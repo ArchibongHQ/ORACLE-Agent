@@ -1,0 +1,29 @@
+# Secrets
+.env
+credentials.json
+token.json
+
+# Build artifacts
+dist/
+*.js.map
+*.d.ts.map
+
+# Turbo cache
+.turbo/
+
+# Dependencies
+node_modules/
+
+# Python
+.tmp/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python tools/scrape_fixtures.py --dry-run)",
+      "Bash(python tools/scrape_fixtures.py --date 2026-06-06 --dry-run)",
+      "Bash(python -m playwright install chromium)",
+      "Bash(python tools/scrape_fixtures.py --date 2026-06-06 --dry-run --no-playwright)"
+    ]
+  }
+}

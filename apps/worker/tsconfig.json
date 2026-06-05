@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "lib": ["ES2022", "DOM"],
+    "paths": {
+      "@oracle/engine": ["../../packages/engine/src/index.ts"],
+      "@oracle/storage": ["../../packages/storage/src/index.ts"],
+      "@oracle/llm": ["../../packages/llm/src/index.ts"],
+      "@oracle/runtime": ["../../packages/runtime/src/index.ts"],
+      "@oracle/notify": ["../../packages/notify/src/index.ts"],
+      "@oracle/booking": ["../../apps/booking/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"]
+}

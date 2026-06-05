@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "paths": {
+      "@oracle/engine": ["../../packages/engine/src/index.ts"],
+      "@oracle/storage": ["../../packages/storage/src/index.ts"],
+      "@oracle/runtime": ["../../packages/runtime/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"]
+}

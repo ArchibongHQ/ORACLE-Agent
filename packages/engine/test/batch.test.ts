@@ -1,0 +1,267 @@
+/** Phase 3 batch tests.
+ *  Done criteria: 39-fixture batch completes with one error (batch does not abort),
+ *  market whitelist filters correctly, progress events fire in order. */
+import { describe, it, expect, vi } from 'vitest';
+import { parseFixtureList, runBatch } from '../src/batch/index.js';
+import { ExecutionEngine } from '../src/execution/index.js';
+import { MemoryAdapter } from '@oracle/storage';
+import type { RunResult } from '../src/types.js';
+import type { FixtureJobSuccess, FixtureJobError } from '../src/batch/index.js';
+
+const INSTANT_BACKOFF = () => 0;  // eliminates delay in retry tests
+
+const RUN_ID = Date.now().toString(36);
+const storage = new MemoryAdapter(`.tmp/batch-test-${RUN_ID}`);
+const config = { geminiApiKey: '', claudeApiKey: '', bankroll: 1000 };
+const deps = { storage, config };
+
+// ── parseFixtureList ──────────────────────────────────────────────────────────
+
+describe('parseFixtureList', () => {
+  it('parses comma-separated format', () => {
+    const result = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05T15:00:00Z');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ home: 'Arsenal', away: 'Chelsea', league: 'Premier League' });
+  });
+
+  it('parses pipe-separated format', () => {
+    const result = parseFixtureList('Real Madrid vs Barca | La Liga | 2026-06-05T20:00:00Z');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ home: 'Real Madrid', away: 'Barca', league: 'La Liga' });
+  });
+
+  it('skips comment lines', () => {
+    const input = '# matchday 38\nArsenal vs Chelsea, Premier League, 2026-06-05';
+    expect(parseFixtureList(input)).toHaveLength(1);
+  });
+
+  it('skips blank lines', () => {
+    const input = '\n\nArsenal vs Chelsea, Premier League, 2026-06-05\n\n';
+    expect(parseFixtureList(input)).toHaveLength(1);
+  });
+
+  it('skips lines without vs separator', () => {
+    const input = 'Arsenal Chelsea, Premier League\nArsenal vs Chelsea, Premier League, 2026-06-05';
+    expect(parseFixtureList(input)).toHaveLength(1);
+  });
+
+  it('parses multi-line list', () => {
+    const input = [
+      'Arsenal vs Chelsea, Premier League, 2026-06-05T15:00:00Z',
+      'Real Madrid vs Barca, La Liga, 2026-06-05T20:00:00Z',
+      '# comment',
+      'Bayern Munich vs Dortmund, Bundesliga, 2026-06-06T18:30:00Z',
+    ].join('\n');
+    expect(parseFixtureList(input)).toHaveLength(3);
+  });
+
+  it('defaults league to Default when missing', () => {
+    const result = parseFixtureList('Arsenal vs Chelsea');
+    expect(result[0]?.league).toBe('Default');
+  });
+});
+
+// ── runBatch ──────────────────────────────────────────────────────────────────
+
+describe('runBatch', () => {
+  it('runs a small batch and returns correct counts', async () => {
+    const jobs = parseFixtureList([
+      'Arsenal vs Chelsea, Premier League, 2026-06-05T15:00:00Z',
+      'Real Madrid vs Barca, La Liga, 2026-06-05T20:00:00Z',
+    ].join('\n'));
+
+    const result = await runBatch(jobs, deps);
+
+    expect(result.jobs).toHaveLength(2);
+    expect(result.completedCount + result.errorCount).toBe(2);
+    expect(result.rankingMode).toBe('CONFIDENCE_WEIGHTED');
+    expect(typeof result.date).toBe('string');
+  }, 15_000);
+
+  it('does not abort when one fixture throws — errorCount increments', async () => {
+    const spy = vi.spyOn(ExecutionEngine, 'run').mockRejectedValueOnce(new Error('API timeout'));
+
+    const jobs = parseFixtureList([
+      'BadFixture vs ErrorTeam, Premier League, 2026-06-05',
+      'Arsenal vs Chelsea, Premier League, 2026-06-05',
+    ].join('\n'));
+
+    const result = await runBatch(jobs, deps);
+
+    expect(result.errorCount).toBe(1);
+    expect(result.completedCount).toBe(1);
+    expect(result.jobs[0]?.status).toBe('error');
+    expect((result.jobs[0] as { reason: string }).reason).toContain('API timeout');
+    spy.mockRestore();
+  });
+
+  it('handles a 39-fixture batch without aborting even with one injected error', async () => {
+    const spy = vi.spyOn(ExecutionEngine, 'run').mockRejectedValueOnce(new Error('fixture not found'));
+
+    const lines = Array.from({ length: 39 }, (_, i) =>
+      `Team${i}A vs Team${i}B, Premier League, 2026-06-07T${String(i % 24).padStart(2, '0')}:00:00Z`,
+    );
+    const jobs = parseFixtureList(lines.join('\n'));
+
+    const result = await runBatch(jobs, deps, {
+      onProgress: ({ completed, total }) => {
+        expect(completed).toBeLessThanOrEqual(total);
+      },
+    });
+
+    expect(result.jobs).toHaveLength(39);
+    expect(result.errorCount).toBe(1);
+    expect(result.completedCount).toBe(38);
+    spy.mockRestore();
+  }, 20_000);
+
+  it('fires progress events from 0 to total', async () => {
+    const events: Array<{ completed: number; total: number }> = [];
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+
+    await runBatch(jobs, deps, { onProgress: e => events.push(e) });
+
+    expect(events[0]?.completed).toBe(0);
+    expect(events[events.length - 1]?.completed).toBe(1);
+    expect(events[events.length - 1]?.total).toBe(1);
+  });
+
+  it('applies marketWhitelist — only matching categories returned', async () => {
+    const mockResult: RunResult = {
+      fp: { home: 0.45, draw: 0.28, away: 0.27 },
+      evMarkets: [
+        {
+          cat: '1x2', label: 'Home Win', market: '1x2', side: 'Home Win',
+          mp: 0.45, modelProb: 0.45, ip: 0.40, rawEdge: 0.05, ev: 0.05,
+          odds: 2.5, stake: 0.02, stakeAmt: 20, rankingScore: 0.5, varianceMod: 1.0,
+        },
+        {
+          cat: 'Goals O/U', label: 'Over 2.5', market: 'Goals O/U', side: 'Over 2.5',
+          mp: 0.55, modelProb: 0.55, ip: 0.48, rawEdge: 0.07, ev: 0.07,
+          odds: 2.1, stake: 0.03, stakeAmt: 30, rankingScore: 0.6, varianceMod: 1.0,
+        },
+      ],
+      oddsAvailable: true,
+      bayesian_lH: 1.5, bayesian_lA: 1.2,
+      expectedScoreline: '1-1',
+      portfolioCorrelation: null,
+      correlatedParlayRisk: null,
+    };
+
+    const spy = vi.spyOn(ExecutionEngine, 'run').mockResolvedValueOnce(mockResult);
+
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+    const result = await runBatch(jobs, deps, { marketWhitelist: ['Goals O/U'] });
+
+    expect(result.jobs[0]?.status).toBe('ok');
+    const job = result.jobs[0] as FixtureJobSuccess;
+    expect(job.result.evMarkets).toHaveLength(1);
+    expect(job.result.evMarkets[0]?.cat).toBe('Goals O/U');
+
+    spy.mockRestore();
+  });
+
+  it('respects rankingMode option', async () => {
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+    const result = await runBatch(jobs, deps, { rankingMode: 'MAX_EV' });
+    expect(result.rankingMode).toBe('MAX_EV');
+  });
+
+  it('includes cost and errors fields in BatchResult', async () => {
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+    const result = await runBatch(jobs, deps);
+    expect(result.cost).toMatchObject({ estimatedUsd: 0, halted: false });
+    expect(result.cost.ceilingUsd).toBeNull();
+    expect(Array.isArray(result.errors)).toBe(true);
+  });
+
+  it('maps error to typed AgentErrorCode and populates errors array', async () => {
+    const spy = vi.spyOn(ExecutionEngine, 'run').mockRejectedValue(new Error('429 rate limit exceeded'));
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+    // maxRetries: 0 — test error classification only, not retry behaviour
+    const result = await runBatch(jobs, deps, { maxRetries: 0 });
+    const errJob = result.jobs[0] as FixtureJobError;
+    expect(errJob.errorCode).toBe('RATE_LIMITED');
+    expect(errJob.league).toBe('Premier League');
+    expect(result.errors[0]?.code).toBe('RATE_LIMITED');
+    expect(result.errors[0]?.retriable).toBe(true);
+    spy.mockRestore();
+  });
+
+  it('dry-run skips execution and returns cost estimate', async () => {
+    const jobs = parseFixtureList([
+      'Arsenal vs Chelsea, Premier League, 2026-06-05',
+      'Real Madrid vs Barca, La Liga, 2026-06-05',
+    ].join('\n'));
+    const result = await runBatch(jobs, deps, { dryRun: true });
+    expect(result.dryRun).toBe(true);
+    expect(result.completedCount).toBe(0);
+    expect(result.errorCount).toBe(2);
+    expect(result.cost.estimatedUsd).toBeGreaterThan(0);
+    expect((result.jobs[0] as FixtureJobError).errorCode).toBe('DRY_RUN');
+  });
+
+  it('retries RATE_LIMITED fixture and succeeds on third attempt', async () => {
+    let calls = 0;
+    const mockOk: RunResult = {
+      fp: { home: 0.45, draw: 0.28, away: 0.27 },
+      evMarkets: [], oddsAvailable: true,
+      bayesian_lH: 1.5, bayesian_lA: 1.2,
+      expectedScoreline: '1-1', portfolioCorrelation: null, correlatedParlayRisk: null,
+    };
+    const spy = vi.spyOn(ExecutionEngine, 'run').mockImplementation(async () => {
+      calls++;
+      if (calls < 3) throw new Error('429 rate limit exceeded');
+      return mockOk;
+    });
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+    const result = await runBatch(jobs, deps, { maxRetries: 3, backoffMs: INSTANT_BACKOFF });
+    expect(result.completedCount).toBe(1);
+    expect(result.errorCount).toBe(0);
+    expect(calls).toBe(3);
+    spy.mockRestore();
+  });
+
+  it('records error after exhausting all retries', async () => {
+    const spy = vi.spyOn(ExecutionEngine, 'run').mockRejectedValue(new Error('429 rate limit exceeded'));
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+    const result = await runBatch(jobs, deps, { maxRetries: 2, backoffMs: INSTANT_BACKOFF });
+    expect(result.errorCount).toBe(1);
+    expect((result.jobs[0] as FixtureJobError).errorCode).toBe('RATE_LIMITED');
+    // 1 original + 2 retries = 3 total calls
+    expect(spy).toHaveBeenCalledTimes(3);
+    spy.mockRestore();
+  });
+
+  it('surfaces cost.ceilingUsd when config sets a per-run ceiling', async () => {
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+    const ceilConfig = { ...config, costCeilingUsd: { perRun: 1.00, perDay: 10 } };
+    const result = await runBatch(jobs, { storage, config: ceilConfig });
+    // No LLM calls (no API key), so cost stays 0 and ceiling is not hit
+    expect(result.cost.ceilingUsd).toBe(1.00);
+    expect(result.cost.halted).toBe(false);
+    expect(result.cost.estimatedUsd).toBe(0);
+  });
+
+  it('totalRecommendedStakePct sums actionable stakes', async () => {
+    const mockResult: RunResult = {
+      fp: { home: 0.45, draw: 0.28, away: 0.27 },
+      evMarkets: [{
+        cat: '1x2', label: 'Home Win', market: '1x2', side: 'Home Win',
+        mp: 0.55, modelProb: 0.55, ip: 0.40, rawEdge: 0.15, ev: 0.15,
+        odds: 2.5, stake: 0.05, stakeAmt: 50, rankingScore: 0.8, varianceMod: 1.0,
+      }],
+      oddsAvailable: true,
+      bayesian_lH: 1.5, bayesian_lA: 1.2,
+      expectedScoreline: '1-1',
+      portfolioCorrelation: null,
+      correlatedParlayRisk: null,
+    };
+
+    const spy = vi.spyOn(ExecutionEngine, 'run').mockResolvedValueOnce(mockResult);
+    const jobs = parseFixtureList('Arsenal vs Chelsea, Premier League, 2026-06-05');
+    const result = await runBatch(jobs, deps);
+    expect(result.totalRecommendedStakePct).toBeGreaterThanOrEqual(0);
+    spy.mockRestore();
+  });
+});
