@@ -384,6 +384,8 @@ def build_features(
     # Per-team xG history (rolling pre-match, anti-leakage)
     xg_history: dict[str, list[tuple[float, float]]] = {}  # team -> [(xgF, xgA), ...]
     xg_hits = 0
+    # Directional H2H history (home, away) -> list of FTR outcomes
+    h2h_history: dict[tuple[str, str], list[str]] = {}
 
     for idx, row in df.iterrows():
         home = row["HomeTeam"]
@@ -420,6 +422,48 @@ def build_features(
             feat["lineMovD"] = 0.0
             feat["lineMovA"] = 0.0
             feat["lineMovHAbs"] = 0.0
+
+        # ── Opening market consensus (soft-book average, pre-sharp-money) ──
+        # AvgH/AvgD/AvgA = market average opening odds (newer CSVs, 2019+)
+        # BbAvH/BbAvD/BbAvA = Betbrain average (older CSVs pre-2019) — same concept
+        # NaN for seasons without this col — XGBoost handles natively
+        for open_h, open_d, open_a in [("AvgH", "AvgD", "AvgA"), ("BbAvH", "BbAvD", "BbAvA")]:
+            if open_h in row.index and pd.notna(row[open_h]):
+                try:
+                    aoh, aod, aoa = _devivify(float(row[open_h]), float(row[open_d]), float(row[open_a]))
+                    feat["openAvgH"] = aoh
+                    feat["openAvgD"] = aod
+                    feat["openAvgA"] = aoa
+                    feat["openMovH"] = mh - aoh   # closing vs soft-book open
+                    feat["openMovA"] = ma - aoa
+                except (ValueError, ZeroDivisionError):
+                    pass
+                break
+        feat.setdefault("openAvgH", float("nan"))
+        feat.setdefault("openAvgD", float("nan"))
+        feat.setdefault("openAvgA", float("nan"))
+        feat.setdefault("openMovH", float("nan"))
+        feat.setdefault("openMovA", float("nan"))
+
+        # ── Max closing odds (best price at close — CLV proxy) ──
+        # MaxCH/MaxCD/MaxCA = best close across all tracked books (newer CSVs, 2019+)
+        for mc_h, mc_d, mc_a in [("MaxCH", "MaxCD", "MaxCA"), ("BbMxH", "BbMxD", "BbMxA")]:
+            if mc_h in row.index and pd.notna(row[mc_h]):
+                try:
+                    mxh, mxd, mxa = _devivify(float(row[mc_h]), float(row[mc_d]), float(row[mc_a]))
+                    feat["maxCloseH"] = mxh
+                    feat["maxCloseD"] = mxd
+                    feat["maxCloseA"] = mxa
+                    feat["maxCloseEdgeH"] = mxh - mh   # best price vs Pinnacle close
+                    feat["maxCloseEdgeA"] = mxa - ma
+                except (ValueError, ZeroDivisionError):
+                    pass
+                break
+        feat.setdefault("maxCloseH", float("nan"))
+        feat.setdefault("maxCloseD", float("nan"))
+        feat.setdefault("maxCloseA", float("nan"))
+        feat.setdefault("maxCloseEdgeH", float("nan"))
+        feat.setdefault("maxCloseEdgeA", float("nan"))
 
         # ── Simple rolling attack/defense rating proxy ──
         # gd_rolling = goals_for - goals_against over last 10 (team strength proxy)
@@ -764,6 +808,113 @@ def _save_model(results: dict, model_stem: str) -> None:
     print(f"[gbm] Meta saved  -> {meta_path}")
 
 
+def walk_forward_rolling(
+    features: pd.DataFrame,
+    folds: int,
+    leagues: set[str] | None = None,
+    exclude_features: set[str] | None = None,
+    n_estimators: int = 400,
+) -> dict:
+    """Run N-fold rolling walk-forward: each fold tests one season, trains on all prior.
+    Returns averaged metrics and the best-fold model (highest improvement)."""
+    if leagues:
+        features = features[features["_league"].isin(leagues)].copy()
+        print(f"[gbm] League filter: {sorted(leagues)} -> {len(features)} rows")
+
+    seasons = sorted(features["_season"].unique())
+    test_seasons = seasons[-folds:]  # last N seasons used as test folds
+    if len(test_seasons) < folds:
+        print(f"[gbm] WARNING: only {len(seasons)} seasons available, using {len(test_seasons)} folds")
+
+    fold_results = []
+    for ts in test_seasons:
+        train_df = features[features["_season"] < ts]
+        test_df  = features[features["_season"] == ts]
+        if len(train_df) < 100 or len(test_df) < 50:
+            print(f"[gbm]   Fold {ts}: skipped (too few rows)")
+            continue
+
+        feat_cols = [c for c in features.columns if not c.startswith("_")]
+        if exclude_features:
+            feat_cols = [c for c in feat_cols if c not in exclude_features]
+
+        X_train = train_df[feat_cols].fillna(0).values
+        y_train = train_df["_outcome"].values
+        X_test  = test_df[feat_cols].fillna(0).values
+        y_test  = test_df["_outcome"].values
+
+        model = xgb.XGBClassifier(
+            objective="multi:softprob",
+            num_class=3,
+            n_estimators=n_estimators,
+            max_depth=4,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            min_child_weight=5,
+            reg_lambda=1.0,
+            use_label_encoder=False,
+            eval_metric="mlogloss",
+            verbosity=0,
+            random_state=42,
+            early_stopping_rounds=30,
+        )
+        val_cut = int(len(X_train) * 0.85)
+        model.fit(X_train[:val_cut], y_train[:val_cut],
+                  eval_set=[(X_train[val_cut:], y_train[val_cut:])], verbose=False)
+
+        gbm_probs = model.predict_proba(X_test)
+        mkt_probs = test_df[["_mktH", "_mktD", "_mktA"]].fillna(1/3).values
+        gbm_rps = rps_vector(gbm_probs, y_test)
+        mkt_rps = rps_vector(mkt_probs, y_test)
+        delta = float(np.mean(mkt_rps)) - float(np.mean(gbm_rps))
+
+        importances = dict(zip(feat_cols, model.feature_importances_.tolist()))
+        print(f"[gbm]   Fold {ts}: train={len(train_df)} test={len(test_df)} delta={delta:+.4f}")
+        fold_results.append({
+            "test_season": ts,
+            "n_train": len(train_df),
+            "n_test": len(test_df),
+            "mean_gbm_rps": round(float(np.mean(gbm_rps)), 4),
+            "mean_mkt_rps": round(float(np.mean(mkt_rps)), 4),
+            "improvement": round(delta, 4),
+            "model": model,
+            "feat_cols": feat_cols,
+            "importances": importances,
+        })
+
+    if not fold_results:
+        raise RuntimeError("No valid folds produced results")
+
+    avg_delta = sum(f["improvement"] for f in fold_results) / len(fold_results)
+    best = max(fold_results, key=lambda f: f["improvement"])
+
+    # Average importances across folds
+    avg_imp: dict[str, float] = {}
+    for f in fold_results:
+        for col, val in f["importances"].items():
+            avg_imp[col] = avg_imp.get(col, 0.0) + val / len(fold_results)
+    top_features = sorted(avg_imp.items(), key=lambda x: -x[1])[:15]
+
+    print(f"[gbm] Rolling {len(fold_results)}-fold avg delta: {avg_delta:+.4f}  "
+          f"({'PASS' if avg_delta >= RPS_IMPROVEMENT_THRESHOLD else 'FAIL'})")
+
+    return {
+        "n_train": best["n_train"],
+        "n_test": best["n_test"],
+        "test_seasons": [f["test_season"] for f in fold_results],
+        "mean_gbm_rps": best["mean_gbm_rps"],
+        "mean_mkt_rps": best["mean_mkt_rps"],
+        "improvement": round(avg_delta, 4),
+        "gate_passed": avg_delta >= RPS_IMPROVEMENT_THRESHOLD,
+        "league_stats": {},
+        "top_features": top_features,
+        "model": best["model"],
+        "feat_cols": best["feat_cols"],
+        "fold_details": [{"season": f["test_season"], "delta": f["improvement"]} for f in fold_results],
+    }
+
+
 def _run_single_model(features: pd.DataFrame, test_season: str | None) -> None:
     results = walk_forward_eval(features, test_season=test_season)
     _print_results(results)
@@ -777,6 +928,8 @@ def _run_split_model(
     features: pd.DataFrame,
     test_season: str | None,
     xg_feature_cols: set[str],
+    n_estimators: int = 400,
+    rolling_folds: int = 1,
 ) -> None:
     """
     Train two models:
@@ -789,20 +942,17 @@ def _run_split_model(
     base_leagues = {lg for div, lg in LEAGUE_MAP.items() if div not in TOP5_DIVS}
 
     print("\n[gbm] -- TOP-5 MODEL (Premier League / La Liga / Bundesliga / Serie A / Ligue 1) --")
-    top5_results = walk_forward_eval(
-        features,
-        test_season=test_season,
-        leagues=TOP5_LEAGUES,
-    )
+    if rolling_folds > 1:
+        top5_results = walk_forward_rolling(features, folds=rolling_folds, leagues=TOP5_LEAGUES, n_estimators=n_estimators)
+    else:
+        top5_results = walk_forward_eval(features, test_season=test_season, leagues=TOP5_LEAGUES, n_estimators=n_estimators)
     _print_results(top5_results, label="top5")
 
     print("\n[gbm] -- BASE MODEL (Championship / Eredivisie / Belgian / Primeira Liga / Scottish) --")
-    base_results = walk_forward_eval(
-        features,
-        test_season=test_season,
-        leagues=base_leagues,
-        exclude_features=xg_feature_cols,
-    )
+    if rolling_folds > 1:
+        base_results = walk_forward_rolling(features, folds=rolling_folds, leagues=base_leagues, exclude_features=xg_feature_cols, n_estimators=n_estimators)
+    else:
+        base_results = walk_forward_eval(features, test_season=test_season, leagues=base_leagues, exclude_features=xg_feature_cols, n_estimators=n_estimators)
     _print_results(base_results, label="base")
 
     # Combined gate assessment
@@ -835,12 +985,14 @@ def main() -> None:
     parser.add_argument("--clubelo-dir", default=str(CLUBELO_DIR), help="Path to .tmp/clubelo/ snapshots")
     parser.add_argument("--no-xg", action="store_true", help="Disable xG features")
     parser.add_argument("--no-elo", action="store_true", help="Disable ClubElo features")
+    parser.add_argument("--n-estimators", type=int, default=400, help="XGBoost n_estimators (default 400)")
+    parser.add_argument("--rolling-folds", type=int, default=1, help="N-fold rolling walk-forward (default 1 = single holdout)")
     parser.add_argument(
         "--split-model",
         action="store_true",
         help=(
             "Train two separate models: top-5 leagues (E0/SP1/D1/I1/F1) with xG features "
-            "→ gbm_top5.json; base leagues (E1/N1/B1/P1/SC0) without xG → gbm_base.json"
+            "-> gbm_top5.json; base leagues (E1/N1/B1/P1/SC0) without xG -> gbm_base.json"
         ),
     )
     args = parser.parse_args()
@@ -894,9 +1046,12 @@ def main() -> None:
         "xgForHome10", "xgAgainstHome10", "xgForAway10", "xgAgainstAway10",
         "xgDiffHome10", "xgDiffAway10",
     }
+    H2H_FEATURE_COLS = {
+        "h2hHomeWin", "h2hDraw", "h2hAwayWin", "h2hN", "h2hGoalDiff",
+    }
 
     if args.split_model:
-        _run_split_model(features, args.test_season, XG_FEATURE_COLS + H2H_FEATURE_COLS)
+        _run_split_model(features, args.test_season, XG_FEATURE_COLS | H2H_FEATURE_COLS, n_estimators=args.n_estimators, rolling_folds=args.rolling_folds)
     else:
         _run_single_model(features, args.test_season)
 

@@ -17,3 +17,5 @@ export type { ResolveResult } from './resolveFixtures.js';
 
 export { runAnalysis, resolveDay, CLV_ELIGIBLE_LEAGUES } from './analyze.js';
 export type { AnalyzeOptions, AnalyzeResult, ResolveDayResult } from './analyze.js';
+
+export { enrichWithH2H } from './h2h.js';

@@ -99,7 +99,7 @@ async function runDailyBatch(trigger: RunManifest['trigger'] = 'scheduled'): Pro
   checkSportyBetStreak(sportyBetCount);
   const storage = new GBrainAdapter(DB_PATH);
 
-  const { jobs, source } = await fetchTodaysFixtures(config.oddsApiKey, true, config.geminiApiKey);
+  const { jobs, source } = await fetchTodaysFixtures(config.oddsApiKey, true, config.geminiApiKey, config.footballDataApiKey);
   console.log(`[oracle] ${jobs.length} fixtures (source: ${source})`);
 
   if (!jobs.length) {
