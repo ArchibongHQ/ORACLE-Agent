@@ -1,5 +1,5 @@
 {
-  "name": "@oracle/runtime",
+  "name": "@oracle/bot",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,17 +12,15 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "biome check .",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests",
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@oracle/engine": "workspace:*",
     "@oracle/storage": "workspace:*",
-    "@oracle/llm": "workspace:*",
-    "@oracle/notify": "workspace:*",
-    "@oracle/booking": "workspace:*"
+    "@oracle/runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

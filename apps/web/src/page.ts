@@ -1,6 +1,6 @@
 /** The ORACLE web landing page — a Google-search-styled fixture input.
  *  Zero-dep, all CSS/JS inline (matches the report.ts house style). */
-import { SPORT_TO_LEAGUE } from '@oracle/runtime';
+import { SPORT_TO_LEAGUE } from "@oracle/runtime";
 
 const PAGE_CSS = `
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -49,7 +49,10 @@ form.addEventListener('submit', () => { document.body.classList.add('loading'); 
 /** Build the <option> list for the league hint dropdown. */
 function leagueOptions(): string {
   const leagues = Array.from(new Set(Object.values(SPORT_TO_LEAGUE))).sort();
-  return ['<option value="">Any league</option>', ...leagues.map(l => `<option value="${l}">${l}</option>`)].join('');
+  return [
+    '<option value="">Any league</option>',
+    ...leagues.map((l) => `<option value="${l}">${l}</option>`),
+  ].join("");
 }
 
 export function renderPage(): string {
@@ -89,6 +92,51 @@ export function renderPage(): string {
 }
 
 /** A minimal standalone error/notice page (dark theme). */
+/** Escape HTML special chars for safe interpolation into the punt page. */
+function esc(s: string): string {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+/** The /punt page — paste a SportyBet booking code; shows the awaiting-state banner and last result.
+ *  `state` describes today's prompt/fulfilment; `resultHtml` is an optional rendered result block. */
+export function renderPuntPage(
+  state: { promptedAt: string | null; fulfilled: boolean; lastCode?: string },
+  resultHtml = '',
+): string {
+  const banner = state.fulfilled
+    ? `<div class="banner ok">✅ Today's code processed${state.lastCode ? ` — <code>${esc(state.lastCode)}</code>` : ''}.</div>`
+    : state.promptedAt
+      ? `<div class="banner wait">⏳ Awaiting today's booking code. Drop it below 👇</div>`
+      : `<div class="banner">Paste a SportyBet booking code to run ORACLE counter-analysis.</div>`;
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ORACLE — Punt Analysis</title>
+<style>${PAGE_CSS}
+.banner{max-width:640px;width:100%;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:.9rem;color:#cbd5e1}
+.banner.wait{border-color:#f59e0b;color:#fbbf24}.banner.ok{border-color:#22c55e;color:#4ade80}
+.result{max-width:760px;width:100%;margin-top:24px;background:#1e293b;border:1px solid #334155;border-radius:10px;padding:18px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:.82rem;color:#e2e8f0}
+code{background:#0f172a;padding:1px 6px;border-radius:4px;color:#93c5fd}</style>
+</head><body>
+<div class="logo">ORA<span>CLE</span></div>
+<div class="tagline">Punt counter-analysis — keep his fixtures, swap weak picks</div>
+${banner}
+<form id="punt-form" method="POST" action="/punt">
+  <div class="searchbar">
+    <input type="text" name="code" id="code" placeholder="SportyBet booking code (e.g. BC2A3L9H)" autocomplete="off" required>
+    <button class="btn" type="submit">Analyse</button>
+  </div>
+  <div class="hint">ORACLE loads the slip, analyses every leg, and emits an adjusted booking code.</div>
+</form>
+<div class="spinner"></div>
+${resultHtml ? `<div class="result">${resultHtml}</div>` : ''}
+<script>
+const f=document.getElementById('punt-form');
+f.addEventListener('submit',()=>{document.body.classList.add('loading');});
+</script>
+</body></html>`;
+}
+
 export function renderNotice(title: string, message: string): string {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

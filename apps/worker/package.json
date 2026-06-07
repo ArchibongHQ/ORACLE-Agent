@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
     "test": "vitest run --passWithNoTests",
     "smoke": "node --experimental-vm-modules dist/smoke.js",
     "start": "node dist/index.js",
@@ -20,6 +21,7 @@
     "@oracle/runtime": "workspace:*",
     "@oracle/notify": "workspace:*",
     "@oracle/booking": "workspace:*",
+    "@oracle/bot": "workspace:*",
     "node-cron": "^3.0.3"
   },
   "devDependencies": {
