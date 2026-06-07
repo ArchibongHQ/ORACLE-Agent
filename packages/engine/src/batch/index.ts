@@ -29,6 +29,11 @@ export interface FixtureJobSuccess {
   decisionReplay: DecisionReplay | null;
   eligibleBets: EVMarket[];
   primaryPick: EVMarket | null;
+  // ── Optional LLM-layer telemetry (for report surfacing; all may be absent) ──
+  cvlStatus?: 'APPROVED' | 'OVERRIDE' | 'VETO' | 'SKIPPED';   // B2 verification verdict
+  briefingFlags?: string[];        // B1 briefing flags (e.g. FRAMING_BIAS_DETECTED)
+  swarmConsensus?: string;         // Level-2 swarm consensus pick label
+  swarmDivergence?: number;        // 0–1; high = workers disagreed
 }
 
 export interface FixtureJobError {
@@ -257,6 +262,9 @@ export async function runBatch(
 
       // B7: route based on convergence tier
       let briefingText: string | undefined;
+      let briefingFlags: string[] | undefined;       // captured for report surfacing
+      let swarmConsensus: string | undefined;        // captured for report surfacing
+      let swarmDivergenceVal: number | undefined;    // captured for report surfacing
       let swarmDivergence = false;  // set true when swarm workers strongly disagree
       try {
         const { routeFixture } = await import('@oracle/llm');
@@ -273,6 +281,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             const briefing = await callBriefing(briefingPrompt, llmCtx);
             briefingText = briefing.text;
             if (briefing.flags.length) {
+              briefingFlags = briefing.flags;
               decisionCtx.softContext = [
                 ...(decisionCtx.softContext ?? []),
                 ...briefing.flags.map(f => ({ kind: 'news' as const, text: `[BRIEFING_FLAG] ${f}`, source: 'callBriefing', observedAt: new Date().toISOString() })),
@@ -300,6 +309,8 @@ Keep it under 200 words. Identify the single most important risk factor.`;
                 ...swarmToSoftContext(swarm),
               ];
               swarmDivergence = swarm.highDivergence;
+              swarmConsensus = swarm.consensusPick;
+              swarmDivergenceVal = swarm.divergence;
             }
           } catch { /* non-fatal */ }
         }
@@ -310,7 +321,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
       const decision     = validateSelection(rawDecision, eligible, mlFilter);
 
       // B2: optional CVL adversarial verification
-      let cvlStamp: string | undefined;
+      let cvlStatus: 'APPROVED' | 'OVERRIDE' | 'VETO' | 'SKIPPED' | undefined;
       try {
         const { routeFixture } = await import('@oracle/llm');
         const route = routeFixture(String(convResult?.['tier'] ?? 'VIABLE'));
@@ -321,7 +332,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(eligible.slice(0, 3))}`;
           const llmCtx = { config: { claudeApiKey: config.claudeApiKey, geminiApiKey: config.geminiApiKey, bankroll: config.bankroll }, requestedAt: new Date().toISOString() };
           const cvl = await callVerification(cvlPrompt, llmCtx);
-          cvlStamp = cvl.stamp;
+          cvlStatus = cvl.status;
           if (cvl.status === 'VETO') {
             decision.primaryPick = 'NO_BET';
             decision.rationale = `CVL VETO: ${cvl.rationale}`;
@@ -331,8 +342,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
 
       // Log when LLM disagrees with deterministic top (SkillOpt training signal)
       await logPickDisagreement(deps.storage, rawDecision, eligible[0] ?? null, { ...job, fixtureId });
-      void cvlStamp; // referenced for future telemetry
-      void briefingText; // referenced for future report rendering
+      void briefingText; // full briefing text retained for future report body rendering
 
       const primaryPick =
         decision.primaryPick !== 'NO_BET'
@@ -345,6 +355,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
         analysisId, runId, fixtureId,
         home: job.home, away: job.away, league: job.league, kickoff: job.kickoff,
         result: filteredResult, decision, decisionReplay, eligibleBets: eligible, primaryPick,
+        cvlStatus, briefingFlags, swarmConsensus, swarmDivergence: swarmDivergenceVal,
       };
       }, maxRetries, backoffMs);
     } catch (err) {

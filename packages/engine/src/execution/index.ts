@@ -387,10 +387,7 @@ export class ExecutionEngine {
   // ── _acquireContext — Gemini T1/T2/T3 acquisition turns ──────────────────
 
   private async _acquireContext(state: RunState): Promise<void> {
-    // T0 (Perplexity) runs independently of the Gemini key; T1/T2/T3 need Gemini.
-    const hasGemini = !!this._config.geminiApiKey;
-    const hasT0     = !!(this._config.enableNewsIntel && this._config.perplexityApiKey);
-    if (!hasGemini && !hasT0) return;
+    if (!this._config.geminiApiKey) return;
 
     const fixture = state.pipeline?.fixture ?? {};
     const home    = String(fixture['home'] ?? '').trim();
@@ -400,33 +397,26 @@ export class ExecutionEngine {
     if (!home || !away) return;
 
     let fetchGemini: GeminiCallFn | null = null;
-    if (hasGemini) {
-      try {
-        const llm = await import('@oracle/llm');
-        fetchGemini = llm.fetchGeminiWithCascade;
-      } catch { fetchGemini = null; }
-    }
+    try {
+      const llm = await import('@oracle/llm');
+      fetchGemini = llm.fetchGeminiWithCascade;
+    } catch { return; }
+    if (!fetchGemini) return;
 
     const geminiCtx: GeminiCtx = {
       config: { geminiApiKey: this._config.geminiApiKey, claudeApiKey: this._config.claudeApiKey, bankroll: this._config.bankroll },
       requestedAt: new Date().toISOString(),
     };
 
-    // Resolved-null placeholders keep the destructure stable when a tier is disabled.
-    const skip = Promise.resolve(null);
-    const [t0, t1, t2, t3] = await Promise.allSettled([
-      this._runT0News(home, away, league, kickoff),
-      fetchGemini ? this._runT1(fetchGemini, home, away, league, geminiCtx) : skip,
-      fetchGemini ? this._runT2(fetchGemini, home, away, league, geminiCtx) : skip,
-      fetchGemini ? this._runT3(fetchGemini, home, away, league, kickoff, geminiCtx) : skip,
+    // T0 (Perplexity news) is enriched in the runtime layer (runtime/newsIntel.ts)
+    // before the batch, so the fs-free engine handles only the Gemini turns here.
+    const [t1, t2, t3] = await Promise.allSettled([
+      this._runT1(fetchGemini, home, away, league, geminiCtx),
+      this._runT2(fetchGemini, home, away, league, geminiCtx),
+      this._runT3(fetchGemini, home, away, league, kickoff, geminiCtx),
     ]);
 
     if (!state.telemetry) state.telemetry = {};
-
-    if (t0.status === 'fulfilled' && t0.value?.length) {
-      const existing = state.telemetry.softContext ?? [];
-      state.telemetry.softContext = [...existing, ...t0.value];
-    }
 
     if (t1.status === 'fulfilled' && t1.value) {
       const v = t1.value;
@@ -457,31 +447,6 @@ export class ExecutionEngine {
         state.telemetry.softContext = [...existing, ...v.softContext];
       }
     }
-  }
-
-  /** T0 — Perplexity Sonar news/team intelligence. Opt-in (enableNewsIntel + perplexityApiKey).
-   *  Returns SoftContextItems (injuries/suspensions/lineups/motivation/travel). Non-fatal. */
-  private async _runT0News(
-    home: string, away: string, league: string, kickoff: string,
-  ): Promise<SoftContextItem[] | null> {
-    if (!this._config.enableNewsIntel || !this._config.perplexityApiKey) return null;
-    try {
-      const { fetchNewsIntelligence } = await import('@oracle/llm');
-      const intel = await fetchNewsIntelligence(home, away, league, kickoff, this._config.perplexityApiKey);
-      if (!intel) return null;
-
-      const observedAt = new Date().toISOString();
-      const items: SoftContextItem[] = [];
-      const push = (kind: SoftContextItem['kind'], texts: string[]) => {
-        for (const text of texts) items.push({ kind, text, source: `perplexity-${intel.model}`, observedAt });
-      };
-      push('injury', intel.injuries);
-      push('injury', intel.suspensions);   // suspensions are absence signals, same kind
-      push('lineup', intel.lineupHints);
-      push('motivation', intel.motivationFlags);
-      push('news', intel.travelFlags);
-      return items.length ? items : null;
-    } catch { return null; }
   }
 
   private async _runT1(

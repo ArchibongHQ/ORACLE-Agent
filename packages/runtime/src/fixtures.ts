@@ -11,6 +11,7 @@ import type { FixtureJob } from '@oracle/engine';
 import { fetchOddsViaGemini } from '@oracle/llm';
 import type { LLMCallContext } from '@oracle/llm';
 import { enrichWithH2H } from './h2h.js';
+import { enrichWithNewsIntel } from './newsIntel.js';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, '../../..');
@@ -511,15 +512,19 @@ export async function fetchTodaysFixtures(
   enableWebSearchFallback: boolean = true,
   geminiApiKey?: string,
   footballDataApiKey?: string,
+  perplexityApiKey?: string,
 ): Promise<FetchResult> {
+  // T0 news intel runs after H2H on every return path (cache-first, non-fatal).
+  const enrich = async (jobs: FixtureJob[]): Promise<FixtureJob[]> => {
+    const withH2H = await enrichWithH2H(jobs, footballDataApiKey);
+    return enrichWithNewsIntel(withH2H, perplexityApiKey);
+  };
+
   if (!oddsApiKey) {
     console.warn('[odds] No ODDS_API_KEY — falling back to .tmp/fixtures/today.txt');
     const cached = await readCachedJobs();
     const filled = await geminiOddsGapFill(cached.filter(j => !j.state?.telemetry?.hOdds), geminiApiKey);
-    const jobs = await enrichWithH2H(
-      [...cached.filter(j => j.state?.telemetry?.hOdds), ...filled],
-      footballDataApiKey,
-    );
+    const jobs = await enrich([...cached.filter(j => j.state?.telemetry?.hOdds), ...filled]);
     return { jobs, source: jobs.length ? 'cache' : 'empty', quality: filled.length ? 'degraded' : 'no_odds', fetchedAt: new Date().toISOString() };
   }
 
@@ -561,9 +566,9 @@ export async function fetchTodaysFixtures(
     const unmatched = findUnmatched(scraped, oddsJobs);
     const filled = await geminiOddsGapFill(unmatched, geminiApiKey);
 
-    const preH2H = [...oddsJobs, ...filled];
+    const preEnrich = [...oddsJobs, ...filled];
     console.log(`[odds] Total for analysis: ${oddsJobs.length} live + ${filled.length} Gemini-filled`);
-    const allJobs = await enrichWithH2H(preH2H, footballDataApiKey);
+    const allJobs = await enrich(preEnrich);
     return { jobs: allJobs, source: 'api', quality: filled.length > 0 ? 'degraded' : 'live', fetchedAt: new Date().toISOString() };
   }
 
@@ -573,8 +578,8 @@ export async function fetchTodaysFixtures(
     if (cached.length > 0) {
       console.warn('[odds] API quota exhausted — attempting web search fallback');
       const enhanced = await fetchWebSearchOdds(cached, true);
-      const withH2H = await enrichWithH2H(enhanced, footballDataApiKey);
-      return { jobs: withH2H, source: 'web_search_consensus', quality: 'degraded', fetchedAt: new Date().toISOString() };
+      const enrichedJobs = await enrich(enhanced);
+      return { jobs: enrichedJobs, source: 'web_search_consensus', quality: 'degraded', fetchedAt: new Date().toISOString() };
     }
   }
 
@@ -584,8 +589,8 @@ export async function fetchTodaysFixtures(
     console.warn('[odds] API returned 0 games — attempting Gemini gap-fill on scraped fixtures');
     const filled = await geminiOddsGapFill(cached, geminiApiKey);
     if (filled.length > 0) {
-      const withH2H = await enrichWithH2H(filled, footballDataApiKey);
-      return { jobs: withH2H, source: 'web_search_consensus', quality: 'degraded', fetchedAt: new Date().toISOString() };
+      const enrichedJobs = await enrich(filled);
+      return { jobs: enrichedJobs, source: 'web_search_consensus', quality: 'degraded', fetchedAt: new Date().toISOString() };
     }
     return { jobs: cached, source: 'cache', quality: 'no_odds', fetchedAt: new Date().toISOString() };
   }

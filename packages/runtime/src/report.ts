@@ -86,6 +86,19 @@ function renderCard(job: BatchJobResult): string {
   const mlFilter = r['mlFilter'] as Record<string, unknown> | undefined;
   if (mlFilter?.mlAllowed === false) flags.push('<span class="flag flag-danger">ML_BLOCKED</span>');
 
+  // LLM-layer telemetry flags (B1 briefing, B2 CVL, Level-2 swarm)
+  if (job.cvlStatus === 'VETO') flags.push('<span class="flag flag-danger">CVL_VETO</span>');
+  else if (job.cvlStatus === 'OVERRIDE') flags.push('<span class="flag flag-warn">CVL_OVERRIDE</span>');
+  else if (job.cvlStatus === 'APPROVED') flags.push('<span class="flag flag-info">CVL_OK</span>');
+  if (job.swarmConsensus !== undefined) {
+    const dv = job.swarmDivergence ?? 0;
+    const cls = dv > 0.4 ? 'flag-warn' : 'flag-info';
+    flags.push(`<span class="flag ${cls}">SWARM ${esc(job.swarmConsensus)} ${(dv * 100).toFixed(0)}%div</span>`);
+  }
+  for (const bf of job.briefingFlags ?? []) {
+    flags.push(`<span class="flag flag-warn">${esc(bf)}</span>`);
+  }
+
   // Primary pick
   const pick = d.primaryPick === 'NO_BET' ? null : (d.primaryPick as PickRef);
   const pickStr = pick
