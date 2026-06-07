@@ -27,3 +27,9 @@ export type { BatchRoute, RouteTier } from './routeBatch.js';
 // Odds acquisition
 export { fetchOddsViaGemini } from './callOdds.js';
 export type { OddsAcquisitionResult } from './callOdds.js';
+// T0 — news / team intelligence (Perplexity Sonar)
+export { fetchNewsIntelligence } from './callNewsIntel.js';
+export type { NewsIntelResult } from './callNewsIntel.js';
+// Swarm worker (Kimi K2.6)
+export { callKimiVote } from './callKimi.js';
+export type { KimiVote } from './callKimi.js';

@@ -3,7 +3,7 @@
  *  StoragePort replaces localStorage (_persist / init).
  *  PostmortemRegistry: B11 failure-pattern store, pre-seeded with 4 confirmed 2026-03-10 losses. */
 import type { StoragePort } from '@oracle/storage';
-import { STORAGE_KEYS } from '@oracle/storage';
+import { STORAGE_KEYS, withKeyLock } from '@oracle/storage';
 import { safeNum, benfordMAD } from '../math/index.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -102,8 +102,8 @@ export class RAGSystem {
     const league = String(fd['league'] ?? 'Default');
     const lH = safeNum((fd['bayesian_lH'] as number | undefined) ?? 0, 0);
     const lA = safeNum((fd['bayesian_lA'] as number | undefined) ?? 0, 0);
-    this._store.push({
-      id: Date.now().toString(),
+    const entry: RAGEntry = {
+      id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
       fixture: `${fd['home'] ?? ''} vs ${fd['away'] ?? ''}`,
       home: String(fd['home'] ?? ''),
       away: String(fd['away'] ?? ''),
@@ -118,9 +118,17 @@ export class RAGSystem {
       topMarketCat,
       result,
       timestamp: new Date().toISOString(),
+    };
+
+    // Serialized read-modify-write on the shared store key. Re-reads the persisted
+    // store inside the lock so concurrent fixtures append to the latest state
+    // instead of each overwriting with a stale init() snapshot (would drop entries).
+    await withKeyLock(STORAGE_KEYS.ragStore, async () => {
+      const persisted = (await this._storage.get<RAGEntry[]>(STORAGE_KEYS.ragStore)) ?? [];
+      const merged = [...persisted, entry].slice(-MAX_STORE);
+      this._store = merged;
+      await this._storage.set(STORAGE_KEYS.ragStore, merged);
     });
-    if (this._store.length > MAX_STORE) this._store.shift();
-    await this._persist();
   }
 
   findSimilar(qf: Record<string, unknown>, k = 5): RAGEntry[] {

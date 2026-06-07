@@ -5,6 +5,7 @@ import type { StoragePort } from '@oracle/storage';
 import { ExecutionEngine } from '../execution/index.js';
 import { buildEligibleBets, decide, validateSelection, logPickDisagreement } from '../decision/index.js';
 import type { DecisionContext } from '../decision/index.js';
+import { runPool, AtomicCostTracker } from './pool.js';
 
 export interface FixtureJob {
   home: string;
@@ -65,6 +66,7 @@ export interface BatchOptions {
   dryRun?: boolean;                // skip execution; return cost estimate only (§11A)
   maxRetries?: number;             // per-fixture retries on RATE_LIMITED (default 3; 0 = no retries)
   backoffMs?: (attempt: number) => number; // delay per retry attempt; default: exponential 1s/2s/4s ±10%
+  concurrency?: number;            // max fixtures processed in parallel (default config.batchConcurrency ?? 8)
   onProgress?: (event: { completed: number; total: number; current: string }) => void;
 }
 
@@ -192,20 +194,18 @@ export async function runBatch(
     };
   }
 
-  const results: BatchJobResult[] = [];
   const agentErrors: AgentError[] = [];
-  let estimatedCostUsd = 0;
-  let costHalted = false;
   const total = jobs.length;
+  const concurrency = Math.max(1, options.concurrency ?? config.batchConcurrency ?? 8);
+  const costTracker = new AtomicCostTracker(LLM_COST_ESTIMATE_USD_PER_CALL, ceilingUsd);
+  let completedCounter = 0;
 
-  for (let i = 0; i < jobs.length; i++) {
-    const job = jobs[i]!;
+  // Per-fixture work — identical logic to the previous sequential body, now
+  // runnable concurrently. Returns a BatchJobResult (never throws).
+  async function processOne(job: FixtureJob): Promise<BatchJobResult> {
     const fixtureId = makeFixtureId(job.home, job.away, job.kickoff);
-
-    onProgress?.({ completed: i, total, current: `${job.home} vs ${job.away}` });
-
     try {
-      const jobResult = await withRetry(async (): Promise<FixtureJobSuccess> => {
+      return await withRetry(async (): Promise<FixtureJobSuccess> => {
       const state: RunState = {
         ...(job.state ?? {}),
         pipeline: {
@@ -257,6 +257,7 @@ export async function runBatch(
 
       // B7: route based on convergence tier
       let briefingText: string | undefined;
+      let swarmDivergence = false;  // set true when swarm workers strongly disagree
       try {
         const { routeFixture } = await import('@oracle/llm');
         const route = routeFixture(String(convResult?.['tier'] ?? 'VIABLE'));
@@ -279,6 +280,29 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             }
           } catch { /* non-fatal */ }
         }
+
+        // Level-2 swarm: fan out sub-agent voters for high-conviction fixtures.
+        // AUGMENTS the decision only — injects advisory consensus + divergence into
+        // softContext. It never sets primaryPick; decide()/validateSelection remain authoritative.
+        if (route.swarmWorkers > 0 && config.enableSwarm && config.kimiApiKey) {
+          try {
+            const { runSwarm, swarmToSoftContext } = await import('../swarm/index.js');
+            const swarm = await runSwarm(
+              route.swarmWorkers,
+              { home: job.home, away: job.away, league: job.league, kickoff: job.kickoff },
+              eligible,
+              config,
+              decisionCtx.softContext,
+            );
+            if (swarm) {
+              decisionCtx.softContext = [
+                ...(decisionCtx.softContext ?? []),
+                ...swarmToSoftContext(swarm),
+              ];
+              swarmDivergence = swarm.highDivergence;
+            }
+          } catch { /* non-fatal */ }
+        }
       } catch { /* non-fatal — llm module unavailable */ }
 
       const { decision: rawDecision, replay: decisionReplay } = await decide(eligible, decisionCtx, config);
@@ -290,7 +314,9 @@ Keep it under 200 words. Identify the single most important risk factor.`;
       try {
         const { routeFixture } = await import('@oracle/llm');
         const route = routeFixture(String(convResult?.['tier'] ?? 'VIABLE'));
-        if (route.useCVL && config.enableCVL && config.claudeApiKey && rawDecision.primaryPick !== 'NO_BET') {
+        // Swarm high-divergence escalates to a CVL pass even on lower tiers.
+        const cvlTriggered = (route.useCVL || swarmDivergence) && config.enableCVL;
+        if (cvlTriggered && config.claudeApiKey && rawDecision.primaryPick !== 'NO_BET') {
           const { callVerification } = await import('@oracle/llm');
           const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(eligible.slice(0, 3))}`;
           const llmCtx = { config: { claudeApiKey: config.claudeApiKey, geminiApiKey: config.geminiApiKey, bankroll: config.bankroll }, requestedAt: new Date().toISOString() };
@@ -321,27 +347,11 @@ Keep it under 200 words. Identify the single most important risk factor.`;
         result: filteredResult, decision, decisionReplay, eligibleBets: eligible, primaryPick,
       };
       }, maxRetries, backoffMs);
-
-      results.push(jobResult);
-
-      // Cost ceiling enforcement (PRD §11A.4) — only LLM calls contribute to cost
-      if (jobResult.decisionReplay !== null) {
-        estimatedCostUsd += LLM_COST_ESTIMATE_USD_PER_CALL;
-        if (ceilingUsd !== null && estimatedCostUsd >= ceilingUsd) {
-          agentErrors.push({
-            code: 'COST_CEILING_HIT',
-            message: `Per-run cost ceiling $${ceilingUsd.toFixed(2)} reached — batch halted after ${results.filter(r => r.status === 'ok').length} fixture(s)`,
-            retriable: false,
-          });
-          costHalted = true;
-          break;
-        }
-      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       const code = classifyError(reason);
       agentErrors.push({ code, fixtureId, message: reason, retriable: code === 'RATE_LIMITED' });
-      results.push({
+      return {
         status: 'error',
         fixtureId,
         home: job.home,
@@ -350,8 +360,40 @@ Keep it under 200 words. Identify the single most important risk factor.`;
         kickoff: job.kickoff,
         reason,
         errorCode: code,
-      });
+      };
     }
+  }
+
+  // Initial progress event (completed: 0) — preserves the pre-loop semantics
+  // callers relied on under the old sequential runner.
+  onProgress?.({ completed: 0, total, current: jobs[0] ? `${jobs[0].home} vs ${jobs[0].away}` : '' });
+
+  // Level-1 swarm: process up to `concurrency` fixtures in parallel.
+  // Results preserve input order. Cost ceiling stops scheduling new fixtures
+  // (in-flight ones finish); per-key storage locks keep RAG/logs race-free.
+  const poolResults = await runPool(
+    jobs,
+    concurrency,
+    processOne,
+    {
+      onSettled: (i, r) => {
+        // Charge only billable (LLM) decisions toward the ceiling.
+        if (r.status === 'ok' && r.decisionReplay !== null) costTracker.charge();
+        onProgress?.({ completed: ++completedCounter, total, current: `${jobs[i]!.home} vs ${jobs[i]!.away}` });
+      },
+      shouldStop: () => costTracker.halted,
+    },
+  );
+
+  // runPool leaves holes for fixtures skipped after a cost-ceiling halt — drop them.
+  const results = poolResults.filter((r): r is BatchJobResult => r != null);
+  const costHalted = costTracker.halted;
+  if (costHalted) {
+    agentErrors.push({
+      code: 'COST_CEILING_HIT',
+      message: `Per-run cost ceiling $${(ceilingUsd ?? 0).toFixed(2)} reached — stopped scheduling after ${results.filter(r => r.status === 'ok').length} fixture(s)`,
+      retriable: false,
+    });
   }
 
   onProgress?.({ completed: total, total, current: '' });
@@ -374,7 +416,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
     errorCount: results.filter(r => r.status === 'error').length,
     actionableCount: actionable.length,
     totalRecommendedStakePct: parseFloat(totalStakePct.toFixed(2)),
-    cost: { estimatedUsd: estimatedCostUsd, ceilingUsd, halted: costHalted },
+    cost: { estimatedUsd: costTracker.spent, ceilingUsd, halted: costHalted },
     errors: agentErrors,
   };
 }

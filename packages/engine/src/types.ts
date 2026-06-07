@@ -81,6 +81,8 @@ export interface EVMarket {
 export interface OracleConfig {
   geminiApiKey: string;
   claudeApiKey: string;
+  perplexityApiKey?: string;         // T0 news/team intelligence (Perplexity Sonar)
+  kimiApiKey?: string;               // swarm worker model (Kimi K2.6 via Moonshot)
   openWeatherApiKey?: string;
   footballDataApiKey?: string;
   apiFootballKey?: string;
@@ -106,6 +108,14 @@ export interface OracleConfig {
   // B-layer feature flags (all default false)
   enableBriefing?: boolean;   // B1: Claude Opus + Gemini temp ensemble briefing
   enableCVL?: boolean;        // B2: Claude Sonnet adversarial verification
+  // T0 + swarm (all default false/undefined)
+  enableNewsIntel?: boolean;  // T0: Perplexity Sonar news/injury/lineup intelligence
+  enableSwarm?: boolean;      // Level-2: per-fixture sub-agent swarm (APEX/PRIME)
+  batchConcurrency?: number;  // Level-1: max concurrent fixtures (default 8)
+  // Hardware capabilities (populated at runtime boundary, never inside @oracle/engine)
+  isVps?: boolean;                    // ORACLE_IS_VPS=true or systemd-detect-virt detects VM
+  hasNvidiaGpu?: boolean;             // nvidia-smi available and returned a GPU name
+  enableAutoResearch?: boolean;       // ORACLE_AUTORESEARCH_ENABLED=true + GPU/VPS required
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

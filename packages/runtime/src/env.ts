@@ -2,6 +2,7 @@
  *  Lifted from apps/worker/src/index.ts (§ env loader). Keys from .env only — never hardcoded. */
 import { readFileSync } from 'node:fs';
 import type { OracleConfig, AgentError } from '@oracle/engine';
+import { detectHardware, isGpuCapable } from './hardware.js';
 
 /** Parse a flat KEY=VALUE .env file into a record. Missing file → {} (never throws). */
 export function loadEnv(path: string): Record<string, string> {
@@ -46,9 +47,15 @@ export function validateConfig(config: OracleConfig): AgentError[] {
 
 /** Build an OracleConfig from a parsed env record. Defaults: bankroll=1000, CONFIDENCE_WEIGHTED. */
 export function buildConfig(env: Record<string, string>): OracleConfig {
+  const hw = detectHardware();
+  const gpuCapable = isGpuCapable(hw);
+  const autoResearchRequested = env['ORACLE_AUTORESEARCH_ENABLED']?.toLowerCase() === 'true';
+
   return {
     geminiApiKey:        env['GEMINI_API_KEY']        ?? '',
     claudeApiKey:        env['CLAUDE_API_KEY']         ?? '',
+    perplexityApiKey:    env['PERPLEXITY_API_KEY'],
+    kimiApiKey:          env['KIMI_API_KEY'],
     openWeatherApiKey:   env['OPENWEATHER_API_KEY'],
     footballDataApiKey:  env['FOOTBALL_DATA_API_KEY'],
     apiFootballKey:      env['API_FOOTBALL_KEY'],
@@ -59,5 +66,14 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     enableWebSearchOddsFallback: env['ENABLE_WEB_SEARCH_FALLBACK']?.toLowerCase() !== 'false',
     webOddsMinConsensus: Number(env['WEB_ODDS_MIN_CONSENSUS'] ?? 3),
     webOddsVarianceThreshold: Number(env['WEB_ODDS_VARIANCE_THRESHOLD'] ?? 0.025),
+    // T0 news intel + swarm — opt-in; off unless the key is present and the flag set
+    enableNewsIntel:     env['ENABLE_NEWS_INTEL']?.toLowerCase() === 'true' && !!env['PERPLEXITY_API_KEY'],
+    enableSwarm:         env['ENABLE_SWARM']?.toLowerCase() === 'true' && !!env['KIMI_API_KEY'],
+    batchConcurrency:    Number(env['BATCH_CONCURRENCY'] ?? 8),
+    // Hardware capabilities — detected at startup, never hardcoded
+    hasNvidiaGpu:        hw.hasNvidiaGpu,
+    isVps:               hw.isVps,
+    // Autonomous SkillOpt loop: requires explicit opt-in AND GPU/VPS capability
+    enableAutoResearch:  autoResearchRequested && gpuCapable,
   };
 }

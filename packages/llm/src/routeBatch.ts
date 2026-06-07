@@ -13,6 +13,7 @@ export interface BatchRoute {
   useCVL: boolean;
   useBriefing: boolean;
   acquisitionModel: string;
+  swarmWorkers: number;   // Level-2 sub-agent count (0 = no swarm)
 }
 
 import { MODELS } from './cascade.js';
@@ -36,6 +37,7 @@ export function routeFixture(convergenceTier: string): BatchRoute {
       useCVL: true,
       useBriefing: true,
       acquisitionModel: MODELS.GEMINI_FLASH,
+      swarmWorkers: tier === 'APEX' ? 7 : 5,
     };
   }
 
@@ -46,6 +48,7 @@ export function routeFixture(convergenceTier: string): BatchRoute {
       useCVL: false,
       useBriefing: false,
       acquisitionModel: MODELS.GEMINI_FLASH_LITE,
+      swarmWorkers: 0,
     };
   }
 
@@ -56,5 +59,6 @@ export function routeFixture(convergenceTier: string): BatchRoute {
     useCVL: false,
     useBriefing: false,
     acquisitionModel: MODELS.GEMINI_FLASH,
+    swarmWorkers: 3,
   };
 }

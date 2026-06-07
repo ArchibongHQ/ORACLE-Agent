@@ -5,3 +5,4 @@ export { SqlAdapter } from './SqlAdapter.js';
 export type { SqlQueryFn } from './SqlAdapter.js';
 export { STORAGE_KEYS } from './keys.js';
 export type { StorageKey } from './keys.js';
+export { withKeyLock, _resetKeyLocks } from './keyLock.js';

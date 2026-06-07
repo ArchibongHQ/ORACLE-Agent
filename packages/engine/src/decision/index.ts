@@ -3,7 +3,7 @@
  *  validateSelection enforces hard gates in code — no LLM instruction can bypass them. */
 import type { EVMarket, DecisionOutput, DecisionReplay, PickRef, OracleConfig, SoftContextItem, DecisionContext } from '../types.js';
 import type { StoragePort } from '@oracle/storage';
-import { STORAGE_KEYS } from '@oracle/storage';
+import { STORAGE_KEYS, withKeyLock } from '@oracle/storage';
 
 /** Paired output from decide() — decision for downstream gates, replay for the ledger. */
 export interface DecisionResult {
@@ -104,8 +104,11 @@ export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
 
 // ── Public: decide ────────────────────────────────────────────────────────────
 
-const CLAUDE_DECISION_MODEL  = 'claude-opus-4-8';
-const GEMINI_DECISION_MODEL  = 'gemini-3.1-pro-preview';
+// Decision-path model IDs. Kept in sync with @oracle/llm cascade.ts MODELS — the canonical source.
+// Hardcoded here (not imported) to avoid forcing a static @oracle/llm import on the deterministic path,
+// which must run even when the LLM module is absent. Update both locations together.
+const CLAUDE_DECISION_MODEL  = 'claude-opus-4-8';   // = MODELS.CLAUDE_OPUS
+const GEMINI_DECISION_MODEL  = 'gemini-3.5-flash';  // = MODELS.GEMINI_PRO (3.5 Flash; was gemini-3.1-pro-preview)
 
 /** Calls LLMs to select the best bet.
  *
@@ -244,16 +247,19 @@ export async function logDisagreement(
   const redVerdicts = (verdicts ?? []).filter(v => v['verdict'] === 'RED');
   if (!redVerdicts.length) return;
 
-  const existing = (await storage.get<Array<Record<string, unknown>>>(STORAGE_KEYS.decisionDisagreementLog)) ?? [];
-  await storage.set(STORAGE_KEYS.decisionDisagreementLog, [
-    ...existing,
-    {
-      type:             'DEBATE_RED',
-      timestamp:        Date.now(),
-      overallTrigger:   referee['overallTrigger'],
-      redVerdicts,
-    },
-  ]);
+  // Serialized read-modify-write — safe under concurrent fixture processing.
+  await withKeyLock(STORAGE_KEYS.decisionDisagreementLog, async () => {
+    const existing = (await storage.get<Array<Record<string, unknown>>>(STORAGE_KEYS.decisionDisagreementLog)) ?? [];
+    await storage.set(STORAGE_KEYS.decisionDisagreementLog, [
+      ...existing,
+      {
+        type:             'DEBATE_RED',
+        timestamp:        Date.now(),
+        overallTrigger:   referee['overallTrigger'],
+        redVerdicts,
+      },
+    ]);
+  });
 }
 
 // ── Public: logPickDisagreement (LLM vs deterministic) ───────────────────────
@@ -273,25 +279,28 @@ export async function logPickDisagreement(
 
   if (llmMarket === deterministicTop.market) return; // no disagreement
 
-  const existing = (await storage.get<Array<Record<string, unknown>>>(STORAGE_KEYS.decisionDisagreementLog)) ?? [];
-  await storage.set(STORAGE_KEYS.decisionDisagreementLog, [
-    ...existing,
-    {
-      type:              'LLM_DISAGREE',
-      timestamp:         Date.now(),
-      fixtureId:         fixture.fixtureId,
-      home:              fixture.home,
-      away:              fixture.away,
-      league:            fixture.league,
-      kickoff:           fixture.kickoff,
-      llmPick:           llmMarket,
-      llmSide:           llmRef?.side ?? null,
-      llmOdds:           llmRef?.odds ?? null,
-      deterministicPick: deterministicTop.market,
-      deterministicSide: deterministicTop.side ?? null,
-      deterministicOdds: deterministicTop.odds,
-      confidence:        llmPick.confidence,
-      rationale:         llmPick.rationale,
-    },
-  ]);
+  // Serialized read-modify-write — safe under concurrent fixture processing.
+  await withKeyLock(STORAGE_KEYS.decisionDisagreementLog, async () => {
+    const existing = (await storage.get<Array<Record<string, unknown>>>(STORAGE_KEYS.decisionDisagreementLog)) ?? [];
+    await storage.set(STORAGE_KEYS.decisionDisagreementLog, [
+      ...existing,
+      {
+        type:              'LLM_DISAGREE',
+        timestamp:         Date.now(),
+        fixtureId:         fixture.fixtureId,
+        home:              fixture.home,
+        away:              fixture.away,
+        league:            fixture.league,
+        kickoff:           fixture.kickoff,
+        llmPick:           llmMarket,
+        llmSide:           llmRef?.side ?? null,
+        llmOdds:           llmRef?.odds ?? null,
+        deterministicPick: deterministicTop.market,
+        deterministicSide: deterministicTop.side ?? null,
+        deterministicOdds: deterministicTop.odds,
+        confidence:        llmPick.confidence,
+        rationale:         llmPick.rationale,
+      },
+    ]);
+  });
 }

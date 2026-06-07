@@ -4,7 +4,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { parseFixtureList, runBatch } from '../src/batch/index.js';
 import { ExecutionEngine } from '../src/execution/index.js';
-import { MemoryAdapter } from '@oracle/storage';
+import { MemoryAdapter, STORAGE_KEYS } from '@oracle/storage';
 import type { RunResult } from '../src/types.js';
 import type { FixtureJobSuccess, FixtureJobError } from '../src/batch/index.js';
 
@@ -264,4 +264,42 @@ describe('runBatch', () => {
     expect(result.totalRecommendedStakePct).toBeGreaterThanOrEqual(0);
     spy.mockRestore();
   });
+});
+
+// ── Concurrency safety (Level-1 swarm) ────────────────────────────────────────
+
+describe('runBatch — concurrency safety', () => {
+  it('RAG store grows by exactly N after an N-fixture parallel batch (no lost writes)', async () => {
+    // Fresh isolated storage so the count is deterministic.
+    const freshStorage = new MemoryAdapter(`.tmp/batch-rag-${Date.now().toString(36)}`);
+    const freshDeps = { storage: freshStorage, config };
+
+    const N = 12;
+    const jobs = Array.from({ length: N }, (_, i) =>
+      `Home${i} vs Away${i}, Premier League, 2026-06-05T15:00:00Z`,
+    ).join('\n');
+
+    // High concurrency to maximize the chance of a read-modify-write race if the
+    // withKeyLock around RAGSystem.addToStore regressed.
+    await runBatch(parseFixtureList(jobs), freshDeps, { concurrency: N });
+
+    const store = (await freshStorage.get<unknown[]>(STORAGE_KEYS.ragStore)) ?? [];
+    expect(store.length).toBe(N);
+  }, 30_000);
+
+  it('processes fixtures in parallel and preserves input order in results', async () => {
+    const freshStorage = new MemoryAdapter(`.tmp/batch-order-${Date.now().toString(36)}`);
+    const jobs = parseFixtureList([
+      'Arsenal vs Chelsea, Premier League, 2026-06-05',
+      'Real Madrid vs Barca, La Liga, 2026-06-05',
+      'Bayern vs Dortmund, Bundesliga, 2026-06-05',
+    ].join('\n'));
+
+    const result = await runBatch(jobs, { storage: freshStorage, config }, { concurrency: 3 });
+
+    expect(result.jobs).toHaveLength(3);
+    expect(result.jobs[0]?.home).toBe('Arsenal');
+    expect(result.jobs[1]?.home).toBe('Real Madrid');
+    expect(result.jobs[2]?.home).toBe('Bayern');
+  }, 30_000);
 });

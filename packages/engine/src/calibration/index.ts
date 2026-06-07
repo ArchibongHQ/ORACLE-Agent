@@ -1,7 +1,7 @@
 /** CalibrationEngine — ported from ORACLE_v2026_8_0.jsx §5, lines 1377-1572.
  *  Rewrite #1: _safeStorage → StoragePort. MathEngine imported for safeNum/clamp/rps. */
 import type { StoragePort } from '@oracle/storage';
-import { STORAGE_KEYS } from '@oracle/storage';
+import { STORAGE_KEYS, withKeyLock } from '@oracle/storage';
 import { safeNum, clamp, rankedProbabilityScore } from '../math/index.js';
 import type { LiquidityTag, ClvSourceQuality } from '../types.js';
 
@@ -107,10 +107,13 @@ export class CalibrationEngine {
   }
 
   async addBet(bet: BetRecord): Promise<{ bets: BetRecord[]; metrics: CalibrationMetrics }> {
-    const bets = await this._load();
-    bets.push({ ...bet, id: Date.now().toString() + Math.random().toString(36).slice(2,9), status:'pending', clv:null, outcome:null, loggedAt:new Date().toISOString() });
-    await this._save(bets);
-    return { bets, metrics: this.calculate(bets) };
+    // Serialized read-modify-write — safe if ever called under concurrent fixtures.
+    return withKeyLock(STORAGE_KEYS.calibrationLedger, async () => {
+      const bets = await this._load();
+      bets.push({ ...bet, id: Date.now().toString() + Math.random().toString(36).slice(2,9), status:'pending', clv:null, outcome:null, loggedAt:new Date().toISOString() });
+      await this._save(bets);
+      return { bets, metrics: this.calculate(bets) };
+    });
   }
 
   async resolveBet(id: string, outcome: string, homeG: number, awayG: number, closeOdds: number): Promise<{ bets: BetRecord[]; metrics: CalibrationMetrics }> {
