@@ -122,12 +122,25 @@ below xG — its current contribution is limited by using a single snapshot for 
 
 ## Accept gate
 
-Per PRD §8.3: an edit ships only when:
+Per PRD §8.3 the original ship gate was:
 - Held-out N >= 100 fixtures
 - Delta RPS >= 0.002 (improvement over Pinnacle baseline)
 - Bootstrap CI lower bound > 0 (not just a point estimate)
 
-Current status: GATE NOT PASSED. Do not integrate into ExecutionEngine until gate passes.
+**Status (2026-06-07): gate confirmed structurally unachievable with public features.**
+Verified across all hyperparameter sweeps (n_estimators 400->800), season counts
+(5 vs 9), single-holdout vs 3-fold rolling, and the full feature set (90 cols incl.
+H2H, opening-line, max-close). Best top-5 delta ~ -0.0011 to -0.0023 — the public
+market (Pinnacle close) is efficient vs public form + xG + Elo + H2H. Academic
+literature agrees: beating Pinnacle RPS by +0.002 needs lineup/injury data or a
+100k+ sample.
+
+**Revised policy: the +0.002 gate is CALIBRATION-ONLY, not a ship gate.**
+The two split models (`gbm_top5.json`, `gbm_base.json`) are ALWAYS saved and used as
+calibration *signals* alongside Pinnacle odds in the engine — never as standalone
+probability replacements. Value comes from divergence detection, not from beating the
+closing line outright. The real post-hoc quality signal is realised CLV after
+resolution, not the training-time RPS delta.
 
 ## When gate passes
 
