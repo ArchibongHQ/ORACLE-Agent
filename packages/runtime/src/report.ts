@@ -1,16 +1,15 @@
 /** Self-contained HTML report renderer — Phase 3.
  *  No external deps; all CSS inline. One card per fixture. */
-import { writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
-import type { BatchResult, BatchJobResult, FixtureJobSuccess } from '@oracle/engine';
-import type { PickRef } from '@oracle/engine';
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { BatchJobResult, BatchResult, PickRef } from "@oracle/engine";
 
 function esc(s: unknown): string {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function pct(n: number, dec = 1): string {
@@ -56,13 +55,13 @@ h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 16px; color: #f1f5f9; }
 `;
 
 function cardClass(job: BatchJobResult): string {
-  if (job.status === 'error') return 'card card-error';
-  if (job.decision.primaryPick === 'NO_BET') return 'card card-no-bet';
-  return 'card card-actionable';
+  if (job.status === "error") return "card card-error";
+  if (job.decision.primaryPick === "NO_BET") return "card card-no-bet";
+  return "card card-actionable";
 }
 
 function renderCard(job: BatchJobResult): string {
-  if (job.status === 'error') {
+  if (job.status === "error") {
     return `
 <div class="card card-error">
   <div class="card-header"><span class="teams">${esc(job.home)} vs ${esc(job.away)}</span></div>
@@ -78,60 +77,77 @@ function renderCard(job: BatchJobResult): string {
 
   // Regime flags
   const flags: string[] = [];
-  const lowScore = (r['lowScoreRegime'] as Record<string, unknown> | undefined)?.regime === 'LOW_SCORING';
+  const lowScore =
+    (r.lowScoreRegime as Record<string, unknown> | undefined)?.regime === "LOW_SCORING";
   if (lowScore) flags.push('<span class="flag flag-warn">LOW_SCORING</span>');
   if (r.portfolioCorrelation !== null && (r.portfolioCorrelation as number) > 0.5)
     flags.push('<span class="flag flag-warn">HIGH_CORR</span>');
   if (!r.oddsAvailable) flags.push('<span class="flag flag-info">NO_ODDS</span>');
-  const mlFilter = r['mlFilter'] as Record<string, unknown> | undefined;
+  const mlFilter = r.mlFilter as Record<string, unknown> | undefined;
   if (mlFilter?.mlAllowed === false) flags.push('<span class="flag flag-danger">ML_BLOCKED</span>');
 
+  // LLM-layer telemetry flags (B1 briefing, B2 CVL, Level-2 swarm)
+  if (job.cvlStatus === "VETO") flags.push('<span class="flag flag-danger">CVL_VETO</span>');
+  else if (job.cvlStatus === "OVERRIDE")
+    flags.push('<span class="flag flag-warn">CVL_OVERRIDE</span>');
+  else if (job.cvlStatus === "APPROVED") flags.push('<span class="flag flag-info">CVL_OK</span>');
+  if (job.swarmConsensus !== undefined) {
+    const dv = job.swarmDivergence ?? 0;
+    const cls = dv > 0.4 ? "flag-warn" : "flag-info";
+    flags.push(
+      `<span class="flag ${cls}">SWARM ${esc(job.swarmConsensus)} ${(dv * 100).toFixed(0)}%div</span>`
+    );
+  }
+  for (const bf of job.briefingFlags ?? []) {
+    flags.push(`<span class="flag flag-warn">${esc(bf)}</span>`);
+  }
+
   // Primary pick
-  const pick = d.primaryPick === 'NO_BET' ? null : (d.primaryPick as PickRef);
+  const pick = d.primaryPick === "NO_BET" ? null : (d.primaryPick as PickRef);
   const pickStr = pick
-    ? `${esc(pick.market)}${pick.side ? ` — ${esc(pick.side)}` : ''} <span style="color:#fbbf24">@ ${pick.odds}</span>`
+    ? `${esc(pick.market)}${pick.side ? ` — ${esc(pick.side)}` : ""} <span style="color:#fbbf24">@ ${pick.odds}</span>`
     : '<span style="color:#64748b">NO_BET</span>';
-  const stakeStr = pick?.stake ? `<span class="pick-stake">${pct(pick.stake)} Kelly</span>` : '';
+  const stakeStr = pick?.stake ? `<span class="pick-stake">${pct(pick.stake)} Kelly</span>` : "";
   const altPick = d.altPick;
-  const altStr = altPick
-    ? `${esc(altPick.market)} @ ${altPick.odds}`
-    : '—';
+  const altStr = altPick ? `${esc(altPick.market)} @ ${altPick.odds}` : "—";
 
   // Adversary objection from debate
-  const debate = r['debate'] as Record<string, unknown> | undefined;
-  const rounds = debate?.['rounds'] as Array<Record<string, unknown>> | undefined;
-  const adversary = rounds && rounds.length > 0
-    ? String(rounds[rounds.length - 1]!['adversaryArg'] ?? '')
-    : '';
+  const debate = r.debate as Record<string, unknown> | undefined;
+  const rounds = debate?.rounds as Array<Record<string, unknown>> | undefined;
+  const adversary =
+    rounds && rounds.length > 0 ? String(rounds[rounds.length - 1]?.adversaryArg ?? "") : "";
 
   return `
 <div class="${cardClass(job)}">
   <div class="card-header">
     <span class="teams">${esc(job.home)} vs ${esc(job.away)}</span>
-    <span class="meta">${esc(job.league)}<br>${esc(job.kickoff.slice(0, 16).replace('T', ' '))}</span>
+    <span class="meta">${esc(job.league)}<br>${esc(job.kickoff.slice(0, 16).replace("T", " "))}</span>
   </div>
-  <div class="lambda-row">λH <strong>${lH.toFixed(2)}</strong> · λA <strong>${lA.toFixed(2)}</strong> · xScore <strong>${esc(r.expectedScoreline ?? '?')}</strong></div>
+  <div class="lambda-row">λH <strong>${lH.toFixed(2)}</strong> · λA <strong>${lA.toFixed(2)}</strong> · xScore <strong>${esc(r.expectedScoreline ?? "?")}</strong></div>
   <div class="probs">
     <div class="prob"><div class="prob-label">Home</div><div class="prob-val">${pct(fp.home)}</div></div>
     <div class="prob"><div class="prob-label">Draw</div><div class="prob-val">${pct(fp.draw)}</div></div>
     <div class="prob"><div class="prob-label">Away</div><div class="prob-val">${pct(fp.away)}</div></div>
   </div>
-  ${flags.length ? `<div class="flags">${flags.join('')}</div>` : ''}
+  ${flags.length ? `<div class="flags">${flags.join("")}</div>` : ""}
   <div class="picks">
-    <div class="pick-row"><span class="pick-label">Primary</span><span class="pick-val">${pickStr}</span>${stakeStr}${pick ? `<span class="confidence">${pct(d.confidence)} conf</span>` : ''}</div>
+    <div class="pick-row"><span class="pick-label">Primary</span><span class="pick-val">${pickStr}</span>${stakeStr}${pick ? `<span class="confidence">${pct(d.confidence)} conf</span>` : ""}</div>
     <div class="pick-row"><span class="pick-label">Alt</span><span class="pick-val" style="color:#94a3b8">${altStr}</span></div>
   </div>
-  ${adversary ? `<div class="adversary"><span class="adv-label">Adversary:</span>${esc(adversary)}</div>` : ''}
-  ${d.rationale ? `<div class="rationale">${esc(d.rationale)}</div>` : ''}
+  ${adversary ? `<div class="adversary"><span class="adv-label">Adversary:</span>${esc(adversary)}</div>` : ""}
+  ${d.rationale ? `<div class="rationale">${esc(d.rationale)}</div>` : ""}
 </div>`;
 }
 
 export function renderReport(batch: BatchResult): string {
   const hasHighCorr = (batch.jobs as BatchJobResult[]).some(
-    j => j.status === 'ok' && j.result.portfolioCorrelation !== null && (j.result.portfolioCorrelation as number) > 0.5,
+    (j) =>
+      j.status === "ok" &&
+      j.result.portfolioCorrelation !== null &&
+      (j.result.portfolioCorrelation as number) > 0.5
   );
 
-  const cards = batch.jobs.map(renderCard).join('\n');
+  const cards = batch.jobs.map(renderCard).join("\n");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -148,9 +164,9 @@ export function renderReport(batch: BatchResult): string {
   <div class="stat"><span class="stat-label">Mode</span><span class="stat-val">${esc(batch.rankingMode)}</span></div>
   <div class="stat"><span class="stat-label">Fixtures</span><span class="stat-val">${batch.jobs.length}</span></div>
   <div class="stat"><span class="stat-label">Actionable</span><span class="stat-val" style="color:#22c55e">${batch.actionableCount}</span></div>
-  <div class="stat"><span class="stat-label">Errors</span><span class="stat-val"${batch.errorCount > 0 ? ' style="color:#ef4444"' : ''}>${batch.errorCount}</span></div>
+  <div class="stat"><span class="stat-label">Errors</span><span class="stat-val"${batch.errorCount > 0 ? ' style="color:#ef4444"' : ""}>${batch.errorCount}</span></div>
   <div class="stat"><span class="stat-label">Total Stake</span><span class="stat-val">${batch.totalRecommendedStakePct.toFixed(1)}%</span></div>
-  ${hasHighCorr ? '<div class="stat"><span class="stat-label">Portfolio</span><span class="stat-val" style="color:#f97316">HIGH_CORR</span></div>' : ''}
+  ${hasHighCorr ? '<div class="stat"><span class="stat-label">Portfolio</span><span class="stat-val" style="color:#f97316">HIGH_CORR</span></div>' : ""}
 </div>
 <div class="cards">
 ${cards}
@@ -160,9 +176,9 @@ ${cards}
 }
 
 /** Write the report to .tmp/reports/oracle-{date}.html. Returns the output path. */
-export async function writeReport(batch: BatchResult, outDir = '.tmp/reports'): Promise<string> {
+export async function writeReport(batch: BatchResult, outDir = ".tmp/reports"): Promise<string> {
   await mkdir(outDir, { recursive: true });
   const outPath = join(outDir, `oracle-${batch.date}.html`);
-  await writeFile(outPath, renderReport(batch), 'utf8');
+  await writeFile(outPath, renderReport(batch), "utf8");
   return outPath;
 }

@@ -14,12 +14,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
     "test": "vitest run"
   },
   "dependencies": {
     "@oracle/engine": "workspace:*",
     "@oracle/storage": "workspace:*",
-    "@oracle/llm": "workspace:*"
+    "@oracle/llm": "workspace:*",
+    "@oracle/notify": "workspace:*",
+    "@oracle/booking": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

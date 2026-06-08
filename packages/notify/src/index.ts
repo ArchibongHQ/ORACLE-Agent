@@ -1,18 +1,19 @@
 /** @oracle/notify — pluggable push delivery for ORACLE batch results.
  *  Channels are constructed only when their env vars are present, so an unconfigured
  *  channel is simply absent (never a runtime error). */
-export type { Notifier, BatchSummary, ActionablePick } from './types.js';
-export { summarizeBatch, formatSummaryText, formatSummaryHtml } from './types.js';
-export { TelegramNotifier } from './telegram.js';
-export { SlackNotifier } from './slack.js';
-export { EmailNotifier } from './email.js';
-export { OpenClawNotifier } from './openclaw.js';
 
-import type { Notifier, BatchSummary } from './types.js';
-import { TelegramNotifier } from './telegram.js';
-import { SlackNotifier } from './slack.js';
-import { EmailNotifier } from './email.js';
-import { OpenClawNotifier } from './openclaw.js';
+export { EmailNotifier } from "./email.js";
+export { OpenClawNotifier } from "./openclaw.js";
+export { SlackNotifier } from "./slack.js";
+export { TelegramNotifier } from "./telegram.js";
+export type { ActionablePick, BatchSummary, Notifier } from "./types.js";
+export { formatSummaryHtml, formatSummaryText, summarizeBatch } from "./types.js";
+
+import { EmailNotifier } from "./email.js";
+import { OpenClawNotifier } from "./openclaw.js";
+import { SlackNotifier } from "./slack.js";
+import { TelegramNotifier } from "./telegram.js";
+import type { BatchSummary, Notifier } from "./types.js";
 
 /** Build the set of notifiers configured in the given env record.
  *  Recognised keys:
@@ -25,26 +26,30 @@ import { OpenClawNotifier } from './openclaw.js';
 export function buildNotifiers(env: Record<string, string | undefined>): Notifier[] {
   const notifiers: Notifier[] = [];
 
-  if (env['TELEGRAM_BOT_TOKEN'] && env['TELEGRAM_CHAT_ID']) {
-    notifiers.push(new TelegramNotifier(env['TELEGRAM_BOT_TOKEN'], env['TELEGRAM_CHAT_ID']));
+  if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
+    notifiers.push(new TelegramNotifier(env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_CHAT_ID));
   }
-  if (env['SLACK_WEBHOOK_URL']) {
-    notifiers.push(new SlackNotifier(env['SLACK_WEBHOOK_URL']));
+  if (env.SLACK_WEBHOOK_URL) {
+    notifiers.push(new SlackNotifier(env.SLACK_WEBHOOK_URL));
   }
-  if (env['MAIL_API_KEY'] && env['MAIL_FROM'] && env['MAIL_TO']) {
-    notifiers.push(new EmailNotifier({
-      apiKey: env['MAIL_API_KEY'],
-      from: env['MAIL_FROM'],
-      to: env['MAIL_TO'],
-      ...(env['MAIL_ENDPOINT'] ? { endpoint: env['MAIL_ENDPOINT'] } : {}),
-    }));
+  if (env.MAIL_API_KEY && env.MAIL_FROM && env.MAIL_TO) {
+    notifiers.push(
+      new EmailNotifier({
+        apiKey: env.MAIL_API_KEY,
+        from: env.MAIL_FROM,
+        to: env.MAIL_TO,
+        ...(env.MAIL_ENDPOINT ? { endpoint: env.MAIL_ENDPOINT } : {}),
+      })
+    );
   }
-  if (env['OPENCLAW_GATEWAY_URL'] && env['OPENCLAW_TOKEN']) {
-    notifiers.push(new OpenClawNotifier({
-      gatewayUrl: env['OPENCLAW_GATEWAY_URL'],
-      token: env['OPENCLAW_TOKEN'],
-      ...(env['OPENCLAW_AGENT_ID'] ? { agentId: env['OPENCLAW_AGENT_ID'] } : {}),
-    }));
+  if (env.OPENCLAW_GATEWAY_URL && env.OPENCLAW_TOKEN) {
+    notifiers.push(
+      new OpenClawNotifier({
+        gatewayUrl: env.OPENCLAW_GATEWAY_URL,
+        token: env.OPENCLAW_TOKEN,
+        ...(env.OPENCLAW_AGENT_ID ? { agentId: env.OPENCLAW_AGENT_ID } : {}),
+      })
+    );
   }
 
   return notifiers;
@@ -53,13 +58,10 @@ export function buildNotifiers(env: Record<string, string | undefined>): Notifie
 /** Fire every notifier; a single channel failure is logged but never aborts the others. */
 export async function notifyAll(notifiers: Notifier[], summary: BatchSummary): Promise<void> {
   await Promise.allSettled(
-    notifiers.map(async n => {
+    notifiers.map(async (n) => {
       try {
         await n.notify(summary);
-        console.log(`[notify] ${n.name} sent`);
-      } catch (err) {
-        console.warn(`[notify] ${n.name} failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }),
+      } catch (_err) {}
+    })
   );
 }

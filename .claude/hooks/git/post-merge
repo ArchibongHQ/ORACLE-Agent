@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Advisory post-merge hook: reminds about /gstack-document-release.
+# Non-blocking — always exits 0.
+
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+echo "[post-merge] Merge completed on branch: $CURRENT_BRANCH"
+echo ""
+echo "================================================================"
+echo "  POST-MERGE: If this merge represents a shipped feature or PR,"
+echo "  run /gstack-document-release in Claude Code to sync docs."
+echo "================================================================"
+
+exit 0

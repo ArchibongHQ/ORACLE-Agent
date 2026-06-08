@@ -53,8 +53,39 @@ Every failure is a chance to make the system stronger:
 - **Surgical edits only.** Modify only what was asked. No drive-by refactoring of adjacent working code.
 - **Simplicity over abstraction.** Write the shortest, cleanest code that solves the immediate problem. No speculative future-proofing.
 - **Ask, don't assume.** If a prompt has multiple interpretations or missing edge-case details, stop and ask before proceeding.
+- **Pin key files.** Reference critical files explicitly in prompts using `@path/to/file` (e.g., `@packages/runtime/src/index.ts`) to anchor reasoning to real code, not memory.
 - **Mandatory verification.** Every code change must be followed by running the project's test and lint commands to confirm zero regressions.
 - **Context compaction.** Alert the user to run `/clear` when the conversation hits 15–20 messages to prevent token bloat.
+
+---
+
+## Verification Loop (Mandatory)
+
+After every code change:
+
+1. Run `pnpm turbo run typecheck test`
+2. If anything fails, fix it before claiming success.
+3. If output doesn't match expectations, explain the discrepancy — do not paper over it.
+4. For any diff >50 lines, run `/gstack-review` before claiming success.
+5. Use `@.claude/agents/verifier.md` for an independent review pass on non-trivial changes.
+
+---
+
+## gstack Workflow Integration
+
+The full gstack skill suite (garrytan/gstack, MIT) is installed globally at `~/.claude/skills/gstack/`. Available in every Claude Code session across all projects.
+
+| Stage | Command |
+|---|---|
+| New feature scoping | `/gstack-office-hours` |
+| Architecture decisions | `/gstack-plan-eng-review` |
+| Debugging failures | `/gstack-investigate` |
+| Pre-PR review (>50 lines) | `/gstack-review` |
+| Pre-release security | `/gstack-cso` |
+| Shipping a PR | `/gstack-ship` |
+| Weekly sprint review | `/gstack-retro` |
+| Docs sync post-ship | `/gstack-document-release` |
+| Update gstack | `bash ~/.claude/skills/gstack/register-skills.sh` (after git pull in gstack dir) |
 
 ---
 

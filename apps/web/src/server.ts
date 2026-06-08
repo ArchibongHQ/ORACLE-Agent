@@ -5,20 +5,30 @@
  *  GET /health    → liveness probe
  *
  *  Binds 127.0.0.1 by default (single power user; auth deferred to the cloud stage — PRD §1.3). */
-import http from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { GBrainAdapter } from '@oracle/storage';
-import type { StoragePort } from '@oracle/storage';
-import { parseFixtureList } from '@oracle/engine';
-import type { OracleConfig } from '@oracle/engine';
-import { loadEnv, buildConfig, fetchFixtureByName, runAnalysis } from '@oracle/runtime';
-import { renderPage, renderNotice } from './page.js';
+
+import { readFile } from "node:fs/promises";
+import http from "node:http";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { FixtureJob, OracleConfig } from "@oracle/engine";
+import { parseFixtureList } from "@oracle/engine";
+import {
+  buildConfig,
+  fetchFixtureByName,
+  formatPuntResult,
+  loadEnv,
+  markFulfilled,
+  readPuntState,
+  runAnalysis,
+  runPuntAnalysis,
+} from "@oracle/runtime";
+import type { StoragePort } from "@oracle/storage";
+import { GBrainAdapter } from "@oracle/storage";
+import { renderNotice, renderPage, renderPuntPage } from "./page.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dir, '../../..');
-const REPORTS_DIR = join(ROOT, '.tmp/reports');
+const ROOT = join(__dir, "../../..");
+const REPORTS_DIR = join(ROOT, ".tmp/reports");
 
 export interface WebDeps {
   storage: StoragePort;
@@ -31,29 +41,48 @@ export interface WebResponse {
   body: string;
 }
 
-const html = (status: number, body: string): WebResponse =>
-  ({ status, headers: { 'content-type': 'text/html; charset=utf-8' }, body });
-const jsonRes = (status: number, obj: unknown): WebResponse =>
-  ({ status, headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) });
+const html = (status: number, body: string): WebResponse => ({
+  status,
+  headers: { "content-type": "text/html; charset=utf-8" },
+  body,
+});
+const jsonRes = (status: number, obj: unknown): WebResponse => ({
+  status,
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(obj),
+});
 
 /** Parse a POST body (JSON or form-encoded) into the analyse fields. */
-function parseBody(body: string, contentType: string): { query?: string; league?: string; list?: string } {
+function parseBody(
+  body: string,
+  contentType: string
+): { query?: string; league?: string; list?: string; code?: string } {
   if (!body) return {};
-  if (contentType.includes('application/json')) {
-    try { return JSON.parse(body) as Record<string, string>; } catch { return {}; }
+  if (contentType.includes("application/json")) {
+    try {
+      return JSON.parse(body) as Record<string, string>;
+    } catch {
+      return {};
+    }
   }
   const params = new URLSearchParams(body);
-  const out: { query?: string; league?: string; list?: string } = {};
-  const q = params.get('query'); if (q) out.query = q;
-  const l = params.get('league'); if (l) out.league = l;
-  const list = params.get('list'); if (list) out.list = list;
+  const out: { query?: string; league?: string; list?: string; code?: string } = {};
+  const q = params.get("query");
+  if (q) out.query = q;
+  const l = params.get("league");
+  if (l) out.league = l;
+  const list = params.get("list");
+  if (list) out.list = list;
+  const code = params.get("code");
+  if (code) out.code = code;
   return out;
 }
 
 function splitFixture(s: string): { home: string; away: string } | null {
   const parts = s.split(/\s+vs\.?\s+/i);
   if (parts.length !== 2) return null;
-  const home = parts[0]!.trim(), away = parts[1]!.trim();
+  const home = parts[0]?.trim(),
+    away = parts[1]?.trim();
   if (!home || !away) return null;
   return { home, away };
 }
@@ -64,57 +93,89 @@ export async function handleRequest(
   urlPath: string,
   body: string,
   contentType: string,
-  deps: WebDeps,
+  deps: WebDeps
 ): Promise<WebResponse> {
-  if (method === 'GET' && urlPath === '/') return html(200, renderPage());
-  if (method === 'GET' && urlPath === '/health') return jsonRes(200, { ok: true });
+  if (method === "GET" && urlPath === "/") return html(200, renderPage());
+  if (method === "GET" && urlPath === "/health") return jsonRes(200, { ok: true });
 
-  if (method === 'GET' && urlPath.startsWith('/reports/')) {
-    const date = urlPath.slice('/reports/'.length);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return html(400, renderNotice('Bad request', 'Report date must be YYYY-MM-DD.'));
+  if (method === "GET" && urlPath === "/punt") {
+    return html(200, renderPuntPage(readPuntState(ROOT)));
+  }
+
+  if (method === "POST" && urlPath === "/punt") {
+    const { code } = parseBody(body, contentType);
+    if (!code?.trim()) {
+      return html(400, renderPuntPage(readPuntState(ROOT), "⚠️ Enter a booking code."));
+    }
+    const result = await runPuntAnalysis(code.trim(), deps);
+    if (result.oracleCode) markFulfilled(ROOT, code.trim());
+    const block = formatPuntResult(result)
+      .replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string);
+    return html(200, renderPuntPage(readPuntState(ROOT), block));
+  }
+
+  if (method === "GET" && urlPath.startsWith("/reports/")) {
+    const date = urlPath.slice("/reports/".length);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+      return html(400, renderNotice("Bad request", "Report date must be YYYY-MM-DD."));
     try {
-      const file = await readFile(join(REPORTS_DIR, `oracle-${date}.html`), 'utf8');
+      const file = await readFile(join(REPORTS_DIR, `oracle-${date}.html`), "utf8");
       return html(200, file);
     } catch {
-      return html(404, renderNotice('Not found', `No report for ${date}.`));
+      return html(404, renderNotice("Not found", `No report for ${date}.`));
     }
   }
 
-  if (method === 'POST' && urlPath === '/analyze') {
+  if (method === "POST" && urlPath === "/analyze") {
     const { query, league, list } = parseBody(body, contentType);
 
-    let jobs;
-    if (list && list.trim()) {
+    let jobs: FixtureJob[];
+    if (list?.trim()) {
       jobs = parseFixtureList(list);
-    } else if (query && query.trim()) {
+    } else if (query?.trim()) {
       const split = splitFixture(query);
-      if (!split) return html(400, renderNotice('Could not parse', `Expected "Home vs Away", got "${query}".`));
-      const job = await fetchFixtureByName(split.home, split.away, deps.config.oddsApiKey, league || undefined);
+      if (!split)
+        return html(
+          400,
+          renderNotice("Could not parse", `Expected "Home vs Away", got "${query}".`)
+        );
+      const job = await fetchFixtureByName(
+        split.home,
+        split.away,
+        deps.config.oddsApiKey,
+        league || undefined
+      );
       jobs = job ? [job] : [];
     } else {
-      return html(400, renderNotice('Nothing to analyse', 'Enter a fixture or paste a list.'));
+      return html(400, renderNotice("Nothing to analyse", "Enter a fixture or paste a list."));
     }
 
     if (!jobs.length) {
-      return html(200, renderNotice('No odds found', 'Could not find live odds for that fixture. Try a league hint, or paste the fixture into the list box.'));
+      return html(
+        200,
+        renderNotice(
+          "No odds found",
+          "Could not find live odds for that fixture. Try a league hint, or paste the fixture into the list box."
+        )
+      );
     }
 
     const { reportHtml } = await runAnalysis(jobs, deps, {
-      trigger: 'manual',
+      trigger: "manual",
       batchOptions: { rankingMode: deps.config.rankingMode },
     });
     return html(200, reportHtml);
   }
 
-  return html(404, renderNotice('Not found', `No route for ${method} ${urlPath}.`));
+  return html(404, renderNotice("Not found", `No route for ${method} ${urlPath}.`));
 }
 
 function readReqBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', c => chunks.push(c as Buffer));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    req.on("data", (c) => chunks.push(c as Buffer));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
   });
 }
 
@@ -126,34 +187,32 @@ export interface ServerOptions {
 
 /** Start the HTTP server. Owns a single GBrainAdapter unless deps are injected (tests). */
 export function startServer(opts: ServerOptions = {}): http.Server {
-  const port = opts.port ?? Number(process.env['PORT'] ?? 8787);
-  const host = opts.host ?? '127.0.0.1';
+  const port = opts.port ?? Number(process.env.PORT ?? 8787);
+  const host = opts.host ?? "127.0.0.1";
   const deps: WebDeps = opts.deps ?? {
-    storage: new GBrainAdapter(join(ROOT, '.tmp/gbrain')),
-    config: buildConfig(loadEnv(join(ROOT, '.env'))),
+    storage: new GBrainAdapter(join(ROOT, ".tmp/gbrain")),
+    config: buildConfig(loadEnv(join(ROOT, ".env"))),
   };
 
   const server = http.createServer((req, res) => {
     void (async () => {
       try {
-        const method = req.method ?? 'GET';
-        const urlPath = (req.url ?? '/').split('?')[0]!;
-        const body = method === 'POST' ? await readReqBody(req) : '';
-        const contentType = req.headers['content-type'] ?? '';
+        const method = req.method ?? "GET";
+        const urlPath = (req.url ?? "/").split("?")[0]!;
+        const body = method === "POST" ? await readReqBody(req) : "";
+        const contentType = req.headers["content-type"] ?? "";
         const r = await handleRequest(method, urlPath, body, contentType, deps);
         res.writeHead(r.status, r.headers);
         res.end(r.body);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        res.writeHead(500, { 'content-type': 'text/html; charset=utf-8' });
-        res.end(renderNotice('Server error', msg));
+        res.writeHead(500, { "content-type": "text/html; charset=utf-8" });
+        res.end(renderNotice("Server error", msg));
       }
     })();
   });
 
-  server.listen(port, host, () => {
-    console.log(`[oracle-web] listening on http://${host}:${port}`);
-  });
+  server.listen(port, host, () => {});
   return server;
 }
 

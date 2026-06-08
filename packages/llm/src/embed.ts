@@ -2,17 +2,14 @@
  *  Spec: ORACLE_v2026_8_0.jsx (B4 section).
  *  Model: gemini-embedding-001 (Gemini Embedding API).
  *  Falls back to null when no key — RAGSystem keeps its own 12-dim hash as fallback. */
-import { GoogleGenAI } from '@google/genai';
-import type { LLMCallContext } from './types.js';
+import { GoogleGenAI } from "@google/genai";
+import type { LLMCallContext } from "./types.js";
 
-const EMBEDDING_MODEL = 'gemini-embedding-001';
+const EMBEDDING_MODEL = "gemini-embedding-001";
 
 /** Generate a semantic embedding vector for a text passage.
  *  Returns null when the key is absent or the call fails — caller uses hash-based fallback. */
-export async function embedText(
-  text: string,
-  ctx: LLMCallContext,
-): Promise<number[] | null> {
+export async function embedText(text: string, ctx: LLMCallContext): Promise<number[] | null> {
   if (!ctx.config.geminiApiKey) return null;
   try {
     const ai = new GoogleGenAI({ apiKey: ctx.config.geminiApiKey });

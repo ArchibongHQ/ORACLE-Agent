@@ -7,11 +7,11 @@
  *    const adapter = new SqlAdapter((sql, params) => pool.query(sql, params));
  *
  *  Compatible with `pg`, `postgres`, `@neondatabase/serverless`, etc. */
-import type { StoragePort } from './StoragePort.js';
+import type { StoragePort } from "./StoragePort.js";
 
 export type SqlQueryFn = (
   sql: string,
-  params?: unknown[],
+  params?: unknown[]
 ) => Promise<{ rows: Record<string, unknown>[] }>;
 
 const DDL = `
@@ -35,12 +35,13 @@ export class SqlAdapter implements StoragePort {
 
   async get<T>(key: string): Promise<T | null> {
     await this._ensureSchema();
-    const { rows } = await this._query(
-      'SELECT value FROM kv_store WHERE key = $1',
-      [key],
-    );
+    const { rows } = await this._query("SELECT value FROM kv_store WHERE key = $1", [key]);
     if (rows.length === 0) return null;
-    try { return JSON.parse(rows[0]!['value'] as string) as T; } catch { return null; }
+    try {
+      return JSON.parse(rows[0]?.value as string) as T;
+    } catch {
+      return null;
+    }
   }
 
   async set<T>(key: string, value: T): Promise<void> {
@@ -51,7 +52,7 @@ export class SqlAdapter implements StoragePort {
        ON CONFLICT(key) DO UPDATE
          SET value = EXCLUDED.value,
              updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT`,
-      [key, JSON.stringify(value)],
+      [key, JSON.stringify(value)]
     );
   }
 
@@ -59,34 +60,40 @@ export class SqlAdapter implements StoragePort {
     await this._ensureSchema();
     const { rows } = await this._query(
       "SELECT key FROM kv_store WHERE key LIKE $1 || '%' ORDER BY key",
-      [prefix],
+      [prefix]
     );
-    return rows.map(r => r['key'] as string);
+    return rows.map((r) => r.key as string);
   }
 
   async query<T>(filter: (item: T) => boolean): Promise<T[]> {
     await this._ensureSchema();
-    const { rows } = await this._query('SELECT value FROM kv_store');
+    const { rows } = await this._query("SELECT value FROM kv_store");
     const out: T[] = [];
     for (const row of rows) {
       try {
-        const parsed = JSON.parse(row['value'] as string) as T;
+        const parsed = JSON.parse(row.value as string) as T;
         if (filter(parsed)) out.push(parsed);
-      } catch { /* skip unparseable rows */ }
+      } catch {
+        /* skip unparseable rows */
+      }
     }
     return out;
   }
 
   async bulkWrite<T>(key: string, items: T[]): Promise<void> {
     await this._ensureSchema();
-    const existing = await this.get<T[]>(key) ?? [];
+    const existing = (await this.get<T[]>(key)) ?? [];
     await this.set(key, [...existing, ...items]);
   }
 
-  async upsertBulk<T extends Record<string, unknown>>(key: string, items: T[], idField: keyof T): Promise<void> {
+  async upsertBulk<T extends Record<string, unknown>>(
+    key: string,
+    items: T[],
+    idField: keyof T
+  ): Promise<void> {
     await this._ensureSchema();
-    const existing = await this.get<T[]>(key) ?? [];
-    const map = new Map<unknown, T>(existing.map(item => [item[idField], item]));
+    const existing = (await this.get<T[]>(key)) ?? [];
+    const map = new Map<unknown, T>(existing.map((item) => [item[idField], item]));
     for (const item of items) map.set(item[idField], item);
     await this.set(key, [...map.values()]);
   }

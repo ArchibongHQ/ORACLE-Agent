@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "lib": ["ES2022", "DOM"],
+    "paths": {
+      "@oracle/engine": ["../../packages/engine/src/index.ts"],
+      "@oracle/storage": ["../../packages/storage/src/index.ts"],
+      "@oracle/runtime": ["../../packages/runtime/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"]
+}

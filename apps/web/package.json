@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
     "test": "vitest run --passWithNoTests",
     "start": "node dist/server.js"
   },

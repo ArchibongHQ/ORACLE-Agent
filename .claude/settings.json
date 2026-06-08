@@ -6,5 +6,37 @@
       "Bash(python -m playwright install chromium)",
       "Bash(python tools/scrape_fixtures.py --date 2026-06-06 --dry-run --no-playwright)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pnpm turbo run typecheck 2>&1 | tail -20"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \".claude/hooks/on-bash-failure.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "DIFF_LINES=$(git diff --cached --stat 2>/dev/null | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' | awk '{s+=$1}END{print s+0}'); if [ \"${DIFF_LINES:-0}\" -gt 50 ] 2>/dev/null; then echo \"REMINDER: ${DIFF_LINES} staged insertions (>50). Per CLAUDE.md, run /gstack-review before claiming success.\"; fi"
+          }
+        ]
+      }
+    ]
   }
 }

@@ -3,10 +3,10 @@
  *  Primary: Claude Opus (temperature=0). Fallback: Gemini temperature ensemble (T=[0.4,0.8,1.2]).
  *  Emits DIVERGENT_TEMPERATURE_ENSEMBLE when no majority market in ensemble.
  *  Emits FRAMING_BIAS_DETECTED when neutral-persona Kelly diverges >15%. */
-import Anthropic from '@anthropic-ai/sdk';
-import { GoogleGenAI } from '@google/genai';
-import type { LLMCallContext } from './types.js';
-import { MODELS } from './cascade.js';
+import Anthropic from "@anthropic-ai/sdk";
+import { GoogleGenAI } from "@google/genai";
+import { MODELS } from "./cascade.js";
+import type { LLMCallContext } from "./types.js";
 
 export interface BriefingResult {
   text: string;
@@ -35,29 +35,29 @@ function extractMarket(text: string): string {
 async function geminiEnsembleBriefing(
   prompt: string,
   ctx: LLMCallContext,
-  flags: string[],
+  flags: string[]
 ): Promise<string> {
   const ai = new GoogleGenAI({ apiKey: ctx.config.geminiApiKey });
   const results = await Promise.allSettled(
-    TEMPERATURES.map(temp =>
+    TEMPERATURES.map((temp) =>
       ai.models.generateContent({
         model: MODELS.GEMINI_FLASH,
         contents: prompt,
         config: { temperature: temp, thinkingConfig: { thinkingBudget: 0 } },
-      }),
-    ),
+      })
+    )
   );
 
   const texts: string[] = results
-    .filter(r => r.status === 'fulfilled')
-    .map(r => ((r as PromiseFulfilledResult<{ text?: string }>).value.text ?? ''))
+    .filter((r) => r.status === "fulfilled")
+    .map((r) => (r as PromiseFulfilledResult<{ text?: string }>).value.text ?? "")
     .filter(Boolean);
 
-  if (!texts.length) throw new Error('Gemini briefing ensemble: all calls failed');
+  if (!texts.length) throw new Error("Gemini briefing ensemble: all calls failed");
 
   const markets = texts.map(extractMarket);
   const maj = majority(markets);
-  if (!maj) flags.push('DIVERGENT_TEMPERATURE_ENSEMBLE');
+  if (!maj) flags.push("DIVERGENT_TEMPERATURE_ENSEMBLE");
 
   // Use the text that produced the majority market, or first if divergent
   const idx = maj ? markets.indexOf(maj) : 0;
@@ -70,7 +70,7 @@ async function checkFramingBias(
   primaryText: string,
   prompt: string,
   ctx: LLMCallContext,
-  flags: string[],
+  flags: string[]
 ): Promise<void> {
   try {
     const client = new Anthropic({ apiKey: ctx.config.claudeApiKey });
@@ -79,14 +79,14 @@ async function checkFramingBias(
       model: MODELS.CLAUDE_OPUS,
       max_tokens: 1024,
       temperature: 0,
-      messages: [{ role: 'user', content: neutralPrompt }],
+      messages: [{ role: "user", content: neutralPrompt }],
     });
-    const neutralText = resp.content[0]?.type === 'text' ? resp.content[0].text : '';
+    const neutralText = resp.content[0]?.type === "text" ? resp.content[0].text : "";
     const kellyMatch = primaryText.match(/"stake"\s*:\s*([\d.]+)/);
     const neutralMatch = neutralText.match(/"stake"\s*:\s*([\d.]+)/);
     if (kellyMatch && neutralMatch) {
       const diff = Math.abs(parseFloat(kellyMatch[1]!) - parseFloat(neutralMatch[1]!));
-      if (diff > 0.15) flags.push('FRAMING_BIAS_DETECTED');
+      if (diff > 0.15) flags.push("FRAMING_BIAS_DETECTED");
     }
   } catch {
     // Non-fatal — framing bias check is advisory
@@ -94,10 +94,7 @@ async function checkFramingBias(
 }
 
 /** callBriefing — primary entry point for B1 layer. */
-export async function callBriefing(
-  prompt: string,
-  ctx: LLMCallContext,
-): Promise<BriefingResult> {
+export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise<BriefingResult> {
   const flags: string[] = [];
 
   // Primary: Claude Opus
@@ -108,9 +105,9 @@ export async function callBriefing(
         model: MODELS.CLAUDE_OPUS,
         max_tokens: 4096,
         temperature: 0,
-        messages: [{ role: 'user', content: prompt }],
+        messages: [{ role: "user", content: prompt }],
       });
-      const text = resp.content[0]?.type === 'text' ? resp.content[0].text : '';
+      const text = resp.content[0]?.type === "text" ? resp.content[0].text : "";
       if (text) {
         await checkFramingBias(text, prompt, ctx, flags);
         return { text, model: MODELS.CLAUDE_OPUS, flags };
@@ -126,5 +123,5 @@ export async function callBriefing(
     return { text, model: MODELS.GEMINI_FLASH, flags };
   }
 
-  throw new Error('callBriefing: no LLM key available');
+  throw new Error("callBriefing: no LLM key available");
 }

@@ -2,8 +2,8 @@
  *  Local: PGLite (PostgreSQL in WASM, no server required).
  *  Schema: single kv_store table; bulkWrite uses a transaction batch for backfill efficiency.
  *  Pass no dbPath (or undefined) for a transient in-memory instance (tests). */
-import { PGlite } from '@electric-sql/pglite';
-import type { StoragePort } from './StoragePort.js';
+import { PGlite } from "@electric-sql/pglite";
+import type { StoragePort } from "./StoragePort.js";
 
 const DDL = `
   CREATE TABLE IF NOT EXISTS kv_store (
@@ -28,13 +28,12 @@ export class GBrainAdapter implements StoragePort {
 
   async get<T>(key: string): Promise<T | null> {
     const db = await this._ensureDb();
-    const result = await db.query<{ value: string }>(
-      'SELECT value FROM kv_store WHERE key = $1',
-      [key],
-    );
+    const result = await db.query<{ value: string }>("SELECT value FROM kv_store WHERE key = $1", [
+      key,
+    ]);
     if (result.rows.length === 0) return null;
     try {
-      return JSON.parse(result.rows[0]!.value) as T;
+      return JSON.parse(result.rows[0]?.value) as T;
     } catch {
       return null;
     }
@@ -49,7 +48,7 @@ export class GBrainAdapter implements StoragePort {
        ON CONFLICT(key) DO UPDATE
          SET value = EXCLUDED.value,
              updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT`,
-      [key, json],
+      [key, json]
     );
   }
 
@@ -57,14 +56,14 @@ export class GBrainAdapter implements StoragePort {
     const db = await this._ensureDb();
     const result = await db.query<{ key: string }>(
       "SELECT key FROM kv_store WHERE key LIKE $1 || '%' ORDER BY key",
-      [prefix],
+      [prefix]
     );
-    return result.rows.map(r => r.key);
+    return result.rows.map((r) => r.key);
   }
 
   async query<T>(filter: (item: T) => boolean): Promise<T[]> {
     const db = await this._ensureDb();
-    const result = await db.query<{ value: string }>('SELECT value FROM kv_store');
+    const result = await db.query<{ value: string }>("SELECT value FROM kv_store");
     const out: T[] = [];
     for (const row of result.rows) {
       try {
@@ -82,12 +81,16 @@ export class GBrainAdapter implements StoragePort {
     const db = await this._ensureDb();
     await db.transaction(async (tx) => {
       const result = await tx.query<{ value: string }>(
-        'SELECT value FROM kv_store WHERE key = $1',
-        [key],
+        "SELECT value FROM kv_store WHERE key = $1",
+        [key]
       );
       let existing: T[] = [];
       if (result.rows.length > 0) {
-        try { existing = JSON.parse(result.rows[0]!.value) as T[]; } catch { /* start fresh */ }
+        try {
+          existing = JSON.parse(result.rows[0]?.value) as T[];
+        } catch {
+          /* start fresh */
+        }
       }
       const merged = JSON.stringify([...existing, ...items]);
       await tx.query(
@@ -96,23 +99,31 @@ export class GBrainAdapter implements StoragePort {
          ON CONFLICT(key) DO UPDATE
            SET value = EXCLUDED.value,
                updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT`,
-        [key, merged],
+        [key, merged]
       );
     });
   }
 
-  async upsertBulk<T extends Record<string, unknown>>(key: string, items: T[], idField: keyof T): Promise<void> {
+  async upsertBulk<T extends Record<string, unknown>>(
+    key: string,
+    items: T[],
+    idField: keyof T
+  ): Promise<void> {
     const db = await this._ensureDb();
     await db.transaction(async (tx) => {
       const result = await tx.query<{ value: string }>(
-        'SELECT value FROM kv_store WHERE key = $1',
-        [key],
+        "SELECT value FROM kv_store WHERE key = $1",
+        [key]
       );
       let existing: T[] = [];
       if (result.rows.length > 0) {
-        try { existing = JSON.parse(result.rows[0]!.value) as T[]; } catch { /* start fresh */ }
+        try {
+          existing = JSON.parse(result.rows[0]?.value) as T[];
+        } catch {
+          /* start fresh */
+        }
       }
-      const map = new Map<unknown, T>(existing.map(item => [item[idField], item]));
+      const map = new Map<unknown, T>(existing.map((item) => [item[idField], item]));
       for (const item of items) map.set(item[idField], item);
       const merged = JSON.stringify([...map.values()]);
       await tx.query(
@@ -121,7 +132,7 @@ export class GBrainAdapter implements StoragePort {
          ON CONFLICT(key) DO UPDATE
            SET value = EXCLUDED.value,
                updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT`,
-        [key, merged],
+        [key, merged]
       );
     });
   }
