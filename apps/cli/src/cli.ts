@@ -278,7 +278,8 @@ export async function dispatch(argv: string[]): Promise<DispatchResult> {
 }
 
 async function main(): Promise<void> {
-  const { code, output: _output } = await dispatch(process.argv.slice(2));
+  const { code, output } = await dispatch(process.argv.slice(2));
+  if (output) (code === 0 ? process.stdout : process.stderr).write(output + "\n");
   process.exit(code);
 }
 
