@@ -3,7 +3,7 @@ export interface LLMKeyConfig {
   claudeApiKey: string;
   geminiApiKey: string;
   bankroll: number;
-  [key: string]: unknown;  // allows passing full OracleConfig without a hard dep
+  [key: string]: unknown; // allows passing full OracleConfig without a hard dep
 }
 
 /** Structured context passed to every LLM call — never raw strings alone. */

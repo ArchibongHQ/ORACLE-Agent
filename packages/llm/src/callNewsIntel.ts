@@ -8,17 +8,17 @@
  *  Verified June 2026: sonar/sonar-pro current; $1/$1 and $3/$15 per 1M tokens. */
 
 export interface NewsIntelResult {
-  injuries: string[];          // confirmed absences
-  suspensions: string[];       // confirmed bans
-  lineupHints: string[];       // pre-match confirmed starters / formation
-  motivationFlags: string[];   // trophy chase, relegation pressure, cup hangover
-  travelFlags: string[];       // back-to-back away legs, long travel
-  sources: string[];           // Perplexity citation URLs
-  confidence: number;          // 0–1; low = no relevant news found
+  injuries: string[]; // confirmed absences
+  suspensions: string[]; // confirmed bans
+  lineupHints: string[]; // pre-match confirmed starters / formation
+  motivationFlags: string[]; // trophy chase, relegation pressure, cup hangover
+  travelFlags: string[]; // back-to-back away legs, long travel
+  sources: string[]; // Perplexity citation URLs
+  confidence: number; // 0–1; low = no relevant news found
   model: string;
 }
 
-const ENDPOINT = 'https://api.perplexity.ai/chat/completions';
+const ENDPOINT = "https://api.perplexity.ai/chat/completions";
 const MIN_CONFIDENCE = 0.4;
 
 const SYSTEM = `You are a football pre-match intelligence researcher. Search current sources for team news within 48 hours of kickoff. Report ONLY confirmed, sourced facts — never speculate. Return ONLY valid JSON, no markdown.`;
@@ -51,19 +51,19 @@ interface SonarResponse {
 async function callSonar(
   model: string,
   apiKey: string,
-  prompt: string,
+  prompt: string
 ): Promise<{ content: string; citations: string[] } | null> {
   const resp = await fetch(ENDPOINT, {
-    method: 'POST',
+    method: "POST",
     headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
       model,
       messages: [
-        { role: 'system', content: SYSTEM },
-        { role: 'user', content: prompt },
+        { role: "system", content: SYSTEM },
+        { role: "user", content: prompt },
       ],
       temperature: 0,
     }),
@@ -81,12 +81,12 @@ export async function fetchNewsIntelligence(
   away: string,
   league: string,
   kickoff: string,
-  apiKey: string,
+  apiKey: string
 ): Promise<NewsIntelResult | null> {
   if (!apiKey) return null;
 
   const prompt = buildPrompt(home, away, league, kickoff);
-  const models = ['sonar-pro', 'sonar'];
+  const models = ["sonar-pro", "sonar"];
 
   for (const model of models) {
     try {
@@ -94,24 +94,24 @@ export async function fetchNewsIntelligence(
       if (!result) continue;
 
       const cleaned = result.content
-        .replace(/```(?:json)?\s*/gi, '')
-        .replace(/```\s*/g, '')
+        .replace(/```(?:json)?\s*/gi, "")
+        .replace(/```\s*/g, "")
         .trim();
-      const start = cleaned.indexOf('{');
-      const end = cleaned.lastIndexOf('}');
+      const start = cleaned.indexOf("{");
+      const end = cleaned.lastIndexOf("}");
       if (start === -1 || end === -1) continue;
 
       const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
-      const confidence = Math.max(0, Math.min(1, Number(obj['confidence'] ?? 0)));
+      const confidence = Math.max(0, Math.min(1, Number(obj.confidence ?? 0)));
       if (confidence < MIN_CONFIDENCE) return null;
 
       return {
-        injuries:        asStringArray(obj['injuries']),
-        suspensions:     asStringArray(obj['suspensions']),
-        lineupHints:     asStringArray(obj['lineupHints']),
-        motivationFlags: asStringArray(obj['motivationFlags']),
-        travelFlags:     asStringArray(obj['travelFlags']),
-        sources:         result.citations.slice(0, 10),
+        injuries: asStringArray(obj.injuries),
+        suspensions: asStringArray(obj.suspensions),
+        lineupHints: asStringArray(obj.lineupHints),
+        motivationFlags: asStringArray(obj.motivationFlags),
+        travelFlags: asStringArray(obj.travelFlags),
+        sources: result.citations.slice(0, 10),
         confidence,
         model,
       };

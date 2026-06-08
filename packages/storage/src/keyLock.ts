@@ -20,7 +20,13 @@ export function withKeyLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   // Chain after the prior transaction regardless of how it settled.
   const next = prior.then(fn, fn);
   // Store a swallowed-error tail so one failure doesn't reject every future waiter.
-  _chains.set(key, next.then(() => undefined, () => undefined));
+  _chains.set(
+    key,
+    next.then(
+      () => undefined,
+      () => undefined
+    )
+  );
   return next;
 }
 

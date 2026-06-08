@@ -11,34 +11,34 @@
  *  Rate limit: football-data free tier = 10 req/min. We batch with 7s inter-request delay.
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { FixtureJob } from '@oracle/engine';
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { FixtureJob } from "@oracle/engine";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
-const ROOT    = join(__dir, '../../..');
-const H2H_DIR = join(ROOT, '.tmp/h2h');
-const BASE    = 'https://api.football-data.org/v4';
+const ROOT = join(__dir, "../../..");
+const H2H_DIR = join(ROOT, ".tmp/h2h");
+const BASE = "https://api.football-data.org/v4";
 
-const H2H_SHRINK_K  = 5;    // shrink toward prior when H2H sample is thin
-const CACHE_TTL_MS  = 6 * 3_600_000;  // 6 hours
-const REQ_DELAY_MS  = 7_000;          // ~8 req/min — safely under 10 req/min limit
-const MAX_H2H_JOBS  = 20;             // cap API calls per batch to protect quota
+const H2H_SHRINK_K = 5; // shrink toward prior when H2H sample is thin
+const CACHE_TTL_MS = 6 * 3_600_000; // 6 hours
+const REQ_DELAY_MS = 7_000; // ~8 req/min — safely under 10 req/min limit
+const MAX_H2H_JOBS = 20; // cap API calls per batch to protect quota
 
 // ── football-data.org league competition codes ────────────────────────────────
 
 const LEAGUE_TO_COMP: Record<string, string> = {
-  'Premier League':     'PL',
-  'La Liga':            'PD',
-  'Bundesliga':         'BL1',
-  'Serie A':            'SA',
-  'Ligue 1':            'FL1',
-  'Eredivisie':         'DED',
-  'Champions League':   'CL',
-  'Europa League':      'EL',
-  'Championship':       'ELC',
-  'FIFA World Cup':     'WC',
+  "Premier League": "PL",
+  "La Liga": "PD",
+  Bundesliga: "BL1",
+  "Serie A": "SA",
+  "Ligue 1": "FL1",
+  Eredivisie: "DED",
+  "Champions League": "CL",
+  "Europa League": "EL",
+  Championship: "ELC",
+  "FIFA World Cup": "WC",
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -62,25 +62,33 @@ interface FDMatch {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function slug(home: string, away: string): string {
-  const s = (n: string) => n.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+  const s = (n: string) =>
+    n
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_]/g, "");
   return `${s(home)}_vs_${s(away)}`;
 }
 
 function normTeam(name: string): string {
-  return name.toLowerCase()
-    .replace(/\b(fc|afc|sc|cf|ac|as|ssc|sv|bk|if|cd|ud|fk)\b/g, '')
-    .replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  return name
+    .toLowerCase()
+    .replace(/\b(fc|afc|sc|cf|ac|as|ssc|sv|bk|if|cd|ud|fk)\b/g, "")
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function teamsMatch(a: string, b: string): boolean {
-  const na = normTeam(a), nb = normTeam(b);
+  const na = normTeam(a),
+    nb = normTeam(b);
   return na === nb || na.includes(nb) || nb.includes(na);
 }
 
 async function fdGet<T>(path: string, apiKey: string): Promise<T> {
   const url = `${BASE}${path}`;
   const res = await fetch(url, {
-    headers: { 'X-Auth-Token': apiKey },
+    headers: { "X-Auth-Token": apiKey },
     signal: AbortSignal.timeout(12_000),
   });
   if (!res.ok) throw new Error(`football-data ${path}: HTTP ${res.status}`);
@@ -89,16 +97,18 @@ async function fdGet<T>(path: string, apiKey: string): Promise<T> {
 
 async function readCache(home: string, away: string): Promise<H2HCache | null> {
   try {
-    const text = await readFile(join(H2H_DIR, `${slug(home, away)}.json`), 'utf8');
+    const text = await readFile(join(H2H_DIR, `${slug(home, away)}.json`), "utf8");
     const data = JSON.parse(text) as H2HCache;
     if (Date.now() - new Date(data.fetchedAt).getTime() < CACHE_TTL_MS) return data;
-  } catch { /* miss */ }
+  } catch {
+    /* miss */
+  }
   return null;
 }
 
 async function writeCache(home: string, away: string, data: H2HCache): Promise<void> {
   await mkdir(H2H_DIR, { recursive: true });
-  await writeFile(join(H2H_DIR, `${slug(home, away)}.json`), JSON.stringify(data, null, 2), 'utf8');
+  await writeFile(join(H2H_DIR, `${slug(home, away)}.json`), JSON.stringify(data, null, 2), "utf8");
 }
 
 // ── Core fetch ────────────────────────────────────────────────────────────────
@@ -108,38 +118,40 @@ async function fetchH2HStats(
   away: string,
   league: string,
   kickoff: string,
-  apiKey: string,
+  apiKey: string
 ): Promise<H2HCache | null> {
   const compCode = LEAGUE_TO_COMP[league];
   if (!compCode) return null;
 
   const date = kickoff.slice(0, 10);
   const dateFrom = new Date(new Date(date).getTime() - 7 * 86_400_000).toISOString().slice(0, 10);
-  const dateTo   = new Date(new Date(date).getTime() + 7 * 86_400_000).toISOString().slice(0, 10);
+  const dateTo = new Date(new Date(date).getTime() + 7 * 86_400_000).toISOString().slice(0, 10);
 
   // Step 1: find the match ID
   const matchesData = await fdGet<{ matches: FDMatch[] }>(
     `/competitions/${compCode}/matches?dateFrom=${dateFrom}&dateTo=${dateTo}&status=SCHEDULED,TIMED,IN_PLAY,FINISHED`,
-    apiKey,
+    apiKey
   );
 
-  const match = matchesData.matches.find(m =>
-    teamsMatch(m.homeTeam.name, home) && teamsMatch(m.awayTeam.name, away),
+  const match = matchesData.matches.find(
+    (m) => teamsMatch(m.homeTeam.name, home) && teamsMatch(m.awayTeam.name, away)
   );
   if (!match) return null;
 
   // Step 2: fetch H2H
   const h2hData = await fdGet<{ matches: FDMatch[]; aggregates?: Record<string, unknown> }>(
     `/matches/${match.id}/head2head?limit=10`,
-    apiKey,
+    apiKey
   );
 
-  const prior = h2hData.matches.filter(m => m.score.winner !== null);
+  const prior = h2hData.matches.filter((m) => m.score.winner !== null);
   const n = prior.length;
   if (n === 0) return null;
 
   // Compute from the perspective of current home team
-  let homeWins = 0, draws = 0, awayWins = 0;
+  let homeWins = 0,
+    draws = 0,
+    awayWins = 0;
   let goalDiffSum = 0;
 
   for (const m of prior) {
@@ -148,30 +160,30 @@ async function fetchH2HStats(
     const ftHome = m.score.fullTime.home ?? 0;
     const ftAway = m.score.fullTime.away ?? 0;
 
-    if (winner === 'DRAW') {
+    if (winner === "DRAW") {
       draws++;
       goalDiffSum += 0;
-    } else if ((winner === 'HOME_TEAM') === mHomeIsOurHome) {
+    } else if ((winner === "HOME_TEAM") === mHomeIsOurHome) {
       homeWins++;
-      goalDiffSum += mHomeIsOurHome ? (ftHome - ftAway) : (ftAway - ftHome);
+      goalDiffSum += mHomeIsOurHome ? ftHome - ftAway : ftAway - ftHome;
     } else {
       awayWins++;
-      goalDiffSum += mHomeIsOurHome ? (ftHome - ftAway) : (ftAway - ftHome);
+      goalDiffSum += mHomeIsOurHome ? ftHome - ftAway : ftAway - ftHome;
     }
   }
 
   // Shrinkage toward 1/3 prior when sample is thin
-  const wOwn   = n / (n + H2H_SHRINK_K);
+  const wOwn = n / (n + H2H_SHRINK_K);
   const wPrior = 1 - wOwn;
   const prior1_3 = 1 / 3;
 
   return {
-    fetchedAt:    new Date().toISOString(),
-    h2hHomeWin:   wOwn * (homeWins / n) + wPrior * prior1_3,
-    h2hDraw:      wOwn * (draws    / n) + wPrior * prior1_3,
-    h2hAwayWin:   wOwn * (awayWins / n) + wPrior * prior1_3,
-    h2hN:         n,
-    h2hGoalDiff:  n > 0 ? goalDiffSum / n : 0,
+    fetchedAt: new Date().toISOString(),
+    h2hHomeWin: wOwn * (homeWins / n) + wPrior * prior1_3,
+    h2hDraw: wOwn * (draws / n) + wPrior * prior1_3,
+    h2hAwayWin: wOwn * (awayWins / n) + wPrior * prior1_3,
+    h2hN: n,
+    h2hGoalDiff: n > 0 ? goalDiffSum / n : 0,
   };
 }
 
@@ -183,7 +195,7 @@ async function fetchH2HStats(
  *  Never throws — returns jobs unmodified on any error. */
 export async function enrichWithH2H(
   jobs: FixtureJob[],
-  apiKey: string | undefined,
+  apiKey: string | undefined
 ): Promise<FixtureJob[]> {
   if (!apiKey) return jobs;
 
@@ -195,8 +207,6 @@ export async function enrichWithH2H(
 
   if (eligible.length === 0) return jobs;
 
-  console.log(`[h2h] Enriching ${eligible.length} fixtures with H2H stats`);
-
   const enriched = [...jobs];
   let apiCalls = 0;
 
@@ -207,7 +217,7 @@ export async function enrichWithH2H(
 
       if (!stats) {
         // Rate-limit delay before API call (skip delay on first call)
-        if (apiCalls > 0) await new Promise(r => setTimeout(r, REQ_DELAY_MS));
+        if (apiCalls > 0) await new Promise((r) => setTimeout(r, REQ_DELAY_MS));
         stats = await fetchH2HStats(job.home, job.away, job.league, job.kickoff, apiKey);
         apiCalls++;
         if (stats) await writeCache(job.home, job.away, stats);
@@ -216,9 +226,9 @@ export async function enrichWithH2H(
       if (!stats) continue;
 
       // Merge into job.state.pipeline.fetched.stats
-      const existingState = enriched[idx]!.state ?? {};
+      const existingState = enriched[idx]?.state ?? {};
       const existingFetched = (existingState.pipeline?.fetched ?? {}) as Record<string, unknown>;
-      const existingStats = (existingFetched['stats'] ?? {}) as Record<string, number>;
+      const existingStats = (existingFetched.stats ?? {}) as Record<string, number>;
 
       enriched[idx] = {
         ...enriched[idx]!,
@@ -230,30 +240,28 @@ export async function enrichWithH2H(
               ...existingFetched,
               stats: {
                 ...existingStats,
-                h2hHomeWin:  stats.h2hHomeWin,
-                h2hDraw:     stats.h2hDraw,
-                h2hAwayWin:  stats.h2hAwayWin,
-                h2hN:        stats.h2hN,
+                h2hHomeWin: stats.h2hHomeWin,
+                h2hDraw: stats.h2hDraw,
+                h2hAwayWin: stats.h2hAwayWin,
+                h2hN: stats.h2hN,
                 h2hGoalDiff: stats.h2hGoalDiff,
               },
             },
           },
         },
       };
-
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[h2h] ${job.home} vs ${job.away}: ${msg}`);
+      const _msg = err instanceof Error ? err.message : String(err);
     }
   }
 
   const filled = enriched.filter((j, i) => {
     const orig = jobs[i]!;
-    return (j.state?.pipeline?.fetched as Record<string, unknown> | undefined)?.['stats'] !==
-           (orig.state?.pipeline?.fetched as Record<string, unknown> | undefined)?.['stats'];
+    return (
+      (j.state?.pipeline?.fetched as Record<string, unknown> | undefined)?.stats !==
+      (orig.state?.pipeline?.fetched as Record<string, unknown> | undefined)?.stats
+    );
   }).length;
-
-  if (filled > 0) console.log(`[h2h] Enriched ${filled}/${eligible.length} fixtures (${apiCalls} API calls, ${eligible.length - apiCalls} cache hits)`);
 
   return enriched;
 }

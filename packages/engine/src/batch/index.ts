@@ -1,24 +1,42 @@
 /** Batch runner — Phase 3.
  *  parseFixtureList: text → FixtureJob[]. runBatch: sequential, resilient, progress events. */
-import type { OracleConfig, RankingMode, RunState, RunResult, EVMarket, DecisionOutput, DecisionReplay, PickRef, SoftContextItem, AgentError, AgentErrorCode } from '../types.js';
-import type { StoragePort } from '@oracle/storage';
-import { ExecutionEngine } from '../execution/index.js';
-import { buildEligibleBets, decide, validateSelection, logPickDisagreement } from '../decision/index.js';
-import type { DecisionContext } from '../decision/index.js';
-import { runPool, AtomicCostTracker } from './pool.js';
+
+import type { StoragePort } from "@oracle/storage";
+import type { DecisionContext } from "../decision/index.js";
+import {
+  buildEligibleBets,
+  decide,
+  logPickDisagreement,
+  validateSelection,
+} from "../decision/index.js";
+import { ExecutionEngine } from "../execution/index.js";
+import type {
+  AgentError,
+  AgentErrorCode,
+  DecisionOutput,
+  DecisionReplay,
+  EVMarket,
+  OracleConfig,
+  PickRef,
+  RankingMode,
+  RunResult,
+  RunState,
+  SoftContextItem,
+} from "../types.js";
+import { AtomicCostTracker, runPool } from "./pool.js";
 
 export interface FixtureJob {
   home: string;
   away: string;
   league: string;
-  kickoff: string;   // ISO-8601 or YYYY-MM-DDTHH:mm:ssZ
-  state?: RunState;  // optional pre-populated telemetry / odds
+  kickoff: string; // ISO-8601 or YYYY-MM-DDTHH:mm:ssZ
+  state?: RunState; // optional pre-populated telemetry / odds
 }
 
 export interface FixtureJobSuccess {
-  status: 'ok';
-  analysisId: string;           // deterministic idempotency key
-  runId: string;                // parent batch run
+  status: "ok";
+  analysisId: string; // deterministic idempotency key
+  runId: string; // parent batch run
   fixtureId: string;
   home: string;
   away: string;
@@ -30,14 +48,14 @@ export interface FixtureJobSuccess {
   eligibleBets: EVMarket[];
   primaryPick: EVMarket | null;
   // ── Optional LLM-layer telemetry (for report surfacing; all may be absent) ──
-  cvlStatus?: 'APPROVED' | 'OVERRIDE' | 'VETO' | 'SKIPPED';   // B2 verification verdict
-  briefingFlags?: string[];        // B1 briefing flags (e.g. FRAMING_BIAS_DETECTED)
-  swarmConsensus?: string;         // Level-2 swarm consensus pick label
-  swarmDivergence?: number;        // 0–1; high = workers disagreed
+  cvlStatus?: "APPROVED" | "OVERRIDE" | "VETO" | "SKIPPED"; // B2 verification verdict
+  briefingFlags?: string[]; // B1 briefing flags (e.g. FRAMING_BIAS_DETECTED)
+  swarmConsensus?: string; // Level-2 swarm consensus pick label
+  swarmDivergence?: number; // 0–1; high = workers disagreed
 }
 
 export interface FixtureJobError {
-  status: 'error';
+  status: "error";
   fixtureId: string;
   home: string;
   away: string;
@@ -52,9 +70,9 @@ export type BatchJobResult = FixtureJobSuccess | FixtureJobError;
 export interface BatchResult {
   runId: string;
   calibrationSnapshotId: string;
-  date: string;             // YYYY-MM-DD
+  date: string; // YYYY-MM-DD
   rankingMode: RankingMode;
-  dryRun?: boolean;         // true when BatchOptions.dryRun was set
+  dryRun?: boolean; // true when BatchOptions.dryRun was set
   jobs: BatchJobResult[];
   completedCount: number;
   errorCount: number;
@@ -66,12 +84,12 @@ export interface BatchResult {
 
 export interface BatchOptions {
   rankingMode?: RankingMode;
-  calibrationSnapshotId?: string;  // defaults to "calib_YYYY-MM-DD"
+  calibrationSnapshotId?: string; // defaults to "calib_YYYY-MM-DD"
   marketWhitelist?: string[];
-  dryRun?: boolean;                // skip execution; return cost estimate only (§11A)
-  maxRetries?: number;             // per-fixture retries on RATE_LIMITED (default 3; 0 = no retries)
+  dryRun?: boolean; // skip execution; return cost estimate only (§11A)
+  maxRetries?: number; // per-fixture retries on RATE_LIMITED (default 3; 0 = no retries)
   backoffMs?: (attempt: number) => number; // delay per retry attempt; default: exponential 1s/2s/4s ±10%
-  concurrency?: number;            // max fixtures processed in parallel (default config.batchConcurrency ?? 8)
+  concurrency?: number; // max fixtures processed in parallel (default config.batchConcurrency ?? 8)
   onProgress?: (event: { completed: number; total: number; current: string }) => void;
 }
 
@@ -82,25 +100,25 @@ export interface BatchOptions {
  *  Lines starting with '#' and blank lines are skipped. */
 export function parseFixtureList(input: string): FixtureJob[] {
   const jobs: FixtureJob[] = [];
-  for (const raw of input.split('\n')) {
+  for (const raw of input.split("\n")) {
     const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
+    if (!line || line.startsWith("#")) continue;
 
-    const sep = line.includes('|') ? '|' : ',';
-    const parts = line.split(sep).map(p => p.trim());
+    const sep = line.includes("|") ? "|" : ",";
+    const parts = line.split(sep).map((p) => p.trim());
     if (parts.length < 1) continue;
 
-    const vsMatch = (parts[0] ?? '').match(/^(.+?)\s+vs\.?\s+(.+)$/i);
+    const vsMatch = (parts[0] ?? "").match(/^(.+?)\s+vs\.?\s+(.+)$/i);
     if (!vsMatch) continue;
 
-    const home = vsMatch[1]!.trim();
-    const away = vsMatch[2]!.trim();
+    const home = vsMatch[1]?.trim();
+    const away = vsMatch[2]?.trim();
     if (!home || !away) continue;
 
     jobs.push({
       home,
       away,
-      league: parts[1] ?? 'Default',
+      league: parts[1] ?? "Default",
       kickoff: parts[2] ?? new Date().toISOString(),
     });
   }
@@ -111,16 +129,20 @@ export function parseFixtureList(input: string): FixtureJob[] {
 const LLM_COST_ESTIMATE_USD_PER_CALL = 0.05;
 
 function classifyError(msg: string): AgentErrorCode {
-  if (/429|rate.?limit/i.test(msg)) return 'RATE_LIMITED';
-  if (/no.?data|not.?found|no fixture/i.test(msg)) return 'NO_DATA';
-  if (/odds/i.test(msg)) return 'ODDS_UNAVAILABLE';
-  if (/ambiguous/i.test(msg)) return 'AMBIGUOUS_FIXTURE';
-  return 'INTERNAL';
+  if (/429|rate.?limit/i.test(msg)) return "RATE_LIMITED";
+  if (/no.?data|not.?found|no fixture/i.test(msg)) return "NO_DATA";
+  if (/odds/i.test(msg)) return "ODDS_UNAVAILABLE";
+  if (/ambiguous/i.test(msg)) return "AMBIGUOUS_FIXTURE";
+  return "INTERNAL";
 }
 
 function makeFixtureId(home: string, away: string, kickoff: string): string {
-  const slug = (s: string) => s.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
-  return `${slug(home)}_vs_${slug(away)}_${kickoff.replace(/\D/g, '').slice(0, 12)}`;
+  const slug = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_]/g, "");
+  return `${slug(home)}_vs_${slug(away)}_${kickoff.replace(/\D/g, "").slice(0, 12)}`;
 }
 
 function makeRunId(): string {
@@ -128,7 +150,11 @@ function makeRunId(): string {
 }
 
 /** Deterministic per-analysis ID — enables safe upserts (PRD §11A.3). */
-function makeAnalysisId(fixtureId: string, rankingMode: string, calibrationSnapshotId: string): string {
+function makeAnalysisId(
+  fixtureId: string,
+  rankingMode: string,
+  calibrationSnapshotId: string
+): string {
   return `${fixtureId}:${rankingMode}:${calibrationSnapshotId}`;
 }
 
@@ -136,7 +162,7 @@ function makeAnalysisId(fixtureId: string, rankingMode: string, calibrationSnaps
 async function withRetry<T>(
   fn: () => Promise<T>,
   maxRetries: number,
-  backoffMs: (attempt: number) => number,
+  backoffMs: (attempt: number) => number
 ): Promise<T> {
   let attempt = 0;
   while (true) {
@@ -144,8 +170,8 @@ async function withRetry<T>(
       return await fn();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (classifyError(msg) !== 'RATE_LIMITED' || attempt >= maxRetries) throw err;
-      await new Promise<void>(r => setTimeout(r, backoffMs(attempt)));
+      if (classifyError(msg) !== "RATE_LIMITED" || attempt >= maxRetries) throw err;
+      await new Promise<void>((r) => setTimeout(r, backoffMs(attempt)));
       attempt++;
     }
   }
@@ -156,35 +182,40 @@ async function withRetry<T>(
 export async function runBatch(
   jobs: FixtureJob[],
   deps: { storage: StoragePort; config: OracleConfig },
-  options: BatchOptions = {},
+  options: BatchOptions = {}
 ): Promise<BatchResult> {
-  const { onProgress, marketWhitelist, rankingMode = 'CONFIDENCE_WEIGHTED' } = options;
+  const { onProgress, marketWhitelist, rankingMode = "CONFIDENCE_WEIGHTED" } = options;
   const maxRetries = options.maxRetries ?? 3;
-  const backoffMs = options.backoffMs ?? ((attempt: number) => {
-    const base = Math.pow(2, attempt) * 1000;
-    return base * (1 + (Math.random() * 0.2 - 0.1));
-  });
+  const backoffMs =
+    options.backoffMs ??
+    ((attempt: number) => {
+      const base = 2 ** attempt * 1000;
+      return base * (1 + (Math.random() * 0.2 - 0.1));
+    });
   const runId = makeRunId();
-  const calibrationSnapshotId = options.calibrationSnapshotId ?? `calib_${new Date().toISOString().slice(0, 10)}`;
+  const calibrationSnapshotId =
+    options.calibrationSnapshotId ?? `calib_${new Date().toISOString().slice(0, 10)}`;
   const config: OracleConfig = { ...deps.config, rankingMode };
   const ceilingUsd = config.costCeilingUsd?.perRun ?? null;
 
   // §11A dry-run: no API calls; returns a cost estimate based on job count
   if (options.dryRun) {
-    const dryJobs: BatchJobResult[] = jobs.map(job => ({
-      status: 'error' as const,
+    const dryJobs: BatchJobResult[] = jobs.map((job) => ({
+      status: "error" as const,
       fixtureId: makeFixtureId(job.home, job.away, job.kickoff),
       home: job.home,
       away: job.away,
       league: job.league,
       kickoff: job.kickoff,
-      reason: 'DRY_RUN — estimate only',
-      errorCode: 'DRY_RUN' as AgentErrorCode,
+      reason: "DRY_RUN — estimate only",
+      errorCode: "DRY_RUN" as AgentErrorCode,
     }));
     return {
-      runId, calibrationSnapshotId,
+      runId,
+      calibrationSnapshotId,
       date: new Date().toISOString().slice(0, 10),
-      rankingMode, dryRun: true,
+      rankingMode,
+      dryRun: true,
       jobs: dryJobs,
       completedCount: 0,
       errorCount: dryJobs.length,
@@ -210,160 +241,215 @@ export async function runBatch(
   async function processOne(job: FixtureJob): Promise<BatchJobResult> {
     const fixtureId = makeFixtureId(job.home, job.away, job.kickoff);
     try {
-      return await withRetry(async (): Promise<FixtureJobSuccess> => {
-      const state: RunState = {
-        ...(job.state ?? {}),
-        pipeline: {
-          ...(job.state?.pipeline ?? {}),
-          fixture: {
+      return await withRetry(
+        async (): Promise<FixtureJobSuccess> => {
+          const state: RunState = {
+            ...(job.state ?? {}),
+            pipeline: {
+              ...(job.state?.pipeline ?? {}),
+              fixture: {
+                home: job.home,
+                away: job.away,
+                league: job.league,
+                date: job.kickoff,
+                ...(job.state?.pipeline?.fixture ?? {}),
+              },
+            },
+          };
+
+          const runResult = await ExecutionEngine.run(state, { storage: deps.storage, config });
+
+          let evMarkets = runResult.evMarkets;
+          if (marketWhitelist && marketWhitelist.length > 0) {
+            const wl = marketWhitelist.map((s) => s.toLowerCase());
+            evMarkets = evMarkets.filter((m) =>
+              wl.some((w) => m.cat.toLowerCase().includes(w) || m.label.toLowerCase().includes(w))
+            );
+          }
+
+          const filteredResult: RunResult = { ...runResult, evMarkets };
+          const eligible = buildEligibleBets(evMarkets);
+
+          // Build context for LLM decision layer
+          const convResult = runResult.convergence as Record<string, unknown> | undefined;
+          const mlResult = runResult.mlFilter as Record<string, unknown> | undefined;
+          const debateRes = runResult.debate as Record<string, unknown> | undefined;
+          const regimeRes = runResult.lowScoreRegime as Record<string, unknown> | undefined;
+
+          const decisionCtx: DecisionContext = {
+            fixture: { home: job.home, away: job.away, league: job.league, kickoff: job.kickoff },
+            fp: runResult.fp,
+            lambdaH: (runResult.bayesian_lH as number | undefined) ?? 0,
+            lambdaA: (runResult.bayesian_lA as number | undefined) ?? 0,
+            expectedScoreline: String(runResult.expectedScoreline ?? "?"),
+            regime: String(regimeRes?.regime ?? "STANDARD"),
+            convergenceTier: String(convResult?.tier ?? "UNKNOWN"),
+            convergenceScore: Number(convResult?.score ?? 0),
+            mlAllowed: mlResult?.mlAllowed !== false,
+            drawRisk: String(mlResult?.drawRisk ?? "MEDIUM"),
+            betTrigger: String(debateRes?.betTrigger ?? "YELLOW"),
+            portfolioCorrelation: runResult.portfolioCorrelation,
+            softContext: state.telemetry?.softContext as SoftContextItem[] | undefined,
+          };
+
+          // B7: route based on convergence tier
+          let briefingText: string | undefined;
+          let briefingFlags: string[] | undefined; // captured for report surfacing
+          let swarmConsensus: string | undefined; // captured for report surfacing
+          let swarmDivergenceVal: number | undefined; // captured for report surfacing
+          let swarmDivergence = false; // set true when swarm workers strongly disagree
+          try {
+            const { routeFixture } = await import("@oracle/llm");
+            const route = routeFixture(String(convResult?.tier ?? "VIABLE"));
+
+            // B1: optional briefing layer for APEX/PRIME fixtures
+            if (
+              route.useBriefing &&
+              config.enableBriefing &&
+              (config.claudeApiKey || config.geminiApiKey)
+            ) {
+              try {
+                const { callBriefing } = await import("@oracle/llm");
+                const briefingPrompt = `Provide a brief pre-match analysis for ${job.home} vs ${job.away} (${job.league}).
+Convergence tier: ${route.tier}. Top eligible bet: ${eligible[0]?.label ?? "none"} @ ${eligible[0]?.odds ?? "N/A"}.
+Keep it under 200 words. Identify the single most important risk factor.`;
+                const llmCtx = {
+                  config: {
+                    claudeApiKey: config.claudeApiKey,
+                    geminiApiKey: config.geminiApiKey,
+                    bankroll: config.bankroll,
+                  },
+                  requestedAt: new Date().toISOString(),
+                };
+                const briefing = await callBriefing(briefingPrompt, llmCtx);
+                briefingText = briefing.text;
+                if (briefing.flags.length) {
+                  briefingFlags = briefing.flags;
+                  decisionCtx.softContext = [
+                    ...(decisionCtx.softContext ?? []),
+                    ...briefing.flags.map((f) => ({
+                      kind: "news" as const,
+                      text: `[BRIEFING_FLAG] ${f}`,
+                      source: "callBriefing",
+                      observedAt: new Date().toISOString(),
+                    })),
+                  ];
+                }
+              } catch {
+                /* non-fatal */
+              }
+            }
+
+            // Level-2 swarm: fan out sub-agent voters for high-conviction fixtures.
+            // AUGMENTS the decision only — injects advisory consensus + divergence into
+            // softContext. It never sets primaryPick; decide()/validateSelection remain authoritative.
+            if (route.swarmWorkers > 0 && config.enableSwarm && config.kimiApiKey) {
+              try {
+                const { runSwarm, swarmToSoftContext } = await import("../swarm/index.js");
+                const swarm = await runSwarm(
+                  route.swarmWorkers,
+                  { home: job.home, away: job.away, league: job.league, kickoff: job.kickoff },
+                  eligible,
+                  config,
+                  decisionCtx.softContext
+                );
+                if (swarm) {
+                  decisionCtx.softContext = [
+                    ...(decisionCtx.softContext ?? []),
+                    ...swarmToSoftContext(swarm),
+                  ];
+                  swarmDivergence = swarm.highDivergence;
+                  swarmConsensus = swarm.consensusPick;
+                  swarmDivergenceVal = swarm.divergence;
+                }
+              } catch {
+                /* non-fatal */
+              }
+            }
+          } catch {
+            /* non-fatal — llm module unavailable */
+          }
+
+          const { decision: rawDecision, replay: decisionReplay } = await decide(
+            eligible,
+            decisionCtx,
+            config
+          );
+          const mlFilter = { mlAllowed: decisionCtx.mlAllowed, drawRisk: decisionCtx.drawRisk };
+          const decision = validateSelection(rawDecision, eligible, mlFilter);
+
+          // B2: optional CVL adversarial verification
+          let cvlStatus: "APPROVED" | "OVERRIDE" | "VETO" | "SKIPPED" | undefined;
+          try {
+            const { routeFixture } = await import("@oracle/llm");
+            const route = routeFixture(String(convResult?.tier ?? "VIABLE"));
+            // Swarm high-divergence escalates to a CVL pass even on lower tiers.
+            const cvlTriggered = (route.useCVL || swarmDivergence) && config.enableCVL;
+            if (cvlTriggered && config.claudeApiKey && rawDecision.primaryPick !== "NO_BET") {
+              const { callVerification } = await import("@oracle/llm");
+              const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(eligible.slice(0, 3))}`;
+              const llmCtx = {
+                config: {
+                  claudeApiKey: config.claudeApiKey,
+                  geminiApiKey: config.geminiApiKey,
+                  bankroll: config.bankroll,
+                },
+                requestedAt: new Date().toISOString(),
+              };
+              const cvl = await callVerification(cvlPrompt, llmCtx);
+              cvlStatus = cvl.status;
+              if (cvl.status === "VETO") {
+                decision.primaryPick = "NO_BET";
+                decision.rationale = `CVL VETO: ${cvl.rationale}`;
+              }
+            }
+          } catch {
+            /* non-fatal */
+          }
+
+          // Log when LLM disagrees with deterministic top (SkillOpt training signal)
+          await logPickDisagreement(deps.storage, rawDecision, eligible[0] ?? null, {
+            ...job,
+            fixtureId,
+          });
+          void briefingText; // full briefing text retained for future report body rendering
+
+          const primaryPick =
+            decision.primaryPick !== "NO_BET"
+              ? (eligible.find((m) => m.market === (decision.primaryPick as PickRef).market) ??
+                null)
+              : null;
+
+          const analysisId = makeAnalysisId(fixtureId, rankingMode, calibrationSnapshotId);
+          return {
+            status: "ok" as const,
+            analysisId,
+            runId,
+            fixtureId,
             home: job.home,
             away: job.away,
             league: job.league,
-            date: job.kickoff,
-            ...(job.state?.pipeline?.fixture ?? {}),
-          },
+            kickoff: job.kickoff,
+            result: filteredResult,
+            decision,
+            decisionReplay,
+            eligibleBets: eligible,
+            primaryPick,
+            cvlStatus,
+            briefingFlags,
+            swarmConsensus,
+            swarmDivergence: swarmDivergenceVal,
+          };
         },
-      };
-
-      const runResult = await ExecutionEngine.run(state, { storage: deps.storage, config });
-
-      let evMarkets = runResult.evMarkets;
-      if (marketWhitelist && marketWhitelist.length > 0) {
-        const wl = marketWhitelist.map(s => s.toLowerCase());
-        evMarkets = evMarkets.filter(m =>
-          wl.some(w => m.cat.toLowerCase().includes(w) || m.label.toLowerCase().includes(w)),
-        );
-      }
-
-      const filteredResult: RunResult = { ...runResult, evMarkets };
-      const eligible = buildEligibleBets(evMarkets);
-
-      // Build context for LLM decision layer
-      const convResult = runResult['convergence'] as Record<string, unknown> | undefined;
-      const mlResult   = runResult['mlFilter']    as Record<string, unknown> | undefined;
-      const debateRes  = runResult['debate']       as Record<string, unknown> | undefined;
-      const regimeRes  = runResult['lowScoreRegime'] as Record<string, unknown> | undefined;
-
-      const decisionCtx: DecisionContext = {
-        fixture:              { home: job.home, away: job.away, league: job.league, kickoff: job.kickoff },
-        fp:                   runResult.fp,
-        lambdaH:              (runResult.bayesian_lH as number | undefined) ?? 0,
-        lambdaA:              (runResult.bayesian_lA as number | undefined) ?? 0,
-        expectedScoreline:    String(runResult.expectedScoreline ?? '?'),
-        regime:               String(regimeRes?.regime ?? 'STANDARD'),
-        convergenceTier:      String(convResult?.tier ?? 'UNKNOWN'),
-        convergenceScore:     Number(convResult?.score ?? 0),
-        mlAllowed:            mlResult?.mlAllowed !== false,
-        drawRisk:             String(mlResult?.drawRisk ?? 'MEDIUM'),
-        betTrigger:           String(debateRes?.betTrigger ?? 'YELLOW'),
-        portfolioCorrelation: runResult.portfolioCorrelation,
-        softContext:          state.telemetry?.softContext as SoftContextItem[] | undefined,
-      };
-
-      // B7: route based on convergence tier
-      let briefingText: string | undefined;
-      let briefingFlags: string[] | undefined;       // captured for report surfacing
-      let swarmConsensus: string | undefined;        // captured for report surfacing
-      let swarmDivergenceVal: number | undefined;    // captured for report surfacing
-      let swarmDivergence = false;  // set true when swarm workers strongly disagree
-      try {
-        const { routeFixture } = await import('@oracle/llm');
-        const route = routeFixture(String(convResult?.['tier'] ?? 'VIABLE'));
-
-        // B1: optional briefing layer for APEX/PRIME fixtures
-        if (route.useBriefing && config.enableBriefing && (config.claudeApiKey || config.geminiApiKey)) {
-          try {
-            const { callBriefing } = await import('@oracle/llm');
-            const briefingPrompt = `Provide a brief pre-match analysis for ${job.home} vs ${job.away} (${job.league}).
-Convergence tier: ${route.tier}. Top eligible bet: ${eligible[0]?.label ?? 'none'} @ ${eligible[0]?.odds ?? 'N/A'}.
-Keep it under 200 words. Identify the single most important risk factor.`;
-            const llmCtx = { config: { claudeApiKey: config.claudeApiKey, geminiApiKey: config.geminiApiKey, bankroll: config.bankroll }, requestedAt: new Date().toISOString() };
-            const briefing = await callBriefing(briefingPrompt, llmCtx);
-            briefingText = briefing.text;
-            if (briefing.flags.length) {
-              briefingFlags = briefing.flags;
-              decisionCtx.softContext = [
-                ...(decisionCtx.softContext ?? []),
-                ...briefing.flags.map(f => ({ kind: 'news' as const, text: `[BRIEFING_FLAG] ${f}`, source: 'callBriefing', observedAt: new Date().toISOString() })),
-              ];
-            }
-          } catch { /* non-fatal */ }
-        }
-
-        // Level-2 swarm: fan out sub-agent voters for high-conviction fixtures.
-        // AUGMENTS the decision only — injects advisory consensus + divergence into
-        // softContext. It never sets primaryPick; decide()/validateSelection remain authoritative.
-        if (route.swarmWorkers > 0 && config.enableSwarm && config.kimiApiKey) {
-          try {
-            const { runSwarm, swarmToSoftContext } = await import('../swarm/index.js');
-            const swarm = await runSwarm(
-              route.swarmWorkers,
-              { home: job.home, away: job.away, league: job.league, kickoff: job.kickoff },
-              eligible,
-              config,
-              decisionCtx.softContext,
-            );
-            if (swarm) {
-              decisionCtx.softContext = [
-                ...(decisionCtx.softContext ?? []),
-                ...swarmToSoftContext(swarm),
-              ];
-              swarmDivergence = swarm.highDivergence;
-              swarmConsensus = swarm.consensusPick;
-              swarmDivergenceVal = swarm.divergence;
-            }
-          } catch { /* non-fatal */ }
-        }
-      } catch { /* non-fatal — llm module unavailable */ }
-
-      const { decision: rawDecision, replay: decisionReplay } = await decide(eligible, decisionCtx, config);
-      const mlFilter     = { mlAllowed: decisionCtx.mlAllowed, drawRisk: decisionCtx.drawRisk };
-      const decision     = validateSelection(rawDecision, eligible, mlFilter);
-
-      // B2: optional CVL adversarial verification
-      let cvlStatus: 'APPROVED' | 'OVERRIDE' | 'VETO' | 'SKIPPED' | undefined;
-      try {
-        const { routeFixture } = await import('@oracle/llm');
-        const route = routeFixture(String(convResult?.['tier'] ?? 'VIABLE'));
-        // Swarm high-divergence escalates to a CVL pass even on lower tiers.
-        const cvlTriggered = (route.useCVL || swarmDivergence) && config.enableCVL;
-        if (cvlTriggered && config.claudeApiKey && rawDecision.primaryPick !== 'NO_BET') {
-          const { callVerification } = await import('@oracle/llm');
-          const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(eligible.slice(0, 3))}`;
-          const llmCtx = { config: { claudeApiKey: config.claudeApiKey, geminiApiKey: config.geminiApiKey, bankroll: config.bankroll }, requestedAt: new Date().toISOString() };
-          const cvl = await callVerification(cvlPrompt, llmCtx);
-          cvlStatus = cvl.status;
-          if (cvl.status === 'VETO') {
-            decision.primaryPick = 'NO_BET';
-            decision.rationale = `CVL VETO: ${cvl.rationale}`;
-          }
-        }
-      } catch { /* non-fatal */ }
-
-      // Log when LLM disagrees with deterministic top (SkillOpt training signal)
-      await logPickDisagreement(deps.storage, rawDecision, eligible[0] ?? null, { ...job, fixtureId });
-      void briefingText; // full briefing text retained for future report body rendering
-
-      const primaryPick =
-        decision.primaryPick !== 'NO_BET'
-          ? (eligible.find(m => m.market === (decision.primaryPick as PickRef).market) ?? null)
-          : null;
-
-      const analysisId = makeAnalysisId(fixtureId, rankingMode, calibrationSnapshotId);
-      return {
-        status: 'ok' as const,
-        analysisId, runId, fixtureId,
-        home: job.home, away: job.away, league: job.league, kickoff: job.kickoff,
-        result: filteredResult, decision, decisionReplay, eligibleBets: eligible, primaryPick,
-        cvlStatus, briefingFlags, swarmConsensus, swarmDivergence: swarmDivergenceVal,
-      };
-      }, maxRetries, backoffMs);
+        maxRetries,
+        backoffMs
+      );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       const code = classifyError(reason);
-      agentErrors.push({ code, fixtureId, message: reason, retriable: code === 'RATE_LIMITED' });
+      agentErrors.push({ code, fixtureId, message: reason, retriable: code === "RATE_LIMITED" });
       return {
-        status: 'error',
+        status: "error",
         fixtureId,
         home: job.home,
         away: job.away,
@@ -377,43 +463,46 @@ Keep it under 200 words. Identify the single most important risk factor.`;
 
   // Initial progress event (completed: 0) — preserves the pre-loop semantics
   // callers relied on under the old sequential runner.
-  onProgress?.({ completed: 0, total, current: jobs[0] ? `${jobs[0].home} vs ${jobs[0].away}` : '' });
+  onProgress?.({
+    completed: 0,
+    total,
+    current: jobs[0] ? `${jobs[0].home} vs ${jobs[0].away}` : "",
+  });
 
   // Level-1 swarm: process up to `concurrency` fixtures in parallel.
   // Results preserve input order. Cost ceiling stops scheduling new fixtures
   // (in-flight ones finish); per-key storage locks keep RAG/logs race-free.
-  const poolResults = await runPool(
-    jobs,
-    concurrency,
-    processOne,
-    {
-      onSettled: (i, r) => {
-        // Charge only billable (LLM) decisions toward the ceiling.
-        if (r.status === 'ok' && r.decisionReplay !== null) costTracker.charge();
-        onProgress?.({ completed: ++completedCounter, total, current: `${jobs[i]!.home} vs ${jobs[i]!.away}` });
-      },
-      shouldStop: () => costTracker.halted,
+  const poolResults = await runPool(jobs, concurrency, processOne, {
+    onSettled: (i, r) => {
+      // Charge only billable (LLM) decisions toward the ceiling.
+      if (r.status === "ok" && r.decisionReplay !== null) costTracker.charge();
+      onProgress?.({
+        completed: ++completedCounter,
+        total,
+        current: `${jobs[i]?.home} vs ${jobs[i]?.away}`,
+      });
     },
-  );
+    shouldStop: () => costTracker.halted,
+  });
 
   // runPool leaves holes for fixtures skipped after a cost-ceiling halt — drop them.
   const results = poolResults.filter((r): r is BatchJobResult => r != null);
   const costHalted = costTracker.halted;
   if (costHalted) {
     agentErrors.push({
-      code: 'COST_CEILING_HIT',
-      message: `Per-run cost ceiling $${(ceilingUsd ?? 0).toFixed(2)} reached — stopped scheduling after ${results.filter(r => r.status === 'ok').length} fixture(s)`,
+      code: "COST_CEILING_HIT",
+      message: `Per-run cost ceiling $${(ceilingUsd ?? 0).toFixed(2)} reached — stopped scheduling after ${results.filter((r) => r.status === "ok").length} fixture(s)`,
       retriable: false,
     });
   }
 
-  onProgress?.({ completed: total, total, current: '' });
+  onProgress?.({ completed: total, total, current: "" });
 
-  const successful = results.filter((r): r is FixtureJobSuccess => r.status === 'ok');
-  const actionable = successful.filter(r => r.decision.primaryPick !== 'NO_BET');
+  const successful = results.filter((r): r is FixtureJobSuccess => r.status === "ok");
+  const actionable = successful.filter((r) => r.decision.primaryPick !== "NO_BET");
   const totalStakePct = actionable.reduce((sum, r) => {
     const pick = r.decision.primaryPick;
-    if (pick === 'NO_BET') return sum;
+    if (pick === "NO_BET") return sum;
     return sum + ((pick as PickRef).stake ?? 0) * 100;
   }, 0);
 
@@ -424,7 +513,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
     rankingMode,
     jobs: results,
     completedCount: successful.length,
-    errorCount: results.filter(r => r.status === 'error').length,
+    errorCount: results.filter((r) => r.status === "error").length,
     actionableCount: actionable.length,
     totalRecommendedStakePct: parseFloat(totalStakePct.toFixed(2)),
     cost: { estimatedUsd: costTracker.spent, ceilingUsd, halted: costHalted },

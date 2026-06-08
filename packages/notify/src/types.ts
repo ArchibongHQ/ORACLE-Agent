@@ -1,5 +1,5 @@
 /** Notifier contract + the BatchSummary every channel renders. */
-import type { BatchResult, BatchJobResult, PickRef } from '@oracle/engine';
+import type { BatchJobResult, BatchResult, PickRef } from "@oracle/engine";
 
 export interface ActionablePick {
   home: string;
@@ -36,14 +36,20 @@ export interface Notifier {
 export function summarizeBatch(batch: BatchResult, reportUrl?: string): BatchSummary {
   const actionable: ActionablePick[] = [];
   for (const j of batch.jobs as BatchJobResult[]) {
-    if (j.status !== 'ok') continue;
+    if (j.status !== "ok") continue;
     const pick = j.decision.primaryPick;
-    if (pick === 'NO_BET') continue;
+    if (pick === "NO_BET") continue;
     const p = pick as PickRef;
     actionable.push({
-      home: j.home, away: j.away, league: j.league, kickoff: j.kickoff,
-      market: p.market, side: p.side ?? null, odds: p.odds,
-      stakePct: (p.stake ?? 0) * 100, confidence: j.decision.confidence,
+      home: j.home,
+      away: j.away,
+      league: j.league,
+      kickoff: j.kickoff,
+      market: p.market,
+      side: p.side ?? null,
+      odds: p.odds,
+      stakePct: (p.stake ?? 0) * 100,
+      confidence: j.decision.confidence,
     });
   }
   return {
@@ -58,35 +64,45 @@ export function summarizeBatch(batch: BatchResult, reportUrl?: string): BatchSum
 
 /** Plain-text / Markdown rendering for chat channels (Telegram, Slack). */
 export function formatSummaryText(s: BatchSummary): string {
-  const lines = [`*ORACLE ${s.date}* — ${s.analysed} analysed, ${s.actionableCount} actionable, ${s.errors} errors`];
+  const lines = [
+    `*ORACLE ${s.date}* — ${s.analysed} analysed, ${s.actionableCount} actionable, ${s.errors} errors`,
+  ];
   if (s.actionable.length === 0) {
-    lines.push('_No actionable picks today._');
+    lines.push("_No actionable picks today._");
   } else {
     for (const p of s.actionable) {
-      const side = p.side ? ` (${p.side})` : '';
-      lines.push(`• ${p.home} vs ${p.away} — ${p.market}${side} @ ${p.odds} · ${p.stakePct.toFixed(1)}% Kelly · ${(p.confidence * 100).toFixed(0)}% conf`);
+      const side = p.side ? ` (${p.side})` : "";
+      lines.push(
+        `• ${p.home} vs ${p.away} — ${p.market}${side} @ ${p.odds} · ${p.stakePct.toFixed(1)}% Kelly · ${(p.confidence * 100).toFixed(0)}% conf`
+      );
     }
   }
   if (s.bookingCode) {
     lines.push(`\n🎟 SportyBet Booking Code: *${s.bookingCode}*`);
-    const loadUrl = s.bookingLoadUrl ?? `https://www.sportybet.com/?shareCode=${s.bookingCode}&c=ng`;
+    const loadUrl =
+      s.bookingLoadUrl ?? `https://www.sportybet.com/?shareCode=${s.bookingCode}&c=ng`;
     lines.push(`Load: ${loadUrl}`);
     if (s.bookingUnmatched?.length) {
-      lines.push(`⚠️ Unmatched legs (book manually): ${s.bookingUnmatched.map(p => `${p.home} vs ${p.away} (${p.market})`).join(', ')}`);
+      lines.push(
+        `⚠️ Unmatched legs (book manually): ${s.bookingUnmatched.map((p) => `${p.home} vs ${p.away} (${p.market})`).join(", ")}`
+      );
     }
   } else if (s.bookingError) {
     lines.push(`\n⚠️ SportyBet booking unavailable: ${s.bookingError}`);
   }
   if (s.reportUrl) lines.push(`\nReport: ${s.reportUrl}`);
-  return lines.join('\n');
+  return lines.join("\n");
 }
 
 /** HTML rendering for email. */
 export function formatSummaryHtml(s: BatchSummary): string {
   const rows = s.actionable.length
-    ? s.actionable.map(p =>
-        `<tr><td>${p.home} vs ${p.away}</td><td>${p.market}${p.side ? ` (${p.side})` : ''}</td><td>${p.odds}</td><td>${p.stakePct.toFixed(1)}%</td><td>${(p.confidence * 100).toFixed(0)}%</td></tr>`,
-      ).join('')
+    ? s.actionable
+        .map(
+          (p) =>
+            `<tr><td>${p.home} vs ${p.away}</td><td>${p.market}${p.side ? ` (${p.side})` : ""}</td><td>${p.odds}</td><td>${p.stakePct.toFixed(1)}%</td><td>${(p.confidence * 100).toFixed(0)}%</td></tr>`
+        )
+        .join("")
     : '<tr><td colspan="5">No actionable picks today.</td></tr>';
   return `<h2>ORACLE ${s.date}</h2>
 <p>${s.analysed} analysed · ${s.actionableCount} actionable · ${s.errors} errors</p>
@@ -94,15 +110,17 @@ export function formatSummaryHtml(s: BatchSummary): string {
 <tr><th>Fixture</th><th>Market</th><th>Odds</th><th>Stake</th><th>Conf</th></tr>
 ${rows}
 </table>
-${s.bookingCode
+${
+  s.bookingCode
     ? `<p><strong>🎟 SportyBet Booking Code: <code>${s.bookingCode}</code></strong><br>
 <a href="${s.bookingLoadUrl ?? `https://www.sportybet.com/?shareCode=${s.bookingCode}&c=ng`}">Load on SportyBet</a>${
-      s.bookingUnmatched?.length
-        ? `<br><em>⚠️ Unmatched legs (book manually): ${s.bookingUnmatched.map(p => `${p.home} vs ${p.away} (${p.market})`).join(', ')}</em>`
-        : ''
-    }</p>`
+        s.bookingUnmatched?.length
+          ? `<br><em>⚠️ Unmatched legs (book manually): ${s.bookingUnmatched.map((p) => `${p.home} vs ${p.away} (${p.market})`).join(", ")}</em>`
+          : ""
+      }</p>`
     : s.bookingError
-    ? `<p><em>⚠️ SportyBet booking unavailable: ${s.bookingError}</em></p>`
-    : ''}
-${s.reportUrl ? `<p><a href="${s.reportUrl}">Full report</a></p>` : ''}`;
+      ? `<p><em>⚠️ SportyBet booking unavailable: ${s.bookingError}</em></p>`
+      : ""
+}
+${s.reportUrl ? `<p><a href="${s.reportUrl}">Full report</a></p>` : ""}`;
 }

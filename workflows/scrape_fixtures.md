@@ -64,7 +64,7 @@ Sources run in order. All failures are non-fatal — a failed source is skipped 
 | **BetExplorer** | Playwright, table DOM | ✅ Working | CET/CEST | Date URL `?yr=&mo=&dy=`; `js-tournament` league headers |
 | **365Scores** | Playwright + `__INITIAL_STATE__` | ⚠️ Partial | CET/CEST | Returns 0 on quiet days; `window.__INITIAL_STATE__` not populated |
 | **OneFootball** | Playwright + `__NEXT_DATA__` | ⚠️ Partial | UTC | Competition-specific URL; generalise when daily feed found |
-| **SportyBet** | Playwright, JS state + DOM | ⚠️ Partial | WAT (UTC+1) | Nigeria `/today` URL; DOM walk fallback; timezone fixed to WAT |
+| **SportyBet** | Playwright, JS state + DOM | ✅ Working | WAT (UTC+1) | Nigeria `/today` URL; DOM walk fallback; timezone fixed to WAT |
 | **WhoScored** | Playwright | ❌ Blocked | BST/GMT | Cloudflare JS challenge — returns [] |
 
 ### ESPN League Slugs

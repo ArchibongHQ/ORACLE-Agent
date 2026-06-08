@@ -2,9 +2,9 @@
  *  Uses Google Search grounding to find consensus 1X2 odds from multiple bookmakers.
  *  Returns null when confidence is too low — caller falls back to no-odds path. */
 
-import { GoogleGenAI } from '@google/genai';
-import type { LLMCallContext } from './types.js';
-import { MODELS } from './cascade.js';
+import { GoogleGenAI } from "@google/genai";
+import { MODELS } from "./cascade.js";
+import type { LLMCallContext } from "./types.js";
 
 export interface OddsAcquisitionResult {
   home: number;
@@ -16,10 +16,10 @@ export interface OddsAcquisitionResult {
   overround: number;
 }
 
-const MIN_CONFIDENCE  = 0.65;
-const MAX_OVERROUND   = 0.18;  // reject if implied probs sum > 1.18 (too much juice)
-const MIN_OVERROUND   = 0.03;  // reject if sum < 1.03 (looks fabricated)
-const MAX_PRICE_DRIFT = 0.06;  // reject if any single price differs >6% across sources
+const MIN_CONFIDENCE = 0.65;
+const MAX_OVERROUND = 0.18; // reject if implied probs sum > 1.18 (too much juice)
+const MIN_OVERROUND = 0.03; // reject if sum < 1.03 (looks fabricated)
+const MAX_PRICE_DRIFT = 0.06; // reject if any single price differs >6% across sources
 
 /** Ask Gemini (with Search grounding) for 1X2 odds on a single fixture.
  *  Cascade: Flash → Flash-Lite. Returns null on failure or low confidence. */
@@ -28,7 +28,7 @@ export async function fetchOddsViaGemini(
   away: string,
   league: string,
   kickoff: string,
-  ctx: LLMCallContext,
+  ctx: LLMCallContext
 ): Promise<OddsAcquisitionResult | null> {
   if (!ctx.config.geminiApiKey) return null;
 
@@ -66,7 +66,7 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
         },
       });
 
-      const text = (result.text ?? '').trim();
+      const text = (result.text ?? "").trim();
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) continue;
 
@@ -83,14 +83,14 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
       const homeOdds = parsed.home_odds;
       const drawOdds = parsed.draw_odds;
       const awayOdds = parsed.away_odds;
-      const sources  = parsed.sources ?? [];
+      const sources = parsed.sources ?? [];
 
       if (!homeOdds?.length || !drawOdds?.length || !awayOdds?.length) continue;
       if (homeOdds.length < 2 || sources.length < 2) return null;
 
       // Validate all values are plausible decimal odds (1.01–50)
       const allOdds = [...homeOdds, ...drawOdds, ...awayOdds];
-      if (allOdds.some(o => typeof o !== 'number' || o < 1.01 || o > 50)) continue;
+      if (allOdds.some((o) => typeof o !== "number" || o < 1.01 || o > 50)) continue;
 
       // Check price drift across sources — reject if any market drifts >6%
       const maxDrift = (arr: number[]) => (Math.max(...arr) - Math.min(...arr)) / Math.min(...arr);
@@ -110,13 +110,19 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
       if (overround < MIN_OVERROUND || overround > MAX_OVERROUND) continue;
 
       // Confidence: base 0.5 + 0.1 per source beyond 2 + 0.1 for tight drift
-      const driftBonus = (maxDrift(homeOdds) + maxDrift(drawOdds) + maxDrift(awayOdds)) / 3 < 0.02 ? 0.1 : 0;
-      const confidence = Math.min(0.95, 0.5 + Math.min(0.3, (sources.length - 2) * 0.1) + driftBonus + 0.05 * Math.min(4, sources.length));
+      const driftBonus =
+        (maxDrift(homeOdds) + maxDrift(drawOdds) + maxDrift(awayOdds)) / 3 < 0.02 ? 0.1 : 0;
+      const confidence = Math.min(
+        0.95,
+        0.5 +
+          Math.min(0.3, (sources.length - 2) * 0.1) +
+          driftBonus +
+          0.05 * Math.min(4, sources.length)
+      );
 
       if (confidence < MIN_CONFIDENCE) return null;
 
       return { home: h, draw: d, away: a, confidence, sources, overround };
-
     } catch {
       // cascade to next model
     }

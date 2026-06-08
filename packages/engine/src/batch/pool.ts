@@ -16,7 +16,7 @@ export async function runPool<TIn, TOut>(
   hooks?: {
     onSettled?: (index: number, result: TOut) => void;
     shouldStop?: () => boolean;
-  },
+  }
 ): Promise<Array<TOut | undefined>> {
   const results = new Array<TOut | undefined>(items.length);
   const width = Math.max(1, Math.min(concurrency, items.length || 1));
@@ -50,7 +50,7 @@ export class AtomicCostTracker {
 
   constructor(
     private readonly _perCallUsd: number,
-    private readonly _ceilingUsd: number | null,
+    private readonly _ceilingUsd: number | null
   ) {}
 
   /** Record one billable call. Returns true if the ceiling is now reached/exceeded. */
@@ -60,6 +60,10 @@ export class AtomicCostTracker {
     return this._halted;
   }
 
-  get spent(): number { return this._spent; }
-  get halted(): boolean { return this._halted; }
+  get spent(): number {
+    return this._spent;
+  }
+  get halted(): boolean {
+    return this._halted;
+  }
 }

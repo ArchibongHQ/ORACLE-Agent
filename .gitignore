@@ -21,9 +21,15 @@ __pycache__/
 .venv/
 venv/
 
+# Graphify output (regenerated on demand)
+graphify-out/
+
 # Logs
 *.log
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated/vendor files
+ORACLE_v*.jsx

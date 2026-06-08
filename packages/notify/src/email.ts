@@ -1,27 +1,27 @@
 /** Email push notifier — zero-dep via an HTTP mail API (Resend-style) rather than bundling SMTP.
  *  Default endpoint targets Resend (https://resend.com); override `endpoint` for a compatible API. */
-import type { Notifier, BatchSummary } from './types.js';
-import { formatSummaryHtml } from './types.js';
+import type { BatchSummary, Notifier } from "./types.js";
+import { formatSummaryHtml } from "./types.js";
 
 export interface EmailConfig {
   apiKey: string;
   from: string;
   to: string;
-  endpoint?: string;   // default: https://api.resend.com/emails
+  endpoint?: string; // default: https://api.resend.com/emails
 }
 
 export class EmailNotifier implements Notifier {
-  name = 'email';
+  name = "email";
   private endpoint: string;
   constructor(private cfg: EmailConfig) {
-    this.endpoint = cfg.endpoint ?? 'https://api.resend.com/emails';
+    this.endpoint = cfg.endpoint ?? "https://api.resend.com/emails";
   }
 
   async notify(summary: BatchSummary): Promise<void> {
     const res = await fetch(this.endpoint, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'content-type': 'application/json',
+        "content-type": "application/json",
         authorization: `Bearer ${this.cfg.apiKey}`,
       },
       body: JSON.stringify({

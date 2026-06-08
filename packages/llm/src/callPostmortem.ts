@@ -4,9 +4,9 @@
  *  The synthesized rule is stored as synthesizedRule on the entry (optional field).
  *  Batched: processes an array of loss entries, returns updated entries with synthesizedRule set.
  *  Called in apps/worker resolution path. */
-import { GoogleGenAI } from '@google/genai';
-import type { LLMCallContext } from './types.js';
-import { MODELS } from './cascade.js';
+import { GoogleGenAI } from "@google/genai";
+import { MODELS } from "./cascade.js";
+import type { LLMCallContext } from "./types.js";
 
 export interface PostmortemLossInput {
   fixtureId: string;
@@ -29,37 +29,36 @@ Return ONLY the rule as plain text — no JSON, no preamble.
 Fixture: ${entry.homeTeam} vs ${entry.awayTeam}
 Market: ${entry.marketPicked}
 Root cause: ${entry.rootCause}
-Signals fired: ${entry.signalsThatFired.join(', ') || 'none'}
-Signals missed: ${entry.signalsThatShouldHaveFired.join(', ') || 'none'}`;
+Signals fired: ${entry.signalsThatFired.join(", ") || "none"}
+Signals missed: ${entry.signalsThatShouldHaveFired.join(", ") || "none"}`;
 }
 
 /** synthesizePostmortems — batch process resolved losses, return entries with synthesizedRule.
  *  Entries that fail synthesis get synthesizedRule = '' (empty). */
 export async function synthesizePostmortems(
   losses: PostmortemLossInput[],
-  ctx: LLMCallContext,
+  ctx: LLMCallContext
 ): Promise<PostmortemSynthesisResult[]> {
   if (!ctx.config.geminiApiKey || !losses.length) {
-    return losses.map(l => ({ ...l, synthesizedRule: '' }));
+    return losses.map((l) => ({ ...l, synthesizedRule: "" }));
   }
 
   const ai = new GoogleGenAI({ apiKey: ctx.config.geminiApiKey });
 
   const settled = await Promise.allSettled(
-    losses.map(entry =>
+    losses.map((entry) =>
       ai.models.generateContent({
         model: MODELS.GEMINI_FLASH_LITE,
         contents: buildSynthesisPrompt(entry),
         config: { thinkingConfig: { thinkingBudget: 0 } },
-      }),
-    ),
+      })
+    )
   );
 
   return losses.map((entry, i) => {
     const result = settled[i];
-    const rule = result?.status === 'fulfilled'
-      ? (result.value.text ?? '').trim().slice(0, 200)
-      : '';
+    const rule =
+      result?.status === "fulfilled" ? (result.value.text ?? "").trim().slice(0, 200) : "";
     return { ...entry, synthesizedRule: rule };
   });
 }

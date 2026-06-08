@@ -6,14 +6,14 @@
  *  OpenAI-compatible chat/completions; $0.60/$2.50 per 1M tokens; best HLE-Full tool-use (54.0).
  *  Never throws — returns null on any failure so the swarm degrades gracefully. */
 
-import { MODELS } from './cascade.js';
+import { MODELS } from "./cascade.js";
 
-const ENDPOINT = 'https://api.moonshot.ai/v1/chat/completions';
+const ENDPOINT = "https://api.moonshot.ai/v1/chat/completions";
 
 /** One swarm worker's structured vote on a fixture. */
 export interface KimiVote {
-  pick: string;        // market label the worker would back, or "NO_BET"
-  confidence: number;  // 0–1 self-reported confidence
+  pick: string; // market label the worker would back, or "NO_BET"
+  confidence: number; // 0–1 self-reported confidence
   rationale: string;
   model: string;
 }
@@ -23,7 +23,7 @@ export interface KimiVote {
 export async function callKimiVote(
   prompt: string,
   apiKey: string,
-  opts: { temperature?: number; maxTokens?: number } = {},
+  opts: { temperature?: number; maxTokens?: number } = {}
 ): Promise<KimiVote | null> {
   if (!apiKey) return null;
 
@@ -32,18 +32,18 @@ export async function callKimiVote(
 
   try {
     const resp = await fetch(ENDPOINT, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         model: MODELS.KIMI_SWARM,
         messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: prompt },
+          { role: "system", content: system },
+          { role: "user", content: prompt },
         ],
-        temperature: opts.temperature ?? 0.4,  // slight diversity across workers
+        temperature: opts.temperature ?? 0.4, // slight diversity across workers
         max_tokens: opts.maxTokens ?? 512,
       }),
     });
@@ -55,19 +55,22 @@ export async function callKimiVote(
     const text = data.choices?.[0]?.message?.content;
     if (!text) return null;
 
-    const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim();
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
+    const cleaned = text
+      .replace(/```(?:json)?\s*/gi, "")
+      .replace(/```\s*/g, "")
+      .trim();
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
     if (start === -1 || end === -1) return null;
 
     const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
-    const pick = String(obj['pick'] ?? '').trim();
+    const pick = String(obj.pick ?? "").trim();
     if (!pick) return null;
 
     return {
       pick,
-      confidence: Math.max(0, Math.min(1, Number(obj['confidence'] ?? 0.5))),
-      rationale: String(obj['rationale'] ?? ''),
+      confidence: Math.max(0, Math.min(1, Number(obj.confidence ?? 0.5))),
+      rationale: String(obj.rationale ?? ""),
       model: MODELS.KIMI_SWARM,
     };
   } catch {

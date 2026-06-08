@@ -5,7 +5,7 @@
  *  VIABLE → standard path (Gemini decision cascade, no briefing/CVL).
  *  Reads convergence.tier from the batch job result — reuses ConvergenceTier from safety/index.ts. */
 
-export type RouteTier = 'APEX' | 'PRIME' | 'VIABLE' | 'MARGINAL' | 'NOISE';
+export type RouteTier = "APEX" | "PRIME" | "VIABLE" | "MARGINAL" | "NOISE";
 
 export interface BatchRoute {
   tier: RouteTier;
@@ -13,22 +13,23 @@ export interface BatchRoute {
   useCVL: boolean;
   useBriefing: boolean;
   acquisitionModel: string;
-  swarmWorkers: number;   // Level-2 sub-agent count (0 = no swarm)
+  swarmWorkers: number; // Level-2 sub-agent count (0 = no swarm)
 }
 
-import { MODELS } from './cascade.js';
+import { MODELS } from "./cascade.js";
 
-const APEX_PRIME = new Set<RouteTier>(['APEX', 'PRIME']);
-const MARGINAL_NOISE = new Set<RouteTier>(['MARGINAL', 'NOISE']);
+const APEX_PRIME = new Set<RouteTier>(["APEX", "PRIME"]);
+const MARGINAL_NOISE = new Set<RouteTier>(["MARGINAL", "NOISE"]);
 
 /** Determine model routing for a single fixture based on its convergence tier.
  *  Call this before decide() to know which optional layers to activate. */
 export function routeFixture(convergenceTier: string): BatchRoute {
-  const tier = (APEX_PRIME.has(convergenceTier as RouteTier) ||
-                MARGINAL_NOISE.has(convergenceTier as RouteTier) ||
-                convergenceTier === 'VIABLE')
-    ? convergenceTier as RouteTier
-    : 'VIABLE';
+  const tier =
+    APEX_PRIME.has(convergenceTier as RouteTier) ||
+    MARGINAL_NOISE.has(convergenceTier as RouteTier) ||
+    convergenceTier === "VIABLE"
+      ? (convergenceTier as RouteTier)
+      : "VIABLE";
 
   if (APEX_PRIME.has(tier)) {
     return {
@@ -37,7 +38,7 @@ export function routeFixture(convergenceTier: string): BatchRoute {
       useCVL: true,
       useBriefing: true,
       acquisitionModel: MODELS.GEMINI_FLASH,
-      swarmWorkers: tier === 'APEX' ? 7 : 5,
+      swarmWorkers: tier === "APEX" ? 7 : 5,
     };
   }
 

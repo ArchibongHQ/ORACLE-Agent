@@ -18,46 +18,48 @@
  *  API used:  POST {gatewayUrl}/v1/responses
  *  Docs:      https://docs.openclaw.ai/gateway/openresponses-http-api
  */
-import type { Notifier, BatchSummary } from './types.js';
-import { formatSummaryText } from './types.js';
+import type { BatchSummary, Notifier } from "./types.js";
+import { formatSummaryText } from "./types.js";
 
 export interface OpenClawConfig {
-  gatewayUrl: string;   // e.g. http://127.0.0.1:18789
-  token: string;        // Bearer token
-  agentId?: string;     // defaults to "main"
+  gatewayUrl: string; // e.g. http://127.0.0.1:18789
+  token: string; // Bearer token
+  agentId?: string; // defaults to "main"
 }
 
 export class OpenClawNotifier implements Notifier {
-  name = 'openclaw';
+  name = "openclaw";
   private agentId: string;
 
   constructor(private cfg: OpenClawConfig) {
-    this.agentId = cfg.agentId ?? 'main';
+    this.agentId = cfg.agentId ?? "main";
   }
 
   async notify(summary: BatchSummary): Promise<void> {
-    const url = `${this.cfg.gatewayUrl.replace(/\/$/, '')}/v1/responses`;
+    const url = `${this.cfg.gatewayUrl.replace(/\/$/, "")}/v1/responses`;
     const body = {
-      model: 'openclaw',
+      model: "openclaw",
       input: formatSummaryText(summary),
       // Stable session key so repeated pushes land in the same conversation thread
-      user: 'oracle-batch-notifier',
+      user: "oracle-batch-notifier",
     };
 
     const res = await fetch(url, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'content-type': 'application/json',
+        "content-type": "application/json",
         authorization: `Bearer ${this.cfg.token}`,
-        'x-openclaw-agent-id': this.agentId,
+        "x-openclaw-agent-id": this.agentId,
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
     });
 
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`OpenClaw Gateway failed: HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ''}`);
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `OpenClaw Gateway failed: HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ""}`
+      );
     }
   }
 }

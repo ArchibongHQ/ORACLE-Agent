@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from "node:child_process";
 
 export interface HardwareCapabilities {
   hasNvidiaGpu: boolean;
@@ -14,34 +14,46 @@ export function detectHardware(): HardwareCapabilities {
 
   try {
     const out = execFileSync(
-      'nvidia-smi',
-      ['--query-gpu=name,driver_version', '--format=csv,noheader'],
-      { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] },
-    ).toString().trim();
+      "nvidia-smi",
+      ["--query-gpu=name,driver_version", "--format=csv,noheader"],
+      { timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }
+    )
+      .toString()
+      .trim();
     if (out) {
       hasNvidiaGpu = true;
-      gpuName = out.split(',')[0].trim();
+      gpuName = out.split(",")[0].trim();
     }
-  } catch { /* nvidia-smi absent or no NVIDIA GPU */ }
+  } catch {
+    /* nvidia-smi absent or no NVIDIA GPU */
+  }
 
   try {
-    const match = execFileSync('nvcc', ['--version'], {
+    const match = execFileSync("nvcc", ["--version"], {
       timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).toString().match(/release (\S+),/);
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .match(/release (\S+),/);
     cudaVersion = match?.[1] ?? null;
-  } catch { /* CUDA toolkit not installed */ }
+  } catch {
+    /* CUDA toolkit not installed */
+  }
 
   // Prefer env override (works on Windows where systemd-detect-virt is unavailable)
-  let isVps = process.env['ORACLE_IS_VPS'] === 'true';
+  let isVps = process.env.ORACLE_IS_VPS === "true";
   if (!isVps) {
     try {
-      const virt = execFileSync('systemd-detect-virt', [], {
+      const virt = execFileSync("systemd-detect-virt", [], {
         timeout: 2000,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).toString().trim();
-      isVps = virt !== 'none' && virt !== '';
-    } catch { /* not a systemd host */ }
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .toString()
+        .trim();
+      isVps = virt !== "none" && virt !== "";
+    } catch {
+      /* not a systemd host */
+    }
   }
 
   return { hasNvidiaGpu, gpuName, isVps, cudaVersion };

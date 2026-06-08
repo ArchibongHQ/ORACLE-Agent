@@ -1,18 +1,18 @@
-import { defineConfig } from 'vitest/config';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { defineConfig } from "vitest/config";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   test: {
-    environment: 'node',
+    environment: "node",
   },
   resolve: {
     alias: {
-      '@oracle/engine':  resolve(__dirname, './src/index.ts'),
-      '@oracle/storage': resolve(__dirname, '../storage/src/index.ts'),
-      '@oracle/llm':     resolve(__dirname, '../llm/src/index.ts'),
+      "@oracle/engine": resolve(__dirname, "./src/index.ts"),
+      "@oracle/storage": resolve(__dirname, "../storage/src/index.ts"),
+      "@oracle/llm": resolve(__dirname, "../llm/src/index.ts"),
     },
   },
 });

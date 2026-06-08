@@ -8,5 +8,9 @@ export interface StoragePort {
   bulkWrite<T>(key: string, items: T[]): Promise<void>;
   /** Upsert items into the array at key, deduplicating by idField (PRD §11A.3).
    *  Existing items whose idField value matches a new item are replaced; new items are appended. */
-  upsertBulk<T extends Record<string, unknown>>(key: string, items: T[], idField: keyof T): Promise<void>;
+  upsertBulk<T extends Record<string, unknown>>(
+    key: string,
+    items: T[],
+    idField: keyof T
+  ): Promise<void>;
 }

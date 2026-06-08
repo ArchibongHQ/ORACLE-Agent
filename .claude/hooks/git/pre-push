@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Advisory pre-push hook: reminds about /gstack-review, /gstack-cso, /gstack-ship.
+# Non-blocking — always exits 0.
+
+REMOTE="$1"
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+while read local_ref local_oid remote_ref remote_oid; do
+  # Skip branch deletions
+  [ "$local_oid" = "0000000000000000000000000000000000000000" ] && continue
+
+  # Determine comparison base
+  if [ "$remote_oid" = "0000000000000000000000000000000000000000" ]; then
+    BASE="main"
+  else
+    BASE="$remote_oid"
+  fi
+
+  # Count diff lines
+  DIFF_STAT=$(git diff --stat "${BASE}...${local_oid}" 2>/dev/null | tail -1)
+  INSERTIONS=$(echo "$DIFF_STAT" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)
+  DELETIONS=$(echo "$DIFF_STAT" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo 0)
+  TOTAL_LINES=$(( ${INSERTIONS:-0} + ${DELETIONS:-0} ))
+
+  echo "[pre-push] Branch: $CURRENT_BRANCH | Diff: +${INSERTIONS}/-${DELETIONS} lines"
+
+  # Reminder 1: diff >50 lines → /gstack-review
+  if [ "$TOTAL_LINES" -gt 50 ]; then
+    echo ""
+    echo "================================================================"
+    echo "  DIFF IS ${TOTAL_LINES} LINES (>50)."
+    echo "  CLAUDE.md requires /gstack-review before claiming success."
+    echo "  Run it in Claude Code before opening the PR."
+    echo "================================================================"
+  fi
+
+  # Reminder 2: push to main/release → /gstack-cso
+  if [[ "$remote_ref" == "refs/heads/main" ]] || [[ "$remote_ref" == "refs/heads/release/"* ]]; then
+    echo ""
+    echo "================================================================"
+    echo "  PUSHING TO ${remote_ref}."
+    echo "  Run /gstack-cso in Claude Code for a pre-release security scan."
+    echo "================================================================"
+  fi
+
+  # Reminder 3: first push of feature branch → /gstack-ship
+  if [[ "$CURRENT_BRANCH" == "feature/"* ]] && [ "$remote_oid" = "0000000000000000000000000000000000000000" ]; then
+    echo ""
+    echo "================================================================"
+    echo "  New feature branch pushed."
+    echo "  When opening the PR, run /gstack-ship in Claude Code"
+    echo "  to go through the full shipping checklist."
+    echo "================================================================"
+  fi
+
+done
+
+exit 0

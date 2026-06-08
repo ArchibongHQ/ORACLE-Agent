@@ -1,15 +1,102 @@
 {
-	"version": "2.0.0",
-	"tasks": [
-		{
-			"label": "pnpm build",
-			"type": "shell",
-			"command": "pnpm",
-			"args": [
-				"run",
-				"build"
-			],
-			"group": "build"
-		}
-	]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "pnpm build",
+      "type": "shell",
+      "command": "pnpm",
+      "args": ["run", "build"],
+      "group": "build"
+    },
+    {
+      "label": "gstack: Office Hours (feature scoping)",
+      "type": "shell",
+      "command": "claude",
+      "args": ["-p", "Run /gstack-office-hours to help scope this new feature work with a YC-style product interrogation."],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gstack: Eng Review (architecture decision)",
+      "type": "shell",
+      "command": "claude",
+      "args": ["-p", "Run /gstack-plan-eng-review to review the current architecture plan with diagrams and test planning."],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gstack: Review (pre-PR, manual)",
+      "type": "shell",
+      "command": "claude",
+      "args": ["-p", "Run /gstack-review to perform a pre-PR code review of the current diff. Focus on correctness, architecture, test coverage, and SQL/LLM safety."],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gstack: Security Scan (CSO)",
+      "type": "shell",
+      "command": "claude",
+      "args": ["-p", "Run /gstack-cso to perform an OWASP Top 10 + STRIDE security audit of the current codebase."],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gstack: Ship PR checklist",
+      "type": "shell",
+      "command": "claude",
+      "args": ["-p", "Run /gstack-ship to go through the full PR shipping checklist: sync base, run tests, review diff, bump version, update changelog, commit, push, open PR."],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gstack: Investigate (debug failure)",
+      "type": "shell",
+      "command": "claude",
+      "args": ["-p", "Run /gstack-investigate to perform systematic root-cause analysis on the current failure with hypothesis testing."],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "focus": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gstack: Update skills",
+      "type": "shell",
+      "command": "bash",
+      "args": ["-c", "cd ~/.claude/skills/gstack && git pull && bash register-skills.sh"],
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
 }

@@ -3,15 +3,15 @@
  *  Gemini Pro → Flash cascade with thinking_level HIGH.
  *  Returns JSON: { critique, weaknesses, alternativePick?, confidenceScore }.
  *  CLI subcommand only — NOT auto-run in batch. */
-import { GoogleGenAI } from '@google/genai';
-import type { LLMCallContext } from './types.js';
-import { MODELS, DECISION_CASCADE } from './cascade.js';
+import { GoogleGenAI } from "@google/genai";
+import { DECISION_CASCADE } from "./cascade.js";
+import type { LLMCallContext } from "./types.js";
 
 export interface RedTeamResult {
   critique: string;
   weaknesses: string[];
   alternativePick?: string;
-  confidenceScore: number;   // 0–1 estimate of pick surviving scrutiny
+  confidenceScore: number; // 0–1 estimate of pick surviving scrutiny
   model: string;
 }
 
@@ -21,20 +21,24 @@ Return ONLY valid JSON:
 {"critique":"...","weaknesses":["..."],"alternativePick":"optional better pick or null","confidenceScore":0.0}
 confidenceScore: 0=pick is terrible, 1=pick survives all scrutiny.`;
 
-function parseRedTeamResponse(text: string): Omit<RedTeamResult, 'model'> {
+function parseRedTeamResponse(text: string): Omit<RedTeamResult, "model"> {
   try {
-    const cleaned = text.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim();
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start === -1 || end === -1) throw new Error('no JSON');
+    const cleaned = text
+      .replace(/```(?:json)?\s*/gi, "")
+      .replace(/```\s*/g, "")
+      .trim();
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start === -1 || end === -1) throw new Error("no JSON");
     const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
     return {
-      critique: String(obj['critique'] ?? ''),
-      weaknesses: Array.isArray(obj['weaknesses']) ? (obj['weaknesses'] as unknown[]).map(String) : [],
-      alternativePick: obj['alternativePick'] && obj['alternativePick'] !== 'null'
-        ? String(obj['alternativePick'])
-        : undefined,
-      confidenceScore: Math.max(0, Math.min(1, Number(obj['confidenceScore'] ?? 0.5))),
+      critique: String(obj.critique ?? ""),
+      weaknesses: Array.isArray(obj.weaknesses) ? (obj.weaknesses as unknown[]).map(String) : [],
+      alternativePick:
+        obj.alternativePick && obj.alternativePick !== "null"
+          ? String(obj.alternativePick)
+          : undefined,
+      confidenceScore: Math.max(0, Math.min(1, Number(obj.confidenceScore ?? 0.5))),
     };
   } catch {
     return { critique: text.slice(0, 500), weaknesses: [], confidenceScore: 0.5 };
@@ -42,10 +46,7 @@ function parseRedTeamResponse(text: string): Omit<RedTeamResult, 'model'> {
 }
 
 /** callRedTeam — adversarial critique. CLI-only; not wired into batch auto-run. */
-export async function callRedTeam(
-  prompt: string,
-  ctx: LLMCallContext,
-): Promise<RedTeamResult> {
+export async function callRedTeam(prompt: string, ctx: LLMCallContext): Promise<RedTeamResult> {
   const ai = new GoogleGenAI({ apiKey: ctx.config.geminiApiKey });
   const errors: string[] = [];
 
@@ -56,11 +57,11 @@ export async function callRedTeam(
         contents: `${RED_TEAM_SYSTEM}\n\n${prompt}`,
         config: {
           temperature: 0.3,
-          responseMimeType: 'application/json',
+          responseMimeType: "application/json",
           thinkingConfig: { thinkingBudget: 16384 },
         },
       });
-      const text = result.text ?? '';
+      const text = result.text ?? "";
       if (text) {
         return { ...parseRedTeamResponse(text), model: modelId };
       }
@@ -69,5 +70,5 @@ export async function callRedTeam(
     }
   }
 
-  throw new Error(`callRedTeam cascade exhausted. Errors: ${errors.join(' | ')}`);
+  throw new Error(`callRedTeam cascade exhausted. Errors: ${errors.join(" | ")}`);
 }

@@ -21,6 +21,7 @@ Usage:
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -218,6 +219,47 @@ def aggregate_stats(
         "debateRedCount": debate_stats["count"],
         "llmDisagreeCount": llm_stats["count"],
     }
+
+
+# ── Git atomic revert helpers ─────────────────────────────────────────────────
+
+SKILLOPT_LOG = Path(".tmp/oracle_skillopt_log.json")
+
+
+def _git(*args: str) -> str:
+    """Run a git sub-command with an explicit argument list (no shell). Returns stdout."""
+    result = subprocess.run(
+        ["git", *args],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _stash_rubric(message: str) -> str:
+    """Stage the rubric and stash it. Returns the stash ref (e.g. 'stash@{0}')."""
+    _git("add", str(RUBRIC_PATH))
+    _git("stash", "push", "-m", message, "--", str(RUBRIC_PATH))
+    return "stash@{0}"
+
+
+def _pop_stash() -> None:
+    """Restore the stashed rubric (revert the proposed edit)."""
+    _git("stash", "pop")
+
+
+def _log_attempt(entry: dict) -> None:
+    """Append an attempt record to the SkillOpt log (append-only JSONL-in-array)."""
+    SKILLOPT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    log: list[dict] = []
+    if SKILLOPT_LOG.exists():
+        try:
+            log = json.loads(SKILLOPT_LOG.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            log = []
+    log.append(entry)
+    SKILLOPT_LOG.write_text(json.dumps(log, indent=2), encoding="utf-8")
 
 
 # ── Rubric edit proposal ──────────────────────────────────────────────────────
@@ -423,10 +465,66 @@ def main() -> None:
             print("[skillopt] Validation gate: no improvement signal. Rubric unchanged.")
             sys.exit(0)
 
+    # ── Atomic keep-or-revert (autoresearch pattern) ──────────────────────────
+    # Stash the current rubric, apply the proposed edit, re-score held-out RPS.
+    # If the edit doesn't improve RPS by >= threshold, pop the stash (revert).
+
+    baseline_rps = held_out_rps  # computed above (may be None if < 5 resolved records)
+
     current = load_rubric(RUBRIC_PATH)
     RUBRIC_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Checkpoint: stash baseline rubric before applying proposed edit
+    stash_ref = None
+    try:
+        stash_ref = _stash_rubric(f"skillopt-baseline-{stats['count']}-samples")
+        print(f"[skillopt] Stashed baseline rubric as {stash_ref}")
+    except RuntimeError as exc:
+        print(f"[skillopt] WARNING: Could not stash rubric ({exc}). Proceeding without atomic revert.")
+
     RUBRIC_PATH.write_text(current + proposed, encoding="utf-8")
-    print(f"\n[skillopt] Rubric updated: {RUBRIC_PATH}")
+    print(f"[skillopt] Applied proposed edit to {RUBRIC_PATH}")
+
+    # Re-score held-out RPS on the same recent-20 window to detect improvement
+    new_held_out_rps = compute_held_out_rps(resolutions)
+
+    if baseline_rps is not None and new_held_out_rps is not None:
+        delta = baseline_rps - new_held_out_rps  # positive = improvement (lower RPS is better)
+        print(f"[skillopt] Held-out RPS: baseline={baseline_rps:.6f}  after={new_held_out_rps:.6f}  delta={delta:+.6f}")
+
+        if delta < RPS_IMPROVEMENT_THRESHOLD and stash_ref is not None:
+            print(f"[skillopt] Delta {delta:.6f} < threshold {RPS_IMPROVEMENT_THRESHOLD}. Reverting.")
+            try:
+                _pop_stash()
+                print("[skillopt] Reverted rubric to baseline.")
+            except RuntimeError as exc:
+                print(f"[skillopt] ERROR: Could not revert stash: {exc}. Manual review required.")
+            _log_attempt({
+                "status": "REJECTED",
+                "samples": stats["count"],
+                "baselineRPS": baseline_rps,
+                "afterRPS": new_held_out_rps,
+                "delta": delta,
+                "proposedEdit": proposed,
+            })
+            sys.exit(0)
+
+    # Edit accepted — drop the stash (no longer needed) and log acceptance
+    if stash_ref is not None:
+        try:
+            _git("stash", "drop")
+        except RuntimeError:
+            pass  # stash drop failure is non-fatal; the rubric file is already correct
+
+    _log_attempt({
+        "status": "ACCEPTED",
+        "samples": stats["count"],
+        "baselineRPS": baseline_rps,
+        "afterRPS": new_held_out_rps,
+        "delta": (baseline_rps - new_held_out_rps) if baseline_rps and new_held_out_rps else None,
+        "proposedEdit": proposed,
+    })
+    print(f"\n[skillopt] Rubric updated and accepted: {RUBRIC_PATH}")
 
 
 if __name__ == "__main__":
