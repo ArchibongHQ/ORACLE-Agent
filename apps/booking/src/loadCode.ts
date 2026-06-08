@@ -94,33 +94,106 @@ function eventToLeg(node: unknown, league: string): RawLeg | null {
 }
 
 /** Best-effort extraction of legs from SportyBet's booking-detail JSON.
- *  Handles three shapes: flat selections[], events[], and the pcUpcomingEvents-style
- *  tournaments[].events[] nesting (the only structure confirmed against live SportyBet). */
+ *
+ * Confirmed live shape (2026-06-08, /api/ng/orders/share/<CODE>):
+ *   data.outcomes[]  — one entry per leg; each has homeTeamName, awayTeamName,
+ *                      sport.category.tournament.name, and markets[].outcomes[]
+ *   data.ticket.selections[] — parallel array with marketId + outcomeId to identify
+ *                              which outcome was selected in each market
+ *
+ * Falls back to tournaments[].events[] and flat selections[]/events[] for other shapes.
+ * totalOdds is not served by the API — computed as product of parsed leg odds.
+ */
 function parseBookingJson(json: unknown): { legs: RawLeg[]; totalOdds: number } | null {
   const data = obj((json as { data?: unknown })?.data) ?? obj(json);
   if (!data) return null;
-  const order = obj(data.order) ?? data;
 
   const legs: RawLeg[] = [];
 
-  // Shape A — tournaments[].events[] (same nesting as factsCenter/pcUpcomingEvents).
-  const tournaments = Array.isArray(order.tournaments) ? (order.tournaments as unknown[]) : [];
-  for (const t of tournaments) {
-    const to = obj(t);
-    if (!to) continue;
-    const league = str(to.name, to.tournamentName) || "Football";
-    const events = Array.isArray(to.events) ? (to.events as unknown[]) : [];
-    for (const ev of events) {
-      const leg = eventToLeg(ev, league);
-      if (leg) legs.push(leg);
+  // Shape A — confirmed live: data.outcomes[] + data.ticket.selections[]
+  // Build a fast lookup: eventId → { marketId, outcomeId } from ticket.selections
+  const ticket = obj((data as { ticket?: unknown })?.ticket);
+  const selections = Array.isArray(ticket?.selections) ? (ticket.selections as unknown[]) : [];
+  const selMap = new Map<string, { marketId: string; outcomeId: string }>();
+  for (const s of selections) {
+    const so = obj(s);
+    if (!so) continue;
+    const eid = str(so.eventId);
+    if (eid) selMap.set(eid, { marketId: str(so.marketId), outcomeId: str(so.outcomeId) });
+  }
+
+  const outcomes = Array.isArray(data.outcomes) ? (data.outcomes as unknown[]) : [];
+  for (const node of outcomes) {
+    const ev = obj(node);
+    if (!ev) continue;
+    const home = str(ev.homeTeamName, ev.home);
+    const away = str(ev.awayTeamName, ev.away);
+    if (!home || !away) continue;
+
+    // League from sport.category.tournament.name
+    const sport = obj(ev.sport);
+    const category = obj(sport?.category);
+    const tournament = obj(category?.tournament);
+    const league =
+      str(tournament?.name, category?.name, sport?.name, ev.tournamentName) || "Football";
+
+    // Find the selected market+outcome using ticket.selections cross-ref
+    const eid = str(ev.eventId);
+    const sel = selMap.get(eid);
+    const markets = Array.isArray(ev.markets) ? (ev.markets as unknown[]) : [];
+    let marketDesc = "";
+    let outcomeDesc = "";
+    let odds = 0;
+
+    if (sel) {
+      for (const m of markets) {
+        const mo = obj(m);
+        if (!mo || str(mo.id) !== sel.marketId) continue;
+        marketDesc = str(mo.desc, mo.name);
+        const mOutcomes = Array.isArray(mo.outcomes) ? (mo.outcomes as unknown[]) : [];
+        for (const o of mOutcomes) {
+          const oo = obj(o);
+          if (!oo || str(oo.id) !== sel.outcomeId) continue;
+          outcomeDesc = str(oo.desc, oo.name);
+          odds = num(oo.odds, oo.oddsValue);
+          break;
+        }
+        break;
+      }
+    }
+
+    // Fallback: take first market, first outcome if selection cross-ref failed
+    if (!outcomeDesc && markets.length) {
+      const { marketDesc: md, outcomeDesc: od, odds: o } = extractMarketOutcome(ev);
+      marketDesc = md;
+      outcomeDesc = od;
+      odds = o;
+    }
+
+    legs.push({ home, away, league, marketDesc, outcomeDesc, odds });
+  }
+
+  // Shape B — tournaments[].events[] (factsCenter/pcUpcomingEvents style)
+  if (!legs.length) {
+    const order = obj((data as { order?: unknown })?.order) ?? data;
+    const tournaments = Array.isArray(order.tournaments) ? (order.tournaments as unknown[]) : [];
+    for (const t of tournaments) {
+      const to = obj(t);
+      if (!to) continue;
+      const league = str(to.name, to.tournamentName) || "Football";
+      const events = Array.isArray(to.events) ? (to.events as unknown[]) : [];
+      for (const ev of events) {
+        const leg = eventToLeg(ev, league);
+        if (leg) legs.push(leg);
+      }
     }
   }
 
-  // Shape B/C — flat selections[] / outcomes[] / events[].
+  // Shape C — flat selections[] / events[]
   if (!legs.length) {
+    const order = obj((data as { order?: unknown })?.order) ?? data;
     const flat =
       (Array.isArray(order.selections) && (order.selections as unknown[])) ||
-      (Array.isArray(order.outcomes) && (order.outcomes as unknown[])) ||
       (Array.isArray(order.events) && (order.events as unknown[])) ||
       [];
     for (const node of flat) {
@@ -130,8 +203,12 @@ function parseBookingJson(json: unknown): { legs: RawLeg[]; totalOdds: number } 
   }
 
   if (!legs.length) return null;
-  const totalOdds = num(order.totalOdds, order.totalOdd, order.accumulatedOdds, data.totalOdds);
-  return { legs, totalOdds };
+
+  // totalOdds not served by API — compute as product of leg odds (rounded to 2dp)
+  const totalOdds =
+    legs.reduce((acc, l) => (l.odds > 0 ? acc * l.odds : acc), 1);
+
+  return { legs, totalOdds: Math.round(totalOdds * 100) / 100 };
 }
 
 /** DOM fallback: read rendered betslip rows when the JSON shape can't be captured. */
