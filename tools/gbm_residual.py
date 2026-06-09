@@ -678,27 +678,12 @@ def build_features(
         feat["spiDefAway"] = float("nan")
         feat["spiOffDiff"] = float("nan")
         feat["spiDefDiff"] = float("nan")
-        if spi_lookup or spi_team_ratings:
+        if spi_lookup:
             date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
-            spi_entry = None
-            if spi_lookup:
-                spi_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
-                spi_entry = spi_lookup.get(spi_key)
+            spi_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+            spi_entry = spi_lookup.get(spi_key)
             if spi_entry:
                 feat.update(spi_entry)
-            elif spi_team_ratings:
-                # Fallback: static team-name ratings (no date dependency — broad coverage)
-                norm_h = _normalise_team(str(home))
-                norm_a = _normalise_team(str(away))
-                h_off, h_def = spi_team_ratings.get(norm_h, (float("nan"), float("nan")))
-                a_off, a_def = spi_team_ratings.get(norm_a, (float("nan"), float("nan")))
-                feat["spiOffHome"] = h_off
-                feat["spiDefHome"] = h_def
-                feat["spiOffAway"] = a_off
-                feat["spiDefAway"] = a_def
-                if not (h_off != h_off or a_off != a_off):  # neither is NaN
-                    feat["spiOffDiff"] = h_off - a_off
-                    feat["spiDefDiff"] = h_def - a_def
 
         # ── Squad market value ratio ──
         # home_squad_value / away_squad_value; >1 = home richer.
