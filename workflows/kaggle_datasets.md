@@ -210,6 +210,65 @@ Builds `ref_avg_cards` + `ref_foul_rate` lookup for GBM feature `ref_strictness_
 
 ---
 
+## Phase 3 ML Feature Layers (3A–3F)
+
+Six targeted feature layers filling concrete gaps in the GBM feature matrix. Each
+follows the same pattern: fetch tool → CSV → `load_X()` loader → `build_features()`
+param → `--no-X` flag. All join via `_normalise_team()` (the shared TM↔fdco bridge).
+
+| Phase | Feature | Tool | Status |
+| --- | --- | --- | --- |
+| 3A | HKJC AH line + 15-book consensus (`hkjcAhLine`, `ahConsensus15`, `ahSharpSoftGap`) | extend `fetch_odds_timeseries.py` | **BLOCKED** — needs `realsingwong` dataset (kaggle.json absent). Local `ah-odds` is a 3-league sample with Chinese team names + no HKJC column. |
+| 3B | FTE calibrated probabilities (`fteProbH/D/A`, `fteVsMarket*`, `fteProjScore*`) | new `fetch_fte_forecasts.py` | **BLOCKED** — `saurabhshahane/soccer-prediction-dataset` not downloaded. |
+| 3C | PPDA pressing (`ppdaHome/Away/Diff`, `oppdaHome/Away`) | `fetch_ppda.py` | **DONE** — 10,850 match rows, top-5, 5% coverage. |
+| 3D | Squad availability (`availIdxHome/Away`, `keyPlayerHome/Away`, `availIdxDiff`) | new `fetch_squad_availability.py` | **DONE (redesigned)** — see below. |
+| 3E | Reverse line movement (`reverseLmFlag`, `steamMoveStrength`, `timingLastMove`) | new `fetch_reverse_lm.py` | **BLOCKED** — `eladsil/football-games-odds` not downloaded. |
+| 3F | Match-day weather (`tempC`, `precipMm`, `windKph`, `isAdverse`) | new `fetch_weather.py` | **DONE** — Open-Meteo, no key. |
+
+### 3D — Squad Availability (redesigned)
+
+The original plan (per-match availability from a player-season injuries file) was
+unbuildable — `injuries/dataset.csv` has no club or match-date keys. Rebuilt from
+the Transfermarkt `player-scores` dataset (already downloaded):
+
+```bash
+python tools/fetch_squad_availability.py --kaggle-dir .tmp/kaggle/player-scores
+```
+
+- Matchday squad value = sum of each lineup player's latest market value ≤ match date.
+- `availability_idx` = matchday squad value / **rolling-peak** squad value (expanding
+  max of prior matches, anti-leakage). 1.0 = at peak strength; <0.7 = depleted.
+  Prototype variance on D1: mean 0.79, std 0.18, 28% of matches < 0.70.
+- `key_player_present` = is the club's top-valued rostered player in today's squad (1/0).
+- Top-5 leagues only; club names mapped to fdco canonical via `TM_CODE_TO_FDCO`
+  (Transfermarkt `club_code` → fdco short name — the single TM↔fdco bridge, also
+  reusable for the OTS name-gap fix).
+
+### 3F — Match-Day Weather
+
+```bash
+python tools/fetch_weather.py --backfill-dir .tmp/backfill
+```
+
+- Open-Meteo archive API (`archive-api.open-meteo.com/v1/archive`) — free, no key.
+- City-level coordinates per home team (`TEAM_CITY`, ~150 top-5 + English clubs).
+- Responses cached by `(lat, lon, date)` to `.tmp/weather/cache/` — re-runs hit disk.
+- `is_adverse` = precip > 5 mm OR wind > 50 km/h.
+- 19.5k unique (date, home) matches in scope; throttle 0.1–0.2 s between live calls.
+
+### Unblocking 3A / 3B / 3E
+
+These need Kaggle dataset downloads, which require credentials:
+
+```bash
+# Place kaggle.json at ~/.kaggle/kaggle.json first, then:
+kaggle datasets download -d realsingwong/european-football-asian-handicap-odds-time-series -p .tmp/kaggle/ah-odds --unzip
+kaggle datasets download -d saurabhshahane/soccer-prediction-dataset -p .tmp/kaggle/fte --unzip
+kaggle datasets download -d eladsil/football-games-odds -p .tmp/kaggle/reverse-lm --unzip
+```
+
+---
+
 ## Verification After Each Phase
 
 ```bash
