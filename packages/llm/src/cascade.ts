@@ -25,3 +25,24 @@ export const ACQUISITION_CASCADE: ModelId[] = [MODELS.GEMINI_FLASH, MODELS.GEMIN
 
 /** Cascade for decision layer: Pro first (best reasoning), Flash as fallback. */
 export const DECISION_CASCADE: ModelId[] = [MODELS.GEMINI_PRO, MODELS.GEMINI_FLASH];
+
+/** OpenRouter base URL (OpenAI-compatible endpoint). */
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+/** OpenRouter model IDs — Tier 2 (paid, cheap frontier) and Tier 3 (free). */
+export const OPENROUTER_MODELS = {
+  // Tier 2 — paid
+  GLM_5_1:             "z-ai/glm-5.1",              // #1 SWE-bench Pro 58.4%, AIME 95.3%
+  QWEN3_235B_THINKING: "qwen/qwen3-235b-a22b-thinking-2507", // cheapest near-frontier reasoning
+  MIMO_V2_5_PRO:       "xiaomi/mimo-v2.5-pro",       // beats Claude Opus on SWE-bench Pro
+  QWEN3_CODER_NEXT:    "qwen/qwen3-coder-next",      // SWE-bench Verified >70%, 80B MoE
+  // Tier 3 — free (:free variants)
+  GPT_OSS_120B:        "openai/gpt-oss-120b:free",   // 117B MoE, leading complex logic
+  DEEPSEEK_R1:         "deepseek/deepseek-r1:free",  // o1-level reasoning, open CoT
+  KIMI_K2_FREE:        "moonshotai/kimi-k2.6:free",  // same model as KIMI_SWARM, free tier
+  GLM_4_5_AIR:         "z-ai/glm-4.5-air:free",      // hybrid thinking mode, native tool use
+  DEEPSEEK_V4_FLASH:   "deepseek/deepseek-v4-flash:free", // 284B MoE, 1M context, fast
+  LLAMA_3_3_70B:       "meta-llama/llama-3.3-70b-instruct:free", // best general open-source
+} as const;
+
+export type OpenRouterModelId = (typeof OPENROUTER_MODELS)[keyof typeof OPENROUTER_MODELS];

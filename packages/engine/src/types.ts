@@ -83,10 +83,12 @@ export interface OracleConfig {
   claudeApiKey: string;
   perplexityApiKey?: string; // T0 news/team intelligence (Perplexity Sonar)
   kimiApiKey?: string; // swarm worker model (Kimi K2.6 via Moonshot)
+  openrouterApiKey?: string; // Tier 2/3 fallbacks via OpenRouter (single key, optional)
   openWeatherApiKey?: string;
   footballDataApiKey?: string;
   apiFootballKey?: string;
   oddsApiKey?: string;
+  oddsPapiKey?: string; // structured free-odds fallback (OddsPapi, sharp books)
   bankroll: number;
   rankingMode?: RankingMode; // default CONFIDENCE_WEIGHTED
   useBivariatePoisson?: boolean; // PRD §8.1, default false

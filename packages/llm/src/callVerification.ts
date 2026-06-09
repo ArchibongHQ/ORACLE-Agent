@@ -3,7 +3,8 @@
  *  Adversarial review of chosen pick using Claude Sonnet.
  *  Returns { status, stamp, override? } — skipped when no Claude key. */
 import Anthropic from "@anthropic-ai/sdk";
-import { MODELS } from "./cascade.js";
+import { callOpenRouterJson } from "./callOpenRouter.js";
+import { MODELS, OPENROUTER_MODELS } from "./cascade.js";
 import type { LLMCallContext } from "./types.js";
 
 export type CvlStatus = "APPROVED" | "OVERRIDE" | "VETO" | "SKIPPED";
@@ -51,35 +52,61 @@ function parseCvlResponse(text: string): {
   }
 }
 
-/** callVerification — adversarial Claude Sonnet review of a proposed pick. */
+/** OpenRouter CVL attempt — reuses CVL_SYSTEM + parseCvlResponse. Returns null on failure. */
+async function callVerificationViaOpenRouter(
+  prompt: string,
+  model: string,
+  apiKey: string
+): Promise<CvlResult | null> {
+  const raw = await callOpenRouterJson(CVL_SYSTEM, prompt, model, apiKey, 0);
+  if (!raw) return null;
+  const parsed = parseCvlResponse(raw);
+  return { ...parsed, stamp: new Date().toISOString(), model };
+}
+
+/** callVerification — adversarial Claude Sonnet review of a proposed pick.
+ *  Fallback: GLM-5.1 → GPT-oss-120B via OpenRouter before returning SKIPPED. */
 export async function callVerification(prompt: string, ctx: LLMCallContext): Promise<CvlResult> {
-  if (!ctx.config.claudeApiKey) {
-    return {
-      status: "SKIPPED",
-      stamp: new Date().toISOString(),
-      rationale: "no Claude key",
-      model: "none",
-    };
+  // Tier 1: Claude Sonnet (when key present)
+  if (ctx.config.claudeApiKey) {
+    try {
+      const client = new Anthropic({ apiKey: ctx.config.claudeApiKey });
+      const resp = await client.messages.create({
+        model: MODELS.CLAUDE_SONNET,
+        max_tokens: 1024,
+        temperature: 0,
+        system: CVL_SYSTEM,
+        messages: [{ role: "user", content: prompt }],
+      });
+      const text = resp.content[0]?.type === "text" ? resp.content[0].text : "";
+      const parsed = parseCvlResponse(text);
+      return { ...parsed, stamp: new Date().toISOString(), model: MODELS.CLAUDE_SONNET };
+    } catch {
+      // Fall through to OpenRouter tiers
+    }
   }
 
-  try {
-    const client = new Anthropic({ apiKey: ctx.config.claudeApiKey });
-    const resp = await client.messages.create({
-      model: MODELS.CLAUDE_SONNET,
-      max_tokens: 1024,
-      temperature: 0,
-      system: CVL_SYSTEM,
-      messages: [{ role: "user", content: prompt }],
-    });
-    const text = resp.content[0]?.type === "text" ? resp.content[0].text : "";
-    const parsed = parseCvlResponse(text);
-    return { ...parsed, stamp: new Date().toISOString(), model: MODELS.CLAUDE_SONNET };
-  } catch (err) {
-    return {
-      status: "SKIPPED",
-      stamp: new Date().toISOString(),
-      rationale: `CVL error: ${err instanceof Error ? err.message : String(err)}`,
-      model: MODELS.CLAUDE_SONNET,
-    };
+  // Tier 2/3: OpenRouter — GLM-5.1 then GPT-oss-120B
+  if (ctx.config.openrouterApiKey) {
+    const t2 = await callVerificationViaOpenRouter(
+      prompt,
+      OPENROUTER_MODELS.GLM_5_1,
+      ctx.config.openrouterApiKey
+    );
+    if (t2) return t2;
+
+    const t3 = await callVerificationViaOpenRouter(
+      prompt,
+      OPENROUTER_MODELS.GPT_OSS_120B,
+      ctx.config.openrouterApiKey
+    );
+    if (t3) return t3;
   }
+
+  return {
+    status: "SKIPPED",
+    stamp: new Date().toISOString(),
+    rationale: ctx.config.claudeApiKey ? "CVL error — all tiers failed" : "no Claude key",
+    model: ctx.config.claudeApiKey ? MODELS.CLAUDE_SONNET : "none",
+  };
 }

@@ -103,23 +103,37 @@ export async function runSwarm(
   config: OracleConfig,
   softContext?: SoftContextItem[]
 ): Promise<SwarmResult | null> {
-  if (!config.enableSwarm || !config.kimiApiKey) return null;
+  if (!config.enableSwarm || (!config.kimiApiKey && !config.openrouterApiKey)) return null;
   const n = Math.max(0, Math.min(MAX_WORKERS, workers));
   if (n === 0 || eligible.length === 0) return null;
 
-  let callKimiVote: typeof import("@oracle/llm")["callKimiVote"];
+  // Namespace import — read symbols off `llm` lazily so a Kimi-only path never touches
+  // the OpenRouter exports (keeps callers that mock only callKimiVote working).
+  let llm: typeof import("@oracle/llm");
   try {
-    ({ callKimiVote } = await import("@oracle/llm"));
+    llm = await import("@oracle/llm");
   } catch {
     return null;
   }
 
   const prompt = buildWorkerPrompt(fixture, eligible, softContext);
   const settled = await Promise.allSettled(
-    Array.from({ length: n }, (_, i) =>
+    Array.from({ length: n }, (_, i) => {
       // Spread temperature across workers for genuine diversity of opinion.
-      callKimiVote(prompt, config.kimiApiKey!, { temperature: 0.2 + (i / Math.max(1, n)) * 0.6 })
-    )
+      const temp = 0.2 + (i / Math.max(1, n)) * 0.6;
+      // Tier 1: Kimi (Moonshot) when present.
+      if (config.kimiApiKey) {
+        return llm.callKimiVote(prompt, config.kimiApiKey, { temperature: temp });
+      }
+      // Tier 2/3: OpenRouter — first half paid MiMo, rest alternate free Kimi/Llama.
+      const orKey = config.openrouterApiKey!;
+      const M = llm.OPENROUTER_MODELS;
+      if (i < Math.ceil(n / 2)) {
+        return llm.callOpenRouterVote(prompt, M.MIMO_V2_5_PRO, orKey, { temperature: temp });
+      }
+      const freeModel = i % 2 === 0 ? M.KIMI_K2_FREE : M.LLAMA_3_3_70B;
+      return llm.callOpenRouterVote(prompt, freeModel, orKey, { temperature: temp });
+    })
   );
 
   const votes: SwarmVote[] = settled

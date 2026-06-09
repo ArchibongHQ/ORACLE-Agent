@@ -1,5 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
-import { ACQUISITION_CASCADE, DECISION_CASCADE, MODELS, THINKING_LEVELS } from "./cascade.js";
+import { callOpenRouter } from "./callOpenRouter.js";
+import {
+  ACQUISITION_CASCADE,
+  DECISION_CASCADE,
+  MODELS,
+  OPENROUTER_MODELS,
+  THINKING_LEVELS,
+} from "./cascade.js";
 import type { LLMCallContext } from "./types.js";
 
 /** fetchGeminiWithCascade — lifted from ORACLE_v2026_8_0.jsx §2.
@@ -19,6 +26,22 @@ export async function fetchGeminiWithCascade(prompt: string, ctx: LLMCallContext
       if (text) return text;
     } catch (err) {
       errors.push(`${modelId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // Tier 2/3: OpenRouter — Qwen3 235B → GLM-4.5 Air → DeepSeek V4 Flash (free text, no jsonMode)
+  const orKey = ctx.config.openrouterApiKey;
+  if (orKey) {
+    for (const model of [
+      OPENROUTER_MODELS.QWEN3_235B_THINKING,
+      OPENROUTER_MODELS.GLM_4_5_AIR,
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+    ]) {
+      const text = await callOpenRouter([{ role: "user", content: prompt }], model, orKey, {
+        temperature: 0,
+        maxTokens: 4096,
+      });
+      if (text) return text;
     }
   }
 

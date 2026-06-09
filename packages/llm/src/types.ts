@@ -2,6 +2,7 @@
 export interface LLMKeyConfig {
   claudeApiKey: string;
   geminiApiKey: string;
+  openrouterApiKey?: string; // Tier 2/3 OpenRouter fallbacks — optional
   bankroll: number;
   [key: string]: unknown; // allows passing full OracleConfig without a hard dep
 }

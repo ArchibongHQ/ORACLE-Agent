@@ -151,19 +151,25 @@ export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
 // which must run even when the LLM module is absent. Update both locations together.
 const CLAUDE_DECISION_MODEL = "claude-opus-4-8"; // = MODELS.CLAUDE_OPUS
 const GEMINI_DECISION_MODEL = "gemini-3.5-flash"; // = MODELS.GEMINI_PRO (3.5 Flash; was gemini-3.1-pro-preview)
+// OpenRouter fallback model IDs — = OPENROUTER_MODELS in @oracle/llm cascade.ts.
+// Hardcoded for the same reason as the constants above. Update both locations together.
+const OR_GLM_5_1 = "z-ai/glm-5.1"; // Tier 2 paid
+const OR_GPT_OSS = "openai/gpt-oss-120b:free"; // Tier 3 free
+const OR_DEEPSEEK_R1 = "deepseek/deepseek-r1:free"; // Tier 3 free
 
 /** Calls LLMs to select the best bet.
  *
- *  Fallback chain (three tiers):
- *   1. Claude Opus   — when claudeApiKey present
- *   2. Gemini 2.5 Pro — when geminiApiKey present (fires if Claude key absent OR Claude call fails)
- *   3. Deterministic  — when both LLMs unavailable or parse fails
+ *  Fallback chain (multi-tier):
+ *   1. Claude Opus    — when claudeApiKey present
+ *   2. Gemini 3.5     — when geminiApiKey present (fires if Claude key absent OR Claude call fails)
+ *   3. OpenRouter     — GLM-5.1 → GPT-oss-120B → DeepSeek R1 (when openrouterApiKey present)
+ *   4. Deterministic  — when all LLMs unavailable or parse fails
  *
  *  Always returns { decision, replay } — replay is null on the deterministic path. */
 export async function decide(
   eligibleBets: EVMarket[],
   ctx?: DecisionContext,
-  config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey">
+  config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey" | "openrouterApiKey">
 ): Promise<DecisionResult> {
   if (!eligibleBets.length) {
     return {
@@ -183,6 +189,7 @@ export async function decide(
   const prompt = buildPrompt(eligibleBets, ctx);
   const requestedAt = new Date().toISOString();
   const geminiKey = config?.geminiApiKey ?? "";
+  const openrouterKey = config?.openrouterApiKey ?? "";
 
   // ── Tier 1: Claude Opus ───────────────────────────────────────────────────
   if (config?.claudeApiKey) {
@@ -207,6 +214,7 @@ export async function decide(
         return await _tryGemini(
           prompt,
           geminiKey,
+          openrouterKey,
           requestedAt,
           eligibleBets,
           "Claude parse failure"
@@ -215,29 +223,39 @@ export async function decide(
       return { decision: parsed, replay };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      return await _tryGemini(prompt, geminiKey, requestedAt, eligibleBets, reason);
+      return await _tryGemini(prompt, geminiKey, openrouterKey, requestedAt, eligibleBets, reason);
     }
   }
 
   // ── Tier 1 skipped (no claudeApiKey) → go straight to Gemini ─────────────
-  return await _tryGemini(prompt, geminiKey, requestedAt, eligibleBets, "No Claude key");
+  return await _tryGemini(
+    prompt,
+    geminiKey,
+    openrouterKey,
+    requestedAt,
+    eligibleBets,
+    "No Claude key"
+  );
 }
 
 async function _tryGemini(
   prompt: string,
   geminiKey: string,
+  openrouterKey: string,
   requestedAt: string,
   eligibleBets: EVMarket[],
   claudeFailReason: string
 ): Promise<DecisionResult> {
   if (!geminiKey) {
-    return deterministicDecide(
+    return await _tryOpenRouter(
+      prompt,
+      openrouterKey,
       eligibleBets,
-      `${claudeFailReason} — no Gemini key — deterministic fallback`
+      `${claudeFailReason} — no Gemini key`
     );
   }
 
-  // ── Tier 2: Gemini 2.5 Pro ────────────────────────────────────────────────
+  // ── Tier 2: Gemini 3.5 ────────────────────────────────────────────────────
   try {
     const { callGeminiDecision } = await import("@oracle/llm");
     const raw = await callGeminiDecision(prompt, {
@@ -252,19 +270,61 @@ async function _tryGemini(
     };
     const parsed = parseDecisionResponse(raw);
     if (!parsed) {
-      return {
-        ...deterministicDecide(eligibleBets, "Gemini parse failure — deterministic fallback"),
-        replay,
-      };
+      return await _tryOpenRouter(prompt, openrouterKey, eligibleBets, "Gemini parse failure");
     }
     return { decision: parsed, replay };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    return deterministicDecide(
+    return await _tryOpenRouter(
+      prompt,
+      openrouterKey,
       eligibleBets,
-      `Gemini unavailable (${reason}) — deterministic fallback`
+      `Gemini unavailable (${reason})`
     );
   }
+}
+
+/** ── Tier 3: OpenRouter cascade — GLM-5.1 → GPT-oss-120B → DeepSeek R1.
+ *  Each model is tried at temperature 0 with JSON mode; the first that parses wins.
+ *  All fail (or no key) → deterministic fallback. callOpenRouterJson never throws. */
+async function _tryOpenRouter(
+  prompt: string,
+  openrouterKey: string,
+  eligibleBets: EVMarket[],
+  priorFailReason: string
+): Promise<DecisionResult> {
+  if (!openrouterKey) {
+    return deterministicDecide(
+      eligibleBets,
+      `${priorFailReason} — no OpenRouter key — deterministic fallback`
+    );
+  }
+
+  const { callOpenRouterJson } = await import("@oracle/llm");
+  for (const model of [OR_GLM_5_1, OR_GPT_OSS, OR_DEEPSEEK_R1]) {
+    const raw = await callOpenRouterJson(
+      "You are ORACLE's gated betting decision engine. Return ONLY valid JSON.",
+      prompt,
+      model,
+      openrouterKey,
+      0
+    );
+    if (!raw) continue;
+    const parsed = parseDecisionResponse(raw);
+    if (!parsed) continue;
+    const replay: DecisionReplay = {
+      prompt,
+      rawResponse: raw,
+      model,
+      temperature: 0,
+    };
+    return { decision: parsed, replay };
+  }
+
+  return deterministicDecide(
+    eligibleBets,
+    `${priorFailReason} — OpenRouter cascade exhausted — deterministic fallback`
+  );
 }
 
 // ── Public: validateSelection ─────────────────────────────────────────────────
