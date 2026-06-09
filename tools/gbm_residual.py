@@ -427,6 +427,32 @@ def load_odds_timeseries(ots_dir: Path) -> dict[tuple, dict]:
         return {}
 
 
+def load_fbref(fbref_dir: Path) -> dict[tuple, dict]:
+    """
+    Load FBref squad-level season stats.
+    Returns lookup: (norm_squad, fdco_league) -> feature dict.
+    Covers top-5 leagues, 2025-26 season only.
+    """
+    path = fbref_dir / "team_season_stats.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (_normalise_team(str(row["squad"])), str(row.get("fdco_league", "")))
+            lookup[key] = {
+                "fbrefGoals":  float(row.get("goals", float("nan"))),
+                "fbrefShots":  float(row.get("shots", float("nan"))),
+                "fbrefSotP90": float(row.get("sot_per90", float("nan"))),
+            }
+        print(f"[gbm] FBref loaded: {len(lookup)} team-season rows from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] FBref load failed: {exc}")
+        return {}
+
+
 # ── CSV loading ───────────────────────────────────────────────────────────────
 
 def load_csvs(csv_dir: Path, seasons: list[str] | None = None) -> pd.DataFrame:
@@ -500,6 +526,7 @@ def build_features(
     spi_team_ratings: dict | None = None,
     squad_value_lookup: dict | None = None,
     odds_ts_lookup: dict | None = None,
+    fbref_lookup: dict | None = None,
 ) -> pd.DataFrame:
     """
     For each match, compute rolling pre-match features using only data
@@ -709,6 +736,29 @@ def build_features(
             if ots_entry:
                 feat.update(ots_entry)
 
+        # ── FBref squad-season features ──
+        feat["fbrefGoalsHome"]  = float("nan")
+        feat["fbrefShotsHome"]  = float("nan")
+        feat["fbrefSotP90Home"] = float("nan")
+        feat["fbrefGoalsAway"]  = float("nan")
+        feat["fbrefShotsAway"]  = float("nan")
+        feat["fbrefSotP90Away"] = float("nan")
+        feat["fbrefSotDiff"]    = float("nan")
+        if fbref_lookup:
+            league_code = str(row.get("Div", ""))
+            h_entry = fbref_lookup.get((_normalise_team(str(home)), league_code))
+            a_entry = fbref_lookup.get((_normalise_team(str(away)), league_code))
+            if h_entry:
+                feat["fbrefGoalsHome"]  = h_entry["fbrefGoals"]
+                feat["fbrefShotsHome"]  = h_entry["fbrefShots"]
+                feat["fbrefSotP90Home"] = h_entry["fbrefSotP90"]
+            if a_entry:
+                feat["fbrefGoalsAway"]  = a_entry["fbrefGoals"]
+                feat["fbrefShotsAway"]  = a_entry["fbrefShots"]
+                feat["fbrefSotP90Away"] = a_entry["fbrefSotP90"]
+            if h_entry and a_entry:
+                feat["fbrefSotDiff"] = h_entry["fbrefSotP90"] - a_entry["fbrefSotP90"]
+
         # ── Head-to-head features (directional: home vs away) ──
         # Uses only prior meetings between this exact pair (home_team at home).
         # Shrink toward overall league average when sample is thin (k=5).
@@ -777,10 +827,13 @@ def build_features(
     sv_coverage = f"{sv_hits}/{len(features)} ({100*sv_hits/n:.1f}%)" if squad_value_lookup else "disabled"
     ots_hits = int(features["ahCloseDelta"].notna().sum()) if "ahCloseDelta" in features.columns else 0
     ots_coverage = f"{ots_hits}/{len(features)} ({100*ots_hits/n:.1f}%)" if odds_ts_lookup else "disabled"
+    fbref_hits = int(features["fbrefSotDiff"].notna().sum()) if "fbrefSotDiff" in features.columns else 0
+    fbref_coverage = f"{fbref_hits}/{len(features)} ({100*fbref_hits/n:.1f}%)" if fbref_lookup else "disabled"
     print(
         f"[gbm] Feature matrix: {len(features)} rows x {len(features.columns)} cols"
         f" | xG: {xg_coverage} | Elo: {elo_coverage}"
         f" | SPI: {spi_coverage} | SV: {sv_coverage} | OTS: {ots_coverage}"
+        f" | FBref: {fbref_coverage}"
     )
     return features
 
@@ -1246,6 +1299,14 @@ def main() -> None:
         else:
             print(f"[gbm] Odds-timeseries dir not found ({ots_dir}) -- run fetch_odds_timeseries.py first, or use --no-odds-ts")
 
+    # 2f. FBref squad-season stats (optional — from fetch_fbref.py, top-5 only)
+    fbref_lookup = None
+    fbref_dir = Path(".tmp/fbref")
+    if fbref_dir.exists():
+        fbref_lookup = load_fbref(fbref_dir)
+    else:
+        print("[gbm] FBref dir not found (.tmp/fbref) -- run fetch_fbref.py first")
+
     # 3. Feature engineering
     features = build_features(
         df,
@@ -1255,6 +1316,7 @@ def main() -> None:
         spi_team_ratings=spi_team_ratings or None,
         squad_value_lookup=squad_value_lookup,
         odds_ts_lookup=odds_ts_lookup,
+        fbref_lookup=fbref_lookup,
     )
     if features.empty:
         print("[gbm] No feature rows built.")
