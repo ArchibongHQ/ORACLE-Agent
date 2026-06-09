@@ -41,6 +41,9 @@ import xgboost as xgb
 BACKFILL_DIR = Path(".tmp/backfill")
 XG_DIR = Path(".tmp/xg")
 CLUBELO_DIR = Path(".tmp/clubelo")
+SPI_DIR = Path(".tmp/spi")
+TRANSFERMARKT_DIR = Path(".tmp/transfermarkt")
+ODDS_TIMESERIES_DIR = Path(".tmp/odds-timeseries")
 MODEL_DIR = Path(".tmp/models")
 RPS_IMPROVEMENT_THRESHOLD = 0.002
 MIN_TEST_FIXTURES = 100
@@ -296,6 +299,111 @@ def build_xg_lookup(xg: pd.DataFrame) -> dict[tuple, tuple[float, float]]:
     return lookup
 
 
+# ── SPI feature loader ───────────────────────────────────────────────────────
+
+def load_spi_features(spi_dir: Path) -> dict[tuple, dict]:
+    """
+    Load SPI attack/defense features from .tmp/spi/spi_features.csv.
+    Returns lookup: (date_str, norm_home, norm_away) → feature dict.
+    Columns expected: date, home, away, home_spi_off, home_spi_def,
+                      away_spi_off, away_spi_def, spi_off_diff, spi_def_diff.
+    """
+    path = spi_dir / "spi_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "home", "away"])
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["home"])),
+                _normalise_team(str(row["away"])),
+            )
+            lookup[key] = {
+                "spiOffHome":  float(row.get("home_spi_off", float("nan"))),
+                "spiDefHome":  float(row.get("home_spi_def", float("nan"))),
+                "spiOffAway":  float(row.get("away_spi_off", float("nan"))),
+                "spiDefAway":  float(row.get("away_spi_def", float("nan"))),
+                "spiOffDiff":  float(row.get("spi_off_diff", float("nan"))),
+                "spiDefDiff":  float(row.get("spi_def_diff", float("nan"))),
+            }
+        print(f"[gbm] SPI features loaded: {len(lookup)} matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] SPI load failed: {exc}")
+        return {}
+
+
+# ── Squad value loader ───────────────────────────────────────────────────────
+
+def load_squad_value(tm_dir: Path) -> dict[tuple, float]:
+    """
+    Load squad_value_ratio from .tmp/transfermarkt/squad_value_ratio.csv.
+    Returns lookup: (date_str, norm_home, norm_away) → squad_value_ratio float.
+    Columns expected: date, home, away, squad_value_ratio.
+    """
+    path = tm_dir / "squad_value_ratio.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "home", "away", "squad_value_ratio"])
+        lookup: dict[tuple, float] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["home"])),
+                _normalise_team(str(row["away"])),
+            )
+            lookup[key] = float(row["squad_value_ratio"])
+        print(f"[gbm] Squad value ratio loaded: {len(lookup)} matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] Squad value load failed: {exc}")
+        return {}
+
+
+# ── Odds time-series loader ───────────────────────────────────────────────────
+
+def load_odds_timeseries(ots_dir: Path) -> dict[tuple, dict]:
+    """
+    Load AH + line-movement features from .tmp/odds-timeseries/odds_timeseries_features.csv.
+    Returns lookup: (date_str, norm_home, norm_away) → feature dict.
+    Columns expected: date, home, away, line_movement_slope, opening_to_close_delta,
+                      ah_open_line, ah_close_line, ah_close_delta.
+    """
+    path = ots_dir / "odds_timeseries_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "home", "away"])
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["home"])),
+                _normalise_team(str(row["away"])),
+            )
+            lookup[key] = {
+                "lineMovSlope":     float(row.get("line_movement_slope",    float("nan"))),
+                "openToCloseDelta": float(row.get("opening_to_close_delta", float("nan"))),
+                "ahOpenLine":       float(row.get("ah_open_line",           float("nan"))),
+                "ahCloseLine":      float(row.get("ah_close_line",          float("nan"))),
+                "ahCloseDelta":     float(row.get("ah_close_delta",         float("nan"))),
+            }
+        print(f"[gbm] Odds time-series loaded: {len(lookup)} matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] Odds time-series load failed: {exc}")
+        return {}
+
+
 # ── CSV loading ───────────────────────────────────────────────────────────────
 
 def load_csvs(csv_dir: Path, seasons: list[str] | None = None) -> pd.DataFrame:
@@ -365,6 +473,9 @@ def build_features(
     df: pd.DataFrame,
     xg_lookup: dict | None = None,
     clubelo_ratings: dict[str, float] | None = None,
+    spi_lookup: dict | None = None,
+    squad_value_lookup: dict | None = None,
+    odds_ts_lookup: dict | None = None,
 ) -> pd.DataFrame:
     """
     For each match, compute rolling pre-match features using only data
@@ -535,6 +646,45 @@ def build_features(
             if elo_h is not None and elo_a is not None:
                 feat["eloDiff"] = elo_h - elo_a
 
+        # ── SPI attack/defense ratings ──
+        # NaN when SPI data absent (non-covered leagues/seasons) — XGBoost handles NaN.
+        feat["spiOffHome"] = float("nan")
+        feat["spiDefHome"] = float("nan")
+        feat["spiOffAway"] = float("nan")
+        feat["spiDefAway"] = float("nan")
+        feat["spiOffDiff"] = float("nan")
+        feat["spiDefDiff"] = float("nan")
+        if spi_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            spi_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+            spi_entry = spi_lookup.get(spi_key)
+            if spi_entry:
+                feat.update(spi_entry)
+
+        # ── Squad market value ratio ──
+        # home_squad_value / away_squad_value; >1 = home richer.
+        feat["squadValueRatio"] = float("nan")
+        if squad_value_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            sv_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+            sv_val = squad_value_lookup.get(sv_key)
+            if sv_val is not None:
+                feat["squadValueRatio"] = sv_val
+
+        # ── Odds time-series (AH + line-movement) ──
+        # NaN when data absent — XGBoost handles NaN.
+        feat["lineMovSlope"]     = float("nan")
+        feat["openToCloseDelta"] = float("nan")
+        feat["ahOpenLine"]       = float("nan")
+        feat["ahCloseLine"]      = float("nan")
+        feat["ahCloseDelta"]     = float("nan")
+        if odds_ts_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            ots_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+            ots_entry = odds_ts_lookup.get(ots_key)
+            if ots_entry:
+                feat.update(ots_entry)
+
         # ── Head-to-head features (directional: home vs away) ──
         # Uses only prior meetings between this exact pair (home_team at home).
         # Shrink toward overall league average when sample is thin (k=5).
@@ -597,7 +747,17 @@ def build_features(
     xg_coverage = f"{xg_hits}/{len(features)} ({100*xg_hits/n:.1f}%)" if xg_lookup else "disabled"
     elo_hits = int(features["eloDiff"].notna().sum()) if "eloDiff" in features.columns else 0
     elo_coverage = f"{elo_hits}/{len(features)} ({100*elo_hits/n:.1f}%)" if clubelo_ratings else "disabled"
-    print(f"[gbm] Feature matrix: {len(features)} rows x {len(features.columns)} cols | xG rolling: {xg_coverage} | Elo: {elo_coverage}")
+    spi_hits = int(features["spiOffDiff"].notna().sum()) if "spiOffDiff" in features.columns else 0
+    spi_coverage = f"{spi_hits}/{len(features)} ({100*spi_hits/n:.1f}%)" if spi_lookup else "disabled"
+    sv_hits = int(features["squadValueRatio"].notna().sum()) if "squadValueRatio" in features.columns else 0
+    sv_coverage = f"{sv_hits}/{len(features)} ({100*sv_hits/n:.1f}%)" if squad_value_lookup else "disabled"
+    ots_hits = int(features["ahCloseDelta"].notna().sum()) if "ahCloseDelta" in features.columns else 0
+    ots_coverage = f"{ots_hits}/{len(features)} ({100*ots_hits/n:.1f}%)" if odds_ts_lookup else "disabled"
+    print(
+        f"[gbm] Feature matrix: {len(features)} rows x {len(features.columns)} cols"
+        f" | xG: {xg_coverage} | Elo: {elo_coverage}"
+        f" | SPI: {spi_coverage} | SV: {sv_coverage} | OTS: {ots_coverage}"
+    )
     return features
 
 
@@ -983,8 +1143,14 @@ def main() -> None:
     parser.add_argument("--backfill-dir", default=str(BACKFILL_DIR))
     parser.add_argument("--xg-dir", default=str(XG_DIR), help="Path to .tmp/xg/ xG CSVs")
     parser.add_argument("--clubelo-dir", default=str(CLUBELO_DIR), help="Path to .tmp/clubelo/ snapshots")
+    parser.add_argument("--spi-dir", default=str(SPI_DIR), help="Path to .tmp/spi/ SPI features")
+    parser.add_argument("--transfermarkt-dir", default=str(TRANSFERMARKT_DIR), help="Path to .tmp/transfermarkt/ squad values")
+    parser.add_argument("--odds-ts-dir", default=str(ODDS_TIMESERIES_DIR), help="Path to .tmp/odds-timeseries/ AH+line-movement features")
     parser.add_argument("--no-xg", action="store_true", help="Disable xG features")
     parser.add_argument("--no-elo", action="store_true", help="Disable ClubElo features")
+    parser.add_argument("--no-spi", action="store_true", help="Disable SPI features")
+    parser.add_argument("--no-squad-value", action="store_true", help="Disable squad market value features")
+    parser.add_argument("--no-odds-ts", action="store_true", help="Disable odds time-series features")
     parser.add_argument("--n-estimators", type=int, default=400, help="XGBoost n_estimators (default 400)")
     parser.add_argument("--rolling-folds", type=int, default=1, help="N-fold rolling walk-forward (default 1 = single holdout)")
     parser.add_argument(
@@ -1028,8 +1194,42 @@ def main() -> None:
         else:
             print(f"[gbm] ClubElo dir not found ({clubelo_dir}) -- run fetch_clubelo.py first, or use --no-elo")
 
+    # 2c. SPI attack/defense ratings (optional — from fetch_spi.py)
+    spi_lookup = None
+    if not args.no_spi:
+        spi_dir = Path(args.spi_dir)
+        if spi_dir.exists():
+            spi_lookup = load_spi_features(spi_dir)
+        else:
+            print(f"[gbm] SPI dir not found ({spi_dir}) -- run fetch_spi.py first, or use --no-spi")
+
+    # 2d. Squad market value ratio (optional — from fetch_transfermarkt.py)
+    squad_value_lookup = None
+    if not args.no_squad_value:
+        tm_dir = Path(args.transfermarkt_dir)
+        if tm_dir.exists():
+            squad_value_lookup = load_squad_value(tm_dir)
+        else:
+            print(f"[gbm] Transfermarkt dir not found ({tm_dir}) -- run fetch_transfermarkt.py first, or use --no-squad-value")
+
+    # 2e. Odds time-series AH + line-movement (optional — from fetch_odds_timeseries.py)
+    odds_ts_lookup = None
+    if not args.no_odds_ts:
+        ots_dir = Path(args.odds_ts_dir)
+        if ots_dir.exists():
+            odds_ts_lookup = load_odds_timeseries(ots_dir)
+        else:
+            print(f"[gbm] Odds-timeseries dir not found ({ots_dir}) -- run fetch_odds_timeseries.py first, or use --no-odds-ts")
+
     # 3. Feature engineering
-    features = build_features(df, xg_lookup=xg_lookup, clubelo_ratings=clubelo_ratings)
+    features = build_features(
+        df,
+        xg_lookup=xg_lookup,
+        clubelo_ratings=clubelo_ratings,
+        spi_lookup=spi_lookup,
+        squad_value_lookup=squad_value_lookup,
+        odds_ts_lookup=odds_ts_lookup,
+    )
     if features.empty:
         print("[gbm] No feature rows built.")
         sys.exit(1)
