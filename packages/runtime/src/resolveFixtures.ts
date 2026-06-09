@@ -194,7 +194,11 @@ const LABEL_TO_SIDE: Record<string, "home" | "draw" | "away"> = {
   away: "away",
 };
 
-/** realisedCLV = closingIP − analysisIP for the top-pick side (home proxy if no 1X2 pick). */
+/**
+ * realisedCLV = closingIP − analysisIP for the top-pick side (home proxy if no 1X2 pick).
+ * Positive value = market shortened (you beat the closing line). Units: implied-probability pp.
+ * Display via formatClv() for human-readable "+1.42pp" format.
+ */
 export function computeRealisedClv(
   frozenOdds: Record<string, unknown>,
   closingOdds: { home: number; draw: number; away: number },
@@ -210,6 +214,11 @@ export function computeRealisedClv(
   if (closingForSide <= 1) return null;
 
   return parseFloat((1 / closingForSide - 1 / analysisOdds).toFixed(6));
+}
+
+/** Format a realisedCLV value (implied-probability pp) as "+1.42pp" for display. */
+export function formatClv(clv: number): string {
+  return `${clv >= 0 ? "+" : ""}${(clv * 100).toFixed(2)}pp`;
 }
 
 // ── Match + resolve ───────────────────────────────────────────────────────────
@@ -319,7 +328,10 @@ export async function resolveRecords(
     const rec = await resolveRecord(record, match, runId, oddsApiKey);
     if (rec) {
       resolved.push(rec);
-      const _clvStr = rec.realisedCLV != null ? ` CLV=${rec.realisedCLV.toFixed(4)}` : "";
+      const _clvStr =
+        rec.realisedCLV != null
+          ? ` CLV=${rec.realisedCLV >= 0 ? "+" : ""}${(rec.realisedCLV * 100).toFixed(2)}pp`
+          : "";
     } else {
       unmatched.push(record.fixtureId);
     }
