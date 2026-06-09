@@ -182,13 +182,13 @@ export function makeOddsPapiProvider(apiKey: string | undefined): OddsProvider {
 }
 
 // ── API-Football (tier 3, permanent free net) ──────────────────────────────────
-// SCHEMA: docs (api-football.com/documentation-v3) block automated fetch — the
-// nested paths below follow the documented v3 shape but were NOT machine-verified.
-// Confirm against one live response before trusting in production:
-//   curl -H "x-apisports-key: $K" \
-//     "https://v3.football.api-sports.io/odds?date=2026-06-09&bet=1"
-// Response shape (v3): { response: [ { fixture:{id,date}, teams:{home:{name},away:{name}},
-//   bookmakers:[ { name, bets:[ { id, name, values:[ {value,odd} ] } ] } ] } ] }
+// SCHEMA (machine-verified 2026-06-09 against a live response): the /odds endpoint
+// does NOT return team names — its rows carry only { league, fixture:{id,date},
+// bookmakers:[...] } with `teams` absent. Names must be resolved separately via
+// /fixtures. So this provider is a two-step join:
+//   1. GET /fixtures?date=<d>   -> rows with teams.home.name / teams.away.name; name-match here
+//   2. GET /odds?fixture=<id>&bet=1 -> bookmakers[].bets[id==1].values[{value:Home/Draw/Away,odd}]
+// Verified value labels are exactly "Home"/"Draw"/"Away"; odds are strings.
 const APIFOOTBALL_BASE = "https://v3.football.api-sports.io";
 const APIFOOTBALL_1X2_BET_ID = 1; // "Match Winner"
 const APIFOOTBALL_VALUE_LABELS = { home: "Home", draw: "Draw", away: "Away" } as const;
@@ -213,6 +213,14 @@ interface ApiFootballRow {
 }
 interface ApiFootballResponse {
   response?: ApiFootballRow[];
+}
+// /fixtures rows DO carry team names (unlike /odds), used to resolve the fixture id.
+interface ApiFootballFixtureRow {
+  fixture?: { id?: number };
+  teams?: { home?: { name?: string }; away?: { name?: string } };
+}
+interface ApiFootballFixturesResponse {
+  response?: ApiFootballFixtureRow[];
 }
 
 /** Extract the 1X2 triple from an API-Football odds row. */
@@ -242,18 +250,35 @@ export function makeApiFootballProvider(apiKey: string | undefined): OddsProvide
     async fetch(home, away, _league, kickoff) {
       if (!apiKey) return null;
       const date = kickoff.slice(0, 10);
+      const headers = { "x-apisports-key": apiKey };
+      // Step 1: resolve the fixture id by name-matching against /fixtures (the
+      // /odds endpoint carries no team names, so the match must happen here).
+      const fxRes = await fetch(`${APIFOOTBALL_BASE}/fixtures?date=${date}`, {
+        headers,
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!fxRes.ok) {
+        if (fxRes.status === 429) throw new Error("api-football: quota exhausted");
+        return null;
+      }
+      const fxJson = (await fxRes.json()) as ApiFootballFixturesResponse;
+      const fixtureId = (fxJson.response ?? []).find(
+        (f) =>
+          namesMatch(f.teams?.home?.name ?? "", home) &&
+          namesMatch(f.teams?.away?.name ?? "", away)
+      )?.fixture?.id;
+      if (!fixtureId) return null;
+      // Step 2: fetch odds scoped to that fixture id.
       const res = await fetch(
-        `${APIFOOTBALL_BASE}/odds?date=${date}&bet=${APIFOOTBALL_1X2_BET_ID}`,
-        { headers: { "x-apisports-key": apiKey }, signal: AbortSignal.timeout(15_000) }
+        `${APIFOOTBALL_BASE}/odds?fixture=${fixtureId}&bet=${APIFOOTBALL_1X2_BET_ID}`,
+        { headers, signal: AbortSignal.timeout(15_000) }
       );
       if (!res.ok) {
         if (res.status === 429) throw new Error("api-football: quota exhausted");
         return null;
       }
       const json = (await res.json()) as ApiFootballResponse;
-      const row = (json.response ?? []).find(
-        (r) => namesMatch(r.teams?.home?.name ?? "", home) && namesMatch(r.teams?.away?.name ?? "", away)
-      );
+      const row = (json.response ?? [])[0];
       if (!row) return null;
       const parsed = parseApiFootballRow(row);
       if (!parsed) return null;

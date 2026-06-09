@@ -206,14 +206,31 @@ describe("OddsPapi provider fetch", () => {
 describe("API-Football provider fetch", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("parses the Match Winner bet into a consensus (non-sharp) triple", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+  it("resolves the fixture id then parses the Match Winner bet into a consensus (non-sharp) triple", async () => {
+    // Live-verified two-step shape: /fixtures carries team names (used to resolve
+    // the id), /odds?fixture= carries bookmakers only (no `teams` field).
+    const spy = vi.spyOn(globalThis, "fetch");
+    // Step 1: /fixtures?date= — name-match resolves to fixture id 42.
+    spy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          response: [
+            {
+              fixture: { id: 42 },
+              teams: { home: { name: "Arsenal" }, away: { name: "Chelsea" } },
+            },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+    // Step 2: /odds?fixture=42 — bookmakers only, no team names (real shape).
+    spy.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           response: [
             {
               fixture: { id: 42, date: "2026-06-09T15:00:00Z" },
-              teams: { home: { name: "Arsenal" }, away: { name: "Chelsea" } },
               bookmakers: [
                 {
                   name: "Bet365",
@@ -243,5 +260,7 @@ describe("API-Football provider fetch", () => {
     expect(res!.isSharp).toBe(false);
     expect(res!.home).toBe(2.1);
     expect(res!.draw).toBe(3.4);
+    // Step 2 must be scoped to the resolved fixture id, not a bulk date query.
+    expect(String(spy.mock.calls[1]![0])).toContain("fixture=42");
   });
 });
