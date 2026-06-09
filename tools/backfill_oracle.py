@@ -279,6 +279,9 @@ def _detect_schema(header: list[str]) -> str:
     # adamgbor v2 uses FTHome/FTAway/FTResult + Division/MatchDate
     if "fthome" in lc and "ftaway" in lc and "ftresult" in lc:
         return "adamgbor"
+    # panaaaaa championship: "FTH Goals"/"FTA Goals"/"FT Result"
+    if "fth goals" in lc and "fta goals" in lc and "ft result" in lc:
+        return "panaaaaa"
     # mexwell extra/ uses Home/Away/HG/AG/Res + Country/League/Season/Date
     if "hg" in lc and "ag" in lc and "res" in lc and "home" in lc and "away" in lc:
         return "mexwell_extra"
@@ -464,6 +467,28 @@ def _row_to_records_mexwell(
     return result
 
 
+def _row_to_records_panaaaaa(
+    row: dict[str, str], league: str
+) -> tuple[dict, dict] | None:
+    """Normalise a panaaaaa championship schema row (FTH Goals/FTA Goals/FT Result)."""
+    remapped: dict[str, str] = {
+        "HomeTeam": (row.get("HomeTeam") or "").strip(),
+        "AwayTeam": (row.get("AwayTeam") or "").strip(),
+        "Date":     (row.get("Date") or "").strip(),
+        "FTHG":     (row.get("FTH Goals") or "").strip(),
+        "FTAG":     (row.get("FTA Goals") or "").strip(),
+        "FTR":      (row.get("FT Result") or "").strip(),
+    }
+    lg_col = _find_col(list(row.keys()), ["League", "league", "Division", "Div"])
+    row_league = (row.get(lg_col) or "").strip() if lg_col else ""
+    row_league = row_league or league
+    result = row_to_records(remapped, row_league)
+    if result:
+        result[0]["_source"] = "kaggle"
+        result[1]["_source"] = "kaggle"
+    return result
+
+
 def _row_to_records_mexwell_extra(
     row: dict[str, str], league: str
 ) -> tuple[dict, dict] | None:
@@ -562,6 +587,8 @@ def ingest_kaggle_dir(
                 result = row_to_records(row, row_league)
             elif schema == "adamgbor":
                 result = _row_to_records_adamgbor(row, row_league)
+            elif schema == "panaaaaa":
+                result = _row_to_records_panaaaaa(row, row_league)
             elif schema == "mexwell_extra":
                 result = _row_to_records_mexwell_extra(row, row_league)
             else:  # mexwell

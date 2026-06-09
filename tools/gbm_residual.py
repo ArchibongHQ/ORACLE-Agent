@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import re
 import sys
@@ -430,8 +431,8 @@ def load_odds_timeseries(ots_dir: Path) -> dict[tuple, dict]:
 def load_fbref(fbref_dir: Path) -> dict[tuple, dict]:
     """
     Load FBref squad-level season stats.
-    Returns lookup: (norm_squad, fdco_league) -> feature dict.
-    Covers top-5 leagues, 2025-26 season only.
+    Returns lookup: (norm_squad, fdco_league, season) -> feature dict.
+    Covers top-5 leagues, 2024-25 + 2025-26 seasons.
     """
     path = fbref_dir / "team_season_stats.csv"
     if not path.exists():
@@ -440,7 +441,11 @@ def load_fbref(fbref_dir: Path) -> dict[tuple, dict]:
         df = pd.read_csv(path, encoding="utf-8")
         lookup: dict[tuple, dict] = {}
         for _, row in df.iterrows():
-            key = (_normalise_team(str(row["squad"])), str(row.get("fdco_league", "")))
+            key = (
+                _normalise_team(str(row["squad"])),
+                str(row.get("fdco_league", "")),
+                str(row.get("season", "")),
+            )
             lookup[key] = {
                 "fbrefGoals":  float(row.get("goals", float("nan"))),
                 "fbrefShots":  float(row.get("shots", float("nan"))),
@@ -450,6 +455,31 @@ def load_fbref(fbref_dir: Path) -> dict[tuple, dict]:
         return lookup
     except Exception as exc:
         print(f"[gbm] FBref load failed: {exc}")
+        return {}
+
+
+def load_referee(match_stats_dir: Path) -> dict[str, float]:
+    """
+    Load referee strictness percentile from .tmp/match-stats/referee_features.csv.
+    Returns lookup: norm_referee_name -> strictness_pct (0..1).
+    """
+    path = match_stats_dir / "referee_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        lookup: dict[str, float] = {}
+        with open(path, encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                ref = (row.get("referee") or "").strip().lower()
+                pct = row.get("strictness_pct", "")
+                try:
+                    lookup[ref] = float(pct)
+                except ValueError:
+                    pass
+        print(f"[gbm] Referee features loaded: {len(lookup)} referees from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] Referee load failed: {exc}")
         return {}
 
 
@@ -527,6 +557,7 @@ def build_features(
     squad_value_lookup: dict | None = None,
     odds_ts_lookup: dict | None = None,
     fbref_lookup: dict | None = None,
+    referee_lookup: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
     For each match, compute rolling pre-match features using only data
@@ -746,8 +777,10 @@ def build_features(
         feat["fbrefSotDiff"]    = float("nan")
         if fbref_lookup:
             league_code = str(row.get("Div", ""))
-            h_entry = fbref_lookup.get((_normalise_team(str(home)), league_code))
-            a_entry = fbref_lookup.get((_normalise_team(str(away)), league_code))
+            # season code: "2425" from "_season" col added by load_csvs
+            season_code = str(row.get("_season", ""))
+            h_entry = fbref_lookup.get((_normalise_team(str(home)), league_code, season_code))
+            a_entry = fbref_lookup.get((_normalise_team(str(away)), league_code, season_code))
             if h_entry:
                 feat["fbrefGoalsHome"]  = h_entry["fbrefGoals"]
                 feat["fbrefShotsHome"]  = h_entry["fbrefShots"]
@@ -758,6 +791,14 @@ def build_features(
                 feat["fbrefSotP90Away"] = a_entry["fbrefSotP90"]
             if h_entry and a_entry:
                 feat["fbrefSotDiff"] = h_entry["fbrefSotP90"] - a_entry["fbrefSotP90"]
+
+        # ── Referee strictness ──
+        feat["refStrictness"] = float("nan")
+        if referee_lookup:
+            ref_val = row.get("Referee")
+            ref_raw = str(ref_val).strip().lower() if ref_val and str(ref_val) != "nan" else ""
+            if ref_raw:
+                feat["refStrictness"] = referee_lookup.get(ref_raw, float("nan"))
 
         # ── Head-to-head features (directional: home vs away) ──
         # Uses only prior meetings between this exact pair (home_team at home).
@@ -829,11 +870,13 @@ def build_features(
     ots_coverage = f"{ots_hits}/{len(features)} ({100*ots_hits/n:.1f}%)" if odds_ts_lookup else "disabled"
     fbref_hits = int(features["fbrefSotDiff"].notna().sum()) if "fbrefSotDiff" in features.columns else 0
     fbref_coverage = f"{fbref_hits}/{len(features)} ({100*fbref_hits/n:.1f}%)" if fbref_lookup else "disabled"
+    ref_hits = int(features["refStrictness"].notna().sum()) if "refStrictness" in features.columns else 0
+    ref_coverage = f"{ref_hits}/{len(features)} ({100*ref_hits/n:.1f}%)" if referee_lookup else "disabled"
     print(
         f"[gbm] Feature matrix: {len(features)} rows x {len(features.columns)} cols"
         f" | xG: {xg_coverage} | Elo: {elo_coverage}"
         f" | SPI: {spi_coverage} | SV: {sv_coverage} | OTS: {ots_coverage}"
-        f" | FBref: {fbref_coverage}"
+        f" | FBref: {fbref_coverage} | Ref: {ref_coverage}"
     )
     return features
 
@@ -1307,6 +1350,14 @@ def main() -> None:
     else:
         print("[gbm] FBref dir not found (.tmp/fbref) -- run fetch_fbref.py first")
 
+    # 2g. Referee strictness (optional — from fetch_match_stats.py)
+    referee_lookup = None
+    match_stats_dir = Path(".tmp/match-stats")
+    if match_stats_dir.exists():
+        referee_lookup = load_referee(match_stats_dir)
+    else:
+        print("[gbm] Match-stats dir not found (.tmp/match-stats) -- run fetch_match_stats.py first")
+
     # 3. Feature engineering
     features = build_features(
         df,
@@ -1317,6 +1368,7 @@ def main() -> None:
         squad_value_lookup=squad_value_lookup,
         odds_ts_lookup=odds_ts_lookup,
         fbref_lookup=fbref_lookup,
+        referee_lookup=referee_lookup,
     )
     if features.empty:
         print("[gbm] No feature rows built.")

@@ -114,6 +114,30 @@ def load_player_scores(src_dir: Path) -> dict[tuple[str, str], float]:
 
 # ── squad-values dataset (efeckgz) ────────────────────────────────────────────
 
+def load_simple_squad_values(src_dir: Path) -> dict[tuple[str, str], float]:
+    """
+    Load simple squad-values teams.csv (Team Name / League / Squad Value).
+    No season column — marks values as 'current' (season '2526').
+    """
+    csv_path = src_dir / "teams.csv"
+    if not csv_path.exists():
+        return {}
+    result: dict[tuple[str, str], float] = {}
+    with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            club = (row.get("Team Name") or "").strip()
+            val_str = (row.get("Squad Value") or "").strip()
+            try:
+                val = float(val_str.replace(",", "")) * 1_000_000  # stored in millions
+            except ValueError:
+                continue
+            if club:
+                result[(club, "2526")] = val
+    print(f"[tm/squad-values-simple] loaded {len(result)} club values from {csv_path.name}")
+    return result
+
+
 def load_squad_values(src_dir: Path) -> dict[tuple[str, str], float]:
     """
     Load squad total market value per (club, season) from efeckgz dataset.
@@ -336,14 +360,6 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    if not args.player_scores_dir and not args.squad_values_dir:
-        parser.error(
-            "Provide at least one of --player-scores-dir or --squad-values-dir.\n"
-            "Download first:\n"
-            "  kaggle datasets download -d davidcariboo/player-scores\n"
-            "  kaggle datasets download -d efeckgz/transfermarkt-squad-value-dataset"
-        )
-
     squad_values: dict[tuple[str, str], float] = {}
 
     if args.player_scores_dir:
@@ -351,6 +367,14 @@ def main() -> None:
 
     if args.squad_values_dir:
         squad_values.update(load_squad_values(args.squad_values_dir))
+
+    if not squad_values:
+        parser.error(
+            "No squad value data found. Provide --player-scores-dir or --squad-values-dir.\n"
+            "Download first:\n"
+            "  kaggle datasets download -d davidcariboo/player-scores\n"
+            "  kaggle datasets download -d efeckgz/transfermarkt-squad-value-dataset"
+        )
 
     print(f"[tm] total squad values loaded: {len(squad_values)}")
 
