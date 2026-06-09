@@ -127,13 +127,19 @@ function nameMatches(a: string, b: string): boolean {
  *  job === null marks a no-coverage pass-through leg. */
 export async function loadedSlipToJobs(
   slip: LoadedSlip,
-  deps: { oddsApiKey: string | undefined }
+  deps: { oddsApiKey: string | undefined; geminiApiKey?: string | undefined }
 ): Promise<PuntLeg[]> {
   const out: PuntLeg[] = [];
   for (const raw of slip.legs) {
     let job: FixtureJob | null = null;
     try {
-      job = await fetchFixtureByName(raw.home, raw.away, deps.oddsApiKey, raw.league || undefined);
+      job = await fetchFixtureByName(
+        raw.home,
+        raw.away,
+        deps.oddsApiKey,
+        raw.league || undefined,
+        deps.geminiApiKey
+      );
     } catch {
       job = null;
     }

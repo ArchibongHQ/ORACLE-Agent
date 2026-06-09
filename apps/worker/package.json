@@ -11,6 +11,7 @@
     "smoke": "node --experimental-vm-modules dist/smoke.js",
     "start": "node dist/index.js",
     "start:now": "node dist/index.js --run-now",
+    "refresh-kaggle": "node dist/index.js --refresh-kaggle",
     "export-store": "node dist/export-store.js",
     "import-backfill": "node dist/import-backfill.js"
   },

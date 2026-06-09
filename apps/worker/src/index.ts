@@ -95,6 +95,59 @@ function checkSportyBetStreak(sportyBetCount: number): void {
   }
 }
 
+// ── Weekly Kaggle dataset refresh (Saturday 03:00 UTC) ────────────────────────
+
+function runKaggleTool(label: string, scriptName: string, args: string[] = []): Promise<void> {
+  const python = process.platform === "win32" ? "python" : "python3";
+  const script = join(ROOT, "tools", scriptName);
+  const start = Date.now();
+  process.stdout.write(`[kaggle-refresh] ${label}: starting\n`);
+  return new Promise((resolve) => {
+    execFile(python, [script, ...args], { cwd: ROOT }, (err, stdout, stderr) => {
+      if (stdout) process.stdout.write(stdout);
+      if (stderr) process.stderr.write(stderr);
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      if (err) {
+        process.stderr.write(`[kaggle-refresh] ${label}: FAILED after ${elapsed}s — ${err.message}\n`);
+      } else {
+        process.stdout.write(`[kaggle-refresh] ${label}: done in ${elapsed}s\n`);
+      }
+      resolve(); // always resolve — one failure must not abort the rest
+    });
+  });
+}
+
+async function runWeeklyKaggleRefresh(): Promise<void> {
+  const credPath = process.platform === "win32"
+    ? join(process.env["USERPROFILE"] ?? "", ".kaggle", "kaggle.json")
+    : join(process.env["HOME"] ?? "", ".kaggle", "kaggle.json");
+  const hasEnvAuth = Boolean(process.env["KAGGLE_USERNAME"]) && Boolean(process.env["KAGGLE_KEY"]);
+  if (!existsSync(credPath) && !hasEnvAuth) {
+    process.stderr.write(
+      `[kaggle-refresh] WARNING: no Kaggle credentials found (checked ${credPath} and KAGGLE_USERNAME/KAGGLE_KEY) — downloads will fail\n`
+    );
+  }
+
+  process.stdout.write("[kaggle-refresh] === weekly refresh start ===\n");
+  const wall = Date.now();
+
+  await runKaggleTool("odds_timeseries", "fetch_odds_timeseries.py", [
+    "--btb-dir", ".tmp/kaggle/beat-the-bookie",
+    "--ah-dir",  ".tmp/kaggle/ah-odds",
+  ]);
+  await runKaggleTool("spi", "fetch_spi.py");
+  await runKaggleTool("fbref", "fetch_fbref.py");
+  await runKaggleTool("transfermarkt", "fetch_transfermarkt.py", [
+    "--player-scores-dir", ".tmp/kaggle/player-scores",
+  ]);
+  await runKaggleTool("xg", "fetch_xg.py", [
+    "--kaggle-ppda-dir", ".tmp/kaggle/xg-ppda",
+  ]);
+
+  const total = ((Date.now() - wall) / 1000).toFixed(1);
+  process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s ===\n`);
+}
+
 // ── Daily batch (09:00) ───────────────────────────────────────────────────────
 
 async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Promise<void> {
@@ -108,7 +161,9 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     true,
     config.geminiApiKey,
     config.footballDataApiKey,
-    newsKey
+    newsKey,
+    config.oddsPapiKey,
+    config.apiFootballKey
   );
 
   if (!jobs.length) {
@@ -225,6 +280,11 @@ cron.schedule("0 14 * * *", () => {
   resolveYesterdayFixtures().catch((_e) => {});
 });
 
+// Weekly Kaggle refresh — Saturday 03:00 UTC
+cron.schedule("0 3 * * 6", () => {
+  runWeeklyKaggleRefresh().catch((_e) => {});
+});
+
 // Punt prompt — 10:00 (first), 12:00 + 13:00 (retry only if no code received yet)
 cron.schedule("0 10 * * *", () => {
   sendDailyPuntPrompt(false).catch((_e) => {});
@@ -242,4 +302,10 @@ if (process.argv.includes("--run-now")) {
     .catch((_e) => {
       process.exit(1);
     });
+}
+
+if (process.argv.includes("--refresh-kaggle")) {
+  runWeeklyKaggleRefresh().catch((_e) => {
+    process.exit(1);
+  });
 }

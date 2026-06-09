@@ -11,6 +11,8 @@ import type { LLMCallContext } from "@oracle/llm";
 import { fetchOddsViaGemini } from "@oracle/llm";
 import { enrichWithH2H } from "./h2h.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
+import { buildOddsProviders, runOddsChain, type OddsProvider } from "./oddsProviders.js";
+import { namesMatch } from "./teamNames.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -340,62 +342,95 @@ function findUnmatched(scrapedJobs: FixtureJob[], oddsJobs: FixtureJob[]): Fixtu
   });
 }
 
-/** For fixtures not covered by the Odds API, attempt to acquire odds via Gemini Search.
- *  Returns FixtureJob[] — only jobs where Gemini returned confident odds are included. */
+/** A resolved 1X2 triple plus provenance, normalised across acquisition paths. */
+interface GapOdds {
+  home: number;
+  draw: number;
+  away: number;
+  odds_source: string;
+  odds_quality: "live" | "degraded";
+  confidence: number;
+  sources: string;
+}
+
+/** Build a FixtureJob state from a resolved odds triple, mirroring gameToFixtureJob. */
+function jobFromGapOdds(job: FixtureJob, o: GapOdds): FixtureJob {
+  const hoursToKO = Math.max(0, (new Date(job.kickoff).getTime() - Date.now()) / 3_600_000);
+  const state: RunState = {
+    telemetry: {
+      hOdds: o.home,
+      dOdds: o.draw,
+      aOdds: o.away,
+      ohO: o.home,
+      oaO: o.away,
+      hoursToKO,
+    },
+    pipeline: {
+      fixture: { home: job.home, away: job.away, league: job.league, date: job.kickoff },
+      fetched: { odds: { ...o } },
+    },
+  };
+  return { ...job, state };
+}
+
+/** For fixtures not covered by the Odds API, acquire odds from the structured
+ *  free-API provider chain first (OddsPapi → API-Football → …), then fall back to
+ *  Gemini Search for any still unresolved. Returns only jobs with confident odds. */
 async function geminiOddsGapFill(
   unmatched: FixtureJob[],
-  geminiApiKey: string | undefined
+  geminiApiKey: string | undefined,
+  providers: OddsProvider[] = []
 ): Promise<FixtureJob[]> {
-  if (!geminiApiKey || unmatched.length === 0) return [];
+  if (unmatched.length === 0) return [];
+  const hasChain = providers.some((p) => p.hasQuota());
+  if (!geminiApiKey && !hasChain) return [];
 
-  const ctx: LLMCallContext = {
-    config: { claudeApiKey: "", geminiApiKey, bankroll: 0 },
-    requestedAt: new Date().toISOString(),
-  };
+  const ctx: LLMCallContext | null = geminiApiKey
+    ? { config: { claudeApiKey: "", geminiApiKey, bankroll: 0 }, requestedAt: new Date().toISOString() }
+    : null;
 
   const filled: FixtureJob[] = [];
-  let successCount = 0;
 
   for (const job of unmatched) {
     try {
-      const result = await fetchOddsViaGemini(job.home, job.away, job.league, job.kickoff, ctx);
-      if (!result) continue;
+      let resolved: GapOdds | null = null;
 
-      const kickoffMs = new Date(job.kickoff).getTime();
-      const hoursToKO = Math.max(0, (kickoffMs - Date.now()) / 3_600_000);
+      // Tier 1: structured providers (sharp JSON beats LLM-scraped prose).
+      if (hasChain) {
+        const chain = await runOddsChain(providers, job.home, job.away, job.league, job.kickoff);
+        if (chain) {
+          resolved = {
+            home: chain.home,
+            draw: chain.draw,
+            away: chain.away,
+            odds_source: chain.provider,
+            odds_quality: chain.isSharp ? "live" : "degraded",
+            confidence: chain.confidence,
+            sources: chain.sources.join(","),
+          };
+        }
+      }
 
-      const state: RunState = {
-        telemetry: {
-          hOdds: result.home,
-          dOdds: result.draw,
-          aOdds: result.away,
-          ohO: result.home,
-          oaO: result.away,
-          hoursToKO,
-        },
-        pipeline: {
-          fixture: {
-            home: job.home,
-            away: job.away,
-            league: job.league,
-            date: job.kickoff,
-          },
-          fetched: {
-            odds: {
-              home: result.home,
-              draw: result.draw,
-              away: result.away,
-              odds_source: "gemini_search_consensus",
-              odds_quality: "degraded",
-              confidence: result.confidence,
-              sources: result.sources.join(","),
-            },
-          },
-        },
-      };
+      // Tier 2: Gemini Search consensus (degraded last resort).
+      if (!resolved && ctx) {
+        const g = await fetchOddsViaGemini(job.home, job.away, job.league, job.kickoff, ctx);
+        if (g) {
+          resolved = {
+            home: g.home,
+            draw: g.draw,
+            away: g.away,
+            odds_source: "gemini_search_consensus",
+            odds_quality: "degraded",
+            confidence: g.confidence,
+            sources: g.sources.join(","),
+          };
+        }
+      }
 
-      filled.push({ ...job, state });
-      successCount++;
+      if (!resolved) continue;
+
+      const filledJob = jobFromGapOdds(job, resolved);
+      filled.push(filledJob);
 
       // Write odds to cache for inspection
       await mkdir(ODDS_CACHE_DIR, { recursive: true });
@@ -405,15 +440,12 @@ async function geminiOddsGapFill(
         .replace(/[^a-z0-9_]/g, "");
       await writeFile(
         join(ODDS_CACHE_DIR, `${slug}.json`),
-        JSON.stringify(state.pipeline?.fetched?.odds, null, 2),
+        JSON.stringify(filledJob.state?.pipeline?.fetched?.odds, null, 2),
         "utf8"
       );
     } catch {
       // non-fatal — move to next fixture
     }
-  }
-
-  if (successCount > 0) {
   }
 
   return filled;
@@ -526,8 +558,14 @@ export async function fetchTodaysFixtures(
   enableWebSearchFallback: boolean = true,
   geminiApiKey?: string,
   footballDataApiKey?: string,
-  perplexityApiKey?: string
+  perplexityApiKey?: string,
+  oddsPapiKey?: string,
+  apiFootballKey?: string
 ): Promise<FetchResult> {
+  // Structured free-API odds providers (OddsPapi → API-Football → stubs). Built
+  // once; the gap-fill tries this chain before the Gemini/web-search degraded path.
+  const oddsProviders = buildOddsProviders({ oddsPapiKey, apiFootballKey });
+
   // T0 news intel runs after H2H on every return path (cache-first, non-fatal).
   const enrich = async (jobs: FixtureJob[]): Promise<FixtureJob[]> => {
     const withH2H = await enrichWithH2H(jobs, footballDataApiKey);
@@ -538,7 +576,8 @@ export async function fetchTodaysFixtures(
     const cached = await readCachedJobs();
     const filled = await geminiOddsGapFill(
       cached.filter((j) => !j.state?.telemetry?.hOdds),
-      geminiApiKey
+      geminiApiKey,
+      oddsProviders
     );
     const jobs = await enrich([...cached.filter((j) => j.state?.telemetry?.hOdds), ...filled]);
     return {
@@ -583,7 +622,7 @@ export async function fetchTodaysFixtures(
       // Gap-fill: find scraped fixtures with no Odds API match and try Gemini
       const scraped = await readCachedJobs();
       const unmatched = findUnmatched(scraped, oddsJobs);
-      const filled = await geminiOddsGapFill(unmatched, geminiApiKey);
+      const filled = await geminiOddsGapFill(unmatched, geminiApiKey, oddsProviders);
 
       const preEnrich = [...oddsJobs, ...filled];
       const allJobs = await enrich(preEnrich);
@@ -613,7 +652,7 @@ export async function fetchTodaysFixtures(
   // Fall back to cache + Gemini gap-fill
   const cached = await readCachedJobs();
   if (cached.length) {
-    const filled = await geminiOddsGapFill(cached, geminiApiKey);
+    const filled = await geminiOddsGapFill(cached, geminiApiKey, oddsProviders);
     if (filled.length > 0) {
       const enrichedJobs = await enrich(filled);
       return {
@@ -636,22 +675,8 @@ export async function fetchTodaysFixtures(
 
 // ── Single-fixture lookup by name (web search box / CLI `fixture`) ────────────
 
-/** Normalise a team name for fuzzy matching: lowercase, strip common suffixes & punctuation. */
-function normTeam(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\b(fc|afc|sc|cf|ac|as|ss|ssc|sv|bk|if|cd|ud)\b/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function namesMatch(a: string, b: string): boolean {
-  const na = normTeam(a),
-    nb = normTeam(b);
-  if (!na || !nb) return false;
-  return na === nb || na.includes(nb) || nb.includes(na);
-}
+// Team-name normalisation + alias matching live in teamNames.ts (shared with
+// oddsProviders.ts). normTeam/namesMatch imported at top of file.
 
 /** Resolve a single typed fixture ("Arsenal" vs "Chelsea") to a FixtureJob with live odds.
  *
@@ -664,39 +689,59 @@ export async function fetchFixtureByName(
   home: string,
   away: string,
   oddsApiKey: string | undefined,
-  leagueHint?: string
+  leagueHint?: string,
+  geminiApiKey?: string
 ): Promise<FixtureJob | null> {
-  // 1. Fast path — already-fetched daily cache
+  // 1. Fast path — already-fetched daily cache (only if the job has live odds)
   const cached = await readCachedJobs();
   const hit = cached.find((j) => namesMatch(j.home, home) && namesMatch(j.away, away));
-  if (hit) return hit;
-
-  if (!oddsApiKey) return null;
+  if (hit?.state?.telemetry?.hOdds) return hit;
 
   // 2. Odds API — choose which sports to query
-  let sportKeys = Object.keys(SPORT_TO_LEAGUE);
-  if (leagueHint) {
-    const match = Object.entries(SPORT_TO_LEAGUE).find(([, lg]) => lg === leagueHint);
-    if (match) sportKeys = [match[0]];
-  }
+  // If a cache hit exists (no odds), infer league hint from it to narrow the API call.
+  const effectiveLeague = leagueHint ?? hit?.league;
+  let oddsJob: FixtureJob | null = null;
 
-  const today = new Date();
-  const windowEnd = new Date(today.getTime() + 14 * 86_400_000);
-  const dateFrom = `${today.toISOString().slice(0, 10)}T00:00:00Z`;
-  const dateTo = `${windowEnd.toISOString().slice(0, 10)}T00:00:00Z`;
+  if (oddsApiKey) {
+    let sportKeys = Object.keys(SPORT_TO_LEAGUE);
+    if (effectiveLeague) {
+      const match = Object.entries(SPORT_TO_LEAGUE).find(([, lg]) => lg === effectiveLeague);
+      if (match) sportKeys = [match[0]];
+    }
 
-  for (const sportKey of sportKeys) {
-    try {
-      const games = await fetchSportOdds(oddsApiKey, sportKey, dateFrom, dateTo);
-      const game = games.find(
-        (g) => namesMatch(g.home_team, home) && namesMatch(g.away_team, away)
-      );
-      if (game) return gameToFixtureJob(game, SPORT_TO_LEAGUE[sportKey]!);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("quota")) break; // stop immediately on quota exhaustion
+    const today = new Date();
+    const windowEnd = new Date(today.getTime() + 14 * 86_400_000);
+    const dateFrom = `${today.toISOString().slice(0, 10)}T00:00:00Z`;
+    const dateTo = `${windowEnd.toISOString().slice(0, 10)}T00:00:00Z`;
+
+    for (const sportKey of sportKeys) {
+      try {
+        const games = await fetchSportOdds(oddsApiKey, sportKey, dateFrom, dateTo);
+        const game = games.find(
+          (g) => namesMatch(g.home_team, home) && namesMatch(g.away_team, away)
+        );
+        if (game) {
+          oddsJob = gameToFixtureJob(game, SPORT_TO_LEAGUE[sportKey]!);
+          break;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("quota")) break; // stop immediately on quota exhaustion
+      }
     }
   }
 
-  return null;
+  if (oddsJob) return oddsJob;
+
+  // 3. Gemini gap-fill — fetch odds via Gemini Search when Odds API is unavailable/exhausted
+  const league = effectiveLeague ?? "FIFA World Cup";
+  const kickoff = hit?.kickoff ?? new Date().toISOString();
+  const geminiResults = await geminiOddsGapFill(
+    [{ home, away, league, kickoff }],
+    geminiApiKey
+  );
+  if (geminiResults.length) return geminiResults[0]!;
+
+  // 4. Return the no-odds cache hit as last resort (engine will degrade gracefully)
+  return hit ?? null;
 }

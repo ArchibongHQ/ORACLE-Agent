@@ -45,6 +45,7 @@ CLUBELO_DIR = Path(".tmp/clubelo")
 SPI_DIR = Path(".tmp/spi")
 TRANSFERMARKT_DIR = Path(".tmp/transfermarkt")
 ODDS_TIMESERIES_DIR = Path(".tmp/odds-timeseries")
+PPDA_DIR = Path(".tmp/ppda")
 MODEL_DIR = Path(".tmp/models")
 RPS_IMPROVEMENT_THRESHOLD = 0.002
 MIN_TEST_FIXTURES = 100
@@ -428,6 +429,40 @@ def load_odds_timeseries(ots_dir: Path) -> dict[tuple, dict]:
         return {}
 
 
+def load_ppda(ppda_dir: Path) -> dict[tuple, dict]:
+    """
+    Load PPDA / OPPDA pressing features from .tmp/ppda/ppda_features.csv.
+    Returns lookup: (date_str, norm_home, norm_away) → feature dict.
+    Columns expected: date, home, away, div, ppda_home, ppda_away, oppda_home, oppda_away.
+    Covers top-5 leagues only (slehkyi dataset scope).
+    """
+    path = ppda_dir / "ppda_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "home", "away"])
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["home"])),
+                _normalise_team(str(row["away"])),
+            )
+            lookup[key] = {
+                "ppda_home":  float(row.get("ppda_home",  float("nan"))),
+                "ppda_away":  float(row.get("ppda_away",  float("nan"))),
+                "oppda_home": float(row.get("oppda_home", float("nan"))),
+                "oppda_away": float(row.get("oppda_away", float("nan"))),
+            }
+        print(f"[gbm] PPDA loaded: {len(lookup)} matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] PPDA load failed: {exc}")
+        return {}
+
+
 def load_fbref(fbref_dir: Path) -> dict[tuple, dict]:
     """
     Load FBref squad-level season stats.
@@ -558,6 +593,7 @@ def build_features(
     odds_ts_lookup: dict | None = None,
     fbref_lookup: dict | None = None,
     referee_lookup: dict[str, float] | None = None,
+    ppda_lookup: dict | None = None,
 ) -> pd.DataFrame:
     """
     For each match, compute rolling pre-match features using only data
@@ -800,6 +836,25 @@ def build_features(
             if ref_raw:
                 feat["refStrictness"] = referee_lookup.get(ref_raw, float("nan"))
 
+        # ── PPDA pressing intensity ──
+        # Lower PPDA = more intense pressing (allows fewer passes per defensive action).
+        # Season-level from slehkyi; NaN outside top-5 leagues — XGBoost handles NaN.
+        feat["ppdaHome"]  = float("nan")
+        feat["ppdaAway"]  = float("nan")
+        feat["ppdaDiff"]  = float("nan")
+        feat["oppdaHome"] = float("nan")
+        feat["oppdaAway"] = float("nan")
+        if ppda_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            ppda_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+            ppda_entry = ppda_lookup.get(ppda_key)
+            if ppda_entry:
+                feat["ppdaHome"]  = ppda_entry["ppda_home"]
+                feat["ppdaAway"]  = ppda_entry["ppda_away"]
+                feat["ppdaDiff"]  = ppda_entry["ppda_home"] - ppda_entry["ppda_away"]
+                feat["oppdaHome"] = ppda_entry["oppda_home"]
+                feat["oppdaAway"] = ppda_entry["oppda_away"]
+
         # ── Head-to-head features (directional: home vs away) ──
         # Uses only prior meetings between this exact pair (home_team at home).
         # Shrink toward overall league average when sample is thin (k=5).
@@ -872,11 +927,13 @@ def build_features(
     fbref_coverage = f"{fbref_hits}/{len(features)} ({100*fbref_hits/n:.1f}%)" if fbref_lookup else "disabled"
     ref_hits = int(features["refStrictness"].notna().sum()) if "refStrictness" in features.columns else 0
     ref_coverage = f"{ref_hits}/{len(features)} ({100*ref_hits/n:.1f}%)" if referee_lookup else "disabled"
+    ppda_hits = int(features["ppdaHome"].notna().sum()) if "ppdaHome" in features.columns else 0
+    ppda_coverage = f"{ppda_hits}/{len(features)} ({100*ppda_hits/n:.1f}%)" if ppda_lookup else "disabled"
     print(
         f"[gbm] Feature matrix: {len(features)} rows x {len(features.columns)} cols"
         f" | xG: {xg_coverage} | Elo: {elo_coverage}"
         f" | SPI: {spi_coverage} | SV: {sv_coverage} | OTS: {ots_coverage}"
-        f" | FBref: {fbref_coverage} | Ref: {ref_coverage}"
+        f" | FBref: {fbref_coverage} | Ref: {ref_coverage} | PPDA: {ppda_coverage}"
     )
     return features
 
@@ -1271,6 +1328,8 @@ def main() -> None:
     parser.add_argument("--no-spi", action="store_true", help="Disable SPI features")
     parser.add_argument("--no-squad-value", action="store_true", help="Disable squad market value features")
     parser.add_argument("--no-odds-ts", action="store_true", help="Disable odds time-series features")
+    parser.add_argument("--ppda-dir", default=str(PPDA_DIR), help="Path to .tmp/ppda/ PPDA features")
+    parser.add_argument("--no-ppda", action="store_true", help="Disable PPDA pressing features")
     parser.add_argument("--n-estimators", type=int, default=400, help="XGBoost n_estimators (default 400)")
     parser.add_argument("--rolling-folds", type=int, default=1, help="N-fold rolling walk-forward (default 1 = single holdout)")
     parser.add_argument(
@@ -1358,6 +1417,15 @@ def main() -> None:
     else:
         print("[gbm] Match-stats dir not found (.tmp/match-stats) -- run fetch_match_stats.py first")
 
+    # 2h. PPDA pressing intensity (optional — from fetch_ppda.py, top-5 only)
+    ppda_lookup = None
+    if not args.no_ppda:
+        ppda_dir = Path(args.ppda_dir)
+        if ppda_dir.exists():
+            ppda_lookup = load_ppda(ppda_dir)
+        else:
+            print(f"[gbm] PPDA dir not found ({ppda_dir}) -- run fetch_ppda.py first, or use --no-ppda")
+
     # 3. Feature engineering
     features = build_features(
         df,
@@ -1369,6 +1437,7 @@ def main() -> None:
         odds_ts_lookup=odds_ts_lookup,
         fbref_lookup=fbref_lookup,
         referee_lookup=referee_lookup,
+        ppda_lookup=ppda_lookup,
     )
     if features.empty:
         print("[gbm] No feature rows built.")

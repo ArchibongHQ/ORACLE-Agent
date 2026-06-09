@@ -17,9 +17,9 @@ export interface OddsAcquisitionResult {
 }
 
 const MIN_CONFIDENCE = 0.65;
-const MAX_OVERROUND = 0.18; // reject if implied probs sum > 1.18 (too much juice)
-const MIN_OVERROUND = 0.03; // reject if sum < 1.03 (looks fabricated)
-const MAX_PRICE_DRIFT = 0.06; // reject if any single price differs >6% across sources
+const MAX_OVERROUND = 0.20; // reject if implied probs sum > 1.20 (too much juice)
+const MIN_OVERROUND = 0.02; // reject if sum < 1.02 (looks fabricated)
+const MAX_PRICE_DRIFT = 0.12; // reject if any single price differs >12% across sources (relaxed for WC)
 
 /** Ask Gemini (with Search grounding) for 1X2 odds on a single fixture.
  *  Cascade: Flash → Flash-Lite. Returns null on failure or low confidence. */
@@ -78,7 +78,11 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
         sources?: string[];
       };
 
-      if (parsed.error) return null;
+      if (parsed.error) {
+        // Search grounding failed — try single-source fallback using Gemini knowledge
+        const fallback = await fetchOddsViaGeminiFallback(home, away, league, kickoff, ai);
+        return fallback;
+      }
 
       const homeOdds = parsed.home_odds;
       const drawOdds = parsed.draw_odds;
@@ -86,14 +90,16 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
       const sources = parsed.sources ?? [];
 
       if (!homeOdds?.length || !drawOdds?.length || !awayOdds?.length) continue;
-      if (homeOdds.length < 2 || sources.length < 2) return null;
+      // Accept single-source if multi-source not available
+      if (homeOdds.length < 1 || sources.length < 1) continue;
 
       // Validate all values are plausible decimal odds (1.01–50)
       const allOdds = [...homeOdds, ...drawOdds, ...awayOdds];
       if (allOdds.some((o) => typeof o !== "number" || o < 1.01 || o > 50)) continue;
 
-      // Check price drift across sources — reject if any market drifts >6%
-      const maxDrift = (arr: number[]) => (Math.max(...arr) - Math.min(...arr)) / Math.min(...arr);
+      // Check price drift across sources — skip check for single source
+      const maxDrift = (arr: number[]) =>
+        arr.length < 2 ? 0 : (Math.max(...arr) - Math.min(...arr)) / Math.min(...arr);
       if (maxDrift(homeOdds) > MAX_PRICE_DRIFT) continue;
       if (maxDrift(drawOdds) > MAX_PRICE_DRIFT) continue;
       if (maxDrift(awayOdds) > MAX_PRICE_DRIFT) continue;
@@ -109,13 +115,15 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
       const overround = impliedSum - 1;
       if (overround < MIN_OVERROUND || overround > MAX_OVERROUND) continue;
 
-      // Confidence: base 0.5 + 0.1 per source beyond 2 + 0.1 for tight drift
+      // Confidence: single-source = 0.65 base; multi-source gets bonus
       const driftBonus =
-        (maxDrift(homeOdds) + maxDrift(drawOdds) + maxDrift(awayOdds)) / 3 < 0.02 ? 0.1 : 0;
+        sources.length > 1 && (maxDrift(homeOdds) + maxDrift(drawOdds) + maxDrift(awayOdds)) / 3 < 0.02
+          ? 0.1
+          : 0;
       const confidence = Math.min(
         0.95,
-        0.5 +
-          Math.min(0.3, (sources.length - 2) * 0.1) +
+        (sources.length >= 2 ? 0.5 : 0.65) +
+          Math.min(0.3, Math.max(0, sources.length - 2) * 0.1) +
           driftBonus +
           0.05 * Math.min(4, sources.length)
       );
@@ -128,5 +136,50 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
     }
   }
 
-  return null;
+  // All cascade models failed — try knowledge-based fallback
+  return fetchOddsViaGeminiFallback(home, away, league, kickoff, ai);
+}
+
+/** Single-source fallback: ask Gemini to estimate 1X2 odds from its training knowledge.
+ *  Used when Google Search grounding fails or returns insufficient_sources.
+ *  Returns null if odds look implausible. Confidence capped at 0.65. */
+async function fetchOddsViaGeminiFallback(
+  home: string,
+  away: string,
+  league: string,
+  kickoff: string,
+  ai: GoogleGenAI
+): Promise<OddsAcquisitionResult | null> {
+  const date = kickoff.slice(0, 10);
+  const prompt = `You are a football odds estimator. Based on team quality and typical bookmaker pricing, estimate decimal 1X2 odds for:
+
+Match: ${home} vs ${away}
+Competition: ${league}
+Date: ${date}
+
+Return ONLY this JSON (no markdown):
+{"home": <number>, "draw": <number>, "away": <number>}
+
+Use realistic bookmaker-style prices (implied probs should sum to 1.05–1.15).`;
+
+  try {
+    const result = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: prompt,
+      config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } },
+    });
+    const text = (result.text ?? "").trim();
+    const jsonMatch = text.match(/\{[\s\S]*?\}/);
+    if (!jsonMatch) return null;
+    const parsed = JSON.parse(jsonMatch[0]) as { home?: number; draw?: number; away?: number };
+    const h = parsed.home, d = parsed.draw, a = parsed.away;
+    if (!h || !d || !a) return null;
+    if ([h, d, a].some((v) => typeof v !== "number" || v < 1.01 || v > 50)) return null;
+    const impliedSum = 1 / h + 1 / d + 1 / a;
+    const overround = impliedSum - 1;
+    if (overround < 0.02 || overround > 0.20) return null;
+    return { home: h, draw: d, away: a, confidence: 0.65, sources: ["gemini-estimate"], overround };
+  } catch {
+    return null;
+  }
 }

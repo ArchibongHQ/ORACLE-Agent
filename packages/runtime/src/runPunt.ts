@@ -65,7 +65,10 @@ export async function runPuntAnalysis(
   }
 
   // 2. Resolve each leg to an analyzable job (cache-first).
-  const puntLegs = await loadedSlipToJobs(slip, { oddsApiKey: config.oddsApiKey });
+  const puntLegs = await loadedSlipToJobs(slip, {
+    oddsApiKey: config.oddsApiKey,
+    geminiApiKey: config.geminiApiKey,
+  });
   const jobs = puntLegs.map((l) => l.job).filter((j): j is NonNullable<typeof j> => j !== null);
 
   // 3. Analyze the covered fixtures. counterSlip only reads batch.jobs, so an empty
