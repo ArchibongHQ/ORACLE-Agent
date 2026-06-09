@@ -79,36 +79,25 @@ def load_player_scores(src_dir: Path) -> dict[tuple[str, str], float]:
       players.csv           — player_id, current_club_id, name
     """
     valuations_path = _find_file(src_dir, "player_valuations.csv")
-    clubs_path = _find_file(src_dir, "clubs.csv")
 
-    if not valuations_path or not clubs_path:
-        print(f"[tm/player-scores] could not find player_valuations.csv or clubs.csv in {src_dir}",
+    if not valuations_path:
+        print(f"[tm/player-scores] could not find player_valuations.csv in {src_dir}",
               file=sys.stderr)
         return {}
 
-    # Build club_id → club_name
-    club_names: dict[str, str] = {}
-    with open(clubs_path, newline="", encoding="utf-8-sig") as fh:
-        for row in csv.DictReader(fh):
-            cid = row.get("club_id", row.get("id", ""))
-            name = row.get("name", row.get("pretty_name", ""))
-            if cid and name:
-                club_names[cid] = name
-
-    # Aggregate: for each (club_name, season) take max single-date total value
-    # (proxy: sum of player market values on the date closest to season start)
+    # Aggregate: for each (club_name, season) sum player values per date, take max date
+    # player_valuations.csv has current_club_name directly — no clubs.csv join needed
     season_totals: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
 
     with open(valuations_path, newline="", encoding="utf-8-sig") as fh:
         for row in csv.DictReader(fh):
-            club_id = row.get("club_id", row.get("current_club_id", ""))
-            date = row.get("date", row.get("last_update", ""))
-            val_str = row.get("market_value_in_eur", row.get("market_value", "0") or "0")
+            club = (row.get("current_club_name") or "").strip()
+            date = (row.get("date") or "").strip()
+            val_str = row.get("market_value_in_eur", "0") or "0"
             try:
                 val = float(val_str)
             except (ValueError, TypeError):
                 continue
-            club = club_names.get(club_id, "")
             if not club or not date or val <= 0:
                 continue
             season = _season_tag(date)
@@ -328,7 +317,7 @@ def write_output(features: list[dict], dry_run: bool) -> None:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(features)
-    print(f"[tm] wrote {len(features)} rows → {out_path}")
+    print(f"[tm] wrote {len(features)} rows -> {out_path}")
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────

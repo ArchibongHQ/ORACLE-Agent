@@ -220,7 +220,7 @@ def write_features(features: list[dict], dry_run: bool) -> None:
         writer.writeheader()
         writer.writerows(features)
 
-    print(f"[spi] wrote {len(features)} rows → {combined_path}")
+    print(f"[spi] wrote {len(features)} rows -> {combined_path}")
 
     # Write per-bucket files for direct join with backfill CSVs
     for bucket_key, rows in buckets.items():
@@ -276,7 +276,7 @@ def main() -> None:
                 if not args.dry_run:
                     OUT_DIR.mkdir(parents=True, exist_ok=True)
                     cached.write_text(raw, encoding="utf-8")
-                    print(f"[spi] cached raw CSV → {cached}")
+                    print(f"[spi] cached raw CSV -> {cached}")
                 break
             except Exception as exc:
                 print(f"[spi] source {attempt} failed: {exc}", file=sys.stderr)

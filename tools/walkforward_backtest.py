@@ -47,8 +47,8 @@ def _load_json(store_dir: Path, key: str):
 
 def load_records(store_dir: Path):
     """Returns (analysis_records, resolution_records) as lists of dicts."""
-    analysis   = _load_json(store_dir, "analysis_records")
-    resolution = _load_json(store_dir, "resolution_records")
+    analysis   = _load_json(store_dir, "oracle_v2026_analysis")
+    resolution = _load_json(store_dir, "oracle_v2026_resolution")
     return analysis, resolution
 
 
@@ -94,7 +94,7 @@ def significance_accept_gate(
         return {
             "accept": False, "delta": delta, "ci_lower": None, "ci_upper": None,
             "n": n, "effect_size": effect_size,
-            "reason": f"BELOW_EFFECT_SIZE_FLOOR (|Δ|={effect_size:.5f} < floor={effect_size_floor})",
+            "reason": f"BELOW_EFFECT_SIZE_FLOOR (|d|={effect_size:.5f} < floor={effect_size_floor})",
         }
 
     diffs = [c - b for b, c in zip(baseline, candidate)]
@@ -108,7 +108,7 @@ def significance_accept_gate(
 
     accept = ci_upper < 0
     if accept:
-        reason = f"ACCEPTED: Δ={delta:.5f}, 95% CI=[{ci_lower:.5f}, {ci_upper:.5f}], n={n}"
+        reason = f"ACCEPTED: d={delta:.5f}, 95% CI=[{ci_lower:.5f}, {ci_upper:.5f}], n={n}"
     else:
         reason = (
             f"REJECTED: CI upper {ci_upper:.5f} >= 0 "
@@ -140,7 +140,8 @@ def pair_records(analysis_records: list, resolution_records: list, train_end: st
         if not fid or fid not in res_by_fixture:
             continue
         r = res_by_fixture[fid]
-        if not a.get("probabilities") or not r.get("result", {}).get("outcome"):
+        outcome = r.get("result", {}).get("outcome") or r.get("actualResult")
+        if not a.get("probabilities") or not outcome:
             continue
         kickoff = a.get("kickoff", "")[:10]
         pair = (a, r)
@@ -158,7 +159,7 @@ def compute_rps_series(pairs: list) -> list:
     scores = []
     for a, r in pairs:
         probs   = a.get("probabilities", {})
-        outcome = r.get("result", {}).get("outcome", "")
+        outcome = r.get("result", {}).get("outcome") or r.get("actualResult") or ""
         if outcome in ("home", "draw", "away") and probs:
             scores.append(rps(probs, outcome))
     return scores
@@ -266,14 +267,14 @@ def main():
 
     # Print summary
     print(f"\n{'='*60}")
-    print(f"  Walk-Forward Backtest — {args.label}")
-    print(f"  Train: up to {train_end}  |  Test: {train_end} → {test_end}  |  n={gate['n']}")
+    print(f"  Walk-Forward Backtest: {args.label}")
+    print(f"  Train: up to {train_end}  |  Test: {train_end} -> {test_end}  |  n={gate['n']}")
     print(f"  Baseline RPS:  {baseline_mean:.5f}")
     print(f"  Candidate RPS: {candidate_mean:.5f}")
-    print(f"  Δ RPS:         {gate['delta']}")
+    print(f"  dRPS:          {gate['delta']}")
     print(f"  95% CI:        [{gate['ci_lower']}, {gate['ci_upper']}]")
     print(f"  Effect size:   {gate['effect_size']}")
-    print(f"  Verdict:       {'✓ ACCEPTED' if gate['accept'] else '✗ REJECTED'}")
+    print(f"  Verdict:       {'ACCEPTED' if gate['accept'] else 'REJECTED'}")
     print(f"  {gate['reason']}")
     print(f"{'='*60}\n")
 
@@ -284,7 +285,7 @@ def main():
     outpath = out_dir / f"{today}_{slug}.json"
     with open(outpath, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
-    print(f"[backtest] Report → {outpath}")
+    print(f"[backtest] Report -> {outpath}")
 
     if not gate["accept"]:
         sys.exit(2)  # non-zero exit so CI can detect rejection

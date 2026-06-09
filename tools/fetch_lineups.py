@@ -298,13 +298,13 @@ def main() -> None:
         LINEUPS_DIR.mkdir(parents=True, exist_ok=True)
         today_path = LINEUPS_DIR / "today_summary.json"
         today_path.write_text(json.dumps(summaries, indent=2))
-        print(f"[lineups] wrote {len(summaries)} summaries → {today_path}")
+        print(f"[lineups] wrote {len(summaries)} summaries -> {today_path}")
 
         # Also write to oracle-store so decision layer can read it
         STORE_DIR.mkdir(parents=True, exist_ok=True)
         store_path = STORE_DIR / "oracle_lineups.json"
         store_path.write_text(json.dumps(summaries, indent=2))
-        print(f"[lineups] stored → {store_path}")
+        print(f"[lineups] stored -> {store_path}")
     elif summaries and args.dry_run:
         print(f"[dry-run] would write {len(summaries)} lineup summaries")
         print("  sample:", json.dumps(summaries[0], indent=2)[:500])

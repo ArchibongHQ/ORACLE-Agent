@@ -165,12 +165,12 @@ def row_to_records(
     league: str,
 ) -> tuple[dict, dict] | None:
     """Return (AnalysisRecord, ResolutionRecord) or None if row is unusable."""
-    home = row.get("HomeTeam", "").strip()
-    away = row.get("AwayTeam", "").strip()
-    date_str = row.get("Date", "").strip()
-    ftr = row.get("FTR", "").strip().upper()
-    fthg_s = row.get("FTHG", "").strip()
-    ftag_s = row.get("FTAG", "").strip()
+    home = (row.get("HomeTeam") or "").strip()
+    away = (row.get("AwayTeam") or "").strip()
+    date_str = (row.get("Date") or "").strip()
+    ftr = (row.get("FTR") or "").strip().upper()
+    fthg_s = (row.get("FTHG") or "").strip()
+    ftag_s = (row.get("FTAG") or "").strip()
 
     if not all([home, away, date_str, ftr, fthg_s, ftag_s]):
         return None
@@ -263,7 +263,7 @@ def _try_float(row: dict[str, str], keys: list[str]) -> float | None:
 
 def _find_col(header: list[str], candidates: list[str]) -> str | None:
     """Case-insensitive column lookup against a list of candidate names."""
-    lc = {c.lower(): c for c in header}
+    lc = {c.lower(): c for c in header if c is not None}
     for cand in candidates:
         if cand.lower() in lc:
             return lc[cand.lower()]
@@ -273,9 +273,15 @@ def _find_col(header: list[str], candidates: list[str]) -> str | None:
 def _detect_schema(header: list[str]) -> str:
     """
     Detect which Kaggle dataset schema a CSV header matches.
-    Returns: 'adamgbor' | 'mexwell' | 'fdco' | 'unknown'
+    Returns: 'adamgbor' | 'mexwell' | 'mexwell_extra' | 'fdco' | 'unknown'
     """
-    lc = {c.lower() for c in header}
+    lc = {c.lower() for c in header if c is not None}
+    # adamgbor v2 uses FTHome/FTAway/FTResult + Division/MatchDate
+    if "fthome" in lc and "ftaway" in lc and "ftresult" in lc:
+        return "adamgbor"
+    # mexwell extra/ uses Home/Away/HG/AG/Res + Country/League/Season/Date
+    if "hg" in lc and "ag" in lc and "res" in lc and "home" in lc and "away" in lc:
+        return "mexwell_extra"
     if "homegoals" in lc or "home_goals" in lc:
         # adamgbor uses HomeGoals/AwayGoals; mexwell uses home_goals/away_goals
         if "home_team" in lc or "hometeam" in lc:
@@ -298,14 +304,14 @@ def _row_to_records_adamgbor(
     header = list(row.keys())
     home_col  = _find_col(header, ["HomeTeam", "Home", "home_team"])
     away_col  = _find_col(header, ["AwayTeam", "Away", "away_team"])
-    date_col  = _find_col(header, ["Date", "date", "match_date"])
-    hg_col    = _find_col(header, ["HomeGoals", "home_goals", "FTHG", "HG"])
-    ag_col    = _find_col(header, ["AwayGoals", "away_goals", "FTAG", "AG"])
-    res_col   = _find_col(header, ["Result", "FTR", "result", "winner"])
+    date_col  = _find_col(header, ["Date", "date", "MatchDate", "match_date"])
+    hg_col    = _find_col(header, ["HomeGoals", "home_goals", "FTHome", "FTHG", "HG"])
+    ag_col    = _find_col(header, ["AwayGoals", "away_goals", "FTAway", "FTAG", "AG"])
+    res_col   = _find_col(header, ["Result", "FTR", "FTResult", "result", "winner"])
     # Odds: prefer Pinnacle (PSH/PSD/PSA), fall back to AvgH/AvgD/AvgA or B365
-    oh_col    = _find_col(header, ["PSH", "AvgH", "B365H", "odd_h", "1", "home_odd"])
-    od_col    = _find_col(header, ["PSD", "AvgD", "B365D", "odd_d", "X", "draw_odd"])
-    oa_col    = _find_col(header, ["PSA", "AvgA", "B365A", "odd_a", "2", "away_odd"])
+    oh_col    = _find_col(header, ["PSH", "AvgH", "OddHome", "B365H", "odd_h", "1", "home_odd"])
+    od_col    = _find_col(header, ["PSD", "AvgD", "OddDraw", "B365D", "odd_d", "X", "draw_odd"])
+    oa_col    = _find_col(header, ["PSA", "AvgA", "OddAway", "B365A", "odd_a", "2", "away_odd"])
 
     if not all([home_col, away_col, date_col, hg_col, ag_col, res_col]):
         return None
@@ -458,6 +464,52 @@ def _row_to_records_mexwell(
     return result
 
 
+def _row_to_records_mexwell_extra(
+    row: dict[str, str], league: str
+) -> tuple[dict, dict] | None:
+    """Normalise a mexwell extra/ schema row (Home/Away/HG/AG/Res/Odd_H/Odd_D/Odd_A)."""
+    header = list(row.keys())
+    home_col = _find_col(header, ["Home", "HomeTeam", "home_team"])
+    away_col = _find_col(header, ["Away", "AwayTeam", "away_team"])
+    date_col = _find_col(header, ["Date", "date", "match_date"])
+    hg_col   = _find_col(header, ["HG", "HomeGoals", "FTHG", "home_goals"])
+    ag_col   = _find_col(header, ["AG", "AwayGoals", "FTAG", "away_goals"])
+    res_col  = _find_col(header, ["Res", "Result", "FTR", "result", "winner"])
+    lg_col   = _find_col(header, ["League", "league", "Division", "Div"])
+    oh_col   = _find_col(header, ["Odd_H", "odd_h", "PSH", "AvgH", "B365H"])
+    od_col   = _find_col(header, ["Odd_D", "odd_d", "PSD", "AvgD", "B365D"])
+    oa_col   = _find_col(header, ["Odd_A", "odd_a", "PSA", "AvgA", "B365A"])
+
+    if not all([home_col, away_col, date_col, hg_col, ag_col, res_col]):
+        return None
+
+    row_league = (row.get(lg_col, "").strip() if lg_col else "") or league
+    remapped: dict[str, str] = {
+        "HomeTeam": row.get(home_col, ""),  # type: ignore[arg-type]
+        "AwayTeam": row.get(away_col, ""),  # type: ignore[arg-type]
+        "Date":     row.get(date_col, ""),  # type: ignore[arg-type]
+        "FTHG":     row.get(hg_col, ""),    # type: ignore[arg-type]
+        "FTAG":     row.get(ag_col, ""),    # type: ignore[arg-type]
+        "FTR":      row.get(res_col, ""),   # type: ignore[arg-type]
+    }
+    if oh_col:
+        remapped["PSH"] = row.get(oh_col, "")  # type: ignore[arg-type]
+    if od_col:
+        remapped["PSD"] = row.get(od_col, "")  # type: ignore[arg-type]
+    if oa_col:
+        remapped["PSA"] = row.get(oa_col, "")  # type: ignore[arg-type]
+
+    ftr = remapped["FTR"].strip().upper()
+    ftr_map = {"HOME": "H", "DRAW": "D", "AWAY": "A", "1": "H", "X": "D", "2": "A"}
+    remapped["FTR"] = ftr_map.get(ftr, ftr)
+
+    result = row_to_records(remapped, row_league)
+    if result:
+        result[0]["_source"] = "kaggle"
+        result[1]["_source"] = "kaggle"
+    return result
+
+
 # ── Kaggle directory ingest ───────────────────────────────────────────────────
 
 def ingest_kaggle_dir(
@@ -503,13 +555,15 @@ def ingest_kaggle_dir(
         for row in reader:
             # Per-row league: adamgbor/mexwell often embed league/division name
             league_col = _find_col(list(row.keys()), ["league", "League", "Division", "Div", "division"])
-            row_league = row.get(league_col, "").strip() if league_col else ""
+            row_league = (row.get(league_col) or "").strip() if league_col else ""
             row_league = row_league or fallback_league
 
             if schema == "fdco":
                 result = row_to_records(row, row_league)
             elif schema == "adamgbor":
                 result = _row_to_records_adamgbor(row, row_league)
+            elif schema == "mexwell_extra":
+                result = _row_to_records_mexwell_extra(row, row_league)
             else:  # mexwell
                 result = _row_to_records_mexwell(row, row_league)
 

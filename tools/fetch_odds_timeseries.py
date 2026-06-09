@@ -322,7 +322,7 @@ def merge_and_write(btb: list[dict], ah: list[dict], dry_run: bool) -> None:
         writer.writeheader()
         writer.writerows(merged)
 
-    print(f"[merge] wrote {len(merged)} rows → {out_path}")
+    print(f"[merge] wrote {len(merged)} rows -> {out_path}")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

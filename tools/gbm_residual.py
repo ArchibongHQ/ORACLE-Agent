@@ -301,40 +301,63 @@ def build_xg_lookup(xg: pd.DataFrame) -> dict[tuple, tuple[float, float]]:
 
 # ── SPI feature loader ───────────────────────────────────────────────────────
 
-def load_spi_features(spi_dir: Path) -> dict[tuple, dict]:
+def load_spi_features(spi_dir: Path) -> tuple[dict[tuple, dict], dict[str, tuple[float, float]]]:
     """
-    Load SPI attack/defense features from .tmp/spi/spi_features.csv.
-    Returns lookup: (date_str, norm_home, norm_away) → feature dict.
-    Columns expected: date, home, away, home_spi_off, home_spi_def,
-                      away_spi_off, away_spi_def, spi_off_diff, spi_def_diff.
+    Load SPI attack/defense features.
+
+    Returns:
+      fixture_lookup: (date_str, norm_home, norm_away) → feature dict  (exact match, 2016-2019 only)
+      team_ratings:   norm_team_name → (off, def)  (static snapshot, covers 460+ clubs)
+
+    The static team_ratings are used as a fallback when the fixture key misses, giving
+    broad coverage across all seasons via team-name-only join.
     """
+    fixture_lookup: dict[tuple, dict] = {}
+    team_ratings: dict[str, tuple[float, float]] = {}
+
+    # Load per-match SPI features (2016-2019 coverage)
     path = spi_dir / "spi_features.csv"
-    if not path.exists():
-        return {}
-    try:
-        df = pd.read_csv(path, encoding="utf-8")
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        df = df.dropna(subset=["date", "home", "away"])
-        lookup: dict[tuple, dict] = {}
-        for _, row in df.iterrows():
-            key = (
-                row["date"].strftime("%Y-%m-%d"),
-                _normalise_team(str(row["home"])),
-                _normalise_team(str(row["away"])),
-            )
-            lookup[key] = {
-                "spiOffHome":  float(row.get("home_spi_off", float("nan"))),
-                "spiDefHome":  float(row.get("home_spi_def", float("nan"))),
-                "spiOffAway":  float(row.get("away_spi_off", float("nan"))),
-                "spiDefAway":  float(row.get("away_spi_def", float("nan"))),
-                "spiOffDiff":  float(row.get("spi_off_diff", float("nan"))),
-                "spiDefDiff":  float(row.get("spi_def_diff", float("nan"))),
-            }
-        print(f"[gbm] SPI features loaded: {len(lookup)} matches from {path.name}")
-        return lookup
-    except Exception as exc:
-        print(f"[gbm] SPI load failed: {exc}")
-        return {}
+    if path.exists():
+        try:
+            df = pd.read_csv(path, encoding="utf-8")
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date", "home", "away"])
+            for _, row in df.iterrows():
+                key = (
+                    row["date"].strftime("%Y-%m-%d"),
+                    _normalise_team(str(row["home"])),
+                    _normalise_team(str(row["away"])),
+                )
+                fixture_lookup[key] = {
+                    "spiOffHome":  float(row.get("home_spi_off", float("nan"))),
+                    "spiDefHome":  float(row.get("home_spi_def", float("nan"))),
+                    "spiOffAway":  float(row.get("away_spi_off", float("nan"))),
+                    "spiDefAway":  float(row.get("away_spi_def", float("nan"))),
+                    "spiOffDiff":  float(row.get("spi_off_diff", float("nan"))),
+                    "spiDefDiff":  float(row.get("spi_def_diff", float("nan"))),
+                }
+            print(f"[gbm] SPI features loaded: {len(fixture_lookup)} matches from {path.name}")
+        except Exception as exc:
+            print(f"[gbm] SPI match load failed: {exc}")
+
+    # Load static global rankings → team-level off/def (covers 460+ clubs, all seasons)
+    rankings_path = spi_dir / "spi_rankings.csv"
+    if rankings_path.exists():
+        try:
+            rdf = pd.read_csv(rankings_path, encoding="utf-8")
+            for _, row in rdf.iterrows():
+                name = _normalise_team(str(row.get("name", "")))
+                if not name:
+                    continue
+                try:
+                    team_ratings[name] = (float(row.get("off", 0) or 0), float(row.get("def", 0) or 0))
+                except (ValueError, TypeError):
+                    pass
+            print(f"[gbm] SPI rankings loaded: {len(team_ratings)} club ratings (static fallback)")
+        except Exception as exc:
+            print(f"[gbm] SPI rankings load failed: {exc}")
+
+    return fixture_lookup, team_ratings
 
 
 # ── Squad value loader ───────────────────────────────────────────────────────
@@ -474,6 +497,7 @@ def build_features(
     xg_lookup: dict | None = None,
     clubelo_ratings: dict[str, float] | None = None,
     spi_lookup: dict | None = None,
+    spi_team_ratings: dict | None = None,
     squad_value_lookup: dict | None = None,
     odds_ts_lookup: dict | None = None,
 ) -> pd.DataFrame:
@@ -654,12 +678,27 @@ def build_features(
         feat["spiDefAway"] = float("nan")
         feat["spiOffDiff"] = float("nan")
         feat["spiDefDiff"] = float("nan")
-        if spi_lookup:
+        if spi_lookup or spi_team_ratings:
             date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
-            spi_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
-            spi_entry = spi_lookup.get(spi_key)
+            spi_entry = None
+            if spi_lookup:
+                spi_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+                spi_entry = spi_lookup.get(spi_key)
             if spi_entry:
                 feat.update(spi_entry)
+            elif spi_team_ratings:
+                # Fallback: static team-name ratings (no date dependency — broad coverage)
+                norm_h = _normalise_team(str(home))
+                norm_a = _normalise_team(str(away))
+                h_off, h_def = spi_team_ratings.get(norm_h, (float("nan"), float("nan")))
+                a_off, a_def = spi_team_ratings.get(norm_a, (float("nan"), float("nan")))
+                feat["spiOffHome"] = h_off
+                feat["spiDefHome"] = h_def
+                feat["spiOffAway"] = a_off
+                feat["spiDefAway"] = a_def
+                if not (h_off != h_off or a_off != a_off):  # neither is NaN
+                    feat["spiOffDiff"] = h_off - a_off
+                    feat["spiDefDiff"] = h_def - a_def
 
         # ── Squad market value ratio ──
         # home_squad_value / away_squad_value; >1 = home richer.
@@ -1196,10 +1235,11 @@ def main() -> None:
 
     # 2c. SPI attack/defense ratings (optional — from fetch_spi.py)
     spi_lookup = None
+    spi_team_ratings: dict[str, tuple[float, float]] = {}
     if not args.no_spi:
         spi_dir = Path(args.spi_dir)
         if spi_dir.exists():
-            spi_lookup = load_spi_features(spi_dir)
+            spi_lookup, spi_team_ratings = load_spi_features(spi_dir)
         else:
             print(f"[gbm] SPI dir not found ({spi_dir}) -- run fetch_spi.py first, or use --no-spi")
 
@@ -1227,6 +1267,7 @@ def main() -> None:
         xg_lookup=xg_lookup,
         clubelo_ratings=clubelo_ratings,
         spi_lookup=spi_lookup,
+        spi_team_ratings=spi_team_ratings or None,
         squad_value_lookup=squad_value_lookup,
         odds_ts_lookup=odds_ts_lookup,
     )
