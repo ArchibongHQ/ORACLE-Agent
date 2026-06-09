@@ -134,7 +134,7 @@ async def run(args: argparse.Namespace) -> None:
 
                 if out_path.exists() and not args.force:
                     n = sum(1 for _ in out_path.read_text().splitlines()) - 1
-                    print(f"[xg] CACHED {league_slug} {season}/{season+1}: {n} matches → {out_path.name}")
+                    print(f"[xg] CACHED {league_slug} {season}/{season+1}: {n} matches -> {out_path.name}")
                     total_rows += n
                     total_files += 1
                     continue

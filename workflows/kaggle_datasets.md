@@ -1,0 +1,250 @@
+# Kaggle Dataset Integration — ORACLE Workflow
+
+## Objective
+
+Download and integrate curated Kaggle football datasets to close ORACLE's data gaps:
+- xG coverage beyond top-5 leagues
+- Asian Handicap + line-movement features
+- SPI attack/defense ratings (pi-ratings substitute)
+- Squad market values
+- Player lineups (soft context)
+- Extended historical backfill (pre-2015)
+
+---
+
+## Prerequisites
+
+1. **Kaggle CLI installed:**
+   ```
+   pip install kaggle
+   ```
+2. **Kaggle API credentials** in `~/.kaggle/kaggle.json`:
+   ```json
+   {"username": "<your-username>", "key": "<your-api-key>"}
+   ```
+   Get from: https://www.kaggle.com/settings → API → Create New Token
+
+3. **API-Football key** (for lineups) in `.env`:
+   ```
+   API_FOOTBALL_KEY=<your-key>
+   ```
+   Free tier (100 calls/day): https://www.api-football.com
+
+---
+
+## Phase 1 — Highest-Impact Datasets (GBM gate blockers)
+
+Run these in order. Each step feeds the next.
+
+### Step 1a — Extended Match History + Lower Leagues
+
+**Dataset:** Club Football Match Data 2000–2025 (adamgbor)
+
+```bash
+mkdir -p .tmp/kaggle/club-football-2000-2025
+kaggle datasets download -d adamgbor/club-football-match-data-2000-2025 \
+  -p .tmp/kaggle/club-football-2000-2025 --unzip
+```
+
+Then ingest into backfill:
+```bash
+python tools/backfill_oracle.py \
+  --source kaggle \
+  --kaggle-dir .tmp/kaggle/club-football-2000-2025
+```
+
+**Also recommended:**
+```bash
+# mexwell — 22 leagues, 25 seasons, referee data
+kaggle datasets download -d mexwell/historical-football-resultsbetting-odds-data \
+  -p .tmp/kaggle/mexwell --unzip
+
+# Championship full dataset
+kaggle datasets download -d panaaaaa/english-premier-league-and-championship-full-dataset \
+  -p .tmp/kaggle/championship --unzip
+
+# 30-year odds
+kaggle datasets download -d laisassini/soccer-bet-all-euro-data-from-1993-to-2023 \
+  -p .tmp/kaggle/euro-bet-1993 --unzip
+```
+
+---
+
+### Step 1b — Asian Handicap + Line-Movement Features
+
+**Dataset 1:** Beat The Bookie (32 bookmakers, hourly, 72h window)
+
+```bash
+kaggle datasets download -d austro/beat-the-bookie-worldwide-football-dataset \
+  -p .tmp/kaggle/beat-the-bookie --unzip
+```
+
+**Dataset 2:** AH Odds Time-Series (5 leagues, 15 books, opening→closing)
+
+```bash
+kaggle datasets download -d realsingwong/european-football-asian-handicap-odds-time-series \
+  -p .tmp/kaggle/ah-odds --unzip
+```
+
+**Process both:**
+```bash
+python tools/fetch_odds_timeseries.py \
+  --btb-dir .tmp/kaggle/beat-the-bookie \
+  --ah-dir  .tmp/kaggle/ah-odds
+```
+
+Output: `.tmp/odds-timeseries/odds_timeseries_features.csv`
+GBM features added: `line_movement_slope`, `opening_to_close_delta`, `ah_open_line`, `ah_close_line`, `ah_close_delta`
+
+---
+
+### Step 1c — SPI Attack/Defense Ratings (pi-ratings substitute)
+
+FiveThirtyEight SPI data is auto-fetched from GitHub (no Kaggle auth needed):
+
+```bash
+python tools/fetch_spi.py
+```
+
+Or use Kaggle dataset as backup:
+```bash
+kaggle datasets download -d thedevastator/club-soccer-predictions-spi-ratings-and-forecast \
+  -p .tmp/kaggle/spi --unzip
+
+python tools/fetch_spi.py --local-dir .tmp/kaggle/spi
+```
+
+Output: `.tmp/spi/spi_features.csv` + per-div/season files
+GBM features added: `home_spi_off`, `home_spi_def`, `away_spi_off`, `away_spi_def`, `spi_off_diff`, `spi_def_diff`
+
+---
+
+### Step 1d — PPDA + npxG (pressing + non-penalty xG)
+
+**Dataset:** Extended Football Stats for European Leagues xG (slehkyi)
+
+```bash
+kaggle datasets download -d slehkyi/extended-football-stats-for-european-leagues-xg \
+  -p .tmp/kaggle/xg-ppda --unzip
+```
+
+Merge into existing xG pipeline:
+```bash
+python tools/fetch_xg.py --kaggle-ppda-dir .tmp/kaggle/xg-ppda
+```
+
+GBM features added: `ppda`, `npxg_home`, `npxg_away`
+
+---
+
+## Phase 2 — Soft Context + Squad Quality
+
+### Step 2a — Squad Market Values (Transfermarkt)
+
+```bash
+kaggle datasets download -d davidcariboo/player-scores \
+  -p .tmp/kaggle/player-scores --unzip
+
+python tools/fetch_transfermarkt.py \
+  --player-scores-dir .tmp/kaggle/player-scores
+```
+
+Output: `.tmp/transfermarkt/squad_value_ratio.csv`
+GBM feature added: `squad_value_ratio` (home_squad_value / away_squad_value)
+
+---
+
+### Step 2b — Lineups (Soft Context — requires API key)
+
+Runs automatically 60–75 min before kick-off in the daily worker:
+
+```bash
+python tools/fetch_lineups.py
+```
+
+Or for a specific fixture:
+```bash
+python tools/fetch_lineups.py --fixture-id 12345
+```
+
+Output: `.tmp/lineups/today_summary.json` + `.tmp/oracle-store/oracle_lineups.json`
+Injected into LLM decision prompt: formations, confirmed XI, defensive shape scores.
+
+---
+
+### Step 2c — FBref Player Stats (PPDA, Progressive Passes)
+
+```bash
+# 2025-26 (auto-updated weekly)
+kaggle datasets download -d hubertsidorowicz/football-players-stats-2025-2026 \
+  -p .tmp/kaggle/fbref-2526 --unzip
+
+# 2024-25
+kaggle datasets download -d hubertsidorowicz/football-players-stats-2024-2025 \
+  -p .tmp/kaggle/fbref-2425 --unzip
+```
+
+Process to team-level aggregates (add to GBM features in future sprint).
+
+---
+
+## Phase 3 — Match Events + Advanced Analytics
+
+### StatsBomb Open Data (event-level, shot locations)
+
+```bash
+kaggle datasets download -d saurabhshahane/statsbomb-football-data \
+  -p .tmp/kaggle/statsbomb --unzip
+```
+
+Used to build an in-house xG model for non-Understat leagues.
+
+### Referee History
+
+```bash
+kaggle datasets download -d gokhanergul/football-match-statistics \
+  -p .tmp/kaggle/match-stats --unzip
+```
+
+Builds `ref_avg_cards` + `ref_foul_rate` lookup for GBM feature `ref_strictness_percentile`.
+
+---
+
+## Verification After Each Phase
+
+```bash
+# Confirm new features appear in GBM output
+python tools/gbm_residual.py --dry-run
+
+# Run walk-forward backtest with new features
+python tools/walkforward_backtest.py
+
+# Gate: thin-market RPS delta target ≥ +0.002
+# (current baseline: +0.0007 for Championship/Belgian/Scottish)
+
+# Full pipeline check
+pnpm turbo run typecheck test build
+```
+
+---
+
+## Dataset Catalogue Reference
+
+Full audit with 45 datasets across 4 tiers, ORACLE gap mapping, and integration notes:
+See: `.claude/plans/analyze-and-audit-all-dynamic-sedgewick.md`
+
+| Tier | Datasets | Key Feature |
+|---|---|---|
+| 1 (Critical) | Beat The Bookie, AH Time-Series, mexwell, Club Football 2000–2025, slehkyi xG/PPDA, Understat mirror, StatsBomb | Line movement, AH, backfill, PPDA, events |
+| 2 (High Value) | Transfermarkt, 5.7M records, FBref 2025-26, SPI, Euro Bet 1993–2023, Championship | Squad values, injuries, pressing, pi-ratings |
+| 3 (Supplement) | FBref FBRef, Sofascore+TM, injury datasets, match stats | Cross-validation, soft context |
+| 4 (Low Priority) | VAR data, stadium locations, market value prediction | Weather API lookup, VAR signals |
+
+---
+
+## Edge Cases
+
+- **Column name mismatches:** Kaggle datasets vary in column naming. All tools use `_find_col()` fuzzy matching against a candidate list. If a new dataset uses unusual names, extend the candidates list in the relevant tool.
+- **Duplicate rows:** Kaggle datasets often overlap with football-data.co.uk CSVs. `backfill_oracle.py` uses a content-hash deduplication key (`match_id = hash(date+home+away+div+season)`).
+- **Kaggle quota:** Kaggle API has no hard quota for public dataset downloads. Large datasets (Beat the Bookie ~700MB, Club Football ~1GB) may take 2–10 minutes to download.
+- **API-Football lineup timing:** Lineups are released 60–70 min pre-kick. Running `fetch_lineups.py` before this window returns empty `startXI` arrays (confirmed=False). The tool skips fixtures outside the `--minutes-before` window automatically.
