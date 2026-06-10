@@ -36,10 +36,10 @@ evidence-backed betting intelligence — autonomously and reliably.
         T0 news cache, Kaggle Phase 1 (SPI/squad-value/odds-timeseries tools + GBM wiring),
         Kaggle Phase 2 (FBref PPDA, injuries, referee strictness, match-xG wired into GBM),
         BTB gzip parser (54k matches), all 15 Kaggle dataset dirs downloaded + processed,
-        GBM retrained with 110-feature matrix (top5 delta -0.0009, base delta +0.0000 — advisory)
+        GBM retrained with 110-feature matrix (top5 delta -0.0009, base delta +0.0000 — advisory),
+        API-Football lineups wired into decision-layer soft context (enrichWithLineups + worker pre-batch fetch)
 - Now: Top up API credits (Anthropic + Gemini) → run live batch → monitor World Cup window
-- Next: Wire API-Football lineups (needs API_FOOTBALL_KEY) for pre-match injury signals;
-        consider Pinnacle odds API for higher-quality OTS coverage (BTB skews non-top5)
+- Next: Consider Pinnacle odds API for higher-quality OTS coverage (BTB skews non-top5)
 - Later: Multi-user tier, live odds feed integration
 
 ## Definition of Done

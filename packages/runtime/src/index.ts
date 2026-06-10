@@ -15,6 +15,7 @@ export {
 export { enrichWithH2H } from "./h2h.js";
 export type { HardwareCapabilities } from "./hardware.js";
 export { detectHardware, isGpuCapable } from "./hardware.js";
+export { enrichWithLineups } from "./lineups.js";
 export { enrichWithNewsIntel } from "./newsIntel.js";
 export type { CounterLeg, LegVerdict, PuntLeg } from "./punt.js";
 export {
