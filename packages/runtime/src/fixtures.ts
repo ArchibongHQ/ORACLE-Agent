@@ -10,6 +10,7 @@ import { parseFixtureList } from "@oracle/engine";
 import type { LLMCallContext } from "@oracle/llm";
 import { fetchOddsViaGemini } from "@oracle/llm";
 import { enrichWithH2H } from "./h2h.js";
+import { enrichWithLineups } from "./lineups.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
 import { buildOddsProviders, type OddsProvider, runOddsChain } from "./oddsProviders.js";
 import { namesMatch } from "./teamNames.js";
@@ -569,10 +570,12 @@ export async function fetchTodaysFixtures(
   // once; the gap-fill tries this chain before the Gemini/web-search degraded path.
   const oddsProviders = buildOddsProviders({ oddsPapiKey, apiFootballKey });
 
-  // T0 news intel runs after H2H on every return path (cache-first, non-fatal).
+  // T0 news intel runs after H2H on every return path (cache-first, non-fatal);
+  // API-Football lineups (file-read from fetch_lineups.py output) merge last.
   const enrich = async (jobs: FixtureJob[]): Promise<FixtureJob[]> => {
     const withH2H = await enrichWithH2H(jobs, footballDataApiKey);
-    return enrichWithNewsIntel(withH2H, perplexityApiKey);
+    const withNews = await enrichWithNewsIntel(withH2H, perplexityApiKey);
+    return enrichWithLineups(withNews);
   };
 
   if (!oddsApiKey) {

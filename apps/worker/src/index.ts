@@ -84,6 +84,24 @@ function scrapeFixtures(): Promise<number> {
   });
 }
 
+// ── Lineup fetcher (API-Football, pre-batch) ─────────────────────────────────
+// Best-effort: fetch_lineups.py writes .tmp/oracle-store/oracle_lineups.json,
+// which enrichWithLineups (runtime) merges into softContext. Never blocks batch.
+
+function fetchLineups(): Promise<void> {
+  if (!config.apiFootballKey) return Promise.resolve();
+  const python = process.platform === "win32" ? "python" : "python3";
+  const script = join(ROOT, "tools", "fetch_lineups.py");
+  return new Promise((resolve) => {
+    execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
+      if (stdout) process.stdout.write(stdout);
+      if (stderr) process.stderr.write(stderr);
+      if (err) process.stderr.write(`fetch_lineups error: ${err.message}\n`);
+      resolve(); // lineup fetch failure must never abort the batch
+    });
+  });
+}
+
 // ── SportyBet streak tracker ──────────────────────────────────────────────────
 
 const STREAK_FILE = join(ROOT, ".tmp", "sportybet_streak.json");
@@ -196,6 +214,7 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
 async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Promise<void> {
   const sportyBetCount = await scrapeFixtures();
   checkSportyBetStreak(sportyBetCount);
+  await fetchLineups();
   const storage = new GBrainAdapter(DB_PATH);
 
   const newsKey = config.enableNewsIntel ? config.perplexityApiKey : undefined;
