@@ -44,12 +44,13 @@ def _year_to_fdco(year: int) -> str:
     return f"{str(year)[2:]}{str(year + 1)[2:]}"
 
 
-def _normalise(name: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace."""
-    import re as _re
-    s = name.lower()
-    s = _re.sub(r"[^a-z0-9\s]", "", s)
-    return _re.sub(r"\s+", " ", s).strip()
+# Shared team-name normalisation (audit M2-1). The old local copy had no alias
+# map, so slehkyi/Understat names ("Atletico Madrid", "Borussia M.Gladbach")
+# never matched the fdco-side keys produced by gbm_residual's loader.
+try:
+    from lib.team_names import normalise_team as _normalise
+except ImportError:  # repo root on sys.path instead of tools/
+    from tools.lib.team_names import normalise_team as _normalise
 
 
 def _find_col(cols: list[str], candidates: list[str]) -> str | None:

@@ -12,6 +12,8 @@ export { fetchNewsIntelligence } from "./callNewsIntel.js";
 export type { OddsAcquisitionResult } from "./callOdds.js";
 // Odds acquisition
 export { fetchOddsViaGemini } from "./callOdds.js";
+// OpenRouter generic transport (Tier 2/3 fallbacks)
+export { callOpenRouter, callOpenRouterJson } from "./callOpenRouter.js";
 export type { PostmortemLossInput, PostmortemSynthesisResult } from "./callPostmortem.js";
 // B5
 export { synthesizePostmortems } from "./callPostmortem.js";
@@ -33,8 +35,6 @@ export {
   OPENROUTER_MODELS,
   THINKING_LEVELS,
 } from "./cascade.js";
-// OpenRouter generic transport (Tier 2/3 fallbacks)
-export { callOpenRouter, callOpenRouterJson } from "./callOpenRouter.js";
 export type { EmbedderFn } from "./embed.js";
 // B4
 export { embedText, makeEmbedder } from "./embed.js";

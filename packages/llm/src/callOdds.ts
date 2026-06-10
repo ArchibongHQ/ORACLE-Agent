@@ -17,7 +17,7 @@ export interface OddsAcquisitionResult {
 }
 
 const MIN_CONFIDENCE = 0.65;
-const MAX_OVERROUND = 0.20; // reject if implied probs sum > 1.20 (too much juice)
+const MAX_OVERROUND = 0.2; // reject if implied probs sum > 1.20 (too much juice)
 const MIN_OVERROUND = 0.02; // reject if sum < 1.02 (looks fabricated)
 const MAX_PRICE_DRIFT = 0.12; // reject if any single price differs >12% across sources (relaxed for WC)
 
@@ -117,7 +117,8 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
 
       // Confidence: single-source = 0.65 base; multi-source gets bonus
       const driftBonus =
-        sources.length > 1 && (maxDrift(homeOdds) + maxDrift(drawOdds) + maxDrift(awayOdds)) / 3 < 0.02
+        sources.length > 1 &&
+        (maxDrift(homeOdds) + maxDrift(drawOdds) + maxDrift(awayOdds)) / 3 < 0.02
           ? 0.1
           : 0;
       const confidence = Math.min(
@@ -172,12 +173,14 @@ Use realistic bookmaker-style prices (implied probs should sum to 1.05–1.15).`
     const jsonMatch = text.match(/\{[\s\S]*?\}/);
     if (!jsonMatch) return null;
     const parsed = JSON.parse(jsonMatch[0]) as { home?: number; draw?: number; away?: number };
-    const h = parsed.home, d = parsed.draw, a = parsed.away;
+    const h = parsed.home,
+      d = parsed.draw,
+      a = parsed.away;
     if (!h || !d || !a) return null;
     if ([h, d, a].some((v) => typeof v !== "number" || v < 1.01 || v > 50)) return null;
     const impliedSum = 1 / h + 1 / d + 1 / a;
     const overround = impliedSum - 1;
-    if (overround < 0.02 || overround > 0.20) return null;
+    if (overround < 0.02 || overround > 0.2) return null;
     return { home: h, draw: d, away: a, confidence: 0.65, sources: ["gemini-estimate"], overround };
   } catch {
     return null;

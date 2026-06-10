@@ -51,8 +51,13 @@ def _parse_date(day: str, year_hint: str) -> str:
         return ""
 
 
-def _normalise_team(name: str) -> str:
-    return name.strip().lower().replace(".", "").replace("-", " ").replace("_", " ")
+# Shared team-name normalisation (audit M2-1). Previously a local copy with
+# different semantics (strip/lower/replace only) — it was never called, but is
+# kept importable so future joins use the canonical implementation.
+try:
+    from lib.team_names import normalise_team as _normalise_team
+except ImportError:  # repo root on sys.path instead of tools/
+    from tools.lib.team_names import normalise_team as _normalise_team
 
 
 def main() -> None:

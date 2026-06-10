@@ -111,12 +111,15 @@ TEAM_CITY: dict[str, tuple[float, float]] = {
     "st etienne": (45.46, 4.39), "bordeaux": (44.83, -0.56),
 }
 
+# Shared team-name normalisation (audit M2-1). The old local _normalise kept
+# apostrophes; the shared one strips them and applies the alias map, so the
+# TEAM_CITY keys are canonicalised once at import to keep lookups consistent.
+try:
+    from lib.team_names import normalise_team as _normalise
+except ImportError:  # repo root on sys.path instead of tools/
+    from tools.lib.team_names import normalise_team as _normalise
 
-def _normalise(name: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace — match gbm_residual style."""
-    s = name.lower()
-    s = re.sub(r"[^a-z0-9\s']", "", s)
-    return re.sub(r"\s+", " ", s).strip()
+TEAM_CITY = {_normalise(k): v for k, v in TEAM_CITY.items()}
 
 
 def _find_col(cols: list[str], candidates: list[str]) -> str | None:

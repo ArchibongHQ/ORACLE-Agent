@@ -201,91 +201,13 @@ def load_xg(xg_dir: Path) -> pd.DataFrame:
     return xg
 
 
-# Known abbreviation → full name mappings (football-data.co.uk → Understat)
-_TEAM_ALIASES: dict[str, str] = {
-    "man city":              "manchester city",
-    "man united":            "manchester united",
-    "man utd":               "manchester united",
-    "newcastle":             "newcastle united",
-    "nott'm forest":         "nottingham forest",
-    "nottm forest":          "nottingham forest",
-    "wolves":                "wolverhampton wanderers",
-    "spurs":                 "tottenham hotspur",
-    "tottenham":             "tottenham hotspur",
-    "west brom":             "west bromwich albion",
-    "sheffield utd":         "sheffield united",
-    "sheff utd":             "sheffield united",
-    "sheff wed":             "sheffield wednesday",
-    "leicester":             "leicester city",
-    "brighton":              "brighton and hove albion",
-    "norwich":               "norwich city",
-    "cardiff":               "cardiff city",
-    "swansea":               "swansea city",
-    "stoke":                 "stoke city",
-    "hull":                  "hull city",
-    "ipswich":               "ipswich town",
-    "luton":                 "luton town",
-    "burnley":               "burnley",
-    "brentford":             "brentford",
-    "celta":                 "celta vigo",
-    "atletico madrid":       "atletico de madrid",
-    "atletico":              "atletico de madrid",
-    "real betis":            "real betis",
-    "betis":                 "real betis",
-    "sociedad":              "real sociedad",
-    "real sociedad":         "real sociedad",
-    "hertha":                "hertha bsc",
-    "hertha bsc berlin":     "hertha bsc",
-    "rb leipzig":            "rasenballsport leipzig",
-    "eintracht frankfurt":   "frankfurt",
-    "bayer leverkusen":      "bayer 04 leverkusen",
-    "leverkusen":            "bayer 04 leverkusen",
-    "schalke":               "fc schalke 04",
-    "schalke 04":            "fc schalke 04",
-    "hannover":              "hannover 96",
-    "mainz":                 "1 fsv mainz 05",
-    "mainz 05":              "1 fsv mainz 05",
-    "freiburg":              "sport-club freiburg",
-    "sc freiburg":           "sport-club freiburg",
-    "augsburg":              "fc augsburg",
-    "wolfsburg":             "vfl wolfsburg",
-    "inter":                 "internazionale",
-    "inter milan":           "internazionale",
-    "ac milan":              "milan",
-    "verona":                "hellas verona",
-    "hellas verona fc":      "hellas verona",
-    "spal":                  "spal 2013",
-    "chievo":                "chievo verona",
-    "cagliari":              "cagliari",
-    "psg":                   "paris saint-germain",
-    "paris sg":              "paris saint-germain",
-    "st etienne":            "saint-etienne",
-    "saint etienne":         "saint-etienne",
-    "lyon":                  "olympique lyonnais",
-    "marseille":             "olympique de marseille",
-    "nantes":                "fc nantes",
-    "rennes":                "stade rennais fc",
-    "stade rennais":         "stade rennais fc",
-    "bordeaux":              "girondins de bordeaux",
-    "lille":                 "losc lille",
-    "losc":                  "losc lille",
-    "monaco":                "as monaco",
-    "nice":                  "ogc nice",
-    "strasbourg":            "rc strasbourg alsace",
-    "metz":                  "fc metz",
-    "reims":                 "stade de reims",
-}
-
-
-def _normalise_team(name: str) -> str:
-    """
-    Lowercase, strip punctuation, collapse whitespace, then apply alias map.
-    Handles football-data.co.uk abbreviations vs Understat full names.
-    """
-    s = name.lower()
-    s = re.sub(r"[^a-z0-9\s]", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return _TEAM_ALIASES.get(s, s)
+# Team-name normalisation lives in the shared module (audit M2-1).
+# Works when run as `python tools/gbm_residual.py` (script dir on sys.path)
+# or imported as part of the repo (`tools.gbm_residual`).
+try:
+    from lib.team_names import TEAM_ALIASES as _TEAM_ALIASES, normalise_team as _normalise_team
+except ImportError:  # repo root on sys.path instead of tools/
+    from tools.lib.team_names import TEAM_ALIASES as _TEAM_ALIASES, normalise_team as _normalise_team
 
 
 def build_xg_lookup(xg: pd.DataFrame) -> dict[tuple, tuple[float, float]]:
