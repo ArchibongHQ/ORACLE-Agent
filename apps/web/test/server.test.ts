@@ -144,7 +144,7 @@ describe("POST /analyze", () => {
   });
 
   it("escapes HTML in error notices (XSS regression)", async () => {
-    const payload = 'x<script>alert(1)</script><img src=x onerror=alert(1)>'; // no "vs" → hits the parse-error notice that echoes the query
+    const payload = "x<script>alert(1)</script><img src=x onerror=alert(1)>"; // no "vs" → hits the parse-error notice that echoes the query
     const r = await handleRequest(
       "POST",
       "/analyze",

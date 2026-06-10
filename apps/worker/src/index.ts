@@ -6,8 +6,8 @@ import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RunManifest } from "@oracle/engine";
 import { sendPuntPrompt } from "@oracle/bot";
+import type { RunManifest } from "@oracle/engine";
 import { buildNotifiers, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
   buildConfig,
@@ -61,7 +61,9 @@ function logJob(name: string, fn: () => Promise<unknown>): void {
     .catch((err: unknown) => {
       const s = ((Date.now() - started) / 1000).toFixed(1);
       const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      process.stderr.write(`[worker] ${new Date().toISOString()} ${name}: FAILED after ${s}s — ${msg}\n`);
+      process.stderr.write(
+        `[worker] ${new Date().toISOString()} ${name}: FAILED after ${s}s — ${msg}\n`
+      );
     });
 }
 
@@ -145,7 +147,9 @@ function runKaggleTool(label: string, scriptName: string, args: string[] = []): 
       if (stderr) process.stderr.write(stderr);
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
       if (err) {
-        process.stderr.write(`[kaggle-refresh] ${label}: FAILED after ${elapsed}s — ${err.message}\n`);
+        process.stderr.write(
+          `[kaggle-refresh] ${label}: FAILED after ${elapsed}s — ${err.message}\n`
+        );
       } else {
         process.stdout.write(`[kaggle-refresh] ${label}: done in ${elapsed}s\n`);
       }
@@ -155,9 +159,10 @@ function runKaggleTool(label: string, scriptName: string, args: string[] = []): 
 }
 
 async function runWeeklyKaggleRefresh(): Promise<void> {
-  const credPath = process.platform === "win32"
-    ? join(process.env["USERPROFILE"] ?? "", ".kaggle", "kaggle.json")
-    : join(process.env["HOME"] ?? "", ".kaggle", "kaggle.json");
+  const credPath =
+    process.platform === "win32"
+      ? join(process.env["USERPROFILE"] ?? "", ".kaggle", "kaggle.json")
+      : join(process.env["HOME"] ?? "", ".kaggle", "kaggle.json");
   const hasEnvAuth = Boolean(process.env["KAGGLE_USERNAME"]) && Boolean(process.env["KAGGLE_KEY"]);
   if (!existsSync(credPath) && !hasEnvAuth) {
     process.stderr.write(
@@ -169,17 +174,18 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
   const wall = Date.now();
 
   await runKaggleTool("odds_timeseries", "fetch_odds_timeseries.py", [
-    "--btb-dir", ".tmp/kaggle/beat-the-bookie",
-    "--ah-dir",  ".tmp/kaggle/ah-odds",
+    "--btb-dir",
+    ".tmp/kaggle/beat-the-bookie",
+    "--ah-dir",
+    ".tmp/kaggle/ah-odds",
   ]);
   await runKaggleTool("spi", "fetch_spi.py");
   await runKaggleTool("fbref", "fetch_fbref.py");
   await runKaggleTool("transfermarkt", "fetch_transfermarkt.py", [
-    "--player-scores-dir", ".tmp/kaggle/player-scores",
+    "--player-scores-dir",
+    ".tmp/kaggle/player-scores",
   ]);
-  await runKaggleTool("xg", "fetch_xg.py", [
-    "--kaggle-ppda-dir", ".tmp/kaggle/xg-ppda",
-  ]);
+  await runKaggleTool("xg", "fetch_xg.py", ["--kaggle-ppda-dir", ".tmp/kaggle/xg-ppda"]);
 
   const total = ((Date.now() - wall) / 1000).toFixed(1);
   process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s ===\n`);
@@ -236,9 +242,12 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
         summary.bookingCode = booking.code;
         summary.bookingLoadUrl = booking.loadUrl ?? undefined;
         summary.bookingUnmatched = booking.unmatched;
-        if (booking.loadUrl) process.stdout.write(`[booking] ${booking.code}: ${booking.loadUrl}\n`);
+        if (booking.loadUrl)
+          process.stdout.write(`[booking] ${booking.code}: ${booking.loadUrl}\n`);
         if (booking.unmatched.length)
-          process.stderr.write(`[booking] ${booking.unmatched.length} pick(s) unmatched on SportyBet\n`);
+          process.stderr.write(
+            `[booking] ${booking.unmatched.length} pick(s) unmatched on SportyBet\n`
+          );
       } else {
         summary.bookingError = booking.error ?? "no code returned";
       }
@@ -321,6 +330,15 @@ cron.schedule("0 3 * * 6", () => logJob("kaggle-refresh", runWeeklyKaggleRefresh
 cron.schedule("0 10 * * *", () => logJob("punt-prompt", () => sendDailyPuntPrompt(false)));
 cron.schedule("0 12 * * *", () => logJob("punt-prompt-retry", () => sendDailyPuntPrompt(true)));
 cron.schedule("0 13 * * *", () => logJob("punt-prompt-retry", () => sendDailyPuntPrompt(true)));
+
+// Graceful shutdown — stop cron schedules so the daemon exits cleanly under SIGINT/SIGTERM.
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    process.stdout.write(`[worker] ${sig} received — stopping cron schedules\n`);
+    for (const task of cron.getTasks().values()) task.stop();
+    process.exit(0);
+  });
+}
 
 if (process.argv.includes("--run-now")) {
   runDailyBatch("manual")

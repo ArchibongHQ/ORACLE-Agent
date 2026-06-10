@@ -12,7 +12,10 @@
       "label": "gstack: Office Hours (feature scoping)",
       "type": "shell",
       "command": "claude",
-      "args": ["-p", "Run /gstack-office-hours to help scope this new feature work with a YC-style product interrogation."],
+      "args": [
+        "-p",
+        "Run /gstack-office-hours to help scope this new feature work with a YC-style product interrogation."
+      ],
       "group": "none",
       "presentation": {
         "reveal": "always",
@@ -25,7 +28,10 @@
       "label": "gstack: Eng Review (architecture decision)",
       "type": "shell",
       "command": "claude",
-      "args": ["-p", "Run /gstack-plan-eng-review to review the current architecture plan with diagrams and test planning."],
+      "args": [
+        "-p",
+        "Run /gstack-plan-eng-review to review the current architecture plan with diagrams and test planning."
+      ],
       "group": "none",
       "presentation": {
         "reveal": "always",
@@ -38,7 +44,10 @@
       "label": "gstack: Review (pre-PR, manual)",
       "type": "shell",
       "command": "claude",
-      "args": ["-p", "Run /gstack-review to perform a pre-PR code review of the current diff. Focus on correctness, architecture, test coverage, and SQL/LLM safety."],
+      "args": [
+        "-p",
+        "Run /gstack-review to perform a pre-PR code review of the current diff. Focus on correctness, architecture, test coverage, and SQL/LLM safety."
+      ],
       "group": "none",
       "presentation": {
         "reveal": "always",
@@ -51,7 +60,10 @@
       "label": "gstack: Security Scan (CSO)",
       "type": "shell",
       "command": "claude",
-      "args": ["-p", "Run /gstack-cso to perform an OWASP Top 10 + STRIDE security audit of the current codebase."],
+      "args": [
+        "-p",
+        "Run /gstack-cso to perform an OWASP Top 10 + STRIDE security audit of the current codebase."
+      ],
       "group": "none",
       "presentation": {
         "reveal": "always",
@@ -64,7 +76,10 @@
       "label": "gstack: Ship PR checklist",
       "type": "shell",
       "command": "claude",
-      "args": ["-p", "Run /gstack-ship to go through the full PR shipping checklist: sync base, run tests, review diff, bump version, update changelog, commit, push, open PR."],
+      "args": [
+        "-p",
+        "Run /gstack-ship to go through the full PR shipping checklist: sync base, run tests, review diff, bump version, update changelog, commit, push, open PR."
+      ],
       "group": "none",
       "presentation": {
         "reveal": "always",
@@ -77,7 +92,10 @@
       "label": "gstack: Investigate (debug failure)",
       "type": "shell",
       "command": "claude",
-      "args": ["-p", "Run /gstack-investigate to perform systematic root-cause analysis on the current failure with hypothesis testing."],
+      "args": [
+        "-p",
+        "Run /gstack-investigate to perform systematic root-cause analysis on the current failure with hypothesis testing."
+      ],
       "group": "none",
       "presentation": {
         "reveal": "always",

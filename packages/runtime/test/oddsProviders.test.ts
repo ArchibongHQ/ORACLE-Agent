@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildOddsProviders,
-  runOddsChain,
   type NormalizedOdds,
   type OddsProvider,
+  runOddsChain,
 } from "../src/oddsProviders.js";
 
 // ── Test doubles ──────────────────────────────────────────────────────────────
@@ -123,7 +123,9 @@ describe("buildOddsProviders", () => {
   });
 
   it("marks only OddsPapi and SportsGameOdds as sharp", () => {
-    const sharp = buildOddsProviders({}).filter((p) => p.isSharp).map((p) => p.name);
+    const sharp = buildOddsProviders({})
+      .filter((p) => p.isSharp)
+      .map((p) => p.name);
     expect(sharp).toEqual(["oddspapi", "sportsgameodds"]);
   });
 
@@ -139,8 +141,14 @@ describe("buildOddsProviders", () => {
   });
 
   it("never grants quota to stub providers even with a key (not implemented)", () => {
-    const providers = buildOddsProviders({ sportsGameOddsKey: "k", rapidOddsApiKey: "k", bsdKey: "k" });
-    const stubs = providers.filter((p) => ["sportsgameodds", "rapidoddsapi", "bsd"].includes(p.name));
+    const providers = buildOddsProviders({
+      sportsGameOddsKey: "k",
+      rapidOddsApiKey: "k",
+      bsdKey: "k",
+    });
+    const stubs = providers.filter((p) =>
+      ["sportsgameodds", "rapidoddsapi", "bsd"].includes(p.name)
+    );
     expect(stubs.every((p) => !p.hasQuota())).toBe(true);
   });
 });

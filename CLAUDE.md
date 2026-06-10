@@ -96,8 +96,11 @@ The full gstack skill suite (garrytan/gstack, MIT) is installed globally at `~/.
 tools/             # Python scripts for deterministic execution
 workflows/         # Markdown SOPs defining objectives, steps, and edge cases
 packages/          # TS monorepo: engine, storage, llm, runtime (shared app layer), notify (push)
-apps/              # worker (cron), cli (`oracle` command), web (node:http UI/API on 127.0.0.1:8787)
-.env               # API keys and secrets — NEVER store credentials anywhere else
+apps/              # worker (cron), cli (`oracle` command), web (node:http UI/API on 127.0.0.1:8787),
+                   # bot (Telegram punt bot, single chat-ID gated), booking (Playwright SportyBet
+                   # accumulator agent — anonymous, no real money)
+archive/           # Pre-refactor monolith (ORACLE_v2026_8_0.jsx etc.) — provenance only, never edit
+.env               # API keys and secrets — NEVER store credentials anywhere else (.env.example = template)
 credentials.json   # Google OAuth (gitignored)
 token.json         # Google OAuth (gitignored)
 ```

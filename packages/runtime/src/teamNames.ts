@@ -23,12 +23,12 @@ export const TEAM_ALIASES: Record<string, string> = {
   "côte d'ivoire": "cote divoire",
   "korea republic": "south korea",
   "republic of korea": "south korea",
-  "turkiye": "turkey",
-  "türkiye": "turkey",
+  turkiye: "turkey",
+  türkiye: "turkey",
   "czech republic": "czechia",
   "bosnia herzegovina": "bosnia and herzegovina",
   "bosnia-herzegovina": "bosnia and herzegovina",
-  "usa": "united states",
+  usa: "united states",
   "united states of america": "united states",
 };
 

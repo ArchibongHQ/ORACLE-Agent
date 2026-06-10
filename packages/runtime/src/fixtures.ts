@@ -11,7 +11,7 @@ import type { LLMCallContext } from "@oracle/llm";
 import { fetchOddsViaGemini } from "@oracle/llm";
 import { enrichWithH2H } from "./h2h.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
-import { buildOddsProviders, runOddsChain, type OddsProvider } from "./oddsProviders.js";
+import { buildOddsProviders, type OddsProvider, runOddsChain } from "./oddsProviders.js";
 import { namesMatch } from "./teamNames.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -386,7 +386,10 @@ async function geminiOddsGapFill(
   if (!geminiApiKey && !hasChain) return [];
 
   const ctx: LLMCallContext | null = geminiApiKey
-    ? { config: { claudeApiKey: "", geminiApiKey, bankroll: 0 }, requestedAt: new Date().toISOString() }
+    ? {
+        config: { claudeApiKey: "", geminiApiKey, bankroll: 0 },
+        requestedAt: new Date().toISOString(),
+      }
     : null;
 
   const filled: FixtureJob[] = [];
@@ -736,10 +739,7 @@ export async function fetchFixtureByName(
   // 3. Gemini gap-fill — fetch odds via Gemini Search when Odds API is unavailable/exhausted
   const league = effectiveLeague ?? "FIFA World Cup";
   const kickoff = hit?.kickoff ?? new Date().toISOString();
-  const geminiResults = await geminiOddsGapFill(
-    [{ home, away, league, kickoff }],
-    geminiApiKey
-  );
+  const geminiResults = await geminiOddsGapFill([{ home, away, league, kickoff }], geminiApiKey);
   if (geminiResults.length) return geminiResults[0]!;
 
   // 4. Return the no-odds cache hit as last resort (engine will degrade gracefully)

@@ -8,7 +8,6 @@
 
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { GBrainAdapter } from "@oracle/storage";
 import {
   buildConfig,
   formatPuntResult,
@@ -16,6 +15,7 @@ import {
   markFulfilled,
   runPuntAnalysis,
 } from "@oracle/runtime";
+import { GBrainAdapter } from "@oracle/storage";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -40,6 +40,7 @@ async function sendMessage(text: string): Promise<void> {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: CHAT_ID, text, parse_mode: "Markdown" }),
+      signal: AbortSignal.timeout(10_000),
     });
   } catch {
     /* best-effort */
@@ -49,7 +50,7 @@ async function sendMessage(text: string): Promise<void> {
 /** Push the daily "drop the code" prompt. Called by the worker cron. */
 export async function sendPuntPrompt(): Promise<void> {
   await sendMessage(
-    "🌌 *Universe, drop it here* 👇\nReply with today's SportyBet booking code (or `/punt <CODE>`) and ORACLE will counter-analyse every leg.",
+    "🌌 *Universe, drop it here* 👇\nReply with today's SportyBet booking code (or `/punt <CODE>`) and ORACLE will counter-analyse every leg."
   );
 }
 
@@ -66,7 +67,7 @@ function extractCode(text: string): string | null {
 async function handleMessage(text: string): Promise<void> {
   if (text.trim() === "/start" || text.trim() === "/help") {
     await sendMessage(
-      "Send a SportyBet booking code (or `/punt <CODE>`). ORACLE keeps the fixtures, swaps weak picks, and returns a new code.",
+      "Send a SportyBet booking code (or `/punt <CODE>`). ORACLE keeps the fixtures, swaps weak picks, and returns a new code."
     );
     return;
   }
@@ -81,7 +82,9 @@ async function handleMessage(text: string): Promise<void> {
     if (result.oracleCode) markFulfilled(ROOT, code);
     await sendMessage(formatPuntResult(result));
   } catch (err) {
-    await sendMessage(`⚠️ Punt analysis failed: ${err instanceof Error ? err.message : String(err)}`);
+    await sendMessage(
+      `⚠️ Punt analysis failed: ${err instanceof Error ? err.message : String(err)}`
+    );
   } finally {
     await storage.close();
   }
@@ -99,7 +102,8 @@ export async function runBot(): Promise<void> {
   for (;;) {
     try {
       const url = `${API(TOKEN, "getUpdates")}?timeout=50&offset=${offset}`;
-      const resp = await fetch(url);
+      // Abort at 60s: longer than Telegram's 50s server-side hold, so a hung socket can't wedge the loop.
+      const resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
       const data = (await resp.json()) as { ok: boolean; result?: TgUpdate[] };
       if (!data.ok || !data.result) continue;
 
@@ -111,7 +115,9 @@ export async function runBot(): Promise<void> {
         await handleMessage(msg.text);
       }
     } catch (err) {
-      console.warn(`[oracle-bot] poll error (retrying): ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(
+        `[oracle-bot] poll error (retrying): ${err instanceof Error ? err.message : String(err)}`
+      );
       await new Promise((r) => setTimeout(r, 3_000));
     }
   }

@@ -94,17 +94,20 @@ export function renderPage(): string {
 /** A minimal standalone error/notice page (dark theme). */
 /** Escape HTML special chars for safe interpolation into the punt page. */
 function esc(s: string): string {
-  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+  return s.replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!
+  );
 }
 
 /** The /punt page — paste a SportyBet booking code; shows the awaiting-state banner and last result.
  *  `state` describes today's prompt/fulfilment; `resultHtml` is an optional rendered result block. */
 export function renderPuntPage(
   state: { promptedAt: string | null; fulfilled: boolean; lastCode?: string },
-  resultHtml = '',
+  resultHtml = ""
 ): string {
   const banner = state.fulfilled
-    ? `<div class="banner ok">✅ Today's code processed${state.lastCode ? ` — <code>${esc(state.lastCode)}</code>` : ''}.</div>`
+    ? `<div class="banner ok">✅ Today's code processed${state.lastCode ? ` — <code>${esc(state.lastCode)}</code>` : ""}.</div>`
     : state.promptedAt
       ? `<div class="banner wait">⏳ Awaiting today's booking code. Drop it below 👇</div>`
       : `<div class="banner">Paste a SportyBet booking code to run ORACLE counter-analysis.</div>`;
@@ -129,7 +132,7 @@ ${banner}
   <div class="hint">ORACLE loads the slip, analyses every leg, and emits an adjusted booking code.</div>
 </form>
 <div class="spinner"></div>
-${resultHtml ? `<div class="result">${resultHtml}</div>` : ''}
+${resultHtml ? `<div class="result">${resultHtml}</div>` : ""}
 <script>
 const f=document.getElementById('punt-form');
 f.addEventListener('submit',()=>{document.body.classList.add('loading');});

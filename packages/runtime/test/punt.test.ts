@@ -1,8 +1,8 @@
 import type { BatchResult } from "@oracle/engine";
 import { describe, expect, it } from "vitest";
 import type { RawLeg } from "../../../apps/booking/src/loadCode.js";
-import { counterSlip, loadedSlipToJobs, rawLegToMarketSide } from "../src/punt.js";
 import type { PuntLeg } from "../src/punt.js";
+import { counterSlip, loadedSlipToJobs, rawLegToMarketSide } from "../src/punt.js";
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
 
@@ -19,11 +19,21 @@ function rawLeg(over: Partial<RawLeg> = {}): RawLeg {
 }
 
 /** Minimal FixtureJob-ish placeholder (counterSlip only checks job !== null). */
-const fakeJob = { home: "Arsenal", away: "Chelsea", league: "Premier League", kickoff: "" } as PuntLeg["job"];
+const fakeJob = {
+  home: "Arsenal",
+  away: "Chelsea",
+  league: "Premier League",
+  kickoff: "",
+} as PuntLeg["job"];
 
 /** Build a minimal BatchResult whose only meaningful field is jobs[] (what counterSlip reads). */
 function batchWith(
-  jobs: { home: string; away: string; pick: "NO_BET" | { market: string; side?: string; odds: number; stake?: number }; confidence: number }[],
+  jobs: {
+    home: string;
+    away: string;
+    pick: "NO_BET" | { market: string; side?: string; odds: number; stake?: number };
+    confidence: number;
+  }[]
 ): BatchResult {
   return {
     runId: "t",
@@ -34,7 +44,12 @@ function batchWith(
       status: "ok",
       home: j.home,
       away: j.away,
-      decision: { primaryPick: j.pick, confidence: j.confidence, rationale: "", rejectedAndWhy: [] },
+      decision: {
+        primaryPick: j.pick,
+        confidence: j.confidence,
+        rationale: "",
+        rejectedAndWhy: [],
+      },
     })) as unknown as BatchResult["jobs"],
     completedCount: jobs.length,
     errorCount: 0,
@@ -62,7 +77,9 @@ describe("rawLegToMarketSide", () => {
   });
 
   it("maps BTTS yes/no", () => {
-    expect(rawLegToMarketSide(rawLeg({ marketDesc: "Both Teams to Score", outcomeDesc: "Yes" }))).toEqual({
+    expect(
+      rawLegToMarketSide(rawLeg({ marketDesc: "Both Teams to Score", outcomeDesc: "Yes" }))
+    ).toEqual({
       market: "BTTS",
       side: "Yes",
     });
@@ -89,9 +106,16 @@ describe("counterSlip", () => {
   });
 
   it("CONFIRMED: keeps his pick when ORACLE agrees on market+side", () => {
-    const legs: PuntLeg[] = [{ raw: rawLeg({ marketDesc: "1X2", outcomeDesc: "Home" }), job: fakeJob }];
+    const legs: PuntLeg[] = [
+      { raw: rawLeg({ marketDesc: "1X2", outcomeDesc: "Home" }), job: fakeJob },
+    ];
     const batch = batchWith([
-      { home: "Arsenal", away: "Chelsea", pick: { market: "1X2", side: "Home Win", odds: 2.0 }, confidence: 0.7 },
+      {
+        home: "Arsenal",
+        away: "Chelsea",
+        pick: { market: "1X2", side: "Home Win", odds: 2.0 },
+        confidence: 0.7,
+      },
     ]);
     const [leg] = counterSlip(legs, batch);
     expect(leg?.verdict).toBe("CONFIRMED");
@@ -102,7 +126,12 @@ describe("counterSlip", () => {
     // His pick: Home @ 2.0 → implied 0.50. ORACLE: Away Win @ 70% → 0.70-0.50 = 0.20 ≥ 0.05.
     const legs: PuntLeg[] = [{ raw: rawLeg({ outcomeDesc: "Home", odds: 2.0 }), job: fakeJob }];
     const batch = batchWith([
-      { home: "Arsenal", away: "Chelsea", pick: { market: "1X2", side: "Away Win", odds: 3.2, stake: 0.04 }, confidence: 0.7 },
+      {
+        home: "Arsenal",
+        away: "Chelsea",
+        pick: { market: "1X2", side: "Away Win", odds: 3.2, stake: 0.04 },
+        confidence: 0.7,
+      },
     ]);
     const [leg] = counterSlip(legs, batch);
     expect(leg?.verdict).toBe("ADJUSTED");
@@ -114,7 +143,12 @@ describe("counterSlip", () => {
     // His pick: Home @ 1.25 → implied 0.80. ORACLE: Away @ 82% → 0.82-0.80 = 0.02 < 0.05.
     const legs: PuntLeg[] = [{ raw: rawLeg({ outcomeDesc: "Home", odds: 1.25 }), job: fakeJob }];
     const batch = batchWith([
-      { home: "Arsenal", away: "Chelsea", pick: { market: "1X2", side: "Away Win", odds: 1.22 }, confidence: 0.82 },
+      {
+        home: "Arsenal",
+        away: "Chelsea",
+        pick: { market: "1X2", side: "Away Win", odds: 1.22 },
+        confidence: 0.82,
+      },
     ]);
     const [leg] = counterSlip(legs, batch);
     expect(leg?.verdict).toBe("KEPT_LOW_CONVICTION");
@@ -126,7 +160,12 @@ describe("counterSlip", () => {
 
 describe("loadedSlipToJobs", () => {
   it("returns all job:null when no odds key and nothing in cache", async () => {
-    const slip = { code: "X", legs: [rawLeg(), rawLeg({ home: "Spurs", away: "Everton" })], totalOdds: 4, loadedAt: "" };
+    const slip = {
+      code: "X",
+      legs: [rawLeg(), rawLeg({ home: "Spurs", away: "Everton" })],
+      totalOdds: 4,
+      loadedAt: "",
+    };
     const legs = await loadedSlipToJobs(slip, { oddsApiKey: undefined });
     expect(legs).toHaveLength(2);
     expect(legs.every((l) => l.job === null)).toBe(true);

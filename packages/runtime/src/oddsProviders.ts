@@ -62,11 +62,7 @@ const MIN_OVERROUND = 0.02;
 const MAX_OVERROUND = 0.2;
 
 /** Validate a raw 1X2 triple and compute overround. Returns null if implausible. */
-function validateTriple(
-  h: number,
-  d: number,
-  a: number
-): { overround: number } | null {
+function validateTriple(h: number, d: number, a: number): { overround: number } | null {
   for (const v of [h, d, a]) {
     if (typeof v !== "number" || !Number.isFinite(v) || v < MIN_PRICE || v > MAX_PRICE) {
       return null;
@@ -102,7 +98,12 @@ interface OddsPapiFixturesResponse {
 interface OddsPapiOddsResponse {
   bookmakerOdds?: Record<
     string,
-    { markets?: Record<string, { outcomes?: Record<string, { players?: Record<string, { price?: number }> }> }> }
+    {
+      markets?: Record<
+        string,
+        { outcomes?: Record<string, { players?: Record<string, { price?: number }> }> }
+      >;
+    }
   >;
 }
 
@@ -230,8 +231,7 @@ function parseApiFootballRow(
   for (const bk of row.bookmakers ?? []) {
     const bet = bk.bets?.find((b) => b.id === APIFOOTBALL_1X2_BET_ID);
     if (!bet) continue;
-    const odd = (label: string) =>
-      Number(bet.values.find((v) => v.value === label)?.odd ?? NaN);
+    const odd = (label: string) => Number(bet.values.find((v) => v.value === label)?.odd ?? NaN);
     const h = odd(APIFOOTBALL_VALUE_LABELS.home);
     const d = odd(APIFOOTBALL_VALUE_LABELS.draw);
     const a = odd(APIFOOTBALL_VALUE_LABELS.away);
@@ -264,8 +264,7 @@ export function makeApiFootballProvider(apiKey: string | undefined): OddsProvide
       const fxJson = (await fxRes.json()) as ApiFootballFixturesResponse;
       const fixtureId = (fxJson.response ?? []).find(
         (f) =>
-          namesMatch(f.teams?.home?.name ?? "", home) &&
-          namesMatch(f.teams?.away?.name ?? "", away)
+          namesMatch(f.teams?.home?.name ?? "", home) && namesMatch(f.teams?.away?.name ?? "", away)
       )?.fixture?.id;
       if (!fixtureId) return null;
       // Step 2: fetch odds scoped to that fixture id.

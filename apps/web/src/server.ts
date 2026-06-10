@@ -118,8 +118,10 @@ export async function handleRequest(
     }
     const result = await runPuntAnalysis(code.trim(), deps);
     if (result.oracleCode) markFulfilled(ROOT, code.trim());
-    const block = formatPuntResult(result)
-      .replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string);
+    const block = formatPuntResult(result).replace(
+      /[&<>]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c] as string
+    );
     return html(200, renderPuntPage(readPuntState(ROOT), block));
   }
 

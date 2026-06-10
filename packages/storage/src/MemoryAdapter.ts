@@ -53,12 +53,8 @@ export class MemoryAdapter implements StoragePort {
 
   async query<T>(filter: (item: T) => boolean): Promise<T[]> {
     const keys = await this.list("");
-    const results: T[] = [];
-    for (const key of keys) {
-      const item = await this.get<T>(key);
-      if (item !== null && filter(item)) results.push(item);
-    }
-    return results;
+    const items = (await Promise.all(keys.map((key) => this.get<T>(key)))) as (T | null)[];
+    return items.filter((item): item is T => item !== null && filter(item));
   }
 
   async bulkWrite<T>(key: string, items: T[]): Promise<void> {

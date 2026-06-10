@@ -146,16 +146,9 @@ export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
 
 // ── Public: decide ────────────────────────────────────────────────────────────
 
-// Decision-path model IDs. Kept in sync with @oracle/llm cascade.ts MODELS — the canonical source.
-// Hardcoded here (not imported) to avoid forcing a static @oracle/llm import on the deterministic path,
-// which must run even when the LLM module is absent. Update both locations together.
-const CLAUDE_DECISION_MODEL = "claude-opus-4-8"; // = MODELS.CLAUDE_OPUS
-const GEMINI_DECISION_MODEL = "gemini-3.5-flash"; // = MODELS.GEMINI_PRO (3.5 Flash; was gemini-3.1-pro-preview)
-// OpenRouter fallback model IDs — = OPENROUTER_MODELS in @oracle/llm cascade.ts.
-// Hardcoded for the same reason as the constants above. Update both locations together.
-const OR_GLM_5_1 = "z-ai/glm-5.1"; // Tier 2 paid
-const OR_GPT_OSS = "openai/gpt-oss-120b:free"; // Tier 3 free
-const OR_DEEPSEEK_R1 = "deepseek/deepseek-r1:free"; // Tier 3 free
+// Model IDs come from @oracle/llm cascade.ts (MODELS / OPENROUTER_MODELS) via the same
+// dynamic imports each tier already performs — no static @oracle/llm coupling, so the
+// deterministic path still runs when the LLM module is absent.
 
 /** Calls LLMs to select the best bet.
  *
@@ -194,19 +187,19 @@ export async function decide(
   // ── Tier 1: Claude Opus ───────────────────────────────────────────────────
   if (config?.claudeApiKey) {
     try {
-      const { callClaude } = await import("@oracle/llm");
+      const { callClaude, MODELS } = await import("@oracle/llm");
       const raw = await callClaude(
         prompt,
         {
           config: { claudeApiKey: config.claudeApiKey, geminiApiKey: geminiKey, bankroll: 0 },
           requestedAt,
         },
-        { model: CLAUDE_DECISION_MODEL, maxTokens: 1024 }
+        { model: MODELS.CLAUDE_OPUS, maxTokens: 1024 }
       );
       const replay: DecisionReplay = {
         prompt,
         rawResponse: raw,
-        model: CLAUDE_DECISION_MODEL,
+        model: MODELS.CLAUDE_OPUS,
         temperature: 0,
       };
       const parsed = parseDecisionResponse(raw);
@@ -257,7 +250,7 @@ async function _tryGemini(
 
   // ── Tier 2: Gemini 3.5 ────────────────────────────────────────────────────
   try {
-    const { callGeminiDecision } = await import("@oracle/llm");
+    const { callGeminiDecision, MODELS } = await import("@oracle/llm");
     const raw = await callGeminiDecision(prompt, {
       config: { claudeApiKey: "", geminiApiKey: geminiKey, bankroll: 0 },
       requestedAt,
@@ -265,7 +258,7 @@ async function _tryGemini(
     const replay: DecisionReplay = {
       prompt,
       rawResponse: raw,
-      model: GEMINI_DECISION_MODEL,
+      model: MODELS.GEMINI_PRO,
       temperature: 0,
     };
     const parsed = parseDecisionResponse(raw);
@@ -300,8 +293,12 @@ async function _tryOpenRouter(
     );
   }
 
-  const { callOpenRouterJson } = await import("@oracle/llm");
-  for (const model of [OR_GLM_5_1, OR_GPT_OSS, OR_DEEPSEEK_R1]) {
+  const { callOpenRouterJson, OPENROUTER_MODELS } = await import("@oracle/llm");
+  for (const model of [
+    OPENROUTER_MODELS.GLM_5_1,
+    OPENROUTER_MODELS.GPT_OSS_120B,
+    OPENROUTER_MODELS.DEEPSEEK_R1,
+  ]) {
     const raw = await callOpenRouterJson(
       "You are ORACLE's gated betting decision engine. Return ONLY valid JSON.",
       prompt,

@@ -14,8 +14,11 @@ evidence-backed betting intelligence — autonomously and reliably.
 ## Success Metrics (KPIs)
 - GBM gate accuracy ≥ 52% on held-out test set
 - End-to-end pipeline runtime < 5 min per run
-- Zero unhandled exceptions in production worker over 30 days
-- All 313+ engine tests green at every merge
+- Zero job FAILURES in the production worker over 30 days — measured: every cron job logs
+  `[worker] <ts> <job>: start/ok/FAILED` and successful batch/resolve runs stamp
+  `.tmp/worker_heartbeat.json` (surfaced at web `/health`); a FAILED line or stale heartbeat
+  breaks the streak
+- All 313+ engine tests green at every merge — enforced by CI (.github/workflows/ci.yml)
 
 ## Non-Goals
 - Not a general-purpose chatbot or Q&A tool

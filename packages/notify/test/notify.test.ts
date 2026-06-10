@@ -223,12 +223,10 @@ describe("notifyAll", () => {
 
   it("logs the failing channel to stderr instead of swallowing it", async () => {
     const writes: string[] = [];
-    const spy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(((s: string | Uint8Array) => {
-        writes.push(String(s));
-        return true;
-      }) as typeof process.stderr.write);
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((s: string | Uint8Array) => {
+      writes.push(String(s));
+      return true;
+    }) as typeof process.stderr.write);
     const bad = { name: "telegram", notify: vi.fn().mockRejectedValue(new Error("boom")) };
     await notifyAll([bad], sampleSummary);
     spy.mockRestore();
