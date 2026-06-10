@@ -174,7 +174,7 @@ importers:
         specifier: ^0.52.0
         version: 0.52.0
       '@google/genai':
-        specifier: latest
+        specifier: ^2.8.0
         version: 2.8.0
     devDependencies:
       '@types/node':

@@ -46,10 +46,12 @@ describe("GET routes", () => {
     expect(r.body).toMatch(/Premier League/); // league option from mocked SPORT_TO_LEAGUE
   });
 
-  it("GET /health returns ok json", async () => {
+  it("GET /health returns ok json with worker heartbeat field", async () => {
     const r = await handleRequest("GET", "/health", "", "", deps);
     expect(r.status).toBe(200);
-    expect(JSON.parse(r.body)).toEqual({ ok: true });
+    const parsed = JSON.parse(r.body);
+    expect(parsed.ok).toBe(true);
+    expect(parsed).toHaveProperty("worker"); // null when the worker has never stamped a heartbeat
   });
 
   it("GET /reports/<bad date> → 400", async () => {
@@ -139,6 +141,21 @@ describe("POST /analyze", () => {
     expect(mockParseList).toHaveBeenCalled();
     expect(mockRunAnalysis).toHaveBeenCalledOnce();
     expect(r.body).toMatch(/REPORT/);
+  });
+
+  it("escapes HTML in error notices (XSS regression)", async () => {
+    const payload = "x<script>alert(1)</script><img src=x onerror=alert(1)>"; // no "vs" → hits the parse-error notice that echoes the query
+    const r = await handleRequest(
+      "POST",
+      "/analyze",
+      `query=${encodeURIComponent(payload)}`,
+      "application/x-www-form-urlencoded",
+      deps
+    );
+    expect(r.status).toBe(400);
+    expect(r.body).not.toContain("<script>");
+    expect(r.body).not.toContain("<img");
+    expect(r.body).toContain("&lt;script&gt;");
   });
 
   it("accepts JSON body", async () => {

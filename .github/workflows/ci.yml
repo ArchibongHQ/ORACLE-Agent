@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  node:
+    name: typecheck · test · build · lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # version is read from packageManager in package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Pipeline
+        run: pnpm turbo run typecheck test build
+
+      - name: Lint
+        run: pnpm exec biome ci .
+
+  python:
+    name: pytest tools/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          # scientific stack used by gbm_residual.py (installed separately per docs)
+          pip install pytest numpy pandas xgboost scikit-learn
+
+      - name: Test
+        run: python -m pytest tools/ -q

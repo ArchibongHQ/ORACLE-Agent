@@ -306,7 +306,7 @@ export async function runBatch(
             if (
               route.useBriefing &&
               config.enableBriefing &&
-              (config.claudeApiKey || config.geminiApiKey)
+              (config.claudeApiKey || config.geminiApiKey || config.openrouterApiKey)
             ) {
               try {
                 const { callBriefing } = await import("@oracle/llm");
@@ -317,6 +317,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
                   config: {
                     claudeApiKey: config.claudeApiKey,
                     geminiApiKey: config.geminiApiKey,
+                    openrouterApiKey: config.openrouterApiKey,
                     bankroll: config.bankroll,
                   },
                   requestedAt: new Date().toISOString(),
@@ -343,7 +344,11 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             // Level-2 swarm: fan out sub-agent voters for high-conviction fixtures.
             // AUGMENTS the decision only — injects advisory consensus + divergence into
             // softContext. It never sets primaryPick; decide()/validateSelection remain authoritative.
-            if (route.swarmWorkers > 0 && config.enableSwarm && config.kimiApiKey) {
+            if (
+              route.swarmWorkers > 0 &&
+              config.enableSwarm &&
+              (config.kimiApiKey || config.openrouterApiKey)
+            ) {
               try {
                 const { runSwarm, swarmToSoftContext } = await import("../swarm/index.js");
                 const swarm = await runSwarm(
@@ -385,13 +390,18 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             const route = routeFixture(String(convResult?.tier ?? "VIABLE"));
             // Swarm high-divergence escalates to a CVL pass even on lower tiers.
             const cvlTriggered = (route.useCVL || swarmDivergence) && config.enableCVL;
-            if (cvlTriggered && config.claudeApiKey && rawDecision.primaryPick !== "NO_BET") {
+            if (
+              cvlTriggered &&
+              (config.claudeApiKey || config.openrouterApiKey) &&
+              rawDecision.primaryPick !== "NO_BET"
+            ) {
               const { callVerification } = await import("@oracle/llm");
               const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(eligible.slice(0, 3))}`;
               const llmCtx = {
                 config: {
                   claudeApiKey: config.claudeApiKey,
                   geminiApiKey: config.geminiApiKey,
+                  openrouterApiKey: config.openrouterApiKey,
                   bankroll: config.bankroll,
                 },
                 requestedAt: new Date().toISOString(),

@@ -3,6 +3,9 @@
 credentials.json
 token.json
 
+# Machine-local Claude settings (may contain keys in permission rules)
+.claude/settings.local.json
+
 # Build artifacts
 dist/
 *.js.map

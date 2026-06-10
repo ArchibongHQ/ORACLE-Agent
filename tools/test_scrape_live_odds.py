@@ -256,7 +256,9 @@ class TestVarianceComputation:
             ScrapeResult(
                 source="b",
                 status="success",
-                h2h=OddsOutcome(home=2.051, draw=3.5, away=3.2)  # 2.55% variance
+                # compute_consensus measures max deviation from the MEAN:
+                # mean = 2.0267, |2.08-2.0267|/2.0267 = 2.63% > 2.5% threshold
+                h2h=OddsOutcome(home=2.08, draw=3.5, away=3.2)
             ),
             ScrapeResult(
                 source="c",

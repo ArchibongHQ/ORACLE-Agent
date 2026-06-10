@@ -32,6 +32,11 @@ export class EmailNotifier implements Notifier {
       }),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) throw new Error(`Email API failed: HTTP ${res.status}`);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `Email API failed: HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ""}`
+      );
+    }
   }
 }

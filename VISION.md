@@ -14,8 +14,11 @@ evidence-backed betting intelligence — autonomously and reliably.
 ## Success Metrics (KPIs)
 - GBM gate accuracy ≥ 52% on held-out test set
 - End-to-end pipeline runtime < 5 min per run
-- Zero unhandled exceptions in production worker over 30 days
-- All 313+ engine tests green at every merge
+- Zero job FAILURES in the production worker over 30 days — measured: every cron job logs
+  `[worker] <ts> <job>: start/ok/FAILED` and successful batch/resolve runs stamp
+  `.tmp/worker_heartbeat.json` (surfaced at web `/health`); a FAILED line or stale heartbeat
+  breaks the streak
+- All 313+ engine tests green at every merge — enforced by CI (.github/workflows/ci.yml)
 
 ## Non-Goals
 - Not a general-purpose chatbot or Q&A tool
@@ -30,9 +33,13 @@ evidence-backed betting intelligence — autonomously and reliably.
 ## Roadmap
 - Done: Gemini 3.x SDK swap (Part A), 7 LLM agentic layers B1–B7, split-model GBM,
         H2H enrichment, punt counter-booking pipeline (@oracle/bot), swarm upgrade,
-        T0 news cache, Kaggle dataset integration (Phase 1 tools + GBM feature wiring)
-- Now: Download Kaggle data (user credentials needed) → run backfill + GBM retrain → gate ≥+0.002
-- Next: Phase 2 — FBref PPDA, player injury signals, API-Football lineups wiring
+        T0 news cache, Kaggle Phase 1 (SPI/squad-value/odds-timeseries tools + GBM wiring),
+        Kaggle Phase 2 (FBref PPDA, injuries, referee strictness, match-xG wired into GBM),
+        BTB gzip parser (54k matches), all 15 Kaggle dataset dirs downloaded + processed,
+        GBM retrained with 110-feature matrix (top5 delta -0.0009, base delta +0.0000 — advisory)
+- Now: Top up API credits (Anthropic + Gemini) → run live batch → monitor World Cup window
+- Next: Wire API-Football lineups (needs API_FOOTBALL_KEY) for pre-match injury signals;
+        consider Pinnacle odds API for higher-quality OTS coverage (BTB skews non-top5)
 - Later: Multi-user tier, live odds feed integration
 
 ## Definition of Done

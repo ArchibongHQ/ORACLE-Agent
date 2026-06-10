@@ -83,10 +83,12 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     claudeApiKey: env.CLAUDE_API_KEY ?? "",
     perplexityApiKey: env.PERPLEXITY_API_KEY,
     kimiApiKey: env.KIMI_API_KEY,
+    openrouterApiKey: env.OPENROUTER_API_KEY,
     openWeatherApiKey: env.OPENWEATHER_API_KEY,
     footballDataApiKey: env.FOOTBALL_DATA_API_KEY,
     apiFootballKey: env.API_FOOTBALL_KEY,
     oddsApiKey: env.ODDS_API_KEY,
+    oddsPapiKey: env.ODDSPAPI_KEY,
     bankroll: Number(env.BANKROLL ?? 1000),
     rankingMode: "CONFIDENCE_WEIGHTED",
     // Web search fallback for odds when Odds API fails
@@ -95,7 +97,9 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     webOddsVarianceThreshold: Number(env.WEB_ODDS_VARIANCE_THRESHOLD ?? 0.025),
     // T0 news intel + swarm — opt-in; off unless the key is present and the flag set
     enableNewsIntel: env.ENABLE_NEWS_INTEL?.toLowerCase() === "true" && !!env.PERPLEXITY_API_KEY,
-    enableSwarm: env.ENABLE_SWARM?.toLowerCase() === "true" && !!env.KIMI_API_KEY,
+    enableSwarm:
+      env.ENABLE_SWARM?.toLowerCase() === "true" &&
+      (!!env.KIMI_API_KEY || !!env.OPENROUTER_API_KEY),
     batchConcurrency: Number(env.BATCH_CONCURRENCY ?? 8),
     // Hardware capabilities — detected at startup, never hardcoded
     hasNvidiaGpu: hw.hasNvidiaGpu,

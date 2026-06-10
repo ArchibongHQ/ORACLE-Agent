@@ -13,6 +13,11 @@ export class SlackNotifier implements Notifier {
       body: JSON.stringify({ text: formatSummaryText(summary) }),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) throw new Error(`Slack webhook failed: HTTP ${res.status}`);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(
+        `Slack webhook failed: HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ""}`
+      );
+    }
   }
 }

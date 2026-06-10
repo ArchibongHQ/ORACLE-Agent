@@ -205,8 +205,7 @@ function parseBookingJson(json: unknown): { legs: RawLeg[]; totalOdds: number } 
   if (!legs.length) return null;
 
   // totalOdds not served by API — compute as product of leg odds (rounded to 2dp)
-  const totalOdds =
-    legs.reduce((acc, l) => (l.odds > 0 ? acc * l.odds : acc), 1);
+  const totalOdds = legs.reduce((acc, l) => (l.odds > 0 ? acc * l.odds : acc), 1);
 
   return { legs, totalOdds: Math.round(totalOdds * 100) / 100 };
 }

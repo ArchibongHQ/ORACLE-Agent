@@ -85,83 +85,187 @@ def _linreg_slope(values: list[float]) -> float:
 
 # ── Beat The Bookie parser ─────────────────────────────────────────────────────
 
+def _open_csv(path: Path):
+    """Open a CSV or gzipped CSV, returning a file-like object."""
+    import gzip
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", encoding="latin-1", errors="replace")
+    return open(path, newline="", encoding="utf-8-sig", errors="replace")
+
+
+def _process_btb_wide(odds_path: Path, matches_path: Path) -> list[dict]:
+    """
+    Parse BTB wide-format gzip CSVs.
+
+    odds_series*.csv.gz: match_id, match_date, match_time, score_home, score_away,
+      home_b1_0..home_b1_71 (72 hourly snapshots for bookmaker 1), draw_b1_*, away_b1_*,
+      home_b2_0..., etc.
+    odds_series*_matches.csv.gz: match_id, league, home_team, away_team, score, match_datetime
+
+    Strategy: load match meta from matches file, join on match_id.
+    For each match build home-odds time series from home_b1_0..home_b1_71
+    (index 0 = furthest from kick-off, index 71 = closest).
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        print("[btb] pandas required for wide-format BTB files — skipping", file=sys.stderr)
+        return []
+
+    try:
+        matches = pd.read_csv(matches_path, encoding="latin-1")
+        matches.columns = [c.strip() for c in matches.columns]
+        # strip leading space from column names
+        matches.rename(columns=lambda c: c.strip(), inplace=True)
+    except Exception as exc:
+        print(f"[btb] failed to read matches file {matches_path}: {exc}", file=sys.stderr)
+        return []
+
+    try:
+        odds = pd.read_csv(odds_path, encoding="latin-1")
+        odds.columns = [c.strip() for c in odds.columns]
+    except Exception as exc:
+        print(f"[btb] failed to read odds file {odds_path}: {exc}", file=sys.stderr)
+        return []
+
+    # Home odds columns: home_b1_0 .. home_b1_71 (bookmaker 1 = most common)
+    home_cols = [c for c in odds.columns if c.startswith("home_b1_")]
+    home_cols.sort(key=lambda c: int(c.split("_")[-1]))
+    if not home_cols:
+        print(f"[btb] no home_b1_* columns in {odds_path} — skipping", file=sys.stderr)
+        return []
+
+    # After strip(), match columns are: match_id, league, home_team, away_team, match_datetime
+    meta_cols = [c for c in ["match_id", "league", "home_team", "away_team", "match_datetime"]
+                 if c in matches.columns]
+    merged = odds[["match_id"] + home_cols].merge(
+        matches[meta_cols],
+        on="match_id", how="inner"
+    )
+
+    features: list[dict] = []
+    for _, row in merged.iterrows():
+        odds_seq = []
+        for c in home_cols:
+            try:
+                v = float(row[c])
+                if v > 1.01:
+                    odds_seq.append(v)
+            except (ValueError, TypeError):
+                pass
+        if len(odds_seq) < 2:
+            continue
+
+        opening = odds_seq[0]
+        closing = odds_seq[-1]
+        slope = _linreg_slope(odds_seq)
+        delta = (closing - opening) / opening if opening else 0.0
+
+        league_raw = str(row.get("league", "")).lower().strip()
+        # BTB matches file has format "Country: League Name"
+        league_part = league_raw.split(":")[-1].strip() if ":" in league_raw else league_raw
+        div = BTB_LEAGUE_MAP.get(league_part, "UNK")
+
+        date_str = str(row.get("match_datetime", ""))[:10]
+        features.append({
+            "match_id": f"{date_str}_{row.get('home_team', '')}_{row.get('away_team', '')}",
+            "date": date_str,
+            "home": str(row.get("home_team", "")),
+            "away": str(row.get("away_team", "")),
+            "div": div,
+            "line_movement_slope": round(slope, 6),
+            "opening_to_close_delta": round(delta, 6),
+        })
+
+    return features
+
+
 def process_btb(btb_dir: Path, dry_run: bool) -> list[dict]:
     """
-    Parse Beat The Bookie CSVs.
+    Parse Beat The Bookie CSVs (plain or gzip wide-format).
 
-    Expected format (one row per bookmaker-timestamp per match):
-      MatchID, Date, HomeTeam, AwayTeam, League, BookmakerName,
-      OddsHome, OddsDraw, OddsAway, TimestampHoursBeforeKickoff
-    Falls back to any CSV that has odds columns and a time column.
+    BTB wide format (gzip): odds_series*.csv.gz + odds_series*_matches.csv.gz
+    Legacy format: one row per bookmaker-timestamp per match.
     Returns list of feature dicts (one per match).
     """
     if not btb_dir.exists():
         print(f"[btb] directory not found: {btb_dir} — skipping", file=sys.stderr)
         return []
 
+    # Wide gzip format detection
+    gz_odds = sorted(btb_dir.glob("odds_series*.csv.gz"))
+    # Separate matches files from main odds files
+    matches_files = [p for p in gz_odds if "_matches" in p.name]
+    odds_files = [p for p in gz_odds if "_matches" not in p.name]
+
+    if odds_files and matches_files:
+        all_features: list[dict] = []
+        for odds_path in odds_files:
+            # Find corresponding matches file (e.g. odds_series_b.csv.gz → odds_series_b_matches.csv.gz)
+            stem = odds_path.name.replace(".csv.gz", "")
+            match_path = btb_dir / f"{stem}_matches.csv.gz"
+            if not match_path.exists():
+                # fallback: use first available matches file
+                match_path = matches_files[0]
+            feats = _process_btb_wide(odds_path, match_path)
+            all_features.extend(feats)
+        # Deduplicate by match_id
+        seen: set[str] = set()
+        deduped = []
+        for f in all_features:
+            if f["match_id"] not in seen:
+                seen.add(f["match_id"])
+                deduped.append(f)
+        print(f"[btb] extracted line-movement features for {len(deduped)} matches (wide gzip format)")
+        return deduped
+
+    # Legacy plain-CSV fallback
     csvs = list(btb_dir.rglob("*.csv"))
     if not csvs:
         print(f"[btb] no CSV files found in {btb_dir}", file=sys.stderr)
         return []
 
-    # Accumulate home-odds time series per match key
-    match_series: dict[str, list[tuple[float, float]]] = {}  # key → [(hours_before, home_odds)]
+    match_series: dict[str, list[tuple[float, float]]] = {}
     match_meta: dict[str, dict] = {}
 
     for csv_path in csvs:
         try:
-            with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+            with _open_csv(csv_path) as fh:
                 reader = csv.DictReader(fh)
                 cols = [c.lower().strip() for c in (reader.fieldnames or [])]
-                # Identify relevant columns by common naming patterns
                 home_col = _find_col(cols, ["oddshome", "home_odds", "h_odds", "b365h", "psh"])
                 time_col = _find_col(cols, ["timehoursbeforekickoff", "hours_before", "time_before", "hbk"])
                 home_team_col = _find_col(cols, ["hometeam", "home_team", "home"])
                 away_team_col = _find_col(cols, ["awayteam", "away_team", "away"])
                 date_col = _find_col(cols, ["date", "matchdate", "match_date"])
                 league_col = _find_col(cols, ["league", "div", "division"])
-
                 if not home_col:
-                    continue  # not an odds file
-
+                    continue
                 raw_cols = reader.fieldnames or []
                 col_index = {c.lower().strip(): c for c in raw_cols}
-
                 for row in reader:
                     def get(key: Optional[str]) -> str:
                         return row.get(col_index.get(key or "", ""), "").strip() if key else ""
-
                     home_team = get(home_team_col)
                     away_team = get(away_team_col)
                     date = get(date_col)
                     if not home_team or not away_team or not date:
                         continue
-
                     match_key = f"{date}_{home_team}_{away_team}"
-
                     try:
                         home_odds = float(get(home_col))
                     except (ValueError, TypeError):
                         continue
-
                     try:
                         hours_before = float(get(time_col)) if time_col else 0.0
                     except (ValueError, TypeError):
                         hours_before = 0.0
-
                     if match_key not in match_series:
                         match_series[match_key] = []
                         league_raw = get(league_col).lower()
                         div = BTB_LEAGUE_MAP.get(league_raw, "UNK")
-                        match_meta[match_key] = {
-                            "date": date,
-                            "home": home_team,
-                            "away": away_team,
-                            "div": div,
-                        }
-
+                        match_meta[match_key] = {"date": date, "home": home_team, "away": away_team, "div": div}
                     match_series[match_key].append((hours_before, home_odds))
-
         except Exception as exc:
             print(f"[btb] error reading {csv_path}: {exc}", file=sys.stderr)
 
@@ -169,21 +273,16 @@ def process_btb(btb_dir: Path, dry_run: bool) -> list[dict]:
     for key, series in match_series.items():
         if len(series) < 2:
             continue
-        # Sort by hours_before descending (earliest snapshot first)
         series.sort(key=lambda t: t[0], reverse=True)
         odds_seq = [t[1] for t in series]
         opening = odds_seq[0]
         closing = odds_seq[-1]
         slope = _linreg_slope(odds_seq)
         delta = (closing - opening) / opening if opening else 0.0
-
         meta = match_meta[key]
         features.append({
-            "match_id": key,
-            "date": meta["date"],
-            "home": meta["home"],
-            "away": meta["away"],
-            "div": meta["div"],
+            "match_id": key, "date": meta["date"], "home": meta["home"],
+            "away": meta["away"], "div": meta["div"],
             "line_movement_slope": round(slope, 6),
             "opening_to_close_delta": round(delta, 6),
         })

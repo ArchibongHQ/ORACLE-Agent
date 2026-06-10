@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!ORACLE_v*.jsx", "!ORACLE_v*.js", "!**/dist/**"]
+    "includes": ["**", "!archive", "!ORACLE_v*.jsx", "!ORACLE_v*.js", "!**/dist"]
   },
   "formatter": {
     "enabled": true,

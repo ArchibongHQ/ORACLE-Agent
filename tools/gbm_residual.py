@@ -45,6 +45,10 @@ CLUBELO_DIR = Path(".tmp/clubelo")
 SPI_DIR = Path(".tmp/spi")
 TRANSFERMARKT_DIR = Path(".tmp/transfermarkt")
 ODDS_TIMESERIES_DIR = Path(".tmp/odds-timeseries")
+PPDA_DIR = Path(".tmp/ppda")
+WEATHER_DIR = Path(".tmp/weather")
+AVAILABILITY_DIR = Path(".tmp/squad-availability")
+REVERSE_LM_DIR = Path(".tmp/reverse-lm")
 MODEL_DIR = Path(".tmp/models")
 RPS_IMPROVEMENT_THRESHOLD = 0.002
 MIN_TEST_FIXTURES = 100
@@ -197,91 +201,13 @@ def load_xg(xg_dir: Path) -> pd.DataFrame:
     return xg
 
 
-# Known abbreviation → full name mappings (football-data.co.uk → Understat)
-_TEAM_ALIASES: dict[str, str] = {
-    "man city":              "manchester city",
-    "man united":            "manchester united",
-    "man utd":               "manchester united",
-    "newcastle":             "newcastle united",
-    "nott'm forest":         "nottingham forest",
-    "nottm forest":          "nottingham forest",
-    "wolves":                "wolverhampton wanderers",
-    "spurs":                 "tottenham hotspur",
-    "tottenham":             "tottenham hotspur",
-    "west brom":             "west bromwich albion",
-    "sheffield utd":         "sheffield united",
-    "sheff utd":             "sheffield united",
-    "sheff wed":             "sheffield wednesday",
-    "leicester":             "leicester city",
-    "brighton":              "brighton and hove albion",
-    "norwich":               "norwich city",
-    "cardiff":               "cardiff city",
-    "swansea":               "swansea city",
-    "stoke":                 "stoke city",
-    "hull":                  "hull city",
-    "ipswich":               "ipswich town",
-    "luton":                 "luton town",
-    "burnley":               "burnley",
-    "brentford":             "brentford",
-    "celta":                 "celta vigo",
-    "atletico madrid":       "atletico de madrid",
-    "atletico":              "atletico de madrid",
-    "real betis":            "real betis",
-    "betis":                 "real betis",
-    "sociedad":              "real sociedad",
-    "real sociedad":         "real sociedad",
-    "hertha":                "hertha bsc",
-    "hertha bsc berlin":     "hertha bsc",
-    "rb leipzig":            "rasenballsport leipzig",
-    "eintracht frankfurt":   "frankfurt",
-    "bayer leverkusen":      "bayer 04 leverkusen",
-    "leverkusen":            "bayer 04 leverkusen",
-    "schalke":               "fc schalke 04",
-    "schalke 04":            "fc schalke 04",
-    "hannover":              "hannover 96",
-    "mainz":                 "1 fsv mainz 05",
-    "mainz 05":              "1 fsv mainz 05",
-    "freiburg":              "sport-club freiburg",
-    "sc freiburg":           "sport-club freiburg",
-    "augsburg":              "fc augsburg",
-    "wolfsburg":             "vfl wolfsburg",
-    "inter":                 "internazionale",
-    "inter milan":           "internazionale",
-    "ac milan":              "milan",
-    "verona":                "hellas verona",
-    "hellas verona fc":      "hellas verona",
-    "spal":                  "spal 2013",
-    "chievo":                "chievo verona",
-    "cagliari":              "cagliari",
-    "psg":                   "paris saint-germain",
-    "paris sg":              "paris saint-germain",
-    "st etienne":            "saint-etienne",
-    "saint etienne":         "saint-etienne",
-    "lyon":                  "olympique lyonnais",
-    "marseille":             "olympique de marseille",
-    "nantes":                "fc nantes",
-    "rennes":                "stade rennais fc",
-    "stade rennais":         "stade rennais fc",
-    "bordeaux":              "girondins de bordeaux",
-    "lille":                 "losc lille",
-    "losc":                  "losc lille",
-    "monaco":                "as monaco",
-    "nice":                  "ogc nice",
-    "strasbourg":            "rc strasbourg alsace",
-    "metz":                  "fc metz",
-    "reims":                 "stade de reims",
-}
-
-
-def _normalise_team(name: str) -> str:
-    """
-    Lowercase, strip punctuation, collapse whitespace, then apply alias map.
-    Handles football-data.co.uk abbreviations vs Understat full names.
-    """
-    s = name.lower()
-    s = re.sub(r"[^a-z0-9\s]", "", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return _TEAM_ALIASES.get(s, s)
+# Team-name normalisation lives in the shared module (audit M2-1).
+# Works when run as `python tools/gbm_residual.py` (script dir on sys.path)
+# or imported as part of the repo (`tools.gbm_residual`).
+try:
+    from lib.team_names import TEAM_ALIASES as _TEAM_ALIASES, normalise_team as _normalise_team
+except ImportError:  # repo root on sys.path instead of tools/
+    from tools.lib.team_names import TEAM_ALIASES as _TEAM_ALIASES, normalise_team as _normalise_team
 
 
 def build_xg_lookup(xg: pd.DataFrame) -> dict[tuple, tuple[float, float]]:
@@ -428,6 +354,140 @@ def load_odds_timeseries(ots_dir: Path) -> dict[tuple, dict]:
         return {}
 
 
+def load_ppda(ppda_dir: Path) -> dict[tuple, dict]:
+    """
+    Load PPDA / OPPDA pressing features from .tmp/ppda/ppda_features.csv.
+    Returns lookup: (date_str, norm_home, norm_away) → feature dict.
+    Columns expected: date, home, away, div, ppda_home, ppda_away, oppda_home, oppda_away.
+    Covers top-5 leagues only (slehkyi dataset scope).
+    """
+    path = ppda_dir / "ppda_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "home", "away"])
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["home"])),
+                _normalise_team(str(row["away"])),
+            )
+            lookup[key] = {
+                "ppda_home":  float(row.get("ppda_home",  float("nan"))),
+                "ppda_away":  float(row.get("ppda_away",  float("nan"))),
+                "oppda_home": float(row.get("oppda_home", float("nan"))),
+                "oppda_away": float(row.get("oppda_away", float("nan"))),
+            }
+        print(f"[gbm] PPDA loaded: {len(lookup)} matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] PPDA load failed: {exc}")
+        return {}
+
+
+def load_weather(weather_dir: Path) -> dict[tuple, dict]:
+    """
+    Load match-day weather from .tmp/weather/weather_features.csv.
+    Returns lookup: (date_str, norm_home) → feature dict (keyed on home team =
+    stadium venue). Columns expected: date, home, temp_c, precip_mm, wind_kph,
+    is_adverse. Covers teams in fetch_weather.py TEAM_CITY map (top-5 + English).
+    """
+    path = weather_dir / "weather_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "home"])
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["home"])),
+            )
+            lookup[key] = {
+                "tempC":     float(row.get("temp_c",    float("nan"))),
+                "precipMm":  float(row.get("precip_mm", float("nan"))),
+                "windKph":   float(row.get("wind_kph",  float("nan"))),
+                "isAdverse": float(row.get("is_adverse", float("nan"))),
+            }
+        print(f"[gbm] Weather loaded: {len(lookup)} matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] Weather load failed: {exc}")
+        return {}
+
+
+def load_squad_availability(avail_dir: Path) -> dict[tuple, dict]:
+    """
+    Load match-day squad availability from
+    .tmp/squad-availability/availability_features.csv.
+    Returns lookup: (date_str, norm_club) → feature dict (team-level — join home
+    and away separately). Columns: date, club, availability_idx,
+    key_player_present, starting_xi_value. Derived from Transfermarkt lineups.
+    """
+    path = avail_dir / "availability_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "club"])
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["club"])),
+            )
+            kp = row.get("key_player_present", "")
+            lookup[key] = {
+                "availIdx":  float(row.get("availability_idx", float("nan"))),
+                "keyPlayer": float(kp) if str(kp).strip() not in ("", "nan") else float("nan"),
+            }
+        print(f"[gbm] Squad availability loaded: {len(lookup)} team-matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] Squad availability load failed: {exc}")
+        return {}
+
+
+def load_reverse_lm(reverse_lm_dir: Path) -> dict[tuple, dict]:
+    """
+    Load 1X2 reverse-line-movement features from
+    .tmp/reverse-lm/reverse_lm_features.csv.
+    Returns lookup: (date_str, norm_home, norm_away) → feature dict.
+    Columns: date, home, away, mlHomeDrift, mlDrawDrift, mlReverseLM.
+    Derived from eladsil/football-games-odds moneyline snapshots.
+    """
+    path = reverse_lm_dir / "reverse_lm_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "home", "away"])
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["home"])),
+                _normalise_team(str(row["away"])),
+            )
+            lookup[key] = {
+                "mlHomeDrift": float(row.get("mlHomeDrift", float("nan"))),
+                "mlDrawDrift": float(row.get("mlDrawDrift", float("nan"))),
+                "mlReverseLM": float(row.get("mlReverseLM", float("nan"))),
+            }
+        print(f"[gbm] Reverse-LM loaded: {len(lookup)} matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] Reverse-LM load failed: {exc}")
+        return {}
+
+
 def load_fbref(fbref_dir: Path) -> dict[tuple, dict]:
     """
     Load FBref squad-level season stats.
@@ -558,6 +618,10 @@ def build_features(
     odds_ts_lookup: dict | None = None,
     fbref_lookup: dict | None = None,
     referee_lookup: dict[str, float] | None = None,
+    ppda_lookup: dict | None = None,
+    weather_lookup: dict | None = None,
+    availability_lookup: dict | None = None,
+    reverse_lm_lookup: dict | None = None,
 ) -> pd.DataFrame:
     """
     For each match, compute rolling pre-match features using only data
@@ -800,6 +864,79 @@ def build_features(
             if ref_raw:
                 feat["refStrictness"] = referee_lookup.get(ref_raw, float("nan"))
 
+        # ── PPDA pressing intensity ──
+        # Lower PPDA = more intense pressing (allows fewer passes per defensive action).
+        # Season-level from slehkyi; NaN outside top-5 leagues — XGBoost handles NaN.
+        feat["ppdaHome"]  = float("nan")
+        feat["ppdaAway"]  = float("nan")
+        feat["ppdaDiff"]  = float("nan")
+        feat["oppdaHome"] = float("nan")
+        feat["oppdaAway"] = float("nan")
+        if ppda_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            ppda_key = (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+            ppda_entry = ppda_lookup.get(ppda_key)
+            if ppda_entry:
+                feat["ppdaHome"]  = ppda_entry["ppda_home"]
+                feat["ppdaAway"]  = ppda_entry["ppda_away"]
+                feat["ppdaDiff"]  = ppda_entry["ppda_home"] - ppda_entry["ppda_away"]
+                feat["oppdaHome"] = ppda_entry["oppda_home"]
+                feat["oppdaAway"] = ppda_entry["oppda_away"]
+
+        # ── Match-day weather (home venue) ──
+        # Rain/cold/wind suppress goals and favour defences. Keyed on home team
+        # (= stadium). NaN outside the coordinate map — XGBoost handles NaN.
+        feat["tempC"]     = float("nan")
+        feat["precipMm"]  = float("nan")
+        feat["windKph"]   = float("nan")
+        feat["isAdverse"] = float("nan")
+        if weather_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            wx_entry = weather_lookup.get((date_str, _normalise_team(str(home))))
+            if wx_entry:
+                feat["tempC"]     = wx_entry["tempC"]
+                feat["precipMm"]  = wx_entry["precipMm"]
+                feat["windKph"]   = wx_entry["windKph"]
+                feat["isAdverse"] = wx_entry["isAdverse"]
+
+        # ── Match-day squad availability (Transfermarkt lineups, top-5 only) ──
+        # availIdx = matchday squad value / rolling-peak squad value (<1 = depleted).
+        # keyPlayer = club's top-valued player in today's squad (1/0). NaN elsewhere.
+        feat["availIdxHome"] = float("nan")
+        feat["availIdxAway"] = float("nan")
+        feat["keyPlayerHome"] = float("nan")
+        feat["keyPlayerAway"] = float("nan")
+        feat["availIdxDiff"] = float("nan")
+        if availability_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            h_av = availability_lookup.get((date_str, _normalise_team(str(home))))
+            a_av = availability_lookup.get((date_str, _normalise_team(str(away))))
+            if h_av:
+                feat["availIdxHome"]  = h_av["availIdx"]
+                feat["keyPlayerHome"] = h_av["keyPlayer"]
+            if a_av:
+                feat["availIdxAway"]  = a_av["availIdx"]
+                feat["keyPlayerAway"] = a_av["keyPlayer"]
+            if h_av and a_av and pd.notna(h_av["availIdx"]) and pd.notna(a_av["availIdx"]):
+                feat["availIdxDiff"] = h_av["availIdx"] - a_av["availIdx"]
+
+        # ── 1X2 reverse line movement (moneyline opening→closing drift) ──
+        # mlHomeDrift = de-vigged home prob shift; mlReverseLM = 1 when the line
+        # moved against the opening favourite (sharp-money signal). Distinct from
+        # the AH line-movement above. NaN outside coverage — XGBoost handles NaN.
+        feat["mlHomeDrift"] = float("nan")
+        feat["mlDrawDrift"] = float("nan")
+        feat["mlReverseLM"] = float("nan")
+        if reverse_lm_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            rlm_entry = reverse_lm_lookup.get(
+                (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+            )
+            if rlm_entry:
+                feat["mlHomeDrift"] = rlm_entry["mlHomeDrift"]
+                feat["mlDrawDrift"] = rlm_entry["mlDrawDrift"]
+                feat["mlReverseLM"] = rlm_entry["mlReverseLM"]
+
         # ── Head-to-head features (directional: home vs away) ──
         # Uses only prior meetings between this exact pair (home_team at home).
         # Shrink toward overall league average when sample is thin (k=5).
@@ -872,11 +1009,20 @@ def build_features(
     fbref_coverage = f"{fbref_hits}/{len(features)} ({100*fbref_hits/n:.1f}%)" if fbref_lookup else "disabled"
     ref_hits = int(features["refStrictness"].notna().sum()) if "refStrictness" in features.columns else 0
     ref_coverage = f"{ref_hits}/{len(features)} ({100*ref_hits/n:.1f}%)" if referee_lookup else "disabled"
+    ppda_hits = int(features["ppdaHome"].notna().sum()) if "ppdaHome" in features.columns else 0
+    ppda_coverage = f"{ppda_hits}/{len(features)} ({100*ppda_hits/n:.1f}%)" if ppda_lookup else "disabled"
+    wx_hits = int(features["tempC"].notna().sum()) if "tempC" in features.columns else 0
+    wx_coverage = f"{wx_hits}/{len(features)} ({100*wx_hits/n:.1f}%)" if weather_lookup else "disabled"
+    av_hits = int(features["availIdxHome"].notna().sum()) if "availIdxHome" in features.columns else 0
+    av_coverage = f"{av_hits}/{len(features)} ({100*av_hits/n:.1f}%)" if availability_lookup else "disabled"
+    rlm_hits = int(features["mlReverseLM"].notna().sum()) if "mlReverseLM" in features.columns else 0
+    rlm_coverage = f"{rlm_hits}/{len(features)} ({100*rlm_hits/n:.1f}%)" if reverse_lm_lookup else "disabled"
     print(
         f"[gbm] Feature matrix: {len(features)} rows x {len(features.columns)} cols"
         f" | xG: {xg_coverage} | Elo: {elo_coverage}"
         f" | SPI: {spi_coverage} | SV: {sv_coverage} | OTS: {ots_coverage}"
-        f" | FBref: {fbref_coverage} | Ref: {ref_coverage}"
+        f" | FBref: {fbref_coverage} | Ref: {ref_coverage} | PPDA: {ppda_coverage}"
+        f" | Wx: {wx_coverage} | Avail: {av_coverage} | RLM: {rlm_coverage}"
     )
     return features
 
@@ -1271,6 +1417,14 @@ def main() -> None:
     parser.add_argument("--no-spi", action="store_true", help="Disable SPI features")
     parser.add_argument("--no-squad-value", action="store_true", help="Disable squad market value features")
     parser.add_argument("--no-odds-ts", action="store_true", help="Disable odds time-series features")
+    parser.add_argument("--ppda-dir", default=str(PPDA_DIR), help="Path to .tmp/ppda/ PPDA features")
+    parser.add_argument("--no-ppda", action="store_true", help="Disable PPDA pressing features")
+    parser.add_argument("--weather-dir", default=str(WEATHER_DIR), help="Path to .tmp/weather/ match-day weather features")
+    parser.add_argument("--no-weather", action="store_true", help="Disable weather features")
+    parser.add_argument("--availability-dir", default=str(AVAILABILITY_DIR), help="Path to .tmp/squad-availability/ availability features")
+    parser.add_argument("--no-availability", action="store_true", help="Disable squad-availability features")
+    parser.add_argument("--reverse-lm-dir", default=str(REVERSE_LM_DIR), help="Path to .tmp/reverse-lm/ 1X2 line-movement features")
+    parser.add_argument("--no-reverse-lm", action="store_true", help="Disable reverse-line-movement features")
     parser.add_argument("--n-estimators", type=int, default=400, help="XGBoost n_estimators (default 400)")
     parser.add_argument("--rolling-folds", type=int, default=1, help="N-fold rolling walk-forward (default 1 = single holdout)")
     parser.add_argument(
@@ -1358,6 +1512,42 @@ def main() -> None:
     else:
         print("[gbm] Match-stats dir not found (.tmp/match-stats) -- run fetch_match_stats.py first")
 
+    # 2h. PPDA pressing intensity (optional — from fetch_ppda.py, top-5 only)
+    ppda_lookup = None
+    if not args.no_ppda:
+        ppda_dir = Path(args.ppda_dir)
+        if ppda_dir.exists():
+            ppda_lookup = load_ppda(ppda_dir)
+        else:
+            print(f"[gbm] PPDA dir not found ({ppda_dir}) -- run fetch_ppda.py first, or use --no-ppda")
+
+    # 2i. Match-day weather (optional — from fetch_weather.py, Open-Meteo)
+    weather_lookup = None
+    if not args.no_weather:
+        weather_dir = Path(args.weather_dir)
+        if weather_dir.exists():
+            weather_lookup = load_weather(weather_dir)
+        else:
+            print(f"[gbm] Weather dir not found ({weather_dir}) -- run fetch_weather.py first, or use --no-weather")
+
+    # 2j. Squad availability (optional — from fetch_squad_availability.py, top-5 only)
+    availability_lookup = None
+    if not args.no_availability:
+        avail_dir = Path(args.availability_dir)
+        if avail_dir.exists():
+            availability_lookup = load_squad_availability(avail_dir)
+        else:
+            print(f"[gbm] Availability dir not found ({avail_dir}) -- run fetch_squad_availability.py first, or use --no-availability")
+
+    # 2k. 1X2 reverse line movement (optional — from fetch_reverse_lm.py)
+    reverse_lm_lookup = None
+    if not args.no_reverse_lm:
+        rlm_dir = Path(args.reverse_lm_dir)
+        if rlm_dir.exists():
+            reverse_lm_lookup = load_reverse_lm(rlm_dir)
+        else:
+            print(f"[gbm] Reverse-LM dir not found ({rlm_dir}) -- run fetch_reverse_lm.py first, or use --no-reverse-lm")
+
     # 3. Feature engineering
     features = build_features(
         df,
@@ -1369,6 +1559,10 @@ def main() -> None:
         odds_ts_lookup=odds_ts_lookup,
         fbref_lookup=fbref_lookup,
         referee_lookup=referee_lookup,
+        ppda_lookup=ppda_lookup,
+        weather_lookup=weather_lookup,
+        availability_lookup=availability_lookup,
+        reverse_lm_lookup=reverse_lm_lookup,
     )
     if features.empty:
         print("[gbm] No feature rows built.")

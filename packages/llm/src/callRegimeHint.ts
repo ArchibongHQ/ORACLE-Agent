@@ -4,7 +4,8 @@
  *  Does NOT override the deterministic regime used for math — advisory only.
  *  Returns a RegimeHint that the engine may log but never feed back into probability math. */
 import { GoogleGenAI } from "@google/genai";
-import { MODELS } from "./cascade.js";
+import { callOpenRouterJson } from "./callOpenRouter.js";
+import { MODELS, OPENROUTER_MODELS } from "./cascade.js";
 import type { LLMCallContext } from "./types.js";
 
 export type RegimeHintLabel =
@@ -75,19 +76,41 @@ export async function callRegimeHint(
     advisory: true,
   };
 
-  if (!ctx.config.geminiApiKey) return fallback;
-
-  try {
-    const ai = new GoogleGenAI({ apiKey: ctx.config.geminiApiKey });
-    const result = await ai.models.generateContent({
-      model: MODELS.GEMINI_FLASH,
-      contents: `${REGIME_SYSTEM}\n\nSoft context:\n${softContextSummary}`,
-      config: { thinkingConfig: { thinkingBudget: 0 } },
-    });
-    const text = result.text ?? "";
-    const parsed = parseHintResponse(text);
-    return { ...parsed, model: MODELS.GEMINI_FLASH, advisory: true };
-  } catch {
-    return fallback;
+  // Tier 1: Gemini Flash (when key present)
+  if (ctx.config.geminiApiKey) {
+    try {
+      const ai = new GoogleGenAI({ apiKey: ctx.config.geminiApiKey });
+      const result = await ai.models.generateContent({
+        model: MODELS.GEMINI_FLASH,
+        contents: `${REGIME_SYSTEM}\n\nSoft context:\n${softContextSummary}`,
+        config: { thinkingConfig: { thinkingBudget: 0 } },
+      });
+      const text = result.text ?? "";
+      const parsed = parseHintResponse(text);
+      return { ...parsed, model: MODELS.GEMINI_FLASH, advisory: true };
+    } catch {
+      // Fall through to OpenRouter Tier 3 (advisory only — Tier 2 is overkill here)
+    }
   }
+
+  // Tier 3: GLM-4.5 Air (free) — advisory only
+  if (ctx.config.openrouterApiKey) {
+    try {
+      const raw = await callOpenRouterJson(
+        REGIME_SYSTEM,
+        softContextSummary,
+        OPENROUTER_MODELS.GLM_4_5_AIR,
+        ctx.config.openrouterApiKey,
+        0
+      );
+      if (raw) {
+        const parsed = parseHintResponse(raw);
+        return { ...parsed, model: OPENROUTER_MODELS.GLM_4_5_AIR, advisory: true };
+      }
+    } catch {
+      // still advisory
+    }
+  }
+
+  return fallback;
 }

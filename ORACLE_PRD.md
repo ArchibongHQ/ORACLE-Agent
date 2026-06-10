@@ -1,6 +1,12 @@
 # ORACLE — Product Requirements & Technical Specification
 ### Omniscient Research & Analytical Computation for League Evaluation
-**Document version:** 1.2.1 · **Target build:** v2027.0 · **Status:** Draft for implementation
+**Document version:** 1.2.1 · **Target build:** v2027.0 · **Status:** ⚠️ HISTORICAL — Phase 0 complete
+
+> **⚠️ Archive notice (2026-06-10).** Phase 0 extracted the monolith into `packages/` and this
+> document's `line ~N` references are no longer valid (see §0 note). The pre-refactor monolith now
+> lives in `archive/ORACLE_v2026_8_0.jsx`. For current architecture and commands read `README.md`,
+> `VISION.md`, and `CLAUDE.md`; for operations read `workflows/`. This spec remains the rationale
+> record for the objective function (§2), methodology gates (§8), and agent-ops contract (§11A).
 
 > **Changelog v1.2 → v1.2.1 (data-source currency pass, June 2026).** Re-verified every source in §8.7/§14 against the live web. Corrections: **FiveThirtyEight removed** (SPI discontinued, dropped from `soccerdata`); `soccerdata` wrapped-source list updated (v1.9.0; adds ESPN/Sofascore/SoFIFA/WhoScored); **Understat** narrowed to top-5 leagues (RPL no longer listed, flagged to verify) and marked scraping-fragile; **FBref** flagged Cloudflare + tightened rate-limit (wrapper-only); **Kaggle** dataset is 27 countries / 42 leagues; **the-odds-api free tier (500 credits/mo ≈ 16 req/day)** added as a named §7/§11A.4 batch constraint — it cannot feed a full 39-fixture daily batch, forcing a Phase-3 paid-tier-vs-throttle decision.
 >

@@ -58,9 +58,11 @@ export class SqlAdapter implements StoragePort {
 
   async list(prefix: string): Promise<string[]> {
     await this._ensureSchema();
+    // Escape LIKE wildcards so a literal % or _ in the prefix doesn't widen the match.
+    const literal = prefix.replace(/[\\%_]/g, "\\$&");
     const { rows } = await this._query(
-      "SELECT key FROM kv_store WHERE key LIKE $1 || '%' ORDER BY key",
-      [prefix]
+      "SELECT key FROM kv_store WHERE key LIKE $1 || '%' ESCAPE '\\' ORDER BY key",
+      [literal]
     );
     return rows.map((r) => r.key as string);
   }

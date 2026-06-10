@@ -5,8 +5,12 @@
  *  Emits FRAMING_BIAS_DETECTED when neutral-persona Kelly diverges >15%. */
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI } from "@google/genai";
-import { MODELS } from "./cascade.js";
+import { callOpenRouterJson } from "./callOpenRouter.js";
+import { MODELS, OPENROUTER_MODELS } from "./cascade.js";
 import type { LLMCallContext } from "./types.js";
+
+const BRIEFING_OR_SYSTEM =
+  "You are ORACLE's pre-match briefing analyst. Analyse the provided fixture context and return your assessment as valid JSON.";
 
 export interface BriefingResult {
   text: string;
@@ -119,9 +123,34 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
 
   // Fallback: Gemini temperature ensemble
   if (ctx.config.geminiApiKey) {
-    const text = await geminiEnsembleBriefing(prompt, ctx, flags);
-    return { text, model: MODELS.GEMINI_FLASH, flags };
+    try {
+      const text = await geminiEnsembleBriefing(prompt, ctx, flags);
+      return { text, model: MODELS.GEMINI_FLASH, flags };
+    } catch {
+      // Fall through to OpenRouter tiers
+    }
   }
 
-  throw new Error("callBriefing: no LLM key available");
+  // Tier 2/3: OpenRouter — Qwen3 235B Thinking then DeepSeek R1
+  if (ctx.config.openrouterApiKey) {
+    const t2 = await callOpenRouterJson(
+      BRIEFING_OR_SYSTEM,
+      prompt,
+      OPENROUTER_MODELS.QWEN3_235B_THINKING,
+      ctx.config.openrouterApiKey,
+      0
+    );
+    if (t2) return { text: t2, model: OPENROUTER_MODELS.QWEN3_235B_THINKING, flags };
+
+    const t3 = await callOpenRouterJson(
+      BRIEFING_OR_SYSTEM,
+      prompt,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
+      ctx.config.openrouterApiKey,
+      0
+    );
+    if (t3) return { text: t3, model: OPENROUTER_MODELS.DEEPSEEK_R1, flags };
+  }
+
+  throw new Error("callBriefing: no LLM available");
 }

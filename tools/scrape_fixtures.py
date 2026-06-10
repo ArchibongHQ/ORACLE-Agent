@@ -79,25 +79,13 @@ _SUFFIX_RE = re.compile(
 _NONALNUM_RE = re.compile(r"[^a-z0-9\s]")
 _WS_RE = re.compile(r"\s+")
 
-# Country-name aliases for cross-source dedup (long form → short canonical)
-_COUNTRY_ALIASES: dict[str, str] = {
-    "czech republic": "czechia",
-    "türkiye": "turkey",
-    "turkiye": "turkey",
-    "côte d'ivoire": "ivory coast",
-    "cote divoire": "ivory coast",
-    "ivory coast": "ivory coast",
-    "bosnia and herzegovina": "bosnia herzegovina",
-    "bosnia & herzegovina": "bosnia herzegovina",
-    "republic of ireland": "ireland",
-    "northern mariana islands": "nmi",
-    "democratic republic of congo": "dr congo",
-    "cape verde": "cabo verde",
-    "south korea": "korea",
-    "korea republic": "korea",
-    "football union of russia": "russia",
-    "chinese taipei": "taiwan",
-}
+# Country/team aliases for cross-source dedup now live in the shared module
+# (audit M2-1) — TEAM_ALIASES is a superset of the old _COUNTRY_ALIASES and
+# also canonicalises club-name variants across sources.
+try:
+    from lib.team_names import TEAM_ALIASES as _COUNTRY_ALIASES
+except ImportError:  # repo root on sys.path instead of tools/
+    from tools.lib.team_names import TEAM_ALIASES as _COUNTRY_ALIASES
 
 # Women/U-age suffix patterns stripped before dedup
 _WOMEN_RE = re.compile(r"\s+(women|w|ladies)$", re.IGNORECASE)
