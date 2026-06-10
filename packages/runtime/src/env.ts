@@ -89,6 +89,8 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     apiFootballKey: env.API_FOOTBALL_KEY,
     oddsApiKey: env.ODDS_API_KEY,
     oddsPapiKey: env.ODDSPAPI_KEY,
+    oddsApiIoKey: env.ODDS_API_IO_KEY,
+    sportsGameOddsKey: env.SPORTS_GAMEODDS_KEY,
     bankroll: Number(env.BANKROLL ?? 1000),
     rankingMode: "CONFIDENCE_WEIGHTED",
     // Web search fallback for odds when Odds API fails

@@ -89,6 +89,8 @@ export interface OracleConfig {
   apiFootballKey?: string;
   oddsApiKey?: string;
   oddsPapiKey?: string; // structured free-odds fallback (OddsPapi, sharp books)
+  oddsApiIoKey?: string; // structured free-odds fallback (Odds-API.io, 100 req/hr free)
+  sportsGameOddsKey?: string; // structured free-odds fallback (SportsGameOdds, Pinnacle)
   bankroll: number;
   rankingMode?: RankingMode; // default CONFIDENCE_WEIGHTED
   useBivariatePoisson?: boolean; // PRD §8.1, default false

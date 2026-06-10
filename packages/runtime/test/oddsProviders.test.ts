@@ -115,18 +115,18 @@ describe("buildOddsProviders", () => {
     expect(providers.map((p) => p.name)).toEqual([
       "oddspapi",
       "api-football",
+      "odds-api-io",
       "sportsgameodds",
-      "rapidoddsapi",
       "bsd",
     ]);
     expect(providers.map((p) => p.tier)).toEqual([2, 3, 4, 5, 6]);
   });
 
-  it("marks only OddsPapi and SportsGameOdds as sharp", () => {
+  it("marks OddsPapi, Odds-API.io and SportsGameOdds as sharp", () => {
     const sharp = buildOddsProviders({})
       .filter((p) => p.isSharp)
       .map((p) => p.name);
-    expect(sharp).toEqual(["oddspapi", "sportsgameodds"]);
+    expect(sharp).toEqual(["oddspapi", "odds-api-io", "sportsgameodds"]);
   });
 
   it("reports no quota for providers without a key", () => {
@@ -135,20 +135,19 @@ describe("buildOddsProviders", () => {
   });
 
   it("reports quota only for wired providers once their key is present", () => {
-    const providers = buildOddsProviders({ oddsPapiKey: "k", apiFootballKey: "k2" });
+    const providers = buildOddsProviders({
+      oddsPapiKey: "k",
+      apiFootballKey: "k2",
+      oddsApiIoKey: "k3",
+      sportsGameOddsKey: "k4",
+    });
     const withQuota = providers.filter((p) => p.hasQuota()).map((p) => p.name);
-    expect(withQuota).toEqual(["oddspapi", "api-football"]);
+    expect(withQuota).toEqual(["oddspapi", "api-football", "odds-api-io", "sportsgameodds"]);
   });
 
   it("never grants quota to stub providers even with a key (not implemented)", () => {
-    const providers = buildOddsProviders({
-      sportsGameOddsKey: "k",
-      rapidOddsApiKey: "k",
-      bsdKey: "k",
-    });
-    const stubs = providers.filter((p) =>
-      ["sportsgameodds", "rapidoddsapi", "bsd"].includes(p.name)
-    );
+    const providers = buildOddsProviders({ bsdKey: "k" });
+    const stubs = providers.filter((p) => p.name === "bsd");
     expect(stubs.every((p) => !p.hasQuota())).toBe(true);
   });
 });
@@ -199,6 +198,11 @@ describe("OddsPapi provider fetch", () => {
     expect(res).not.toBeNull();
     expect(res!.isSharp).toBe(true);
     expect(res!.home).toBe(2.05);
+    expect(res!.draw).toBe(3.5);
+    expect(res!.away).toBe(3.8);
+    expect(res!.confidence).toBe(0.85);
+    expect(res!.provider).toBe("oddspapi");
+    expect(res!.overround).toBeGreaterThan(0);
     expect(res!.sources[0]).toContain("pinnacle");
   });
 
@@ -270,5 +274,243 @@ describe("API-Football provider fetch", () => {
     expect(res!.draw).toBe(3.4);
     // Step 2 must be scoped to the resolved fixture id, not a bulk date query.
     expect(String(spy.mock.calls[1]![0])).toContain("fixture=42");
+  });
+});
+
+describe("Odds-API.io provider fetch", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const mockEventsAndOdds = (bookmakers: Record<string, unknown>) =>
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/events")) {
+        return new Response(
+          JSON.stringify([
+            { id: 9001, home: "Arsenal FC", away: "Chelsea FC", date: "2026-06-09T15:00:00Z" },
+          ]),
+          { status: 200 }
+        );
+      }
+      // /odds
+      return new Response(JSON.stringify({ bookmakers }), { status: 200 });
+    });
+
+  it("resolves the event then parses a SingBet ML triple as sharp", async () => {
+    const spy = mockEventsAndOdds({
+      SingBet: [{ name: "ML", odds: [{ home: "2.10", draw: "3.40", away: "3.20" }] }],
+    });
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    const res = await oddsApiIo.fetch(...FX);
+    expect(res).not.toBeNull();
+    expect(res!.isSharp).toBe(true);
+    expect(res!.home).toBe(2.1); // string prices parsed to numbers
+    expect(res!.draw).toBe(3.4);
+    expect(res!.sources[0]).toBe("odds-api-io:SingBet");
+    // Odds call must be scoped to the resolved event id.
+    expect(String(spy.mock.calls[1]![0])).toContain("eventId=9001");
+  });
+
+  it("falls back to a soft book when no sharp book returns the ML market", async () => {
+    mockEventsAndOdds({
+      Bet365: [{ name: "ML", odds: [{ home: "2.05", draw: "3.50", away: "3.30" }] }],
+    });
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    const res = await oddsApiIo.fetch(...FX);
+    expect(res).not.toBeNull();
+    expect(res!.isSharp).toBe(false);
+    expect(res!.confidence).toBe(0.7);
+  });
+
+  it("rejects an implausible triple via validateTriple", async () => {
+    mockEventsAndOdds({
+      SingBet: [{ name: "ML", odds: [{ home: "1.001", draw: "3.40", away: "3.20" }] }],
+    });
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    expect(await oddsApiIo.fetch(...FX)).toBeNull();
+  });
+
+  it("throws on 429 so the chain skips it as quota-exhausted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 429 }));
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    await expect(oddsApiIo.fetch(...FX)).rejects.toThrow("quota exhausted");
+  });
+
+  it("returns null when no event matches the team names", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), { status: 200 })
+    );
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    expect(await oddsApiIo.fetch(...FX)).toBeNull();
+  });
+
+  it("handles the { events: [...] } wrapper response shape", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/events")) {
+        // Wrapped shape (not a bare array)
+        return new Response(
+          JSON.stringify({
+            events: [
+              { id: 9002, home: "Arsenal FC", away: "Chelsea FC", date: "2026-06-09T15:00:00Z" },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          bookmakers: {
+            Pinnacle: [{ name: "ML", odds: [{ home: "2.10", draw: "3.40", away: "3.20" }] }],
+          },
+        }),
+        { status: 200 }
+      );
+    });
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    const res = await oddsApiIo.fetch(...FX);
+    expect(res).not.toBeNull();
+    expect(res!.home).toBe(2.1);
+  });
+
+  it("rejects an event whose kickoff date does not match the fixture date", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/events")) {
+        return new Response(
+          JSON.stringify([
+            // same teams but DIFFERENT date (next day)
+            { id: 9003, home: "Arsenal FC", away: "Chelsea FC", date: "2026-06-10T15:00:00Z" },
+          ]),
+          { status: 200 }
+        );
+      }
+      return new Response(JSON.stringify({ bookmakers: {} }), { status: 200 });
+    });
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    // FX kickoff is 2026-06-09, event is 2026-06-10 → no match
+    expect(await oddsApiIo.fetch(...FX)).toBeNull();
+  });
+});
+
+describe("SportsGameOdds provider fetch", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const sgoEvent = (odds: Record<string, unknown>) => ({
+    data: [
+      {
+        eventID: "ev-1",
+        teams: { home: { names: { long: "Arsenal FC" } }, away: { names: { long: "Chelsea FC" } } },
+        odds,
+      },
+    ],
+  });
+
+  it("converts Pinnacle American odds to decimal and flags the result sharp", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          sgoEvent({
+            "points-home-game-ml3way-home": {
+              odds: "+115",
+              byBookmaker: { pinnacle: { odds: "+110", available: true } },
+            },
+            "points-all-game-ml3way-draw": {
+              odds: "+240",
+              byBookmaker: { pinnacle: { odds: "+245", available: true } },
+            },
+            "points-away-game-ml3way-away": {
+              odds: "+220",
+              byBookmaker: { pinnacle: { odds: "+225", available: true } },
+            },
+          })
+        ),
+        { status: 200 }
+      )
+    );
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    const res = await sgo.fetch(...FX);
+    expect(res).not.toBeNull();
+    expect(res!.isSharp).toBe(true);
+    expect(res!.home).toBeCloseTo(2.1, 5); // +110 → 2.10
+    expect(res!.draw).toBeCloseTo(3.45, 5); // +245 → 3.45
+    expect(res!.away).toBeCloseTo(3.25, 5); // +225 → 3.25
+    expect(res!.sources[0]).toBe("sportsgameodds:pinnacle");
+  });
+
+  it("falls back to consensus odds (non-sharp) when Pinnacle is missing a side", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          sgoEvent({
+            "points-home-game-ml3way-home": {
+              odds: "-110", // -110 → 1.909…
+              byBookmaker: { pinnacle: { odds: "+110", available: true } },
+            },
+            "points-all-game-ml3way-draw": { odds: "+250" }, // no pinnacle side
+            "points-away-game-ml3way-away": { odds: "+260" },
+          })
+        ),
+        { status: 200 }
+      )
+    );
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    const res = await sgo.fetch(...FX);
+    expect(res).not.toBeNull();
+    expect(res!.isSharp).toBe(false);
+    expect(res!.home).toBeCloseTo(1 + 100 / 110, 5); // negative American conversion
+    expect(res!.sources[0]).toBe("sportsgameodds:consensus");
+  });
+
+  it("returns null when the 3-way moneyline market is absent", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(sgoEvent({})), { status: 200 })
+    );
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    expect(await sgo.fetch(...FX)).toBeNull();
+  });
+
+  it("returns null when no event matches the team names", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 })
+    );
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    expect(await sgo.fetch(...FX)).toBeNull();
+  });
+
+  it("throws on 429 so the chain skips it as quota-exhausted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 429 }));
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    await expect(sgo.fetch(...FX)).rejects.toThrow("quota exhausted");
+  });
+
+  it("returns null when consensus odds are non-numeric or zero (americanToDecimal edge cases)", async () => {
+    // "0" and "abc" should both produce NaN → validateTriple rejects → null
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          sgoEvent({
+            "points-home-game-ml3way-home": { odds: "0" },
+            "points-all-game-ml3way-draw": { odds: "abc" },
+            "points-away-game-ml3way-away": { odds: "+220" },
+          })
+        ),
+        { status: 200 }
+      )
+    );
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    expect(await sgo.fetch(...FX)).toBeNull();
   });
 });

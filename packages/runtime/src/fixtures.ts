@@ -564,11 +564,19 @@ export async function fetchTodaysFixtures(
   footballDataApiKey?: string,
   perplexityApiKey?: string,
   oddsPapiKey?: string,
-  apiFootballKey?: string
+  apiFootballKey?: string,
+  oddsApiIoKey?: string,
+  sportsGameOddsKey?: string
 ): Promise<FetchResult> {
-  // Structured free-API odds providers (OddsPapi → API-Football → stubs). Built
-  // once; the gap-fill tries this chain before the Gemini/web-search degraded path.
-  const oddsProviders = buildOddsProviders({ oddsPapiKey, apiFootballKey });
+  // Structured free-API odds providers (OddsPapi → API-Football → Odds-API.io →
+  // SportsGameOdds). Built once; the gap-fill tries this chain before the
+  // Gemini/web-search degraded path.
+  const oddsProviders = buildOddsProviders({
+    oddsPapiKey,
+    apiFootballKey,
+    oddsApiIoKey,
+    sportsGameOddsKey,
+  });
 
   // T0 news intel runs after H2H on every return path (cache-first, non-fatal);
   // API-Football lineups (file-read from fetch_lineups.py output) merge last.

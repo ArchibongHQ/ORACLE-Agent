@@ -225,7 +225,9 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     config.footballDataApiKey,
     newsKey,
     config.oddsPapiKey,
-    config.apiFootballKey
+    config.apiFootballKey,
+    config.oddsApiIoKey,
+    config.sportsGameOddsKey
   );
 
   if (!jobs.length) {
