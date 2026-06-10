@@ -48,6 +48,7 @@ ODDS_TIMESERIES_DIR = Path(".tmp/odds-timeseries")
 PPDA_DIR = Path(".tmp/ppda")
 WEATHER_DIR = Path(".tmp/weather")
 AVAILABILITY_DIR = Path(".tmp/squad-availability")
+REVERSE_LM_DIR = Path(".tmp/reverse-lm")
 MODEL_DIR = Path(".tmp/models")
 RPS_IMPROVEMENT_THRESHOLD = 0.002
 MIN_TEST_FIXTURES = 100
@@ -531,6 +532,40 @@ def load_squad_availability(avail_dir: Path) -> dict[tuple, dict]:
         return {}
 
 
+def load_reverse_lm(reverse_lm_dir: Path) -> dict[tuple, dict]:
+    """
+    Load 1X2 reverse-line-movement features from
+    .tmp/reverse-lm/reverse_lm_features.csv.
+    Returns lookup: (date_str, norm_home, norm_away) → feature dict.
+    Columns: date, home, away, mlHomeDrift, mlDrawDrift, mlReverseLM.
+    Derived from eladsil/football-games-odds moneyline snapshots.
+    """
+    path = reverse_lm_dir / "reverse_lm_features.csv"
+    if not path.exists():
+        return {}
+    try:
+        df = pd.read_csv(path, encoding="utf-8")
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date", "home", "away"])
+        lookup: dict[tuple, dict] = {}
+        for _, row in df.iterrows():
+            key = (
+                row["date"].strftime("%Y-%m-%d"),
+                _normalise_team(str(row["home"])),
+                _normalise_team(str(row["away"])),
+            )
+            lookup[key] = {
+                "mlHomeDrift": float(row.get("mlHomeDrift", float("nan"))),
+                "mlDrawDrift": float(row.get("mlDrawDrift", float("nan"))),
+                "mlReverseLM": float(row.get("mlReverseLM", float("nan"))),
+            }
+        print(f"[gbm] Reverse-LM loaded: {len(lookup)} matches from {path.name}")
+        return lookup
+    except Exception as exc:
+        print(f"[gbm] Reverse-LM load failed: {exc}")
+        return {}
+
+
 def load_fbref(fbref_dir: Path) -> dict[tuple, dict]:
     """
     Load FBref squad-level season stats.
@@ -664,6 +699,7 @@ def build_features(
     ppda_lookup: dict | None = None,
     weather_lookup: dict | None = None,
     availability_lookup: dict | None = None,
+    reverse_lm_lookup: dict | None = None,
 ) -> pd.DataFrame:
     """
     For each match, compute rolling pre-match features using only data
@@ -962,6 +998,23 @@ def build_features(
             if h_av and a_av and pd.notna(h_av["availIdx"]) and pd.notna(a_av["availIdx"]):
                 feat["availIdxDiff"] = h_av["availIdx"] - a_av["availIdx"]
 
+        # ── 1X2 reverse line movement (moneyline opening→closing drift) ──
+        # mlHomeDrift = de-vigged home prob shift; mlReverseLM = 1 when the line
+        # moved against the opening favourite (sharp-money signal). Distinct from
+        # the AH line-movement above. NaN outside coverage — XGBoost handles NaN.
+        feat["mlHomeDrift"] = float("nan")
+        feat["mlDrawDrift"] = float("nan")
+        feat["mlReverseLM"] = float("nan")
+        if reverse_lm_lookup:
+            date_str = row["_date"].strftime("%Y-%m-%d") if pd.notna(row["_date"]) else ""
+            rlm_entry = reverse_lm_lookup.get(
+                (date_str, _normalise_team(str(home)), _normalise_team(str(away)))
+            )
+            if rlm_entry:
+                feat["mlHomeDrift"] = rlm_entry["mlHomeDrift"]
+                feat["mlDrawDrift"] = rlm_entry["mlDrawDrift"]
+                feat["mlReverseLM"] = rlm_entry["mlReverseLM"]
+
         # ── Head-to-head features (directional: home vs away) ──
         # Uses only prior meetings between this exact pair (home_team at home).
         # Shrink toward overall league average when sample is thin (k=5).
@@ -1040,12 +1093,14 @@ def build_features(
     wx_coverage = f"{wx_hits}/{len(features)} ({100*wx_hits/n:.1f}%)" if weather_lookup else "disabled"
     av_hits = int(features["availIdxHome"].notna().sum()) if "availIdxHome" in features.columns else 0
     av_coverage = f"{av_hits}/{len(features)} ({100*av_hits/n:.1f}%)" if availability_lookup else "disabled"
+    rlm_hits = int(features["mlReverseLM"].notna().sum()) if "mlReverseLM" in features.columns else 0
+    rlm_coverage = f"{rlm_hits}/{len(features)} ({100*rlm_hits/n:.1f}%)" if reverse_lm_lookup else "disabled"
     print(
         f"[gbm] Feature matrix: {len(features)} rows x {len(features.columns)} cols"
         f" | xG: {xg_coverage} | Elo: {elo_coverage}"
         f" | SPI: {spi_coverage} | SV: {sv_coverage} | OTS: {ots_coverage}"
         f" | FBref: {fbref_coverage} | Ref: {ref_coverage} | PPDA: {ppda_coverage}"
-        f" | Wx: {wx_coverage} | Avail: {av_coverage}"
+        f" | Wx: {wx_coverage} | Avail: {av_coverage} | RLM: {rlm_coverage}"
     )
     return features
 
@@ -1446,6 +1501,8 @@ def main() -> None:
     parser.add_argument("--no-weather", action="store_true", help="Disable weather features")
     parser.add_argument("--availability-dir", default=str(AVAILABILITY_DIR), help="Path to .tmp/squad-availability/ availability features")
     parser.add_argument("--no-availability", action="store_true", help="Disable squad-availability features")
+    parser.add_argument("--reverse-lm-dir", default=str(REVERSE_LM_DIR), help="Path to .tmp/reverse-lm/ 1X2 line-movement features")
+    parser.add_argument("--no-reverse-lm", action="store_true", help="Disable reverse-line-movement features")
     parser.add_argument("--n-estimators", type=int, default=400, help="XGBoost n_estimators (default 400)")
     parser.add_argument("--rolling-folds", type=int, default=1, help="N-fold rolling walk-forward (default 1 = single holdout)")
     parser.add_argument(
@@ -1560,6 +1617,15 @@ def main() -> None:
         else:
             print(f"[gbm] Availability dir not found ({avail_dir}) -- run fetch_squad_availability.py first, or use --no-availability")
 
+    # 2k. 1X2 reverse line movement (optional — from fetch_reverse_lm.py)
+    reverse_lm_lookup = None
+    if not args.no_reverse_lm:
+        rlm_dir = Path(args.reverse_lm_dir)
+        if rlm_dir.exists():
+            reverse_lm_lookup = load_reverse_lm(rlm_dir)
+        else:
+            print(f"[gbm] Reverse-LM dir not found ({rlm_dir}) -- run fetch_reverse_lm.py first, or use --no-reverse-lm")
+
     # 3. Feature engineering
     features = build_features(
         df,
@@ -1574,6 +1640,7 @@ def main() -> None:
         ppda_lookup=ppda_lookup,
         weather_lookup=weather_lookup,
         availability_lookup=availability_lookup,
+        reverse_lm_lookup=reverse_lm_lookup,
     )
     if features.empty:
         print("[gbm] No feature rows built.")
