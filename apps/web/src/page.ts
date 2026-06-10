@@ -138,10 +138,12 @@ f.addEventListener('submit',()=>{document.body.classList.add('loading');});
 }
 
 export function renderNotice(title: string, message: string): string {
+  const t = esc(title);
+  const m = esc(message);
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ORACLE — ${title}</title>
+<title>ORACLE — ${t}</title>
 <style>body{font-family:-apple-system,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center}
 h1{color:#f1f5f9;margin-bottom:12px}p{color:#94a3b8;max-width:520px;margin-bottom:24px}a{color:#3b82f6;text-decoration:none}</style>
-</head><body><h1>${title}</h1><p>${message}</p><a href="/">← back to search</a></body></html>`;
+</head><body><h1>${t}</h1><p>${m}</p><a href="/">← back to search</a></body></html>`;
 }

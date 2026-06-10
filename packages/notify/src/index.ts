@@ -61,7 +61,10 @@ export async function notifyAll(notifiers: Notifier[], summary: BatchSummary): P
     notifiers.map(async (n) => {
       try {
         await n.notify(summary);
-      } catch (_err) {}
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[notify] ${n.name} failed: ${msg}\n`);
+      }
     })
   );
 }

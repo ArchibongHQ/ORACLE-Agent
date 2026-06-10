@@ -165,6 +165,16 @@ describe("adapters POST correctly", () => {
     );
   });
 
+  it("includes the response body in HTTP error messages", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 429, text: async () => "rate limited" });
+    await expect(new TelegramNotifier("T", "C").notify(sampleSummary)).rejects.toThrow(
+      /HTTP 429 — rate limited/
+    );
+    await expect(
+      new EmailNotifier({ apiKey: "k", from: "a@b.c", to: "d@e.f" }).notify(sampleSummary)
+    ).rejects.toThrow(/HTTP 429 — rate limited/);
+  });
+
   it("OpenClaw POSTs to /v1/responses with correct headers and body", async () => {
     await new OpenClawNotifier({
       gatewayUrl: "http://127.0.0.1:18789",
@@ -209,5 +219,19 @@ describe("notifyAll", () => {
     await notifyAll([good, bad], sampleSummary);
     expect(good.notify).toHaveBeenCalledOnce();
     expect(bad.notify).toHaveBeenCalledOnce();
+  });
+
+  it("logs the failing channel to stderr instead of swallowing it", async () => {
+    const writes: string[] = [];
+    const spy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(((s: string | Uint8Array) => {
+        writes.push(String(s));
+        return true;
+      }) as typeof process.stderr.write);
+    const bad = { name: "telegram", notify: vi.fn().mockRejectedValue(new Error("boom")) };
+    await notifyAll([bad], sampleSummary);
+    spy.mockRestore();
+    expect(writes.join("")).toMatch(/\[notify\] telegram failed: boom/);
   });
 });

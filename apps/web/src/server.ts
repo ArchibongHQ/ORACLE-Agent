@@ -96,7 +96,16 @@ export async function handleRequest(
   deps: WebDeps
 ): Promise<WebResponse> {
   if (method === "GET" && urlPath === "/") return html(200, renderPage());
-  if (method === "GET" && urlPath === "/health") return jsonRes(200, { ok: true });
+  if (method === "GET" && urlPath === "/health") {
+    // Worker heartbeat — stamped by apps/worker after each successful batch/resolve.
+    let worker: unknown = null;
+    try {
+      worker = JSON.parse(await readFile(join(ROOT, ".tmp/worker_heartbeat.json"), "utf8"));
+    } catch {
+      /* worker not run yet on this machine — report null */
+    }
+    return jsonRes(200, { ok: true, worker });
+  }
 
   if (method === "GET" && urlPath === "/punt") {
     return html(200, renderPuntPage(readPuntState(ROOT)));
