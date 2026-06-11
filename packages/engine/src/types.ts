@@ -88,7 +88,7 @@ export interface OracleConfig {
   footballDataApiKey?: string;
   apiFootballKey?: string;
   oddsApiKey?: string;
-  oddsPapiKey?: string; // structured free-odds fallback (OddsPapi, sharp books)
+  sharpApiIoKey?: string; // structured free-odds fallback (SharpAPI.io, sharp books)
   oddsApiIoKey?: string; // structured free-odds fallback (Odds-API.io, 100 req/hr free)
   sportsGameOddsKey?: string; // structured free-odds fallback (SportsGameOdds, Pinnacle)
   bankroll: number;

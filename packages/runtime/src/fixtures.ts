@@ -375,7 +375,7 @@ function jobFromGapOdds(job: FixtureJob, o: GapOdds): FixtureJob {
 }
 
 /** For fixtures not covered by the Odds API, acquire odds from the structured
- *  free-API provider chain first (OddsPapi → API-Football → …), then fall back to
+ *  free-API provider chain first (SharpAPI.io → API-Football → …), then fall back to
  *  Gemini Search for any still unresolved. Returns only jobs with confident odds. */
 async function geminiOddsGapFill(
   unmatched: FixtureJob[],
@@ -563,16 +563,16 @@ export async function fetchTodaysFixtures(
   geminiApiKey?: string,
   footballDataApiKey?: string,
   perplexityApiKey?: string,
-  oddsPapiKey?: string,
+  sharpApiIoKey?: string,
   apiFootballKey?: string,
   oddsApiIoKey?: string,
   sportsGameOddsKey?: string
 ): Promise<FetchResult> {
-  // Structured free-API odds providers (OddsPapi → API-Football → Odds-API.io →
+  // Structured free-API odds providers (SharpAPI.io → API-Football → Odds-API.io →
   // SportsGameOdds). Built once; the gap-fill tries this chain before the
   // Gemini/web-search degraded path.
   const oddsProviders = buildOddsProviders({
-    oddsPapiKey,
+    sharpApiIoKey,
     apiFootballKey,
     oddsApiIoKey,
     sportsGameOddsKey,

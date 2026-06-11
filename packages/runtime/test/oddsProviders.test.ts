@@ -47,18 +47,18 @@ describe("runOddsChain", () => {
   it("stops at the first sharp provider and skips lower tiers", async () => {
     const tier3 = vi.fn();
     const providers = [
-      fakeProvider("oddspapi", 2, true, odds("oddspapi", true)),
+      fakeProvider("sharpapi-io", 2, true, odds("sharpapi-io", true)),
       fakeProvider("api-football", 3, false, odds("api-football", false), { onFetch: tier3 }),
     ];
     const res = await runOddsChain(providers, ...FX);
-    expect(res?.provider).toBe("oddspapi");
+    expect(res?.provider).toBe("sharpapi-io");
     expect(tier3).not.toHaveBeenCalled(); // short-circuited on first sharp
   });
 
   it("skips providers without quota", async () => {
     const exhausted = vi.fn();
     const providers = [
-      fakeProvider("oddspapi", 2, true, odds("oddspapi", true), {
+      fakeProvider("sharpapi-io", 2, true, odds("sharpapi-io", true), {
         hasQuota: false,
         onFetch: exhausted,
       }),
@@ -81,7 +81,7 @@ describe("runOddsChain", () => {
 
   it("returns the soft result when no sharp source produces odds", async () => {
     const providers = [
-      fakeProvider("oddspapi", 2, true, null), // sharp but empty
+      fakeProvider("sharpapi-io", 2, true, null), // sharp but empty
       fakeProvider("api-football", 3, false, odds("api-football", false)),
     ];
     const res = await runOddsChain(providers, ...FX);
@@ -91,7 +91,7 @@ describe("runOddsChain", () => {
 
   it("treats a throwing provider as non-fatal and continues", async () => {
     const providers = [
-      fakeProvider("oddspapi", 2, true, null, { throws: true }),
+      fakeProvider("sharpapi-io", 2, true, null, { throws: true }),
       fakeProvider("api-football", 3, false, odds("api-football", false)),
     ];
     const res = await runOddsChain(providers, ...FX);
@@ -100,7 +100,7 @@ describe("runOddsChain", () => {
 
   it("returns null when the whole chain is empty (caller falls through to Gemini)", async () => {
     const providers = [
-      fakeProvider("oddspapi", 2, true, null),
+      fakeProvider("sharpapi-io", 2, true, null),
       fakeProvider("api-football", 3, false, null),
     ];
     expect(await runOddsChain(providers, ...FX)).toBeNull();
@@ -113,7 +113,7 @@ describe("buildOddsProviders", () => {
   it("registers all five providers in tier order", () => {
     const providers = buildOddsProviders({});
     expect(providers.map((p) => p.name)).toEqual([
-      "oddspapi",
+      "sharpapi-io",
       "api-football",
       "odds-api-io",
       "sportsgameodds",
@@ -122,11 +122,11 @@ describe("buildOddsProviders", () => {
     expect(providers.map((p) => p.tier)).toEqual([2, 3, 4, 5, 6]);
   });
 
-  it("marks OddsPapi, Odds-API.io and SportsGameOdds as sharp", () => {
+  it("marks SharpAPI.io, Odds-API.io and SportsGameOdds as sharp", () => {
     const sharp = buildOddsProviders({})
       .filter((p) => p.isSharp)
       .map((p) => p.name);
-    expect(sharp).toEqual(["oddspapi", "odds-api-io", "sportsgameodds"]);
+    expect(sharp).toEqual(["sharpapi-io", "odds-api-io", "sportsgameodds"]);
   });
 
   it("reports no quota for providers without a key", () => {
@@ -136,13 +136,13 @@ describe("buildOddsProviders", () => {
 
   it("reports quota only for wired providers once their key is present", () => {
     const providers = buildOddsProviders({
-      oddsPapiKey: "k",
+      sharpApiIoKey: "k",
       apiFootballKey: "k2",
       oddsApiIoKey: "k3",
       sportsGameOddsKey: "k4",
     });
     const withQuota = providers.filter((p) => p.hasQuota()).map((p) => p.name);
-    expect(withQuota).toEqual(["oddspapi", "api-football", "odds-api-io", "sportsgameodds"]);
+    expect(withQuota).toEqual(["sharpapi-io", "api-football", "odds-api-io", "sportsgameodds"]);
   });
 
   it("never grants quota to stub providers even with a key (not implemented)", () => {
@@ -156,62 +156,116 @@ describe("buildOddsProviders", () => {
 // Exercises the documented response schemas end-to-end. If a live response shows
 // a different shape, update these fixtures — the parser logic stays the same.
 
-describe("OddsPapi provider fetch", () => {
+describe("SharpAPI.io provider fetch", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("resolves a fixture and parses the Pinnacle 1X2 triple as sharp", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = String(input instanceof Request ? input.url : input);
-      if (url.includes("/fixtures")) {
-        return new Response(
-          JSON.stringify({
-            fixtures: [
-              { fixtureId: "fx-1", participant1Name: "Arsenal FC", participant2Name: "Chelsea FC" },
-            ],
-          }),
-          { status: 200 }
-        );
-      }
-      // /odds
-      return new Response(
+  // Live-verified row shape (2026-06-10): one selection per row, flat fields.
+  const row = (
+    sportsbook: string,
+    selection_type: string,
+    odds_decimal: number,
+    extra: Record<string, unknown> = {}
+  ) => ({
+    sportsbook,
+    home_team: "Arsenal FC",
+    away_team: "Chelsea FC",
+    market_type: "moneyline",
+    selection_type,
+    odds_decimal,
+    is_live: false,
+    is_active: true,
+    is_main_line: true,
+    ...extra,
+  });
+
+  it("assembles the Pinnacle 1X2 triple from flat selection rows as sharp", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
         JSON.stringify({
-          bookmakerOdds: {
-            pinnacle: {
-              markets: {
-                "101": {
-                  outcomes: {
-                    "101": { players: { "0": { price: 2.05 } } },
-                    "102": { players: { "0": { price: 3.5 } } },
-                    "103": { players: { "0": { price: 3.8 } } },
-                  },
-                },
-              },
-            },
-          },
+          data: [
+            // Soft book first — sharp preference must still pick pinnacle.
+            row("draftkings", "home", 2.1),
+            row("draftkings", "draw", 3.4),
+            row("draftkings", "away", 3.7),
+            row("pinnacle", "home", 2.05),
+            row("pinnacle", "draw", 3.5),
+            row("pinnacle", "away", 3.8),
+          ],
         }),
         { status: 200 }
-      );
-    });
+      )
+    );
 
-    const [oddspapi] = buildOddsProviders({ oddsPapiKey: "k" });
-    const res = await oddspapi!.fetch(...FX);
+    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    const res = await sharpapi!.fetch(...FX);
     expect(res).not.toBeNull();
     expect(res!.isSharp).toBe(true);
     expect(res!.home).toBe(2.05);
     expect(res!.draw).toBe(3.5);
     expect(res!.away).toBe(3.8);
     expect(res!.confidence).toBe(0.85);
-    expect(res!.provider).toBe("oddspapi");
+    expect(res!.provider).toBe("sharpapi-io");
     expect(res!.overround).toBeGreaterThan(0);
     expect(res!.sources[0]).toContain("pinnacle");
+    // Single call, server-side filtered, key in header (never in URL).
+    const url = String(spy.mock.calls[0]?.[0]);
+    expect(url).toContain("market=moneyline");
+    expect(url).toContain("date=2026-06-09");
+    expect(url).not.toContain("k=");
   });
 
-  it("returns null when no fixture matches the team names", async () => {
+  it("falls back to a complete soft-book triple (non-sharp) when sharp books are partial", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ fixtures: [] }), { status: 200 })
+      new Response(
+        JSON.stringify({
+          data: [
+            row("pinnacle", "home", 2.05), // incomplete — no draw/away
+            row("draftkings", "home", 2.1),
+            row("draftkings", "draw", 3.4),
+            row("draftkings", "away", 3.7),
+          ],
+        }),
+        { status: 200 }
+      )
     );
-    const [oddspapi] = buildOddsProviders({ oddsPapiKey: "k" });
-    expect(await oddspapi!.fetch(...FX)).toBeNull();
+    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    const res = await sharpapi!.fetch(...FX);
+    expect(res).not.toBeNull();
+    expect(res!.isSharp).toBe(false);
+    expect(res!.confidence).toBe(0.7);
+    expect(res!.sources[0]).toContain("draftkings");
+  });
+
+  it("ignores live, inactive, alt-line, and wrong-fixture rows", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            row("pinnacle", "home", 2.05, { is_live: true }),
+            row("pinnacle", "draw", 3.5, { is_active: false }),
+            row("pinnacle", "away", 3.8, { is_main_line: false }),
+            row("pinnacle", "home", 1.5, { home_team: "Liverpool", away_team: "Everton" }),
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    expect(await sharpapi!.fetch(...FX)).toBeNull();
+  });
+
+  it("returns null when no rows match the team names", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 })
+    );
+    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    expect(await sharpapi!.fetch(...FX)).toBeNull();
+  });
+
+  it("throws quota-exhausted on 429 so the chain marks it spent", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("rate limited", { status: 429 }));
+    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    await expect(sharpapi!.fetch(...FX)).rejects.toThrow("quota exhausted");
   });
 });
 

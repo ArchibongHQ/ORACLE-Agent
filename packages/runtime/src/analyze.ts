@@ -99,7 +99,12 @@ export async function runAnalysis(
         llmPick: j.decision,
         deterministicTopPick: j.primaryPick,
         decisionReplay: j.decisionReplay,
-        frozenOddsAtAnalysis: (r.fetched as Record<string, unknown> | undefined) ?? null,
+        frozenOddsAtAnalysis:
+          ((r.fetched as Record<string, unknown> | undefined)?.odds as
+            | Record<string, unknown>
+            | undefined) ??
+          (r.fetched as Record<string, unknown> | undefined) ??
+          null,
         liquidityTag: CLV_ELIGIBLE_LEAGUES.has(j.league) ? "CLV_ELIGIBLE" : "CALIBRATION_ONLY",
         analysedAt: new Date().toISOString(),
       } satisfies AnalysisRecord,

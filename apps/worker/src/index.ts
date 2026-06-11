@@ -224,7 +224,7 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     config.geminiApiKey,
     config.footballDataApiKey,
     newsKey,
-    config.oddsPapiKey,
+    config.sharpApiIoKey,
     config.apiFootballKey,
     config.oddsApiIoKey,
     config.sportsGameOddsKey

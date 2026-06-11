@@ -57,7 +57,7 @@ Before any web-search synthesis, the gap-fill tries the structured provider chai
 
 | Tier | Provider | Env key | Free quota | Sharp? |
 | --- | --- | --- | --- | --- |
-| 2 | OddsPapi | `ODDSPAPI_KEY` | 250 req/mo | yes (Pinnacle/Singbet) |
+| 2 | SharpAPI.io | `SHARPAPI_IO_KEY` | trial tier (api.sharpapi.io) | yes (Pinnacle/SBOBet/BetOnline) |
 | 3 | API-Football | `API_FOOTBALL_KEY` | permanent free | no (net consensus) |
 | 4 | Odds-API.io | `ODDS_API_IO_KEY` | 100 req/hr | yes when Pinnacle/SingBet present |
 | 5 | SportsGameOdds | `SPORTS_GAMEODDS_KEY` | 1,000 objects/mo | yes (Pinnacle), American-format odds |

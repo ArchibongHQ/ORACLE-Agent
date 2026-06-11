@@ -818,7 +818,9 @@ def build_features(
                 feat["squadValueRatio"] = sv_val
 
         # ── Odds time-series (AH + line-movement) ──
-        # NaN when data absent — XGBoost handles NaN.
+        # Primary: BTB external lookup (slope only — non-top5 coverage, mostly 0%).
+        # Fallback: fdco-native AH columns (AHh=opening line, AHCh=closing line).
+        # NaN when data absent — XGBoost handles NaN natively.
         feat["lineMovSlope"]     = float("nan")
         feat["openToCloseDelta"] = float("nan")
         feat["ahOpenLine"]       = float("nan")
@@ -830,6 +832,22 @@ def build_features(
             ots_entry = odds_ts_lookup.get(ots_key)
             if ots_entry:
                 feat.update(ots_entry)
+        # Fallback: derive AH open/close from fdco columns when BTB had no match.
+        if pd.isna(feat["ahOpenLine"]):
+            try:
+                feat["ahOpenLine"] = float(row["AHh"]) if "AHh" in row.index and pd.notna(row["AHh"]) else float("nan")
+            except (ValueError, TypeError):
+                pass
+        if pd.isna(feat["ahCloseLine"]):
+            try:
+                feat["ahCloseLine"] = float(row["AHCh"]) if "AHCh" in row.index and pd.notna(row["AHCh"]) else float("nan")
+            except (ValueError, TypeError):
+                pass
+        if pd.isna(feat["ahCloseDelta"]) and pd.notna(feat["ahOpenLine"]) and pd.notna(feat["ahCloseLine"]):
+            feat["ahCloseDelta"] = feat["ahCloseLine"] - feat["ahOpenLine"]
+        # openToCloseDelta fallback: reuse Pinnacle 1X2 line movement (already computed above).
+        if pd.isna(feat["openToCloseDelta"]) and "lineMovH" in feat and pd.notna(feat["lineMovH"]):
+            feat["openToCloseDelta"] = feat["lineMovH"]
 
         # ── FBref squad-season features ──
         feat["fbrefGoalsHome"]  = float("nan")

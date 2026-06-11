@@ -255,7 +255,7 @@ export async function enrichWithH2H(
     }
   }
 
-  const filled = enriched.filter((j, i) => {
+  const _filled = enriched.filter((j, i) => {
     const orig = jobs[i]!;
     return (
       (j.state?.pipeline?.fetched as Record<string, unknown> | undefined)?.stats !==
