@@ -115,6 +115,7 @@ function parseSharpApiIoOdds(
   const byBook = new Map<string, Partial<Record<"home" | "draw" | "away", number>>>();
   for (const r of rows) {
     if (!r.sportsbook || r.is_live || r.is_active === false || r.is_main_line === false) continue;
+    if (r.market_type && r.market_type !== "moneyline") continue;
     const side = r.selection_type;
     if (side !== "home" && side !== "draw" && side !== "away") continue;
     if (typeof r.odds_decimal !== "number") continue;
@@ -494,7 +495,7 @@ export function makeSportsGameOddsProvider(apiKey: string | undefined): OddsProv
       // Single call: events + odds in one payload (each event returned = 1 billed
       // object on the 1,000/mo free tier, so the day window + limit stay tight).
       const res = await fetch(
-        `${SGO_BASE}/events?sportID=SOCCER&startsAfter=${date}&startsBefore=${date}T23:59:59Z&oddsAvailable=true&limit=50`,
+        `${SGO_BASE}/events?sportID=SOCCER&startsAfter=${date}T00:00:00Z&startsBefore=${date}T23:59:59Z&oddsAvailable=true&limit=50`,
         { headers: { "X-Api-Key": apiKey }, signal: AbortSignal.timeout(15_000) }
       );
       if (!res.ok) {

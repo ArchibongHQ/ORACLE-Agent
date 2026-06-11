@@ -211,6 +211,8 @@ class TestBuildFeaturesAHFdcoFallback:
         # OTS value should win, not fdco fallback
         assert feats.iloc[0]["ahOpenLine"] == pytest.approx(-0.75)
         assert feats.iloc[0]["ahCloseLine"] == pytest.approx(-1.0)
+        # lineMovSlope only comes from OTS — confirms the OTS code path ran
+        assert feats.iloc[0]["lineMovSlope"] == pytest.approx(0.01)
 
 
 if __name__ == "__main__":

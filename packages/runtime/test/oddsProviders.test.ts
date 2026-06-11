@@ -395,11 +395,20 @@ describe("Odds-API.io provider fetch", () => {
     expect(await oddsApiIo.fetch(...FX)).toBeNull();
   });
 
-  it("throws on 429 so the chain skips it as quota-exhausted", async () => {
+  it("throws on 429 (step 1 /events) so the chain skips it as quota-exhausted", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 429 }));
     const providers = buildOddsProviders({ oddsApiIoKey: "k" });
     const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
     await expect(oddsApiIo.fetch(...FX)).rejects.toThrow("quota exhausted");
+  });
+
+  it("returns null when /events returns 500 (step 1 server error)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("Internal Server Error", { status: 500 })
+    );
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    expect(await oddsApiIo.fetch(...FX)).toBeNull();
   });
 
   it("returns null when no event matches the team names", async () => {
@@ -543,6 +552,36 @@ describe("SportsGameOdds provider fetch", () => {
     expect(res!.draw).toBeCloseTo(3.45, 5); // +245 → 3.45
     expect(res!.away).toBeCloseTo(3.25, 5); // +225 → 3.25
     expect(res!.sources[0]).toBe("sportsgameodds:pinnacle");
+  });
+
+  it("falls back to consensus when Pinnacle sides have available: false", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify(
+          sgoEvent({
+            "points-home-game-ml3way-home": {
+              odds: "+115",
+              byBookmaker: { pinnacle: { odds: "+110", available: false } },
+            },
+            "points-all-game-ml3way-draw": {
+              odds: "+240",
+              byBookmaker: { pinnacle: { odds: "+245", available: false } },
+            },
+            "points-away-game-ml3way-away": {
+              odds: "+220",
+              byBookmaker: { pinnacle: { odds: "+225", available: false } },
+            },
+          })
+        ),
+        { status: 200 }
+      )
+    );
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    const res = await sgo.fetch(...FX);
+    expect(res).not.toBeNull();
+    expect(res!.isSharp).toBe(false);
+    expect(res!.sources[0]).toBe("sportsgameodds:consensus");
   });
 
   it("falls back to consensus odds (non-sharp) when Pinnacle is missing a side", async () => {
