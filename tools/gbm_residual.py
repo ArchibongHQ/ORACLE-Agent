@@ -209,6 +209,28 @@ try:
 except ImportError:  # repo root on sys.path instead of tools/
     from tools.lib.team_names import TEAM_ALIASES as _TEAM_ALIASES, normalise_team as _normalise_team
 
+import re as _re
+
+def _normalise_ref(raw: str) -> str:
+    """
+    Canonical referee key from two formats:
+      fdco:        "M Clattenburg"  → "clattenburg m"
+      match-stats: "Clattenburg M.  (Eng)" → "clattenburg m"
+    """
+    s = _re.sub(r"\(.*?\)", "", raw).strip().lower()  # drop "(Eng)" country suffix
+    s = _re.sub(r"[.\s]+", " ", s).strip()            # collapse dots/spaces
+    parts = s.split()
+    if not parts:
+        return ""
+    # Heuristic: if first token is a single letter it's already "I Surname" (fdco)
+    if len(parts[0]) == 1:
+        return " ".join([parts[-1]] + [parts[0]])     # → "surname initial"
+    # Otherwise "Surname I" or "Surname I extra..." — take last single-char as initial
+    initials = [p for p in parts[1:] if len(p) == 1]
+    surname = parts[0]
+    initial = initials[0] if initials else (parts[1][0] if len(parts) > 1 else "")
+    return f"{surname} {initial}".strip()
+
 
 def build_xg_lookup(xg: pd.DataFrame) -> dict[tuple, tuple[float, float]]:
     """
@@ -530,10 +552,11 @@ def load_referee(match_stats_dir: Path) -> dict[str, float]:
         lookup: dict[str, float] = {}
         with open(path, encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                ref = (row.get("referee") or "").strip().lower()
+                ref = _normalise_ref((row.get("referee") or "").strip())
                 pct = row.get("strictness_pct", "")
                 try:
-                    lookup[ref] = float(pct)
+                    if ref:
+                        lookup[ref] = float(pct)
                 except ValueError:
                     pass
         print(f"[gbm] Referee features loaded: {len(lookup)} referees from {path.name}")
@@ -878,7 +901,7 @@ def build_features(
         feat["refStrictness"] = float("nan")
         if referee_lookup:
             ref_val = row.get("Referee")
-            ref_raw = str(ref_val).strip().lower() if ref_val and str(ref_val) != "nan" else ""
+            ref_raw = _normalise_ref(str(ref_val).strip()) if ref_val and str(ref_val) != "nan" else ""
             if ref_raw:
                 feat["refStrictness"] = referee_lookup.get(ref_raw, float("nan"))
 
