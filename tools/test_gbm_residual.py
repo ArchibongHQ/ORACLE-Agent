@@ -9,16 +9,20 @@ try:
     from gbm_residual import (
         _clubelo_key,
         _devivify,
+        _normalise_ref,
         _rolling_stats,
         _update_history,
+        build_features,
         rps_vector,
     )
 except ImportError:  # repo root on sys.path instead of tools/
     from tools.gbm_residual import (
         _clubelo_key,
         _devivify,
+        _normalise_ref,
         _rolling_stats,
         _update_history,
+        build_features,
         rps_vector,
     )
 
@@ -135,6 +139,78 @@ class TestUpdateHistory:
         _update_history(history, {}, {}, row)
         assert history["Alpha"][0]["pts"] == 1
         assert history["Beta"][0]["pts"] == 1
+
+
+class TestNormaliseRef:
+    def test_fdco_format_initial_first(self):
+        # "M Clattenburg" → "clattenburg m"
+        assert _normalise_ref("M Clattenburg") == "clattenburg m"
+
+    def test_matchstats_format_surname_initial_country(self):
+        # "Clattenburg M. (Eng)" → strip country, collapse dot → "clattenburg m"
+        assert _normalise_ref("Clattenburg M. (Eng)") == "clattenburg m"
+
+    def test_empty_string_returns_empty(self):
+        assert _normalise_ref("") == ""
+
+    def test_single_word_no_initial(self):
+        # "Smith" has no second token → initial defaults to first char of parts[1] else ""
+        result = _normalise_ref("Smith")
+        assert result == "smith"
+
+
+class TestBuildFeaturesAHFdcoFallback:
+    """AH open/close line fallback from fdco columns when OTS lookup misses (audit M2-3)."""
+
+    def _minimal_df(self, **extra: object) -> pd.DataFrame:
+        base: dict = {
+            "HomeTeam": "Alpha",
+            "AwayTeam": "Beta",
+            "FTHG": 1,
+            "FTAG": 0,
+            "FTR": "H",
+            "PSCH": 2.0,
+            "PSCD": 3.5,
+            "PSCA": 4.0,
+            "_season": "2425",
+            "_div": "E0",
+            "_league": "Premier League",
+        }
+        base.update(extra)
+        df = pd.DataFrame([base])
+        df["_date"] = pd.to_datetime("2025-01-01")
+        return df
+
+    def test_ah_open_close_populated_from_fdco_columns(self):
+        df = self._minimal_df(AHh=-0.25, AHCh=-0.5)
+        feats = build_features(df)  # no odds_ts_lookup
+        assert len(feats) == 1
+        assert feats.iloc[0]["ahOpenLine"] == pytest.approx(-0.25)
+        assert feats.iloc[0]["ahCloseLine"] == pytest.approx(-0.5)
+        assert feats.iloc[0]["ahCloseDelta"] == pytest.approx(-0.25)  # -0.5 - (-0.25)
+
+    def test_ah_nan_when_fdco_columns_absent(self):
+        df = self._minimal_df()  # no AHh / AHCh columns
+        feats = build_features(df)
+        assert len(feats) == 1
+        assert math.isnan(feats.iloc[0]["ahOpenLine"])
+        assert math.isnan(feats.iloc[0]["ahCloseLine"])
+        assert math.isnan(feats.iloc[0]["ahCloseDelta"])
+
+    def test_ots_lookup_takes_priority_over_fdco(self):
+        df = self._minimal_df(AHh=-0.25, AHCh=-0.5)
+        ots_lookup = {("2025-01-01", "alpha", "beta"): {
+            "lineMovSlope": 0.01,
+            "openToCloseDelta": 0.02,
+            "ahOpenLine": -0.75,
+            "ahCloseLine": -1.0,
+            "ahCloseDelta": -0.25,
+        }}
+        feats = build_features(df, odds_ts_lookup=ots_lookup)
+        assert len(feats) == 1
+        # OTS value should win, not fdco fallback
+        assert feats.iloc[0]["ahOpenLine"] == pytest.approx(-0.75)
+        assert feats.iloc[0]["ahCloseLine"] == pytest.approx(-1.0)
 
 
 if __name__ == "__main__":

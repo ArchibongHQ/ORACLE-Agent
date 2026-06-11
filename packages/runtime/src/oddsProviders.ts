@@ -358,10 +358,10 @@ export function makeOddsApiIoProvider(apiKey: string | undefined): OddsProvider 
     async fetch(home, away, _league, kickoff) {
       if (!apiKey) return null;
       const date = kickoff.slice(0, 10);
-      // 1. Resolve the event id by team-name match (window defaults to next 14 days,
-      //    so also pin the kickoff date to avoid cross-round mismatches).
+      // 1. Resolve the event id. Narrow to the kickoff day server-side so the
+      //    payload stays small (provider mandates apiKey in query string, not header).
       const evRes = await fetch(
-        `${ODDSAPIIO_BASE}/events?sport=football&apiKey=${encodeURIComponent(apiKey)}`,
+        `${ODDSAPIIO_BASE}/events?sport=football&startsAfter=${date}T00:00:00Z&startsBefore=${date}T23:59:59Z&apiKey=${encodeURIComponent(apiKey)}`,
         { signal: AbortSignal.timeout(15_000) }
       );
       if (!evRes.ok) {

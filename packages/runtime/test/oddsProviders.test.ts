@@ -5,6 +5,7 @@ import {
   type OddsProvider,
   runOddsChain,
 } from "../src/oddsProviders.js";
+import { buildConfig } from "../src/env.js";
 
 // ── Test doubles ──────────────────────────────────────────────────────────────
 
@@ -267,6 +268,14 @@ describe("SharpAPI.io provider fetch", () => {
     const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
     await expect(sharpapi!.fetch(...FX)).rejects.toThrow("quota exhausted");
   });
+
+  it("returns null on 5xx (server error) without throwing", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("Internal Server Error", { status: 500 })
+    );
+    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    expect(await sharpapi!.fetch(...FX)).toBeNull();
+  });
 });
 
 describe("API-Football provider fetch", () => {
@@ -432,6 +441,43 @@ describe("Odds-API.io provider fetch", () => {
     expect(res!.home).toBe(2.1);
   });
 
+  it("throws quota-exhausted when the /odds step 2 call returns 429", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/events")) {
+        return new Response(
+          JSON.stringify([
+            { id: 9004, home: "Arsenal FC", away: "Chelsea FC", date: "2026-06-09T15:00:00Z" },
+          ]),
+          { status: 200 }
+        );
+      }
+      // /odds step returns 429
+      return new Response("", { status: 429 });
+    });
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    await expect(oddsApiIo.fetch(...FX)).rejects.toThrow("quota exhausted");
+  });
+
+  it("returns null when the /odds step 2 call returns 500 (server error)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/events")) {
+        return new Response(
+          JSON.stringify([
+            { id: 9004, home: "Arsenal FC", away: "Chelsea FC", date: "2026-06-09T15:00:00Z" },
+          ]),
+          { status: 200 }
+        );
+      }
+      return new Response("Internal Server Error", { status: 500 });
+    });
+    const providers = buildOddsProviders({ oddsApiIoKey: "k" });
+    const oddsApiIo = providers.find((p) => p.name === "odds-api-io")!;
+    expect(await oddsApiIo.fetch(...FX)).toBeNull();
+  });
+
   it("rejects an event whose kickoff date does not match the fixture date", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = String(input instanceof Request ? input.url : input);
@@ -549,6 +595,15 @@ describe("SportsGameOdds provider fetch", () => {
     await expect(sgo.fetch(...FX)).rejects.toThrow("quota exhausted");
   });
 
+  it("returns null on 5xx (server error) without throwing", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("Internal Server Error", { status: 500 })
+    );
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    expect(await sgo.fetch(...FX)).toBeNull();
+  });
+
   it("returns null when consensus odds are non-numeric or zero (americanToDecimal edge cases)", async () => {
     // "0" and "abc" should both produce NaN → validateTriple rejects → null
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -566,5 +621,27 @@ describe("SportsGameOdds provider fetch", () => {
     const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
     const sgo = providers.find((p) => p.name === "sportsgameodds")!;
     expect(await sgo.fetch(...FX)).toBeNull();
+  });
+});
+
+// ── buildConfig env key forwarding ───────────────────────────────────────────
+
+describe("buildConfig", () => {
+  it("forwards sharpApiIoKey, oddsApiIoKey, and sportsGameOddsKey from env", () => {
+    const cfg = buildConfig({
+      SHARPAPI_IO_KEY: "sharp-key",
+      ODDS_API_IO_KEY: "oddsio-key",
+      SPORTS_GAMEODDS_KEY: "sgo-key",
+    });
+    expect(cfg.sharpApiIoKey).toBe("sharp-key");
+    expect(cfg.oddsApiIoKey).toBe("oddsio-key");
+    expect(cfg.sportsGameOddsKey).toBe("sgo-key");
+  });
+
+  it("leaves provider keys undefined when absent from env", () => {
+    const cfg = buildConfig({});
+    expect(cfg.sharpApiIoKey).toBeUndefined();
+    expect(cfg.oddsApiIoKey).toBeUndefined();
+    expect(cfg.sportsGameOddsKey).toBeUndefined();
   });
 });
