@@ -227,7 +227,8 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     config.sharpApiIoKey,
     config.apiFootballKey,
     config.oddsApiIoKey,
-    config.sportsGameOddsKey
+    config.sportsGameOddsKey,
+    config.maxFixturesPerRun
   );
 
   if (!jobs.length) {

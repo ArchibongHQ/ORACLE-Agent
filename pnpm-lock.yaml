@@ -45,9 +45,15 @@ importers:
 
   apps/bot:
     dependencies:
+      '@oracle/booking':
+        specifier: workspace:*
+        version: link:../booking
       '@oracle/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@oracle/notify':
+        specifier: workspace:*
+        version: link:../../packages/notify
       '@oracle/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime

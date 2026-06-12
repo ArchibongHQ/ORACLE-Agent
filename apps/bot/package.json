@@ -20,7 +20,9 @@
   "dependencies": {
     "@oracle/engine": "workspace:*",
     "@oracle/storage": "workspace:*",
-    "@oracle/runtime": "workspace:*"
+    "@oracle/runtime": "workspace:*",
+    "@oracle/notify": "workspace:*",
+    "@oracle/booking": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

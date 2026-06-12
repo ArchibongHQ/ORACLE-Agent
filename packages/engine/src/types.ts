@@ -116,6 +116,7 @@ export interface OracleConfig {
   enableNewsIntel?: boolean; // T0: Perplexity Sonar news/injury/lineup intelligence
   enableSwarm?: boolean; // Level-2: per-fixture sub-agent swarm (APEX/PRIME)
   batchConcurrency?: number; // Level-1: max concurrent fixtures (default 8)
+  maxFixturesPerRun?: number; // pre-analysis fixture selection cap (default 50)
   // Hardware capabilities (populated at runtime boundary, never inside @oracle/engine)
   isVps?: boolean; // ORACLE_IS_VPS=true or systemd-detect-virt detects VM
   hasNvidiaGpu?: boolean; // nvidia-smi available and returned a GPU name

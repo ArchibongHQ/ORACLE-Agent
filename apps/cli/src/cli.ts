@@ -145,7 +145,18 @@ export async function dispatch(argv: string[]): Promise<DispatchResult> {
     case "run": {
       const storage = new GBrainAdapter(DB_PATH);
       try {
-        const { jobs, source } = await fetchTodaysFixtures(config.oddsApiKey);
+        const { jobs, source } = await fetchTodaysFixtures(
+          config.oddsApiKey,
+          true,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          config.maxFixturesPerRun
+        );
         if (!jobs.length)
           return { code: 1, output: "No fixtures available (Odds API empty and no cache)." };
         const result = await runAnalysis(

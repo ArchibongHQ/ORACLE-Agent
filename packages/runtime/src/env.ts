@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import type { AgentError, OracleConfig } from "@oracle/engine";
 import { detectHardware, isGpuCapable } from "./hardware.js";
+import { DEFAULT_MAX_FIXTURES_PER_RUN } from "./selectFixtures.js";
 
 /** Parse a flat KEY=VALUE .env file into a record. Missing file → {} (never throws). */
 export function loadEnv(path: string): Record<string, string> {
@@ -77,6 +78,7 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
   const hw = detectHardware();
   const gpuCapable = isGpuCapable(hw);
   const autoResearchRequested = env.ORACLE_AUTORESEARCH_ENABLED?.toLowerCase() === "true";
+  const maxFixturesRaw = Math.floor(Number(env.MAX_FIXTURES_PER_RUN ?? DEFAULT_MAX_FIXTURES_PER_RUN));
 
   return {
     geminiApiKey: env.GEMINI_API_KEY ?? "",
@@ -103,6 +105,11 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
       env.ENABLE_SWARM?.toLowerCase() === "true" &&
       (!!env.KIMI_API_KEY || !!env.OPENROUTER_API_KEY),
     batchConcurrency: Number(env.BATCH_CONCURRENCY ?? 8),
+    // Pre-analysis fixture cap — bounds per-run odds/LLM quota spend
+    maxFixturesPerRun:
+      Number.isFinite(maxFixturesRaw) && maxFixturesRaw >= 1
+        ? maxFixturesRaw
+        : DEFAULT_MAX_FIXTURES_PER_RUN,
     // Hardware capabilities — detected at startup, never hardcoded
     hasNvidiaGpu: hw.hasNvidiaGpu,
     isVps: hw.isVps,

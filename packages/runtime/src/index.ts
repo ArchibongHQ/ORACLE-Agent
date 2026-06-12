@@ -27,6 +27,20 @@ export {
 export type { PuntDayState } from "./puntState.js";
 export { markFulfilled, markPrompted, readPuntState, shouldReprompt } from "./puntState.js";
 export { renderReport, writeReport } from "./report.js";
+export type {
+  SelectionCandidate,
+  SelectionResult,
+  SelectionStats,
+  SportyBetIndex,
+} from "./selectFixtures.js";
+export {
+  DEFAULT_MAX_FIXTURES_PER_RUN,
+  loadSportyBetIndex,
+  ORACLE_PRIORITY_LEAGUES,
+  scoreFixture,
+  selectFixtures,
+  sidecarKey,
+} from "./selectFixtures.js";
 export type { ResolveResult } from "./resolveFixtures.js";
 export { computeRealisedClv, formatClv, resolveRecords } from "./resolveFixtures.js";
 export type { PuntResult } from "./runPunt.js";

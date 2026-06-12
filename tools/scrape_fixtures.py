@@ -1,5 +1,9 @@
 """scrape_fixtures.py — populate .tmp/fixtures/today.txt from multiple sources.
 
+Also writes .tmp/fixtures/sportybet_today.json (SportyBet event sidecar with
+market counts) — consumed by packages/runtime/src/selectFixtures.ts to gate the
+pre-analysis fixture selection.
+
 Sources (in order):
   ESPN JSON API   — 16 ORACLE leagues, stdlib urllib, no key
   Sky Sports HTML — HTML-entity-encoded JSON, requires requests
@@ -25,6 +29,7 @@ import argparse
 import asyncio
 import html
 import json
+import os
 import re
 import sys
 import urllib.request
@@ -53,6 +58,9 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_CACHE = ROOT / ".tmp" / "fixtures" / "today.txt"
+# SportyBet sidecar — consumed by packages/runtime/src/selectFixtures.ts to gate
+# the pre-analysis fixture selection (membership + market depth).
+SPORTYBET_SIDECAR = ROOT / ".tmp" / "fixtures" / "sportybet_today.json"
 
 ESPN_LEAGUE_MAP: dict[str, str] = {
     "eng.1":            "Premier League",
@@ -729,6 +737,35 @@ class BetExplorerScraper:
 # Timestamps are UTC Unix ms — no timezone conversion needed.
 # todayGames=true limits to today; pageSize=100 with pagination covers all matches.
 
+def _sportybet_event_to_record(ev: dict, league: str) -> Optional[dict]:
+    """Map a pcUpcomingEvents event to a sidecar record, or None if malformed."""
+    home = ev.get("homeTeamName", "")
+    away = ev.get("awayTeamName", "")
+    ts_ms = ev.get("estimateStartTime")
+    if not (home and away and ts_ms):
+        return None
+    try:
+        kickoff = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except Exception:
+        return None
+    # marketCount is remote-controlled web content — a bad value must not
+    # abort the parse loop, just degrade to 0 for this event
+    try:
+        market_count = max(0, int(ev.get("totalMarketSize") or len(ev.get("markets") or [])))
+    except (TypeError, ValueError):
+        market_count = 0
+    return {
+        "eventId": str(ev.get("eventId", "")),
+        "home": home,
+        "away": away,
+        "league": league,
+        "kickoff_utc": kickoff,
+        "marketCount": market_count,
+    }
+
+
 class SportyBetScraper:
     PAGE_URL = "https://www.sportybet.com/ng/sport/football/today"
     API_BASE = (
@@ -740,6 +777,10 @@ class SportyBetScraper:
         "&todayGames=true"
         "&timeline=1.4"
     )
+
+    def __init__(self) -> None:
+        # Sidecar records for the requested date — read by run_playwright_scrapers
+        self.captured_events: list[dict] = []
 
     async def fetch(self, ctx: "BrowserContext", date_str: str) -> list[Fixture]:
         page = await ctx.new_page()
@@ -779,29 +820,25 @@ class SportyBetScraper:
                         _warn(f"SportyBet page {page_num}: {exc}")
                     page_num += 1
 
-            # Parse all captured API pages
+            # Parse all captured API pages (dedup — pagination can replay events)
+            seen_events: set[tuple[str, str, str]] = set()
             for api_data in api_pages:
                 tournaments = api_data.get("data", {}).get("tournaments", [])
                 for tournament in tournaments:
                     league = tournament.get("name", "Football")
                     for ev in tournament.get("events", []):
-                        home = ev.get("homeTeamName", "")
-                        away = ev.get("awayTeamName", "")
-                        ts_ms = ev.get("estimateStartTime")
-                        if not (home and away and ts_ms):
-                            continue
-                        try:
-                            kickoff = datetime.fromtimestamp(
-                                ts_ms / 1000, tz=timezone.utc
-                            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-                            # Only keep fixtures for the requested date
-                            if kickoff[:10] == date_str:
-                                fixtures.append(Fixture(
-                                    home=home, away=away,
-                                    league=league, kickoff_utc=kickoff,
-                                ))
-                        except Exception:
-                            pass
+                        record = _sportybet_event_to_record(ev, league)
+                        # Only keep fixtures for the requested date
+                        if record and record["kickoff_utc"][:10] == date_str:
+                            ev_key = (record["home"], record["away"], record["kickoff_utc"])
+                            if ev_key in seen_events:
+                                continue
+                            seen_events.add(ev_key)
+                            self.captured_events.append(record)
+                            fixtures.append(Fixture(
+                                home=record["home"], away=record["away"],
+                                league=league, kickoff_utc=record["kickoff_utc"],
+                            ))
 
         except Exception as exc:
             _warn(f"SportyBet: {exc}")
@@ -852,19 +889,20 @@ class WhoScoredScraper:
 
 # ── Playwright runner ─────────────────────────────────────────────────────────
 
-async def run_playwright_scrapers(date_str: str) -> list[Fixture]:
+async def run_playwright_scrapers(date_str: str) -> tuple[list[Fixture], list[dict]]:
     if not HAS_PLAYWRIGHT:
         _warn("Playwright not installed — skipping JS scrapers. "
               "Run: pip install playwright && python -m playwright install chromium")
-        return []
+        return [], []
 
+    sportybet = SportyBetScraper()
     scrapers = [
         ("BBC Sport",    BBCSportScraper()),
         ("Flashscore",   FlashscoreScraper()),
         ("365Scores",    Scores365Scraper()),
         ("OneFootball",  OneFootballScraper()),
         ("BetExplorer",  BetExplorerScraper()),
-        ("SportyBet",    SportyBetScraper()),
+        ("SportyBet",    sportybet),
         ("WhoScored",    WhoScoredScraper()),
     ]
 
@@ -902,7 +940,7 @@ async def run_playwright_scrapers(date_str: str) -> list[Fixture]:
         summary = " ".join(f"{k.lower().replace(' ','')}:{v}" for k, v in counts.items())
         print(f"[scrape] playwright — {summary}", flush=True)
 
-    return results
+    return results, sportybet.captured_events
 
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
@@ -916,6 +954,22 @@ def read_cache() -> list[str]:
 def write_cache(lines: list[str]) -> None:
     FIXTURE_CACHE.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE_CACHE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_sportybet_sidecar(date_str: str, events: list[dict]) -> None:
+    """Written even when events is empty. Note: the TS selector fails open on an
+    empty events list too (an empty SportyBet day must not zero out the batch);
+    the date/scraped_at fields exist so staleness is detectable in logs.
+    Atomic write — a concurrent reader must never see a partial file."""
+    SPORTYBET_SIDECAR.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "date": date_str,
+        "scraped_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "events": events,
+    }
+    tmp = SPORTYBET_SIDECAR.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, SPORTYBET_SIDECAR)
 
 
 def parse_existing_line(line: str) -> Optional[tuple[str, str, str]]:
@@ -967,8 +1021,12 @@ def main() -> None:
     espn_fixtures      = ESPNScraper().fetch_all(date_str)
     sky_fixtures       = SkySportsScraper().fetch(date_str)
     livescore_fixtures = LiveScoreScraper().fetch(date_str)
-    pw_fixtures        = ([] if args.no_playwright
-                          else asyncio.run(run_playwright_scrapers(date_str)))
+    if args.no_playwright:
+        pw_fixtures, sportybet_events = [], []
+        pw_ran = False
+    else:
+        pw_fixtures, sportybet_events = asyncio.run(run_playwright_scrapers(date_str))
+        pw_ran = HAS_PLAYWRIGHT
 
     all_new = espn_fixtures + sky_fixtures + livescore_fixtures + pw_fixtures
     existing = read_cache()
@@ -988,6 +1046,8 @@ def main() -> None:
         return
 
     write_cache(merged)
+    if pw_ran:
+        write_sportybet_sidecar(date_str, sportybet_events)
 
 
 if __name__ == "__main__":

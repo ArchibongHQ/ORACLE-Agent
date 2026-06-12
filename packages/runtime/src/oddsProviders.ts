@@ -407,13 +407,25 @@ export function makeOddsApiIoProvider(apiKey: string | undefined): OddsProvider 
 }
 
 // ── SportsGameOdds (tier 5, sharp-capable) ─────────────────────────────────────
-// SCHEMA: inferred from sportsgameodds.com/docs (oddID pattern + byBookmaker,
-// 2026-06-10) — NOT yet machine-verified. Confirm against one live response,
-// especially the 3-way moneyline oddIDs and team-name field paths:
-//   curl -H "X-Api-Key: $K" "https://api.sportsgameodds.com/v2/events?sportID=SOCCER&startsAfter=<date>&oddsAvailable=true&limit=50"
+// SCHEMA: partially machine-verified live 2026-06-12 (one MLS event):
+//   teams.{home,away}.names.{long,medium,short} and status.startsAt confirmed.
+//   ml3way oddIDs + byBookmaker still doc-inferred only — the event had no priced
+//   odds yet (MLS on World Cup break; re-verify when fixtures price up):
+//   curl -H "X-Api-Key: $K" "https://api.sportsgameodds.com/v2/events?leagueID=MLS&startsAfter=<date>&oddsAvailable=true&limit=50"
 // Free tier bills per OBJECT RETURNED (1,000/mo) — keep limit tight, never page.
+// Free tier REQUIRES leagueID (sportID-wide queries 400: "must specify a leagueID
+// or eventID at this subscription tier") and only unlocks MLS + UCL (verified
+// live 2026-06-12 via GET /v2/leagues?sportID=SOCCER). Unmapped/locked leagues
+// are skipped client-side so no quota or roundtrip is wasted.
 // Odds are AMERICAN format strings (e.g. "-112") and need decimal conversion.
 const SGO_BASE = "https://api.sportsgameodds.com/v2";
+// ORACLE league name → SGO leagueID. Only IDs confirmed against the live API are
+// listed (EPL exists but is locked on the free tier — kept for a future upgrade).
+const SGO_LEAGUE_IDS: Record<string, string> = {
+  MLS: "MLS",
+  "Champions League": "UEFA_CHAMPIONS_LEAGUE",
+  "Premier League": "EPL",
+};
 // oddID pattern: {statID}-{statEntityID}-{periodID}-{betTypeID}-{sideID}
 const SGO_ML3WAY_ODD_IDS = {
   home: "points-home-game-ml3way-home",
@@ -489,13 +501,15 @@ export function makeSportsGameOddsProvider(apiKey: string | undefined): OddsProv
     tier: 5,
     isSharp: true,
     hasQuota: () => !!apiKey,
-    async fetch(home, away, _league, kickoff) {
+    async fetch(home, away, league, kickoff) {
       if (!apiKey) return null;
+      const leagueId = SGO_LEAGUE_IDS[league];
+      if (!leagueId) return null; // league not served by SGO (or locked) — free skip
       const date = kickoff.slice(0, 10);
       // Single call: events + odds in one payload (each event returned = 1 billed
       // object on the 1,000/mo free tier, so the day window + limit stay tight).
       const res = await fetch(
-        `${SGO_BASE}/events?sportID=SOCCER&startsAfter=${date}T00:00:00Z&startsBefore=${date}T23:59:59Z&oddsAvailable=true&limit=50`,
+        `${SGO_BASE}/events?leagueID=${leagueId}&startsAfter=${date}T00:00:00Z&startsBefore=${date}T23:59:59Z&oddsAvailable=true&limit=50`,
         { headers: { "X-Api-Key": apiKey }, signal: AbortSignal.timeout(15_000) }
       );
       if (!res.ok) {

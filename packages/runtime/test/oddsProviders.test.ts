@@ -643,6 +643,27 @@ describe("SportsGameOdds provider fetch", () => {
     expect(await sgo.fetch(...FX)).toBeNull();
   });
 
+  it("queries per-league with the mapped SGO leagueID (free tier rejects sportID-wide)", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    await sgo.fetch(...FX);
+    const url = String(spy.mock.calls[0]?.[0]);
+    expect(url).toContain("leagueID=EPL");
+    expect(url).not.toContain("sportID=");
+  });
+
+  it("skips unmapped leagues without making an HTTP call", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
+    const sgo = providers.find((p) => p.name === "sportsgameodds")!;
+    const res = await sgo.fetch("Boca Juniors", "River Plate", "Copa Libertadores", "2026-06-12T22:00:00Z");
+    expect(res).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
   it("returns null when consensus odds are non-numeric or zero (americanToDecimal edge cases)", async () => {
     // "0" and "abc" should both produce NaN → validateTriple rejects → null
     vi.spyOn(globalThis, "fetch").mockResolvedValue(

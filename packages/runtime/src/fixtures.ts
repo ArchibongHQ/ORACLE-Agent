@@ -1,9 +1,12 @@
 /** Odds API integration — Phase 4.
  *  Fetches today's fixtures + odds, returns FixtureJob[] ready for runBatch.
  *  Falls back to .tmp/fixtures/today.txt when API key is absent or quota exhausted.
- *  Gap-fill: fixtures scraped but not covered by the Odds API get odds via Gemini Search. */
+ *  Gap-fill: fixtures scraped but not covered by the Odds API get odds via Gemini Search.
+ *  Every path is gated through selectFixtures (SportyBet-today membership +
+ *  composite score + MAX_FIXTURES_PER_RUN cap) before any per-fixture paid call. */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { FixtureJob, RunState } from "@oracle/engine";
 import { parseFixtureList } from "@oracle/engine";
@@ -13,6 +16,12 @@ import { enrichWithH2H } from "./h2h.js";
 import { enrichWithLineups } from "./lineups.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
 import { buildOddsProviders, type OddsProvider, runOddsChain } from "./oddsProviders.js";
+import {
+  DEFAULT_MAX_FIXTURES_PER_RUN,
+  loadSportyBetIndex,
+  type SelectionCandidate,
+  selectFixtures,
+} from "./selectFixtures.js";
 import { namesMatch } from "./teamNames.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -314,6 +323,40 @@ async function readCachedJobs(): Promise<FixtureJob[]> {
   }
 }
 
+// ── Pre-analysis selection (quota guard) ──────────────────────────────────────
+
+/** Gate the fixture pool BEFORE any per-fixture paid call (gap-fill chain,
+ *  web search, H2H/news enrichment): SportyBet-today membership + composite
+ *  score + hard cap. See selectFixtures.ts for scoring.
+ *  One clock for the sidecar staleness check AND the today-filter, so the two
+ *  cannot disagree across a UTC midnight boundary. Logs go to stderr — stdout
+ *  must stay clean for `oracle run --json` consumers. */
+async function applySelection(
+  pool: SelectionCandidate[],
+  cap: number
+): Promise<{ jobs: FixtureJob[]; withOdds: FixtureJob[]; withoutOdds: FixtureJob[] }> {
+  const now = new Date();
+  const index = await loadSportyBetIndex(now.toISOString().slice(0, 10));
+  const { selected, stats } = selectFixtures(pool, { cap, sportyBet: index, now });
+  if (stats.failOpen)
+    process.stderr.write("[select] WARN sportybet index unavailable — fail-open\n");
+  process.stderr.write(
+    `[select] pool=${stats.pool} today=${stats.today} sportybet=${stats.sportyBet} ` +
+      `selected=${stats.selected} (bulkOdds=${stats.bulkOdds} priority=${stats.priority} ` +
+      `droppedBulkOdds=${stats.droppedBulkOdds})\n`
+  );
+  return {
+    jobs: selected.map((c) => c.job),
+    withOdds: selected.filter((c) => c.hasBulkOdds).map((c) => c.job),
+    withoutOdds: selected.filter((c) => !c.hasBulkOdds).map((c) => c.job),
+  };
+}
+
+/** Map cached fixtures to selection candidates — cached odds count as bulk. */
+function cachedCandidates(jobs: FixtureJob[]): SelectionCandidate[] {
+  return jobs.map((j) => ({ job: j, hasBulkOdds: Boolean(j.state?.telemetry?.hOdds) }));
+}
+
 // ── Gemini odds gap-fill (scraped fixtures with no Odds API coverage) ────────────
 
 /** Normalise a name to a dedup key for matching scraped vs Odds API fixtures. */
@@ -566,7 +609,8 @@ export async function fetchTodaysFixtures(
   sharpApiIoKey?: string,
   apiFootballKey?: string,
   oddsApiIoKey?: string,
-  sportsGameOddsKey?: string
+  sportsGameOddsKey?: string,
+  maxFixturesPerRun: number = DEFAULT_MAX_FIXTURES_PER_RUN
 ): Promise<FetchResult> {
   // Structured free-API odds providers (SharpAPI.io → API-Football → Odds-API.io →
   // SportsGameOdds). Built once; the gap-fill tries this chain before the
@@ -588,12 +632,9 @@ export async function fetchTodaysFixtures(
 
   if (!oddsApiKey) {
     const cached = await readCachedJobs();
-    const filled = await geminiOddsGapFill(
-      cached.filter((j) => !j.state?.telemetry?.hOdds),
-      geminiApiKey,
-      oddsProviders
-    );
-    const jobs = await enrich([...cached.filter((j) => j.state?.telemetry?.hOdds), ...filled]);
+    const sel = await applySelection(cachedCandidates(cached), maxFixturesPerRun);
+    const filled = await geminiOddsGapFill(sel.withoutOdds, geminiApiKey, oddsProviders);
+    const jobs = await enrich([...sel.withOdds, ...filled]);
     return {
       jobs,
       source: jobs.length ? "cache" : "empty",
@@ -629,44 +670,57 @@ export async function fetchTodaysFixtures(
   }
 
   if (errors.length)
-    if (oddsJobs.length > 0) {
-      // Merge into today.txt without overwriting scraped fixtures
-      await mergeCache(oddsJobs);
+    process.stderr.write(`[fixtures] odds api errors: ${errors.join("; ")}\n`);
 
-      // Gap-fill: find scraped fixtures with no Odds API match and try Gemini
-      const scraped = await readCachedJobs();
-      const unmatched = findUnmatched(scraped, oddsJobs);
-      const filled = await geminiOddsGapFill(unmatched, geminiApiKey, oddsProviders);
+  if (oddsJobs.length > 0) {
+    // Merge into today.txt without overwriting scraped fixtures
+    await mergeCache(oddsJobs);
 
-      const preEnrich = [...oddsJobs, ...filled];
-      const allJobs = await enrich(preEnrich);
-      return {
-        jobs: allJobs,
-        source: "api",
-        quality: filled.length > 0 ? "degraded" : "live",
-        fetchedAt: new Date().toISOString(),
-      };
-    }
+    // Select before gap-fill: scraped fixtures with no Odds API match only get
+    // the per-fixture chain if they survive the SportyBet-today gate + cap
+    const scraped = await readCachedJobs();
+    const unmatched = findUnmatched(scraped, oddsJobs);
+    const sel = await applySelection(
+      [
+        ...oddsJobs.map((j) => ({ job: j, hasBulkOdds: true })),
+        ...unmatched.map((j) => ({ job: j, hasBulkOdds: false })),
+      ],
+      maxFixturesPerRun
+    );
+    const filled = await geminiOddsGapFill(sel.withoutOdds, geminiApiKey, oddsProviders);
+
+    const allJobs = await enrich([...sel.withOdds, ...filled]);
+    return {
+      jobs: allJobs,
+      source: "api",
+      quality: filled.length > 0 ? "degraded" : "live",
+      fetchedAt: new Date().toISOString(),
+    };
+  }
 
   // Quota exhausted — try web search fallback then Gemini on cached
   if (quotaExhausted && enableWebSearchFallback) {
     const cached = await readCachedJobs();
     if (cached.length > 0) {
-      const enhanced = await fetchWebSearchOdds(cached, true);
-      const enrichedJobs = await enrich(enhanced);
-      return {
-        jobs: enrichedJobs,
-        source: "web_search_consensus",
-        quality: "degraded",
-        fetchedAt: new Date().toISOString(),
-      };
+      const sel = await applySelection(cachedCandidates(cached), maxFixturesPerRun);
+      if (sel.jobs.length > 0) {
+        const enhanced = await fetchWebSearchOdds(sel.jobs, true);
+        const enrichedJobs = await enrich(enhanced);
+        return {
+          jobs: enrichedJobs,
+          source: "web_search_consensus",
+          quality: "degraded",
+          fetchedAt: new Date().toISOString(),
+        };
+      }
     }
   }
 
   // Fall back to cache + Gemini gap-fill
   const cached = await readCachedJobs();
   if (cached.length) {
-    const filled = await geminiOddsGapFill(cached, geminiApiKey, oddsProviders);
+    const sel = await applySelection(cachedCandidates(cached), maxFixturesPerRun);
+    const filled = await geminiOddsGapFill(sel.jobs, geminiApiKey, oddsProviders);
     if (filled.length > 0) {
       const enrichedJobs = await enrich(filled);
       return {
@@ -677,8 +731,8 @@ export async function fetchTodaysFixtures(
       };
     }
     return {
-      jobs: cached,
-      source: "cache",
+      jobs: sel.jobs,
+      source: sel.jobs.length ? "cache" : "empty",
       quality: "no_odds",
       fetchedAt: new Date().toISOString(),
     };
