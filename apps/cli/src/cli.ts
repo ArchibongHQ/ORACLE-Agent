@@ -156,6 +156,7 @@ export async function dispatch(argv: string[]): Promise<DispatchResult> {
           undefined,
           undefined,
           undefined,
+          undefined,
           config.maxFixturesPerRun
         );
         if (!jobs.length)

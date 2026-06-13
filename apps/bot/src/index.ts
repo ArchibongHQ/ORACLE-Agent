@@ -441,6 +441,7 @@ async function handleRun(chatId: string): Promise<void> {
       config.sharpApiIoKey,
       config.apiFootballKey,
       config.oddsApiIoKey,
+      config.oddsPapiKey,
       config.sportsGameOddsKey
     );
 

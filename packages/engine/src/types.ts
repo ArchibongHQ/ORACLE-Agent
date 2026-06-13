@@ -95,6 +95,7 @@ export interface OracleConfig {
   oddsApiKey?: string;
   sharpApiIoKey?: string; // structured free-odds fallback (SharpAPI.io, sharp books)
   oddsApiIoKey?: string; // structured free-odds fallback (Odds-API.io, 100 req/hr free)
+  oddsPapiKey?: string; // structured free-odds fallback (OddsPapi v4, Pinnacle/SBOBet)
   sportsGameOddsKey?: string; // structured free-odds fallback (SportsGameOdds, Pinnacle)
   bankroll: number;
   rankingMode?: RankingMode; // default CONFIDENCE_WEIGHTED

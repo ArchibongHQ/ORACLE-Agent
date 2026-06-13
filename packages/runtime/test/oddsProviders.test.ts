@@ -111,23 +111,26 @@ describe("runOddsChain", () => {
 // ── buildOddsProviders registry ───────────────────────────────────────────────
 
 describe("buildOddsProviders", () => {
-  it("registers all five providers in tier order", () => {
+  it("registers all six providers in tier order", () => {
     const providers = buildOddsProviders({});
     expect(providers.map((p) => p.name)).toEqual([
       "sharpapi-io",
       "api-football",
       "odds-api-io",
+      "oddspapi",
       "sportsgameodds",
       "sportybet-sidecar",
     ]);
-    expect(providers.map((p) => p.tier)).toEqual([2, 3, 4, 5, 6]);
+    // odds-api-io and oddspapi share tier 4 (both sharp); the sort is
+    // length-stable but their relative order isn't behaviour-meaningful.
+    expect(providers.map((p) => p.tier)).toEqual([2, 3, 4, 4, 5, 6]);
   });
 
-  it("marks SharpAPI.io, Odds-API.io and SportsGameOdds as sharp", () => {
+  it("marks SharpAPI.io, Odds-API.io, OddsPapi and SportsGameOdds as sharp", () => {
     const sharp = buildOddsProviders({})
       .filter((p) => p.isSharp)
       .map((p) => p.name);
-    expect(sharp).toEqual(["sharpapi-io", "odds-api-io", "sportsgameodds"]);
+    expect(sharp).toEqual(["sharpapi-io", "odds-api-io", "oddspapi", "sportsgameodds"]);
   });
 
   it("reports no quota for API-key providers when no keys are supplied", () => {
@@ -141,13 +144,15 @@ describe("buildOddsProviders", () => {
       sharpApiIoKey: "k",
       apiFootballKey: "k2",
       oddsApiIoKey: "k3",
-      sportsGameOddsKey: "k4",
+      oddsPapiKey: "k4",
+      sportsGameOddsKey: "k5",
     });
     const withQuota = providers.filter((p) => p.hasQuota()).map((p) => p.name);
     expect(withQuota).toEqual([
       "sharpapi-io",
       "api-football",
       "odds-api-io",
+      "oddspapi",
       "sportsgameodds",
       "sportybet-sidecar",
     ]);
@@ -696,17 +701,214 @@ describe("SportsGameOdds provider fetch", () => {
   });
 });
 
+// ── OddsPapi provider fetch ──────────────────────────────────────────────────
+// Provider uses TWO endpoints: /v4/participants (cached) + /v4/odds-by-tournaments.
+// Tests mock both via the fetch URL pattern.
+
+describe("OddsPapi provider fetch", () => {
+  const KICKOFF = "2026-06-13T15:00:00Z";
+  const HOME_ID = 12345;
+  const AWAY_ID = 67890;
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    // Reset the module-level participant cache so each test starts cold.
+    const { _resetOddsPapiParticipantCache } = await import("../src/oddsProviders.js");
+    _resetOddsPapiParticipantCache();
+  });
+
+  function mockOddsPapiFetch(
+    participants: Record<string, string>,
+    fixtures: unknown[]
+  ): ReturnType<typeof vi.spyOn> {
+    return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/v4/participants")) {
+        return new Response(JSON.stringify(participants), { status: 200 });
+      }
+      if (url.includes("/v4/odds-by-tournaments")) {
+        return new Response(JSON.stringify(fixtures), { status: 200 });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    });
+  }
+
+  function pinnacle1x2(home: number, draw: number, away: number) {
+    return {
+      pinnacle: {
+        bookmakerIsActive: true,
+        suspended: false,
+        markets: {
+          "101": {
+            marketActive: true,
+            outcomes: {
+              "101": { players: { "0": { active: true, price: home } } },
+              "102": { players: { "0": { active: true, price: draw } } },
+              "103": { players: { "0": { active: true, price: away } } },
+            },
+          },
+        },
+      },
+    };
+  }
+
+  it("returns a valid sharp triple when Pinnacle has the fixture", async () => {
+    mockOddsPapiFetch(
+      { [HOME_ID]: "Arsenal FC", [AWAY_ID]: "Chelsea FC" },
+      [
+        {
+          participant1Id: HOME_ID,
+          participant2Id: AWAY_ID,
+          startTime: KICKOFF,
+          hasOdds: true,
+          bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
+        },
+      ]
+    );
+    const providers = buildOddsProviders({ oddsPapiKey: "k" });
+    const oddspapi = providers.find((p) => p.name === "oddspapi")!;
+    const res = await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF);
+    expect(res).not.toBeNull();
+    expect(res!.home).toBe(2.1);
+    expect(res!.draw).toBe(3.4);
+    expect(res!.away).toBe(3.5);
+    expect(res!.isSharp).toBe(true);
+    expect(res!.confidence).toBe(0.85);
+    expect(res!.sources).toEqual(["oddspapi:pinnacle"]);
+  });
+
+  it("falls back to SBOBet when Pinnacle 1X2 is unpriced", async () => {
+    mockOddsPapiFetch(
+      { [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" },
+      [
+        {
+          participant1Id: HOME_ID,
+          participant2Id: AWAY_ID,
+          startTime: KICKOFF,
+          hasOdds: true,
+          bookmakerOdds: {
+            pinnacle: { bookmakerIsActive: false, markets: {} },
+            sbobet: {
+              bookmakerIsActive: true,
+              suspended: false,
+              markets: {
+                "101": {
+                  marketActive: true,
+                  outcomes: {
+                    "101": { players: { "0": { active: true, price: 1.95 } } },
+                    "102": { players: { "0": { active: true, price: 3.5 } } },
+                    "103": { players: { "0": { active: true, price: 4.0 } } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      ]
+    );
+    const providers = buildOddsProviders({ oddsPapiKey: "k" });
+    const oddspapi = providers.find((p) => p.name === "oddspapi")!;
+    const res = await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF);
+    expect(res?.sources).toEqual(["oddspapi:sbobet"]);
+    expect(res?.isSharp).toBe(true);
+  });
+
+  it("returns null when the league is not mapped to a tournament id", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const providers = buildOddsProviders({ oddsPapiKey: "k" });
+    const oddspapi = providers.find((p) => p.name === "oddspapi")!;
+    expect(await oddspapi.fetch("X", "Y", "Some Obscure League", KICKOFF)).toBeNull();
+    expect(spy).not.toHaveBeenCalled(); // no roundtrip burned
+  });
+
+  it("returns null when no fixture matches the kickoff date", async () => {
+    mockOddsPapiFetch(
+      { [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" },
+      [
+        {
+          participant1Id: HOME_ID,
+          participant2Id: AWAY_ID,
+          startTime: "2026-06-14T15:00:00Z", // wrong day
+          hasOdds: true,
+          bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
+        },
+      ]
+    );
+    const providers = buildOddsProviders({ oddsPapiKey: "k" });
+    const oddspapi = providers.find((p) => p.name === "oddspapi")!;
+    expect(await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)).toBeNull();
+  });
+
+  it("returns null when no fixture matches the team names", async () => {
+    mockOddsPapiFetch(
+      { [HOME_ID]: "Liverpool", [AWAY_ID]: "Everton" },
+      [
+        {
+          participant1Id: HOME_ID,
+          participant2Id: AWAY_ID,
+          startTime: KICKOFF,
+          hasOdds: true,
+          bookmakerOdds: pinnacle1x2(2.0, 3.4, 4.0),
+        },
+      ]
+    );
+    const providers = buildOddsProviders({ oddsPapiKey: "k" });
+    const oddspapi = providers.find((p) => p.name === "oddspapi")!;
+    expect(await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)).toBeNull();
+  });
+
+  it("throws 'quota exhausted' on 429 from /v4/odds-by-tournaments", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/v4/participants")) {
+        return new Response(JSON.stringify({ [HOME_ID]: "X" }), { status: 200 });
+      }
+      return new Response("", { status: 429 });
+    });
+    const providers = buildOddsProviders({ oddsPapiKey: "k" });
+    const oddspapi = providers.find((p) => p.name === "oddspapi")!;
+    await expect(
+      oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)
+    ).rejects.toThrow("quota exhausted");
+  });
+
+  it("caches /v4/participants across calls (one GET per session)", async () => {
+    const spy = mockOddsPapiFetch(
+      { [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" },
+      [
+        {
+          participant1Id: HOME_ID,
+          participant2Id: AWAY_ID,
+          startTime: KICKOFF,
+          hasOdds: true,
+          bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
+        },
+      ]
+    );
+    const providers = buildOddsProviders({ oddsPapiKey: "k" });
+    const oddspapi = providers.find((p) => p.name === "oddspapi")!;
+    await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF);
+    await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF);
+    const participantCalls = spy.mock.calls.filter((c) =>
+      String(c[0]).includes("/v4/participants")
+    );
+    expect(participantCalls).toHaveLength(1);
+  });
+});
+
 // ── buildConfig env key forwarding ───────────────────────────────────────────
 
 describe("buildConfig", () => {
-  it("forwards sharpApiIoKey, oddsApiIoKey, and sportsGameOddsKey from env", () => {
+  it("forwards sharpApiIoKey, oddsApiIoKey, oddsPapiKey, and sportsGameOddsKey from env", () => {
     const cfg = buildConfig({
       SHARPAPI_IO_KEY: "sharp-key",
       ODDS_API_IO_KEY: "oddsio-key",
+      ODDSPAPI_KEY: "oddspapi-key",
       SPORTS_GAMEODDS_KEY: "sgo-key",
     });
     expect(cfg.sharpApiIoKey).toBe("sharp-key");
     expect(cfg.oddsApiIoKey).toBe("oddsio-key");
+    expect(cfg.oddsPapiKey).toBe("oddspapi-key");
     expect(cfg.sportsGameOddsKey).toBe("sgo-key");
   });
 

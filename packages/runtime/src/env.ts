@@ -94,6 +94,7 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     oddsApiKey: env.ODDS_API_KEY,
     sharpApiIoKey: env.SHARPAPI_IO_KEY,
     oddsApiIoKey: env.ODDS_API_IO_KEY,
+    oddsPapiKey: env.ODDSPAPI_KEY,
     sportsGameOddsKey: env.SPORTS_GAMEODDS_KEY,
     bankroll: Number(env.BANKROLL ?? 1000),
     rankingMode: "CONFIDENCE_WEIGHTED",

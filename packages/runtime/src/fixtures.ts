@@ -613,16 +613,18 @@ export async function fetchTodaysFixtures(
   sharpApiIoKey?: string,
   apiFootballKey?: string,
   oddsApiIoKey?: string,
+  oddsPapiKey?: string,
   sportsGameOddsKey?: string,
   maxFixturesPerRun: number = DEFAULT_MAX_FIXTURES_PER_RUN
 ): Promise<FetchResult> {
-  // Structured free-API odds providers (SharpAPI.io → API-Football → Odds-API.io →
-  // SportsGameOdds). Built once; the gap-fill tries this chain before the
-  // Gemini/web-search degraded path.
+  // Structured free-API odds providers (SharpAPI.io → API-Football → Odds-API.io
+  // → OddsPapi → SportsGameOdds). Built once; the gap-fill tries this chain
+  // before the Gemini/web-search degraded path.
   const oddsProviders = buildOddsProviders({
     sharpApiIoKey,
     apiFootballKey,
     oddsApiIoKey,
+    oddsPapiKey,
     sportsGameOddsKey,
   });
 
