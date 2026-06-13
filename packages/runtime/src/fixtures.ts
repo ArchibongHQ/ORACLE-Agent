@@ -749,7 +749,9 @@ export async function fetchTodaysFixtures(
 /** Resolve a single typed fixture ("Arsenal" vs "Chelsea") to a FixtureJob with live odds.
  *
  *  1. Fast path: scan the cached daily fixture list (.tmp/fixtures/today.txt).
- *  2. Else query the Odds API. With a leagueHint, only that sport is queried; otherwise every
+ *  1.5. SportyBet sidecar: scan sportybet_today.json for a name match — provides
+ *       kickoff/league context for African/Asian fixtures absent from today.txt.
+ *  2. Odds API. With a leagueHint, only that sport is queried; otherwise every
  *     sport in SPORT_TO_LEAGUE is tried until a fuzzy home+away match is found (stops on quota).
  *
  *  Returns null when no odds-bearing match is found (caller decides fallback). */
@@ -765,9 +767,28 @@ export async function fetchFixtureByName(
   const hit = cached.find((j) => namesMatch(j.home, home) && namesMatch(j.away, away));
   if (hit?.state?.telemetry?.hOdds) return hit;
 
+  // 1.5. SportyBet sidecar — covers fixtures from SportyBet that are not in SPORT_TO_LEAGUE
+  //      (African, Asian, and other leagues). Provides kickoff + league context so the
+  //      Odds API / Gemini gap-fill path can proceed with a correct league hint.
+  let sidecarLeague: string | undefined;
+  let sidecarKickoff: string | undefined;
+  if (!hit) {
+    const today = new Date().toISOString().slice(0, 10);
+    const sidecarIndex = await loadSportyBetIndex(today);
+    if (sidecarIndex) {
+      const sbHit = sidecarIndex.events.find(
+        (ev) => namesMatch(ev.home, home) && namesMatch(ev.away, away)
+      );
+      if (sbHit) {
+        sidecarLeague = sbHit.league ?? undefined;
+        sidecarKickoff = sbHit.kickoff_utc ?? undefined;
+      }
+    }
+  }
+
   // 2. Odds API — choose which sports to query
-  // If a cache hit exists (no odds), infer league hint from it to narrow the API call.
-  const effectiveLeague = leagueHint ?? hit?.league;
+  // Prefer explicit leagueHint → sidecar league → cache hit league (narrowest query first).
+  const effectiveLeague = leagueHint ?? sidecarLeague ?? hit?.league;
   let oddsJob: FixtureJob | null = null;
 
   if (oddsApiKey) {
@@ -803,7 +824,7 @@ export async function fetchFixtureByName(
 
   // 3. Gemini gap-fill — fetch odds via Gemini Search when Odds API is unavailable/exhausted
   const league = effectiveLeague ?? "FIFA World Cup";
-  const kickoff = hit?.kickoff ?? new Date().toISOString();
+  const kickoff = hit?.kickoff ?? sidecarKickoff ?? new Date().toISOString();
   const geminiResults = await geminiOddsGapFill([{ home, away, league, kickoff }], geminiApiKey);
   if (geminiResults.length) return geminiResults[0]!;
 

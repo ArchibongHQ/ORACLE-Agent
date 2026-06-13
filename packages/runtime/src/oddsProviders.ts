@@ -14,7 +14,7 @@
  *    3  API-Football      net    — permanent free tier           [WIRED]
  *    4  Odds-API.io       sharp  — Pinnacle/SingBet, 100 req/hr free [WIRED]
  *    5  SportsGameOdds    sharp  — Pinnacle, 1,000 objects/mo free   [WIRED]
- *    6  BSD / bzzoiro     soft   — no-rate-limit floor            [STUB]
+ *    6  SportyBet sidecar soft   — zero-network file read        [WIRED]
  *    7  geminiOddsGapFill (handled upstream — last resort)
  *
  *  Tier 4 runs before tier 5 deliberately: runOddsChain keeps hunting for a sharp
@@ -23,7 +23,9 @@
  *
  *  Providers whose key is absent are skipped silently (config.ts pattern).
  */
+import { readFile } from "node:fs/promises";
 import { namesMatch } from "./teamNames.js";
+import { SPORTYBET_SIDECAR_PATH } from "./selectFixtures.js";
 
 /** 1X2 consensus result. Field-compatible with @oracle/llm OddsAcquisitionResult
  *  so it drops straight into the state-building in fixtures.ts geminiOddsGapFill. */
@@ -541,24 +543,78 @@ export function makeSportsGameOddsProvider(apiKey: string | undefined): OddsProv
   };
 }
 
-// ── Stubs (tier 6) ─────────────────────────────────────────────────────────────
-// Registered so the chain is complete; each is a one-function fill-in. They report
-// hasQuota=false (no key wired) so the chain skips them today.
+// ── SportyBet sidecar (tier 6, soft, zero-network) ────────────────────────────
+// Reads 1X2 odds from .tmp/fixtures/sportybet_today.json, which scrape_fixtures.py
+// populates via the anonymous factsCenter/event API. No rate-limit risk — pure
+// file I/O. Acts as the free floor before the Gemini/web-search degraded path.
+// Overround threshold is relaxed to 0.25 because retail books carry larger margins
+// than the sharp sources above; the engine treats this result as "degraded".
 
-function makeStubProvider(
-  name: string,
-  tier: number,
-  isSharp: boolean,
-  apiKey: string | undefined
-): OddsProvider {
+const SB_MAX_OVERROUND = 0.25;
+
+interface SbSidecarEvent {
+  home: string;
+  away: string;
+  odds?: {
+    "1x2"?: { home?: number | null; draw?: number | null; away?: number | null } | null;
+  } | null;
+}
+interface SbSidecarFile {
+  date?: string;
+  events?: SbSidecarEvent[];
+}
+
+/** Validate a SportyBet 1X2 triple (wider overround tolerance for retail book). */
+function validateSbTriple(h: number, d: number, a: number): { overround: number } | null {
+  for (const v of [h, d, a]) {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < MIN_PRICE || v > MAX_PRICE) {
+      return null;
+    }
+  }
+  const overround = 1 / h + 1 / d + 1 / a - 1;
+  if (overround < MIN_OVERROUND || overround > SB_MAX_OVERROUND) return null;
+  return { overround };
+}
+
+export function makeSportyBetSidecarProvider(sidecarPath: string): OddsProvider {
   return {
-    name,
-    tier,
-    isSharp,
-    hasQuota: () => false, // not implemented — never selected until fetch() is written
-    async fetch() {
-      if (!apiKey) return null;
-      throw new Error(`${name}: provider not implemented`);
+    name: "sportybet-sidecar",
+    tier: 6,
+    isSharp: false,
+    hasQuota: () => true, // always available — file read, no API key needed
+    async fetch(home, away, _league, kickoff) {
+      let raw: SbSidecarFile;
+      try {
+        raw = JSON.parse(await readFile(sidecarPath, "utf8")) as SbSidecarFile;
+      } catch {
+        return null; // sidecar absent (--no-playwright run or first boot)
+      }
+      const today = kickoff.slice(0, 10);
+      if (raw.date !== today || !Array.isArray(raw.events)) return null;
+
+      const ev = raw.events.find(
+        (e) => namesMatch(e.home, home) && namesMatch(e.away, away)
+      );
+      if (!ev?.odds?.["1x2"]) return null;
+
+      const o1x2 = ev.odds["1x2"];
+      const h = Number(o1x2?.home ?? NaN);
+      const d = Number(o1x2?.draw ?? NaN);
+      const a = Number(o1x2?.away ?? NaN);
+
+      const valid = validateSbTriple(h, d, a);
+      if (!valid) return null;
+
+      return {
+        home: h,
+        draw: d,
+        away: a,
+        confidence: 0.62,
+        sources: ["sportybet-sidecar"],
+        overround: valid.overround,
+        provider: "sportybet-sidecar",
+        isSharp: false,
+      };
     },
   };
 }
@@ -568,7 +624,8 @@ export interface OddsProviderKeys {
   apiFootballKey?: string;
   oddsApiIoKey?: string;
   sportsGameOddsKey?: string;
-  bsdKey?: string;
+  /** Override sidecar file path — defaults to .tmp/fixtures/sportybet_today.json. */
+  sportyBetSidecarPath?: string;
 }
 
 /** Build the full provider registry in tier order. */
@@ -578,7 +635,7 @@ export function buildOddsProviders(keys: OddsProviderKeys): OddsProvider[] {
     makeApiFootballProvider(keys.apiFootballKey),
     makeOddsApiIoProvider(keys.oddsApiIoKey),
     makeSportsGameOddsProvider(keys.sportsGameOddsKey),
-    makeStubProvider("bsd", 6, false, keys.bsdKey),
+    makeSportyBetSidecarProvider(keys.sportyBetSidecarPath ?? SPORTYBET_SIDECAR_PATH),
   ].sort((a, b) => a.tier - b.tier);
 }
 

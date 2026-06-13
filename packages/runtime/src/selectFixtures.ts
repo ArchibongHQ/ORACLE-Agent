@@ -81,6 +81,8 @@ interface SportyBetEvent {
   home: string;
   away: string;
   marketCount: number;
+  league?: string;
+  kickoff_utc?: string;
   detail?: SportyBetEventDetail;
 }
 
@@ -141,7 +143,9 @@ export async function loadSportyBetIndex(
           // malformed detail — keep the event but without enrichment
         }
       }
-      events.push({ home: ev.home, away: ev.away, marketCount: mc, detail });
+      const league = typeof ev.league === "string" ? ev.league : undefined;
+      const kickoff_utc = typeof ev.kickoff_utc === "string" ? ev.kickoff_utc : undefined;
+      events.push({ home: ev.home, away: ev.away, marketCount: mc, league, kickoff_utc, detail });
       byKey.set(key, mc);
       if (detail) detailByKey.set(key, detail);
     }
