@@ -766,6 +766,305 @@ def _sportybet_event_to_record(ev: dict, league: str) -> Optional[dict]:
     }
 
 
+# ── SportyBet per-fixture enrichment (sidecar v2) ────────────────────────────
+# Plain anonymous HTTP — no Playwright.  All endpoints verified in spike
+# (see .tmp/sportybet_api_capture/FINDINGS.md).
+
+_SB_HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0"}
+_SB_EVENT_URL = "https://www.sportybet.com/api/ng/factsCenter/event?eventId={eid}&productId=3"
+_SB_GISMO = "https://stats.fn.sportradar.com/sportybet/en/Etc:UTC/gismo/{q}"
+_SB_PACE = 0.15  # seconds between requests within one fixture's fetch
+
+# Rolling team-xG prior (built by tools/build_xg_table.py). Optional — absent for
+# leagues outside Understat's top-5 coverage; the TS scorer falls back to the
+# sidecar goals-average proxy when a team is missing.
+_XG_TABLE_PATH = Path(".tmp/xg/team_xg_table.json")
+
+
+def _load_xg_table() -> dict[str, dict]:
+    """Load the team-xG prior table, keyed by normalise()'d team name. Missing or
+    corrupt file → empty dict (xg blocks degrade to null, never fatal)."""
+    try:
+        data = json.loads(_XG_TABLE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _xg_for(table: dict[str, dict], team: str) -> Optional[dict]:
+    """Look up a team's {xgf, xga} prior by normalised name. None when uncovered."""
+    rec = table.get(normalise(team))
+    if not rec:
+        return None
+    xgf, xga = rec.get("xgf"), rec.get("xga")
+    if not isinstance(xgf, (int, float)) or not isinstance(xga, (int, float)):
+        return None
+    return {"xgf": float(xgf), "xga": float(xga)}
+
+
+def _sb_get(url: str) -> Optional[dict]:
+    try:
+        req = urllib.request.Request(url, headers=_SB_HDR)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def _gismo_doc(query: str) -> Optional[dict]:
+    """Return first doc's data dict from a gismo response, or None on any failure."""
+    j = _sb_get(_SB_GISMO.format(q=query))
+    if not j:
+        return None
+    docs = j.get("doc", [])
+    if not docs:
+        return None
+    doc = docs[0]
+    if doc.get("event") == "exception":
+        return None
+    return doc.get("data")
+
+
+def _parse_odds(markets_data: dict) -> dict:
+    """Extract 1X2, OU2.5, BTTS, DC, DNB odds from factsCenter/event markets list."""
+    result: dict[str, Optional[dict]] = {
+        "1x2": None, "ou25": None, "btts": None, "dc": None, "dnb": None,
+    }
+    for market in markets_data.get("markets") or []:
+        mid = str(market.get("id", ""))
+        name = (market.get("name") or "").lower()
+        outcomes = {str(o.get("id", "")): o.get("odds") for o in market.get("outcomes") or []}
+
+        if mid == "1" or "match result" in name or "1x2" in name:
+            # outcomes: 1=home, 2=draw, 3=away
+            result["1x2"] = {
+                "home": outcomes.get("1"), "draw": outcomes.get("2"), "away": outcomes.get("3"),
+            }
+        elif mid == "18" or ("over/under" in name and "2.5" in name):
+            result["ou25"] = {
+                "over": outcomes.get("12"), "under": outcomes.get("13"),
+            }
+        elif mid == "29" or "both teams" in name or "btts" in name:
+            result["btts"] = {"yes": outcomes.get("74"), "no": outcomes.get("76")}
+        elif mid == "10" or "double chance" in name:
+            result["dc"] = {
+                "1x": outcomes.get("9"), "12": outcomes.get("10"), "x2": outcomes.get("11"),
+            }
+        elif mid == "11" or "draw no bet" in name:
+            result["dnb"] = {"home": outcomes.get("5"), "away": outcomes.get("6")}
+
+    return result
+
+
+def _parse_form(form_data: dict) -> Optional[dict]:
+    """Extract last-5 W/D/L and goals from stats_match_form response."""
+    if not form_data:
+        return None
+    teams = form_data.get("teams", {})
+    out: dict[str, dict] = {}
+    for side in ("home", "away"):
+        team = teams.get(side, {})
+        form_str = team.get("form", "")
+        matches = [m for m in (form_str or "") if m in ("W", "D", "L")][-5:]
+        out[side] = {
+            "name": team.get("name"),
+            "last5": "".join(matches),
+            "w": matches.count("W"),
+            "d": matches.count("D"),
+            "l": matches.count("L"),
+        }
+    return out or None
+
+
+def _parse_standings(tables_data: dict, home_id: Optional[int], away_id: Optional[int]) -> Optional[dict]:
+    """Extract league position and points for both teams from stats_season_tables."""
+    if not tables_data:
+        return None
+    rows = (tables_data.get("tables") or [{}])[0].get("tablerows", [])
+    result: dict[str, Optional[dict]] = {}
+    for row in rows:
+        tid = row.get("_id")
+        if tid in (home_id, away_id):
+            label = "home" if tid == home_id else "away"
+            result[label] = {
+                "pos": row.get("pos"),
+                "points": row.get("tot_pts"),
+                "played": row.get("tot_sp"),
+                "gf": row.get("tot_gf"),
+                "ga": row.get("tot_ga"),
+            }
+        if len(result) == 2:
+            break
+    return result or None
+
+
+def _parse_goals(goals_data: dict, home_id: Optional[int], away_id: Optional[int]) -> Optional[dict]:
+    """Extract per-team avg goals scored/conceded from stats_season_goals."""
+    if not goals_data:
+        return None
+    team_entries = goals_data.get("teams", {})
+    result: dict[str, Optional[dict]] = {}
+    for label, tid in (("home", home_id), ("away", away_id)):
+        if tid is None:
+            continue
+        entry = team_entries.get(str(tid))
+        if entry:
+            result[label] = {
+                "avg_scored": entry.get("avgGoalsFor"),
+                "avg_conceded": entry.get("avgGoalsAgainst"),
+            }
+    return result or None
+
+
+def _parse_h2h(versus_data: dict) -> Optional[dict]:
+    """Summarize H2H from stats_team_versusrecent — empty arrays are common for low-tier."""
+    if not versus_data:
+        return None
+    matches = versus_data.get("matches") or []
+    if not matches:
+        return None
+    summary = {"total": len(matches), "home_wins": 0, "away_wins": 0, "draws": 0}
+    for m in matches[:10]:
+        res = (m.get("result") or "").upper()
+        if res == "HOME":
+            summary["home_wins"] += 1
+        elif res == "AWAY":
+            summary["away_wins"] += 1
+        elif res == "DRAW":
+            summary["draws"] += 1
+    return summary
+
+
+def _fetch_fixture_detail(event_id: str) -> dict:
+    """
+    Fetch markets + stats for one fixture via anonymous plain HTTP.
+
+    Returns a dict with keys: odds, stats, statscoverage.
+    Any sub-call failure degrades that field to None — never raises.
+    """
+    mid = event_id.rsplit(":", 1)[-1]
+    import urllib.parse as _uparse
+    eid_enc = _uparse.quote(event_id)
+
+    # 1. Markets (factsCenter/event)
+    import time as _time
+    event_data = _sb_get(_SB_EVENT_URL.format(eid=eid_enc))
+    _time.sleep(_SB_PACE)
+
+    odds: Optional[dict] = None
+    if event_data:
+        markets_payload = event_data.get("data", event_data)
+        odds = _parse_odds(markets_payload)
+
+    # 2. match_info → team IDs, seasonId, statscoverage
+    mi_data = _gismo_doc(f"match_info/{mid}")
+    _time.sleep(_SB_PACE)
+
+    home_id: Optional[int] = None
+    away_id: Optional[int] = None
+    season_id: Optional[int] = None
+    statscoverage: dict = {}
+
+    if mi_data:
+        match = mi_data.get("match", {})
+        teams = match.get("teams", {})
+        home_id = teams.get("home", {}).get("_id")
+        away_id = teams.get("away", {}).get("_id")
+        season_id = match.get("_seasonid")
+        statscoverage = mi_data.get("statscoverage") or {}
+
+    # 3. Form (stats_match_form)
+    form_data = _gismo_doc(f"stats_match_form/{mid}")
+    _time.sleep(_SB_PACE)
+    form = _parse_form(form_data)
+
+    # 4. Standings (stats_season_tables)
+    standings_data = _gismo_doc(f"stats_season_tables/{season_id}") if season_id else None
+    _time.sleep(_SB_PACE)
+    standings = _parse_standings(standings_data, home_id, away_id)
+
+    # 5. Season goals (stats_season_goals)
+    goals_data = _gismo_doc(f"stats_season_goals/{season_id}") if season_id else None
+    _time.sleep(_SB_PACE)
+    goals = _parse_goals(goals_data, home_id, away_id)
+
+    # 6. H2H (stats_team_versusrecent) — empty for most low-tier pairs; parse defensively
+    h2h_data = _gismo_doc(f"stats_team_versusrecent/{home_id}/{away_id}") if (home_id and away_id) else None
+    if h2h_data:
+        _time.sleep(_SB_PACE)
+    h2h = _parse_h2h(h2h_data)
+
+    stats: dict = {}
+    if form:
+        stats["form"] = form
+    if standings:
+        stats["standings"] = standings
+    if goals:
+        stats["goals"] = goals
+    if h2h:
+        stats["h2h"] = h2h
+
+    return {
+        "odds": odds,
+        "stats": stats or None,
+        "statscoverage": statscoverage or None,
+    }
+
+
+def enrich_sportybet_events(events: list[dict]) -> list[dict]:
+    """
+    Add per-fixture odds/stats to the sidecar event list (sidecar v2).
+
+    Uses ThreadPoolExecutor(max_workers=4) — 300 fixtures ≈ 7 min.
+    Each event record gains: odds, stats, statscoverage keys.
+    A fetch failure degrades that record's fields to None; the event is not dropped.
+    """
+    import time as _time
+
+    if not events:
+        return events
+
+    xg_table = _load_xg_table()
+
+    def _xg_block(ev: dict) -> dict:
+        return {
+            "home": _xg_for(xg_table, ev.get("home", "")),
+            "away": _xg_for(xg_table, ev.get("away", "")),
+        }
+
+    def _worker(ev: dict) -> dict:
+        eid = ev.get("eventId", "")
+        xg = _xg_block(ev)
+        if not eid:
+            return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
+        try:
+            detail = _fetch_fixture_detail(eid)
+            return {**ev, **detail, "xg": xg}
+        except Exception:
+            return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
+
+    enriched: list[dict] = [{}] * len(events)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_worker, ev): i for i, ev in enumerate(events)}
+        done = 0
+        for fut in as_completed(futures):
+            idx = futures[fut]
+            try:
+                enriched[idx] = fut.result()
+            except Exception:
+                enriched[idx] = {
+                    **events[idx],
+                    "odds": None, "stats": None, "statscoverage": None,
+                    "xg": _xg_block(events[idx]),
+                }
+            done += 1
+            if done % 50 == 0:
+                print(f"[enrich] {done}/{len(events)} fixtures enriched", flush=True)
+
+    print(f"[enrich] done — {len(enriched)} fixtures enriched with odds+stats", flush=True)
+    return enriched
+
+
 class SportyBetScraper:
     PAGE_URL = "https://www.sportybet.com/ng/sport/football/today"
     API_BASE = (
@@ -957,10 +1256,15 @@ def write_cache(lines: list[str]) -> None:
 
 
 def write_sportybet_sidecar(date_str: str, events: list[dict]) -> None:
-    """Written even when events is empty. Note: the TS selector fails open on an
-    empty events list too (an empty SportyBet day must not zero out the batch);
-    the date/scraped_at fields exist so staleness is detectable in logs.
-    Atomic write — a concurrent reader must never see a partial file."""
+    """Write sidecar v2 — events enriched with odds/stats blocks.
+
+    Written even when events is empty (TS selector fails open on empty list).
+    Atomic write — a concurrent reader must never see a partial file.
+    Each event record shape: {eventId, home, away, league, kickoff_utc, marketCount,
+      odds: {1x2, ou25, btts, dc, dnb}, stats: {form, standings, goals, h2h},
+      statscoverage: {leaguetable, formtable, headtohead, …},
+      xg: {home: {xgf, xga} | null, away: {xgf, xga} | null}  # Understat top-5 only}
+    """
     SPORTYBET_SIDECAR.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "date": date_str,
@@ -1047,6 +1351,9 @@ def main() -> None:
 
     write_cache(merged)
     if pw_ran:
+        if sportybet_events:
+            print(f"[enrich] enriching {len(sportybet_events)} SportyBet fixtures with odds+stats …", flush=True)
+            sportybet_events = enrich_sportybet_events(sportybet_events)
         write_sportybet_sidecar(date_str, sportybet_events)
 
 

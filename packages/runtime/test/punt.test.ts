@@ -31,7 +31,7 @@ function batchWith(
   jobs: {
     home: string;
     away: string;
-    pick: "NO_BET" | { market: string; side?: string; odds: number; stake?: number };
+    pick: "NO_EDGE" | { market: string; side?: string; odds: number; stake?: number };
     confidence: number;
   }[]
 ): BatchResult {
@@ -45,7 +45,11 @@ function batchWith(
       home: j.home,
       away: j.away,
       decision: {
-        primaryPick: j.pick,
+        primaryPick:
+          j.pick === "NO_EDGE"
+            ? { market: "1x2", side: "home", odds: 1.5 }
+            : j.pick,
+        grade: j.pick === "NO_EDGE" ? "NO_EDGE" : "STRONG",
         confidence: j.confidence,
         rationale: "",
         rejectedAndWhy: [],
@@ -97,9 +101,9 @@ describe("counterSlip", () => {
     expect(leg?.oracleConfidence).toBeNull();
   });
 
-  it("KEPT_LOW_CONVICTION: keeps his pick when ORACLE returns NO_BET", () => {
+  it("KEPT_LOW_CONVICTION: keeps his pick when ORACLE returns NO_EDGE grade", () => {
     const legs: PuntLeg[] = [{ raw: rawLeg(), job: fakeJob }];
-    const batch = batchWith([{ home: "Arsenal", away: "Chelsea", pick: "NO_BET", confidence: 0 }]);
+    const batch = batchWith([{ home: "Arsenal", away: "Chelsea", pick: "NO_EDGE", confidence: 0 }]);
     const [leg] = counterSlip(legs, batch);
     expect(leg?.verdict).toBe("KEPT_LOW_CONVICTION");
     expect(leg?.pick.side).toBe("Home Win");

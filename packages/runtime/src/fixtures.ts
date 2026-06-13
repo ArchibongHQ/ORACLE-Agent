@@ -354,7 +354,7 @@ async function applySelection(
 
 /** Map cached fixtures to selection candidates — cached odds count as bulk. */
 function cachedCandidates(jobs: FixtureJob[]): SelectionCandidate[] {
-  return jobs.map((j) => ({ job: j, hasBulkOdds: Boolean(j.state?.telemetry?.hOdds) }));
+  return jobs.map((j) => ({ job: j, hasBulkOdds: Boolean(j.state?.telemetry?.hOdds), llmEligible: false }));
 }
 
 // ── Gemini odds gap-fill (scraped fixtures with no Odds API coverage) ────────────
@@ -682,8 +682,8 @@ export async function fetchTodaysFixtures(
     const unmatched = findUnmatched(scraped, oddsJobs);
     const sel = await applySelection(
       [
-        ...oddsJobs.map((j) => ({ job: j, hasBulkOdds: true })),
-        ...unmatched.map((j) => ({ job: j, hasBulkOdds: false })),
+        ...oddsJobs.map((j) => ({ job: j, hasBulkOdds: true, llmEligible: false })),
+        ...unmatched.map((j) => ({ job: j, hasBulkOdds: false, llmEligible: false })),
       ],
       maxFixturesPerRun
     );

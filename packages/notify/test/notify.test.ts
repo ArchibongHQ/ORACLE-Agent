@@ -43,7 +43,7 @@ function fakeBatch(overrides: Partial<Record<string, unknown>> = {}) {
         away: "B",
         league: "L",
         kickoff: "k",
-        decision: { primaryPick: "NO_BET", confidence: 0 },
+        decision: { primaryPick: { market: "1x2", side: "home", odds: 1.5 }, grade: "NO_EDGE", confidence: 0 },
       },
     ],
     ...overrides,

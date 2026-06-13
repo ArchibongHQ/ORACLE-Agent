@@ -5,6 +5,7 @@
 import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS, withKeyLock } from "@oracle/storage";
 import type {
+  ConfidenceGrade,
   DecisionContext,
   DecisionOutput,
   DecisionReplay,
@@ -23,27 +24,55 @@ export interface DecisionResult {
 // re-exported here for callers that import from the decision module.
 export type { DecisionContext };
 
+// ── Grade helpers ─────────────────────────────────────────────────────────────
+
+/** Derive a ConfidenceGrade from expected-value. Thresholds are tunable constants. */
+export function gradeFromEV(ev: number): ConfidenceGrade {
+  if (ev >= 0.05) return "STRONG";
+  if (ev > 0) return "LEAN";
+  return "NO_EDGE";
+}
+
+const VALID_GRADES = new Set<string>(["STRONG", "LEAN", "NO_EDGE"]);
+
+function coerceGrade(raw: unknown, ev: number): ConfidenceGrade {
+  if (typeof raw === "string" && VALID_GRADES.has(raw)) return raw as ConfidenceGrade;
+  return gradeFromEV(ev);
+}
+
 // ── Deterministic fallback ────────────────────────────────────────────────────
 
 function deterministicDecide(
-  eligibleBets: EVMarket[],
+  allMarkets: EVMarket[],
   rationale = "Deterministic top pick"
 ): DecisionResult {
-  if (!eligibleBets.length) {
+  // Always pick the best-ranked market even if EV ≤ 0; grade reflects the edge honestly.
+  const sorted = [...allMarkets].sort((a, b) => b.ev - a.ev);
+  const top = sorted[0];
+  if (!top) {
+    // No markets at all — manufacture a placeholder pick so no fixture is ever dropped.
+    // The NO_EDGE grade communicates the honest verdict without omitting the fixture.
+    const placeholder: PickRef = { market: "1x2", side: "home", odds: 1, stake: 0 };
     return {
       decision: {
-        primaryPick: "NO_BET",
+        primaryPick: placeholder,
         confidence: 0,
-        rationale: "No eligible bets",
+        grade: "NO_EDGE",
+        rationale: "No markets available",
         rejectedAndWhy: [],
       },
       replay: null,
     };
   }
-  const top = eligibleBets[0]!;
   const pick: PickRef = { market: top.market, side: top.side, odds: top.odds, stake: top.stake };
   return {
-    decision: { primaryPick: pick, confidence: top.modelProb, rationale, rejectedAndWhy: [] },
+    decision: {
+      primaryPick: pick,
+      confidence: top.modelProb,
+      grade: gradeFromEV(top.ev),
+      rationale,
+      rejectedAndWhy: [],
+    },
     replay: null,
   };
 }
@@ -97,13 +126,14 @@ Portfolio Correlation: ${portfolioCorrelation !== null ? portfolioCorrelation.to
 ${betLines || "NONE"}
 ${softLines ? `\n=== SOFT CONTEXT (Gemini acquisition) ===\n${softLines}` : ""}
 === DECISION RULES ===
-Accept when: convergence STRONG or MODERATE, mlAllowed=true, ev>4%, hoursToKO>4
-Lean NO_BET when: betTrigger=RED without strong independent evidence, mlAllowed=false, portfolioCorrelation>0.6
+Accept (STRONG) when: convergence STRONG or MODERATE, mlAllowed=true, ev>4%, hoursToKO>4
+Grade LEAN when: betTrigger=RED without strong independent evidence, mlAllowed=false, portfolioCorrelation>0.6, or ev<5%
+Grade NO_EDGE when: ev<=0 — still return the best-ranked market in primaryPick
 MoneyLine picks forbidden when drawRisk=VERY_HIGH
 
 === REQUIRED OUTPUT (JSON only, no other text) ===
-{"primaryPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"altPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"confidence":0.0,"rationale":"...","rejectedAndWhy":[]}
-Set "primaryPick" to "NO_BET" (string) when no bet is justified.
+{"primaryPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"altPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"confidence":0.0,"grade":"STRONG","rationale":"...","rejectedAndWhy":[]}
+"grade" must be one of: "STRONG", "LEAN", "NO_EDGE". Always set primaryPick to the best-ranked market.
 "altPick" is optional.`;
 }
 
@@ -125,11 +155,19 @@ function parseDecisionResponse(text: string): DecisionOutput | null {
 
     // Validate minimum shape
     if (!("primaryPick" in obj) || !("confidence" in obj)) return null;
+    // primaryPick must be an object (PickRef) — reject legacy "NO_BET" string responses
+    if (typeof obj.primaryPick !== "object" || obj.primaryPick === null) return null;
+
+    const confidence = Number(obj.confidence ?? 0);
+    const pickObj = obj.primaryPick as PickRef;
+    // Derive EV from the pick's odds for grade calculation when not provided
+    const evApprox = (1 / (pickObj.odds || 1) - 1) * confidence;
 
     return {
-      primaryPick: obj.primaryPick as DecisionOutput["primaryPick"],
+      primaryPick: pickObj,
       altPick: obj.altPick as PickRef | undefined,
-      confidence: Number(obj.confidence ?? 0),
+      confidence,
+      grade: coerceGrade(obj.grade, evApprox),
       rationale: String(obj.rationale ?? ""),
       rejectedAndWhy: (obj.rejectedAndWhy as string[] | undefined) ?? [],
     };
@@ -165,18 +203,11 @@ export async function decide(
   config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey" | "openrouterApiKey">
 ): Promise<DecisionResult> {
   if (!eligibleBets.length) {
-    return {
-      decision: {
-        primaryPick: "NO_BET",
-        confidence: 0,
-        rationale: "No eligible bets",
-        rejectedAndWhy: [],
-      },
-      replay: null,
-    };
+    // No positive-EV bets — return the placeholder NO_EDGE pick
+    return deterministicDecide([], "No positive-EV bets — NO_EDGE grade");
   }
 
-  // Skip all LLM tiers when context is missing
+  // Skip paid LLM tiers when context is missing
   if (!ctx) return deterministicDecide(eligibleBets);
 
   const prompt = buildPrompt(eligibleBets, ctx);
@@ -332,9 +363,7 @@ export function validateSelection(
   eligibleBets: EVMarket[],
   mlFilter?: { mlAllowed?: boolean; drawRisk?: string }
 ): DecisionOutput {
-  if (pick.primaryPick === "NO_BET") return pick;
-
-  const ref = pick.primaryPick as PickRef;
+  const ref = pick.primaryPick;
 
   // Gate 1: pick must be in eligible set
   const found = eligibleBets.find((m) => m.market === ref.market);
@@ -345,10 +374,11 @@ export function validateSelection(
     ).decision;
   }
 
-  // Gate 2: ML safety filter blocked
+  // Gate 2: ML safety filter blocked — downgrade to NO_EDGE (pick stays for reporting)
   if (mlFilter?.mlAllowed === false) {
     return {
-      primaryPick: "NO_BET",
+      ...pick,
+      grade: "NO_EDGE",
       confidence: 0,
       rationale: "ML safety filter blocked all bets",
       rejectedAndWhy: ["mlFilter.mlAllowed=false"],
@@ -407,8 +437,7 @@ export async function logPickDisagreement(
 ): Promise<void> {
   if (!deterministicTop) return;
 
-  const llmRef = llmPick.primaryPick === "NO_BET" ? null : (llmPick.primaryPick as PickRef);
-  const llmMarket = llmRef?.market ?? "NO_BET";
+  const llmMarket = llmPick.primaryPick.market;
 
   if (llmMarket === deterministicTop.market) return; // no disagreement
 
@@ -428,8 +457,8 @@ export async function logPickDisagreement(
         league: fixture.league,
         kickoff: fixture.kickoff,
         llmPick: llmMarket,
-        llmSide: llmRef?.side ?? null,
-        llmOdds: llmRef?.odds ?? null,
+        llmSide: llmPick.primaryPick.side ?? null,
+        llmOdds: llmPick.primaryPick.odds ?? null,
         deterministicPick: deterministicTop.market,
         deterministicSide: deterministicTop.side ?? null,
         deterministicOdds: deterministicTop.odds,

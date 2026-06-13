@@ -159,9 +159,8 @@ function findActionable(
   for (const j of batch.jobs as BatchJobResult[]) {
     if (j.status !== "ok") continue;
     if (!nameMatches(j.home, home) || !nameMatches(j.away, away)) continue;
-    const p = j.decision.primaryPick;
-    if (p === "NO_BET") return null;
-    return { pick: p as PickRef, confidence: j.decision.confidence };
+    if (j.decision.grade === "NO_EDGE") return null;
+    return { pick: j.decision.primaryPick, confidence: j.decision.confidence };
   }
   return null;
 }

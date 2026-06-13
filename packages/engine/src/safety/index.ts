@@ -995,7 +995,7 @@ export class AntiSycophancyCircuit {
       executiveSummary: this._summary(rawRes, referee),
       topBankerBet: (referee.topBet as Record<string, unknown> | null)
         ? `${(referee.topBet as Record<string, unknown>).market} @ ${(referee.topBet as Record<string, unknown>).odds}`
-        : "NO BET",
+        : "NO_EDGE",
       betTrigger: referee.overallTrigger,
       asianHandicapAlt: this._findAH(rawRes),
       riskFlags: this._riskFlags(rawRes, referee),
@@ -1008,7 +1008,7 @@ export class AntiSycophancyCircuit {
     const fixture = `${resData.home ?? "Home"} vs ${resData.away ?? "Away"}`;
     const t = referee.overallTrigger as string;
     if (t === "RED")
-      return `${fixture}: No actionable edge confirmed by 3-Agent debate. Anti-Sycophancy circuit rejected all Finder proposals. Recommendation: SKIP.`;
+      return `${fixture}: No actionable edge confirmed by 3-Agent debate. Anti-Sycophancy circuit rejected all Finder proposals. Grade: NO_EDGE.`;
     const top = referee.topBet as Record<string, unknown> | null;
     const signal =
       t === "GREEN" ? "Strong mathematical edge confirmed" : "Edge detected with caveats";

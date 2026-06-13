@@ -75,14 +75,15 @@ function summarize(batch: BatchResult): string {
       lines.push(`  ✗ ${j.home} vs ${j.away} — ERROR: ${j.reason}`);
       continue;
     }
-    const pick = j.decision.primaryPick;
-    if (pick === "NO_BET") {
-      lines.push(`  · ${j.home} vs ${j.away} — NO_BET`);
+    const p = j.decision.primaryPick;
+    const grade = j.decision.grade;
+    if (grade === "NO_EDGE") {
+      lines.push(`  · ${j.home} vs ${j.away} — NO_EDGE (${p.market})`);
     } else {
-      const p = pick as PickRef;
       const stake = p.stake != null ? ` ${(p.stake * 100).toFixed(1)}% Kelly` : "";
+      const icon = grade === "STRONG" ? "✓✓" : "✓";
       lines.push(
-        `  ✓ ${j.home} vs ${j.away} — ${p.market}${p.side ? ` (${p.side})` : ""} @ ${p.odds}${stake} · ${(j.decision.confidence * 100).toFixed(0)}% conf`
+        `  ${icon} ${j.home} vs ${j.away} — [${grade}] ${p.market}${p.side ? ` (${p.side})` : ""} @ ${p.odds}${stake} · ${(j.decision.confidence * 100).toFixed(0)}% conf`
       );
     }
   }

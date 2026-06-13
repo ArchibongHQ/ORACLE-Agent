@@ -5,10 +5,12 @@ import type { FixtureJob } from "@oracle/engine";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadSportyBetIndex,
+  predictabilityScore,
   scoreFixture,
   selectFixtures,
   type SelectionCandidate,
   sidecarKey,
+  type SportyBetEventDetail,
   type SportyBetIndex,
 } from "../src/selectFixtures.js";
 
@@ -21,7 +23,7 @@ function job(home: string, away: string, league = "Premier League", kickoff = "2
 }
 
 function cand(j: FixtureJob, hasBulkOdds = false): SelectionCandidate {
-  return { job: j, hasBulkOdds };
+  return { job: j, hasBulkOdds, llmEligible: false };
 }
 
 function index(events: Array<{ home: string; away: string; marketCount?: number }>): SportyBetIndex {
@@ -30,37 +32,152 @@ function index(events: Array<{ home: string; away: string; marketCount?: number 
   for (const ev of withCounts) {
     byKey.set(sidecarKey(ev.home, ev.away), ev.marketCount);
   }
-  return { date: TODAY, byKey, events: withCounts };
+  return { date: TODAY, byKey, detailByKey: new Map(), events: withCounts };
 }
 
+// ── helpers for predictabilityScore tests ──────────────────────────────────
+
+function detail(overrides: Partial<SportyBetEventDetail> = {}): SportyBetEventDetail {
+  return {
+    eventId: "test",
+    odds: null,
+    stats: null,
+    statscoverage: null,
+    ...overrides,
+  };
+}
+
+describe("predictabilityScore", () => {
+  it("returns 30 (neutral) when detail is null or undefined", () => {
+    expect(predictabilityScore(null, "Premier League")).toBe(30);
+    expect(predictabilityScore(undefined, "Premier League")).toBe(30);
+  });
+
+  it("never returns NaN — degraded inputs produce a number", () => {
+    const result = predictabilityScore(detail(), "Some League");
+    expect(typeof result).toBe("number");
+    expect(Number.isNaN(result)).toBe(false);
+  });
+
+  it("big home favourite with high scoring and good form scores high (>60)", () => {
+    const d = detail({
+      odds: { "1x2": { home: 1.3, draw: 5.5, away: 12 }, dnb: { home: 1.15 } },
+      stats: {
+        xg: { home: { xgf: 2.3, xga: 0.5 }, away: { xgf: 0.6, xga: 2.0 } },
+        goals: { home: { avg_scored: 2.2, avg_conceded: 0.6 }, away: { avg_scored: 0.7, avg_conceded: 2.0 } },
+        form: { home: { w: 4, d: 1, l: 0 }, away: { w: 0, d: 1, l: 4 } },
+      },
+      statscoverage: { leaguetable: true, formtable: true, headtohead: false },
+    });
+    expect(predictabilityScore(d, "Premier League")).toBeGreaterThan(60);
+  });
+
+  it("evenly-matched low-scoring teams score below 30", () => {
+    const d = detail({
+      odds: { "1x2": { home: 2.0, draw: 3.2, away: 3.8 } },
+      stats: {
+        xg: { home: { xgf: 1.0, xga: 1.0 }, away: { xgf: 1.0, xga: 1.0 } },
+        goals: { home: { avg_scored: 1.0, avg_conceded: 1.0 }, away: { avg_scored: 1.0, avg_conceded: 1.0 } },
+        form: { home: { w: 2, d: 1, l: 2 }, away: { w: 2, d: 1, l: 2 } },
+      },
+      statscoverage: { leaguetable: true, formtable: true, headtohead: true },
+    });
+    expect(predictabilityScore(d, "Serie A")).toBeLessThan(30);
+  });
+
+  it("1X2 component is zero when best implied prob is below 70%", () => {
+    // home 1x2 = 2.0 → implied 50%; away = 3.5 → ~29%
+    const withWeak = detail({ odds: { "1x2": { home: 2.0, draw: 3.2, away: 3.5 } } });
+    const withoutOdds = detail({ odds: null });
+    // Both should produce same 1X2 contribution (0) — i.e. same score
+    expect(predictabilityScore(withWeak, "La Liga")).toBe(predictabilityScore(withoutOdds, "La Liga"));
+  });
+
+  it("cup/friendly/trophy league name applies a soft penalty (score decreases)", () => {
+    const d = detail({
+      stats: {
+        xg: { home: { xgf: 1.5, xga: 0.8 }, away: { xgf: 0.8, xga: 1.5 } },
+        goals: { home: { avg_scored: 1.5, avg_conceded: 0.8 }, away: { avg_scored: 0.8, avg_conceded: 1.5 } },
+        form: { home: { w: 3, d: 1, l: 1 }, away: { w: 1, d: 1, l: 3 } },
+      },
+      statscoverage: { leaguetable: true, formtable: true, headtohead: false },
+    });
+    expect(predictabilityScore(d, "FA Cup")).toBeLessThan(predictabilityScore(d, "Premier League"));
+  });
+
+  it("low-data fixture (no stats, coverage all false) gets a soft penalty", () => {
+    const withData = detail({
+      stats: {
+        goals: { home: { avg_scored: 1.8, avg_conceded: 1.0 }, away: { avg_scored: 1.0, avg_conceded: 1.8 } },
+      },
+      statscoverage: { leaguetable: true, formtable: true, headtohead: false },
+    });
+    const noData = detail({ stats: null, statscoverage: { leaguetable: false, formtable: false, headtohead: false } });
+    expect(predictabilityScore(noData, "Obscure League")).toBeLessThan(
+      predictabilityScore(withData, "Obscure League")
+    );
+  });
+
+  it("result is always in the 0–100 range", () => {
+    // Extreme values shouldn't escape the 0–100 clamp
+    const extreme = detail({
+      odds: { dnb: { home: 1.01 } },
+      stats: {
+        xg: { home: { xgf: 5.0, xga: 0.1 }, away: { xgf: 0.1, xga: 5.0 } },
+        form: { home: { w: 5, d: 0, l: 0 }, away: { w: 0, d: 0, l: 5 } },
+      },
+      statscoverage: { leaguetable: true, formtable: true },
+    });
+    const score = predictabilityScore(extreme, "Premier League");
+    expect(score).toBeGreaterThanOrEqual(0);
+    expect(score).toBeLessThanOrEqual(100);
+  });
+});
+
 describe("scoreFixture", () => {
-  it("scores a priority-league fixture with nothing else at 50", () => {
+  it("scores a priority-league fixture with no detail above a pure neutral baseline", () => {
     const c = cand(job("A", "B", "Premier League", "2026-06-11T10:30:00Z"));
-    expect(scoreFixture(c, 0, NOW)).toBe(50);
+    // neutral predictability (18) + priority (15) = 33 (no odds, no depth, <2h window)
+    expect(scoreFixture(c, 0, NOW)).toBeCloseTo(33, 0);
   });
 
-  it("ranks priority-league-no-odds above non-priority-with-odds", () => {
-    const priority = cand(job("A", "B", "Premier League", "2026-06-11T10:30:00Z"), false);
-    const nonPriority = cand(job("C", "D", "Obscure League", "2026-06-11T15:00:00Z"), true);
-    // 50 vs 30 (odds) + 10 (≥2h) + 5 (depth 20/40*10)
-    expect(scoreFixture(priority, 0, NOW)).toBeGreaterThan(scoreFixture(nonPriority, 20, NOW));
+  it("a strong non-priority favourite now outranks a priority-league coin-flip", () => {
+    // Big favourite with strong stats → high predictability, no priority league
+    const favourite: SelectionCandidate = {
+      job: job("Strong", "Weak", "Obscure League", "2026-06-11T15:00:00Z"),
+      hasBulkOdds: false,
+      llmEligible: false,
+      sportyBetDetail: {
+        eventId: "1",
+        odds: { "1x2": { home: 1.3, draw: 5, away: 11 }, dnb: { home: 1.15 } },
+        stats: {
+          xg: { home: { xgf: 2.2, xga: 0.6 }, away: { xgf: 0.7, xga: 1.9 } },
+          goals: { home: { avg_scored: 2.1, avg_conceded: 0.7 }, away: { avg_scored: 0.8, avg_conceded: 1.8 } },
+          form: { home: { w: 4, d: 1, l: 0 }, away: { w: 0, d: 1, l: 4 } },
+        },
+        statscoverage: { leaguetable: true, formtable: true, headtohead: false },
+      },
+    };
+    const priorityCoinFlip = cand(job("A", "B", "Premier League", "2026-06-11T10:30:00Z"), false);
+    expect(scoreFixture(favourite, 0, NOW)).toBeGreaterThan(scoreFixture(priorityCoinFlip, 0, NOW));
   });
 
-  it("weights bulk odds above kickoff window + market depth combined", () => {
+  it("weights bulk odds (+30) above kickoff window + market depth combined", () => {
     const withOdds = cand(job("A", "B", "Obscure", "2026-06-11T10:30:00Z"), true);
     const without = cand(job("C", "D", "Obscure", "2026-06-11T15:00:00Z"), false);
-    // 30 vs 10 (≥2h) + 10 (depth capped at 40)
+    // 30 (odds) vs 10 (≥2h) + 10 (depth capped at 40) — both have same predictability
     expect(scoreFixture(withOdds, 0, NOW)).toBeGreaterThan(scoreFixture(without, 80, NOW));
   });
 
   it("grades the kickoff window: ≥2h +10, 1–2h +5, <1h +0", () => {
+    // Use same league+detail for all to isolate the window component
     const base = (ko: string) => scoreFixture(cand(job("A", "B", "Obscure", ko)), 0, NOW);
-    expect(base("2026-06-11T13:00:00Z")).toBe(10);
-    expect(base("2026-06-11T11:30:00Z")).toBe(5);
-    expect(base("2026-06-11T10:20:00Z")).toBe(0);
-    // exact boundaries
-    expect(base("2026-06-11T12:00:00Z")).toBe(10);
-    expect(base("2026-06-11T11:00:00Z")).toBe(5);
+    const ref = base("2026-06-11T10:20:00Z"); // <1h → +0
+    expect(base("2026-06-11T13:00:00Z") - ref).toBe(10);
+    expect(base("2026-06-11T11:30:00Z") - ref).toBe(5);
+    expect(base("2026-06-11T10:20:00Z") - ref).toBe(0);
+    expect(base("2026-06-11T12:00:00Z") - ref).toBe(10);
+    expect(base("2026-06-11T11:00:00Z") - ref).toBe(5);
   });
 
   it("caps market depth at 40 markets for the full +10", () => {
@@ -84,14 +201,20 @@ describe("selectFixtures", () => {
     expect(stats.today).toBe(1);
   });
 
-  it("honors the cap, keeping the highest-scored fixtures", () => {
+  it("marks top-N by score as llmEligible, returns ALL fixtures", () => {
     const pool = [
       cand(job("Low", "X", "Obscure"), false),
       cand(job("High", "Y", "Premier League"), true),
       cand(job("Mid", "Z", "Obscure"), true),
     ];
     const { selected } = selectFixtures(pool, { cap: 2, sportyBet: null, now: NOW });
-    expect(selected.map((c) => c.job.home)).toEqual(["High", "Mid"]);
+    // All 3 returned — cap is routing gate only
+    expect(selected).toHaveLength(3);
+    // Top-2 by score marked llmEligible; lowest not
+    const eligible = selected.filter((c) => c.llmEligible).map((c) => c.job.home);
+    expect(eligible).toContain("High");
+    expect(eligible).toContain("Mid");
+    expect(selected.find((c) => c.job.home === "Low")?.llmEligible).toBe(false);
   });
 
   it("returns the whole pool when smaller than the cap", () => {
@@ -100,10 +223,11 @@ describe("selectFixtures", () => {
     expect(selected).toHaveLength(2);
   });
 
-  it("selects nothing for a zero or negative cap", () => {
+  it("cap=0 means no llmEligible fixtures but all are still returned", () => {
     const pool = [cand(job("A", "B"))];
-    expect(selectFixtures(pool, { cap: 0, sportyBet: null, now: NOW }).selected).toEqual([]);
-    expect(selectFixtures(pool, { cap: -1, sportyBet: null, now: NOW }).selected).toEqual([]);
+    const { selected } = selectFixtures(pool, { cap: 0, sportyBet: null, now: NOW });
+    expect(selected).toHaveLength(1);
+    expect(selected[0]?.llmEligible).toBe(false);
   });
 
   it("keeps an offset-bearing kickoff that lands on today in UTC", () => {
@@ -146,6 +270,7 @@ describe("selectFixtures", () => {
     const idx: SportyBetIndex = {
       date: TODAY,
       byKey: new Map([[sidecarKey("Arsenal FC", "Chelsea FC"), 30]]),
+      detailByKey: new Map(),
       events: [], // fallback disabled — a key miss cannot be rescued
     };
     const { selected } = selectFixtures([cand(job("Arsenal", "Chelsea"))], {
@@ -174,22 +299,24 @@ describe("selectFixtures", () => {
 
     const emptyRes = selectFixtures(pool, {
       cap: 50,
-      sportyBet: { date: TODAY, byKey: new Map(), events: [] },
+      sportyBet: { date: TODAY, byKey: new Map(), detailByKey: new Map(), events: [] },
       now: NOW,
     });
     expect(emptyRes.selected).toHaveLength(1);
     expect(emptyRes.stats.failOpen).toBe(true);
   });
 
-  it("reports bulkOdds and priority counts in stats", () => {
+  it("reports bulkOdds, priority, analyzed, and llmRouted counts in stats", () => {
     const pool = [
       cand(job("A", "B", "Premier League"), true),
       cand(job("C", "D", "Obscure"), false),
     ];
-    const { stats } = selectFixtures(pool, { cap: 50, sportyBet: null, now: NOW });
-    expect(stats.selected).toBe(2);
+    const { stats } = selectFixtures(pool, { cap: 1, sportyBet: null, now: NOW });
+    expect(stats.selected).toBe(2); // ALL returned
+    expect(stats.analyzed).toBe(2);
     expect(stats.bulkOdds).toBe(1);
     expect(stats.priority).toBe(1);
+    expect(stats.llmRouted).toBe(1); // cap=1 → top-1 llmEligible
   });
 });
 

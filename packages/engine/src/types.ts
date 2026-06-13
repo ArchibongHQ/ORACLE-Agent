@@ -32,11 +32,16 @@ export interface SoftContextItem {
   observedAt: string; // ISO-8601; must be < kickoff (anti-leakage)
 }
 
+/** Edge confidence grade — replaces "NO_BET" literal across all output surfaces.
+ *  STRONG: EV ≥ 0.05; LEAN: 0 < EV < 0.05; NO_EDGE: EV ≤ 0 (honest no-edge verdict). */
+export type ConfidenceGrade = "STRONG" | "LEAN" | "NO_EDGE";
+
 /** The structured JSON the LLM decision layer must return (PRD §6, Appendix B). */
 export interface DecisionOutput {
-  primaryPick: PickRef | "NO_BET";
+  primaryPick: PickRef;
   altPick?: PickRef;
-  confidence: number; // 0–1
+  confidence: number; // 0–1 (numeric, for backward compat with existing callers)
+  grade: ConfidenceGrade; // human-facing label derived from EV
   rationale: string;
   rejectedAndWhy: string[];
 }
@@ -289,7 +294,8 @@ export interface FixtureOutcome {
   league: string;
   kickoff: string;
   status: "ok" | "error";
-  pick: PickRef | "NO_BET" | null;
+  pick: PickRef | null;
+  grade: ConfidenceGrade | null;
   confidence: number | null;
   errorCode: AgentErrorCode | null;
   errorMessage: string | null;

@@ -393,7 +393,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             if (
               cvlTriggered &&
               (config.claudeApiKey || config.openrouterApiKey) &&
-              rawDecision.primaryPick !== "NO_BET"
+              rawDecision.grade !== "NO_EDGE"
             ) {
               const { callVerification } = await import("@oracle/llm");
               const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(eligible.slice(0, 3))}`;
@@ -409,7 +409,8 @@ Keep it under 200 words. Identify the single most important risk factor.`;
               const cvl = await callVerification(cvlPrompt, llmCtx);
               cvlStatus = cvl.status;
               if (cvl.status === "VETO") {
-                decision.primaryPick = "NO_BET";
+                // CVL VETO downgrades grade; primaryPick (best market) stays for reporting
+                decision.grade = "LEAN";
                 decision.rationale = `CVL VETO: ${cvl.rationale}`;
               }
             }
@@ -425,10 +426,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           void briefingText; // full briefing text retained for future report body rendering
 
           const primaryPick =
-            decision.primaryPick !== "NO_BET"
-              ? (eligible.find((m) => m.market === (decision.primaryPick as PickRef).market) ??
-                null)
-              : null;
+            eligible.find((m) => m.market === decision.primaryPick.market) ?? null;
 
           const analysisId = makeAnalysisId(fixtureId, rankingMode, calibrationSnapshotId);
           return {
@@ -509,12 +507,11 @@ Keep it under 200 words. Identify the single most important risk factor.`;
   onProgress?.({ completed: total, total, current: "" });
 
   const successful = results.filter((r): r is FixtureJobSuccess => r.status === "ok");
-  const actionable = successful.filter((r) => r.decision.primaryPick !== "NO_BET");
-  const totalStakePct = actionable.reduce((sum, r) => {
-    const pick = r.decision.primaryPick;
-    if (pick === "NO_BET") return sum;
-    return sum + ((pick as PickRef).stake ?? 0) * 100;
-  }, 0);
+  const actionable = successful.filter((r) => r.decision.grade !== "NO_EDGE");
+  const totalStakePct = actionable.reduce(
+    (sum, r) => sum + (r.decision.primaryPick.stake ?? 0) * 100,
+    0
+  );
 
   return {
     runId,
