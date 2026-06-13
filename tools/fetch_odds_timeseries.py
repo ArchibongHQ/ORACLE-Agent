@@ -293,6 +293,112 @@ def process_btb(btb_dir: Path, dry_run: bool) -> list[dict]:
 
 # ── Asian Handicap parser ──────────────────────────────────────────────────────
 
+# ── football-data.co.uk AH-line proxy ─────────────────────────────────────────
+# Free fallback when the realsingwong AH dataset is unavailable (~90 rows only).
+# Restricted to post-2019 fdco files which carry BOTH the opening and the
+# closing Asian-handicap line:
+#   "AHh"  — opening market-average handicap
+#   "AHCh" — closing market-average handicap
+# Pre-2019 fdco files only have BbAHh (single market-avg, no open/close split)
+# and BbAH (a bookmaker count, NOT a handicap line — confirmed against
+# 1516_E0.csv: BbAH=26 vs BbAHh=-0.5). Including pre-2019 would inject zero-
+# delta noise and previously caused close_line to read the bookmaker count.
+#
+# line_movement_slope and opening_to_close_delta stay blank — those need
+# bookmaker-level price snapshots which fdco does not provide.
+
+_FDCO_OPEN_COL = "AHh"
+_FDCO_CLOSE_COL = "AHCh"
+
+
+def process_fdco(fdco_dir: Path, dry_run: bool) -> list[dict]:
+    """Mine AH opening/closing lines from football-data.co.uk season CSVs.
+
+    Looks for files like ``2425_E0.csv`` / ``1516_SP1.csv``. The Div is taken
+    from the CSV column (fdco fills it correctly, unlike the BTB wide-format
+    parser which over-labels rows as E0). Skips rows with no AH line at all.
+    """
+    if not fdco_dir.exists():
+        print(f"[fdco] directory not found: {fdco_dir} — skipping", file=sys.stderr)
+        return []
+
+    csvs = sorted(fdco_dir.glob("*.csv"))
+    if not csvs:
+        print(f"[fdco] no CSV files found in {fdco_dir}", file=sys.stderr)
+        return []
+
+    features: list[dict] = []
+    for csv_path in csvs:
+        try:
+            with open(csv_path, newline="", encoding="utf-8-sig") as fh:
+                reader = csv.DictReader(fh)
+                # Strip the BOM-survivor that occasionally precedes "Div" in fdco files.
+                fieldnames = [c.lstrip("﻿") for c in (reader.fieldnames or [])]
+                reader.fieldnames = fieldnames
+
+                for row in reader:
+                    # fdco's BOM-stripped "Div" must be read from the cleaned row.
+                    div = (row.get("Div") or row.get("﻿Div") or "").strip()
+                    date = (row.get("Date") or "").strip()
+                    home = (row.get("HomeTeam") or "").strip()
+                    away = (row.get("AwayTeam") or "").strip()
+                    if not (div and date and home and away):
+                        continue
+
+                    open_raw = row.get(_FDCO_OPEN_COL, "")
+                    close_raw = row.get(_FDCO_CLOSE_COL, "")
+                    if open_raw in ("", None) or close_raw in ("", None):
+                        continue  # pre-2019 file — silently skip
+                    try:
+                        ah_open = float(open_raw)
+                        ah_close = float(close_raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if not (math.isfinite(ah_open) and math.isfinite(ah_close)):
+                        continue
+
+                    # fdco dates are DD/MM/YYYY or DD/MM/YY — coerce to ISO.
+                    iso_date = _coerce_fdco_date(date)
+                    if not iso_date:
+                        continue
+
+                    features.append({
+                        "match_id": f"{iso_date}_{home}_{away}",
+                        "date": iso_date,
+                        "home": home,
+                        "away": away,
+                        "div": div,
+                        "ah_open_line": round(ah_open, 2),
+                        "ah_close_line": round(ah_close, 2),
+                        "ah_close_delta": round(ah_close - ah_open, 2),
+                    })
+        except Exception as exc:  # noqa: BLE001 — best-effort, one bad file shouldn't sink the run
+            print(f"[fdco] error reading {csv_path}: {exc}", file=sys.stderr)
+
+    print(f"[fdco] extracted AH-line features for {len(features)} matches")
+    return features
+
+
+def _coerce_fdco_date(raw: str) -> Optional[str]:
+    """fdco dates are DD/MM/YYYY or DD/MM/YY (and rarely YYYY-MM-DD already).
+    Returns YYYY-MM-DD or None on parse failure. No external deps."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    if len(raw) == 10 and raw[4] == "-":
+        return raw  # already ISO
+    parts = raw.split("/")
+    if len(parts) != 3:
+        return None
+    d, m, y = parts
+    if len(y) == 2:
+        y = ("20" if int(y) < 70 else "19") + y
+    try:
+        return f"{int(y):04d}-{int(m):02d}-{int(d):02d}"
+    except ValueError:
+        return None
+
+
 def process_ah(ah_dir: Path, dry_run: bool) -> list[dict]:
     """
     Parse AH odds time-series CSVs.
@@ -370,25 +476,37 @@ def process_ah(ah_dir: Path, dry_run: bool) -> list[dict]:
 
 # ── Merge and write ────────────────────────────────────────────────────────────
 
-def merge_and_write(btb: list[dict], ah: list[dict], dry_run: bool) -> None:
-    # Index AH by match_id for join
+def merge_and_write(
+    btb: list[dict],
+    ah: list[dict],
+    dry_run: bool,
+    fdco: list[dict] | None = None,
+) -> None:
+    fdco = fdco or []
+
+    # Index AH-only first (richest), then fdco (fallback), by match_id.
+    # AH wins on collision because realsingwong publishes bookmaker-level lines;
+    # fdco is the cross-source market average.
     ah_index: dict[str, dict] = {r["match_id"]: r for r in ah}
+    fdco_index: dict[str, dict] = {r["match_id"]: r for r in fdco if r["match_id"] not in ah_index}
 
     merged: list[dict] = []
     for rec in btb:
         row: dict = dict(rec)
-        ah_rec = ah_index.get(rec["match_id"], {})
+        ah_rec = ah_index.get(rec["match_id"]) or fdco_index.get(rec["match_id"]) or {}
         row["ah_open_line"] = ah_rec.get("ah_open_line", "")
         row["ah_close_line"] = ah_rec.get("ah_close_line", "")
         row["ah_close_delta"] = ah_rec.get("ah_close_delta", "")
         merged.append(row)
 
-    # AH-only matches (not in BTB)
+    # AH/fdco-only matches (not in BTB)
     btb_keys = {r["match_id"] for r in btb}
-    for ah_rec in ah:
-        if ah_rec["match_id"] not in btb_keys:
-            row = {
-                "match_id": ah_rec["match_id"],
+    for source_idx in (ah_index, fdco_index):
+        for match_id, ah_rec in source_idx.items():
+            if match_id in btb_keys:
+                continue
+            merged.append({
+                "match_id": match_id,
                 "date": ah_rec["date"],
                 "home": ah_rec["home"],
                 "away": ah_rec["away"],
@@ -398,8 +516,8 @@ def merge_and_write(btb: list[dict], ah: list[dict], dry_run: bool) -> None:
                 "ah_open_line": ah_rec["ah_open_line"],
                 "ah_close_line": ah_rec["ah_close_line"],
                 "ah_close_delta": ah_rec["ah_close_delta"],
-            }
-            merged.append(row)
+            })
+            btb_keys.add(match_id)  # de-dupe between ah and fdco sources
 
     if not merged:
         print("[merge] no records to write")
@@ -442,17 +560,26 @@ def main() -> None:
                         help="Directory with Beat The Bookie CSV files")
     parser.add_argument("--ah-dir", type=Path, default=None,
                         help="Directory with AH Odds Time-Series CSV files")
+    parser.add_argument("--fdco-dir", type=Path, default=None,
+                        help="Directory with football-data.co.uk season CSVs "
+                             "(opening/closing AH-line proxy; defaults to .tmp/backfill)")
     parser.add_argument("--dry-run", action="store_true", help="Parse and report without writing")
     args = parser.parse_args()
 
-    if not args.btb_dir and not args.ah_dir:
-        parser.error("Provide at least one of --btb-dir or --ah-dir.\n"
+    # Default fdco source: the existing backfill dir (free, already on disk).
+    fdco_dir = args.fdco_dir
+    if fdco_dir is None and not (args.btb_dir or args.ah_dir):
+        fdco_dir = ROOT / ".tmp" / "backfill"
+
+    if not (args.btb_dir or args.ah_dir or fdco_dir):
+        parser.error("Provide at least one of --btb-dir / --ah-dir / --fdco-dir.\n"
                      "Download datasets first:\n"
                      "  kaggle datasets download -d austro/beat-the-bookie-worldwide-football-dataset\n"
                      "  kaggle datasets download -d realsingwong/european-football-asian-handicap-odds-time-series")
 
     btb_features: list[dict] = []
     ah_features: list[dict] = []
+    fdco_features: list[dict] = []
 
     if args.btb_dir:
         btb_features = process_btb(args.btb_dir, args.dry_run)
@@ -460,8 +587,11 @@ def main() -> None:
     if args.ah_dir:
         ah_features = process_ah(args.ah_dir, args.dry_run)
 
-    if btb_features or ah_features:
-        merge_and_write(btb_features, ah_features, args.dry_run)
+    if fdco_dir:
+        fdco_features = process_fdco(fdco_dir, args.dry_run)
+
+    if btb_features or ah_features or fdco_features:
+        merge_and_write(btb_features, ah_features, args.dry_run, fdco=fdco_features)
     else:
         print("[fetch_odds_timeseries] no data processed — check input directories")
 
