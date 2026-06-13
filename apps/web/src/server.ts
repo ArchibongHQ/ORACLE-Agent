@@ -199,7 +199,7 @@ export interface ServerOptions {
 /** Start the HTTP server. Owns a single GBrainAdapter unless deps are injected (tests). */
 export function startServer(opts: ServerOptions = {}): http.Server {
   const port = opts.port ?? Number(process.env.PORT ?? 8787);
-  const host = opts.host ?? "127.0.0.1";
+  const host = opts.host ?? process.env.HOST ?? "0.0.0.0";
   const deps: WebDeps = opts.deps ?? {
     storage: new GBrainAdapter(join(ROOT, ".tmp/gbrain")),
     config: buildConfig(loadEnv(join(ROOT, ".env"))),
