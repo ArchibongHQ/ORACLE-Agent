@@ -902,7 +902,12 @@ def _parse_goals(goals_data: dict, home_id: Optional[int], away_id: Optional[int
     """Extract per-team avg goals scored/conceded from stats_season_goals."""
     if not goals_data:
         return None
-    team_entries = goals_data.get("teams", {})
+    raw = goals_data.get("teams", {})
+    # Gismo may return teams as a dict keyed by team_id or as a list of team objects
+    if isinstance(raw, list):
+        team_entries: dict = {str(t.get("_id", t.get("id", ""))): t for t in raw if isinstance(t, dict)}
+    else:
+        team_entries = raw if isinstance(raw, dict) else {}
     result: dict[str, Optional[dict]] = {}
     for label, tid in (("home", home_id), ("away", away_id)):
         if tid is None:
