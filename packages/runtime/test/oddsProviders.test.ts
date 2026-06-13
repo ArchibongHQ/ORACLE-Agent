@@ -118,7 +118,7 @@ describe("buildOddsProviders", () => {
       "api-football",
       "odds-api-io",
       "sportsgameodds",
-      "bsd",
+      "sportybet-sidecar",
     ]);
     expect(providers.map((p) => p.tier)).toEqual([2, 3, 4, 5, 6]);
   });
@@ -130,12 +130,13 @@ describe("buildOddsProviders", () => {
     expect(sharp).toEqual(["sharpapi-io", "odds-api-io", "sportsgameodds"]);
   });
 
-  it("reports no quota for providers without a key", () => {
-    const providers = buildOddsProviders({});
+  it("reports no quota for API-key providers when no keys are supplied", () => {
+    // The sidecar is file-based and always reports quota — exclude it from this check.
+    const providers = buildOddsProviders({}).filter((p) => p.name !== "sportybet-sidecar");
     expect(providers.every((p) => !p.hasQuota())).toBe(true);
   });
 
-  it("reports quota only for wired providers once their key is present", () => {
+  it("reports quota for wired providers once their key is present, plus sidecar always", () => {
     const providers = buildOddsProviders({
       sharpApiIoKey: "k",
       apiFootballKey: "k2",
@@ -143,13 +144,19 @@ describe("buildOddsProviders", () => {
       sportsGameOddsKey: "k4",
     });
     const withQuota = providers.filter((p) => p.hasQuota()).map((p) => p.name);
-    expect(withQuota).toEqual(["sharpapi-io", "api-football", "odds-api-io", "sportsgameodds"]);
+    expect(withQuota).toEqual([
+      "sharpapi-io",
+      "api-football",
+      "odds-api-io",
+      "sportsgameodds",
+      "sportybet-sidecar",
+    ]);
   });
 
-  it("never grants quota to stub providers even with a key (not implemented)", () => {
-    const providers = buildOddsProviders({ bsdKey: "k" });
-    const stubs = providers.filter((p) => p.name === "bsd");
-    expect(stubs.every((p) => !p.hasQuota())).toBe(true);
+  it("sidecar always reports quota regardless of path (file-based, no API key)", () => {
+    const providers = buildOddsProviders({});
+    const sidecar = providers.find((p) => p.name === "sportybet-sidecar");
+    expect(sidecar?.hasQuota()).toBe(true);
   });
 });
 

@@ -6,9 +6,52 @@ import { loadBookingCode } from "@oracle/booking";
 import type { BatchResult, OracleConfig } from "@oracle/engine";
 import type { ActionablePick } from "@oracle/notify";
 import type { StoragePort } from "@oracle/storage";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { runAnalysis } from "./analyze.js";
 import type { CounterLeg } from "./punt.js";
 import { counterSlip, loadedSlipToJobs } from "./punt.js";
+
+const __dir = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(__dir, "../../..");
+const SIDECAR_PATH = join(ROOT, ".tmp/fixtures/sportybet_today.json");
+
+/** Spawn scrape_fixtures.py if the SportyBet sidecar is missing or stale. Fire-and-wait,
+ *  fail-open: a scrape error never aborts the punt analysis. */
+async function refreshSidecarIfStale(): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    if (existsSync(SIDECAR_PATH)) {
+      const raw = JSON.parse(readFileSync(SIDECAR_PATH, "utf8")) as { date?: string };
+      if (raw?.date === today) return; // fresh — nothing to do
+    }
+  } catch {
+    // corrupt file — fall through to re-scrape
+  }
+  try {
+    await new Promise<void>((resolve) => {
+      const child = spawn("python", [join(ROOT, "tools/scrape_fixtures.py"), "--quiet"], {
+        stdio: "ignore",
+      });
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve();
+      }, 90_000);
+      child.on("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.on("error", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  } catch {
+    // scrape failure is non-fatal
+  }
+}
 
 /** Minimal empty BatchResult for the no-covered-fixtures path. */
 function emptyBatch(): BatchResult {
@@ -64,10 +107,17 @@ export async function runPuntAnalysis(
     return { ...base, error: slip.error ?? "no legs in booking code" };
   }
 
+  // 1.5. Ensure the SportyBet sidecar is fresh before resolving legs.
+  //      Runs scrape_fixtures.py synchronously if the sidecar is missing or dated
+  //      to a prior day. Failure is non-fatal — coverage just degrades gracefully.
+  await refreshSidecarIfStale();
+
   // 2. Resolve each leg to an analyzable job (cache-first).
   const puntLegs = await loadedSlipToJobs(slip, {
     oddsApiKey: config.oddsApiKey,
     geminiApiKey: config.geminiApiKey,
+    footballDataApiKey: config.footballDataApiKey,
+    perplexityApiKey: config.perplexityApiKey,
   });
   const jobs = puntLegs.map((l) => l.job).filter((j): j is NonNullable<typeof j> => j !== null);
 

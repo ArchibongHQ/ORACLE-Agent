@@ -7,6 +7,10 @@ import type { LoadedSlip, RawLeg } from "@oracle/booking";
 import type { BatchJobResult, BatchResult, FixtureJob, PickRef } from "@oracle/engine";
 import type { ActionablePick } from "@oracle/notify";
 import { fetchFixtureByName } from "./fixtures.js";
+import { enrichWithH2H } from "./h2h.js";
+import { enrichWithLineups } from "./lineups.js";
+import { enrichWithNewsIntel } from "./newsIntel.js";
+import { loadSportyBetIndex, sidecarKey } from "./selectFixtures.js";
 
 /** Minimum confidence margin by which ORACLE must beat the punter's implied edge to override
  *  his pick. Tunable in one place. 0.05 = ORACLE needs ≥5 pts more model confidence. */
@@ -124,11 +128,21 @@ function nameMatches(a: string, b: string): boolean {
 // ── Step 2: raw legs → analyzable jobs ───────────────────────────────────────────
 
 /** Resolve each raw leg to a FixtureJob (cache-first via fetchFixtureByName).
+ *  Also merges sidecar stats (xG, form, standings, odds) from the SportyBet
+ *  index so the engine has Stage-2/3 context for every leg it analyses.
  *  job === null marks a no-coverage pass-through leg. */
 export async function loadedSlipToJobs(
   slip: LoadedSlip,
-  deps: { oddsApiKey: string | undefined; geminiApiKey?: string | undefined }
+  deps: {
+    oddsApiKey: string | undefined;
+    geminiApiKey?: string | undefined;
+    footballDataApiKey?: string | undefined;
+    perplexityApiKey?: string | undefined;
+  }
 ): Promise<PuntLeg[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const sidecar = await loadSportyBetIndex(today);
+
   const out: PuntLeg[] = [];
   for (const raw of slip.legs) {
     let job: FixtureJob | null = null;
@@ -143,6 +157,45 @@ export async function loadedSlipToJobs(
     } catch {
       job = null;
     }
+
+    // Enrich each resolved job with H2H, news intelligence, and confirmed lineups —
+    // the same chain fetchTodaysFixtures runs for the daily batch.
+    if (job) {
+      try {
+        [job] = await enrichWithH2H([job], deps.footballDataApiKey);
+        [job] = await enrichWithNewsIntel([job], deps.perplexityApiKey);
+        [job] = await enrichWithLineups([job]);
+      } catch {
+        // enrichment is non-fatal — job falls through with whatever partial state it has
+      }
+    }
+
+    // Merge sidecar stats into the job's pipeline.fetched block so the engine
+    // receives xG/form/standings context (Stage 2/3 enrichment) even for legs
+    // whose fixture was not pre-selected by the daily batch.
+    if (job && sidecar) {
+      // O(1) Map lookup — detailByKey is pre-indexed by loadSportyBetIndex.
+      const detail = sidecar.detailByKey.get(sidecarKey(raw.home, raw.away));
+      if (detail) {
+        const existing = (job.state?.pipeline?.fetched ?? {}) as Record<string, unknown>;
+        job = {
+          ...job,
+          state: {
+            ...job.state,
+            pipeline: {
+              ...job.state?.pipeline,
+              fetched: {
+                ...existing,
+                sportyBetStats: detail.stats,
+                sportyBetOdds: detail.odds,
+                sportyBetStatsCoverage: detail.statscoverage,
+              },
+            },
+          },
+        };
+      }
+    }
+
     out.push({ raw, job });
   }
   return out;
@@ -150,17 +203,23 @@ export async function loadedSlipToJobs(
 
 // ── Step 3: counter-slip decision ────────────────────────────────────────────────
 
-/** ORACLE's actionable pick for a given fixture, if the batch produced one (not NO_BET). */
+/** ORACLE's best pick for a given fixture from the batch.
+ *  Returns the primaryPick regardless of grade — the engine always emits one
+ *  (even NO_EDGE jobs carry a best-market pick). The confidence delta in
+ *  counterSlip decides whether to override the punter's selection. */
 function findActionable(
   batch: BatchResult,
   home: string,
   away: string
-): { pick: PickRef; confidence: number } | null {
+): { pick: PickRef; confidence: number; grade: string } | null {
   for (const j of batch.jobs as BatchJobResult[]) {
     if (j.status !== "ok") continue;
     if (!nameMatches(j.home, home) || !nameMatches(j.away, away)) continue;
-    if (j.decision.grade === "NO_EDGE") return null;
-    return { pick: j.decision.primaryPick, confidence: j.decision.confidence };
+    return {
+      pick: j.decision.primaryPick,
+      confidence: j.decision.confidence,
+      grade: j.decision.grade,
+    };
   }
   return null;
 }
@@ -190,14 +249,14 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
     const oracle = findActionable(batch, raw.home, raw.away);
     const his = rawLegToMarketSide(raw);
 
-    // ORACLE has no actionable edge (NO_BET) — keep his pick.
+    // Batch ran but this fixture produced no result row (engine error, not NO_EDGE).
     if (!oracle) {
       return {
         raw,
         verdict: "KEPT_LOW_CONVICTION",
         pick: pickFromRaw(raw),
         oracleConfidence: null,
-        note: "ORACLE returned NO_BET on this fixture",
+        note: "fixture not found in batch output",
       };
     }
 
@@ -211,12 +270,14 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
         verdict: "CONFIRMED",
         pick: { ...pickFromRaw(raw, oracle.confidence) },
         oracleConfidence: oracle.confidence,
+        note: oracle.grade === "NO_EDGE" ? "ORACLE best pick matches (no positive EV)" : undefined,
       };
     }
 
-    // ORACLE disagrees: replace only if its confidence clears the punter's implied edge by the margin.
+    // ORACLE disagrees: replace if its confidence clears the punter's implied edge by the margin,
+    // AND the grade is not NO_EDGE (we never force-swap onto a negative-EV ORACLE pick).
     const hisImplied = impliedConfidence(raw.odds);
-    if (oracle.confidence - hisImplied >= ADJUST_MIN_CONFIDENCE_DELTA) {
+    if (oracle.grade !== "NO_EDGE" && oracle.confidence - hisImplied >= ADJUST_MIN_CONFIDENCE_DELTA) {
       const adjusted: ActionablePick = {
         home: raw.home,
         away: raw.away,
@@ -237,13 +298,16 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
       };
     }
 
-    // ORACLE disagrees but not strongly enough — keep his pick.
+    // ORACLE disagrees but not strongly enough, or grade is NO_EDGE — keep his pick.
     return {
       raw,
       verdict: "KEPT_LOW_CONVICTION",
       pick: pickFromRaw(raw, oracle.confidence),
       oracleConfidence: oracle.confidence,
-      note: `ORACLE edge ${(oracle.confidence - hisImplied).toFixed(3)} below ${ADJUST_MIN_CONFIDENCE_DELTA} threshold`,
+      note:
+        oracle.grade === "NO_EDGE"
+          ? `ORACLE grade NO_EDGE on this fixture — punter's pick kept`
+          : `ORACLE edge ${(oracle.confidence - hisImplied).toFixed(3)} below ${ADJUST_MIN_CONFIDENCE_DELTA} threshold`,
     };
   });
 }
