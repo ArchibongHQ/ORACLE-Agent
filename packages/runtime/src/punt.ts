@@ -127,10 +127,38 @@ function nameMatches(a: string, b: string): boolean {
 
 // ── Step 2: raw legs → analyzable jobs ───────────────────────────────────────────
 
+/** Build a minimal FixtureJob from a SportyBet sidecar event when the odds-api
+ *  has no coverage for the fixture. Carries sidecar odds/stats in pipeline.fetched
+ *  so the engine has Stage-2/3 context without a paid odds-api hit. */
+function jobFromSidecar(
+  raw: RawLeg,
+  detail: import("./selectFixtures.js").SportyBetEventDetail,
+  kickoff: string,
+  league: string
+): FixtureJob {
+  return {
+    home: raw.home,
+    away: raw.away,
+    league,
+    kickoff,
+    state: {
+      pipeline: {
+        fetched: {
+          sportyBetStats: detail.stats,
+          sportyBetOdds: detail.odds,
+          sportyBetStatsCoverage: detail.statscoverage,
+        },
+      },
+    },
+  };
+}
+
 /** Resolve each raw leg to a FixtureJob (cache-first via fetchFixtureByName).
- *  Also merges sidecar stats (xG, form, standings, odds) from the SportyBet
- *  index so the engine has Stage-2/3 context for every leg it analyses.
- *  job === null marks a no-coverage pass-through leg. */
+ *  Falls back to a sidecar-constructed job when the odds-api has no coverage,
+ *  so every leg the punter selected gets analysed — not silently dropped.
+ *  Also merges sidecar stats into odds-api jobs so the engine has Stage-2/3
+ *  context for every leg it analyses.
+ *  job === null only when neither the odds-api nor the sidecar covers the fixture. */
 export async function loadedSlipToJobs(
   slip: LoadedSlip,
   deps: {
@@ -158,6 +186,36 @@ export async function loadedSlipToJobs(
       job = null;
     }
 
+    // When the odds-api missed, fall back to a job built from the sidecar so no
+    // fixture is silently dropped — the sidecar has team names, league, kickoff,
+    // and Sportradar stats for every event SportyBet lists today.
+    if (!job && sidecar) {
+      const key = sidecarKey(raw.home, raw.away);
+      const detail = sidecar.detailByKey.get(key);
+      if (!detail) {
+        // Try namesMatch fallback for fuzzy team-name variants
+        const ev = sidecar.events.find(
+          (e) => nameMatches(e.home, raw.home) && nameMatches(e.away, raw.away)
+        );
+        if (ev?.detail) {
+          job = jobFromSidecar(
+            raw,
+            ev.detail,
+            ev.kickoff_utc ?? `${today}T12:00:00Z`,
+            ev.league ?? raw.league ?? "Unknown"
+          );
+        }
+      } else {
+        const ev = sidecar.events.find((e) => sidecarKey(e.home, e.away) === key);
+        job = jobFromSidecar(
+          raw,
+          detail,
+          ev?.kickoff_utc ?? `${today}T12:00:00Z`,
+          ev?.league ?? raw.league ?? "Unknown"
+        );
+      }
+    }
+
     // Enrich each resolved job with H2H, news intelligence, and confirmed lineups —
     // the same chain fetchTodaysFixtures runs for the daily batch.
     if (job) {
@@ -170,13 +228,12 @@ export async function loadedSlipToJobs(
       }
     }
 
-    // Merge sidecar stats into the job's pipeline.fetched block so the engine
-    // receives xG/form/standings context (Stage 2/3 enrichment) even for legs
-    // whose fixture was not pre-selected by the daily batch.
+    // Merge sidecar stats into odds-api jobs (sidecar-constructed jobs already
+    // carry this in pipeline.fetched from jobFromSidecar).
     if (job && sidecar) {
-      // O(1) Map lookup — detailByKey is pre-indexed by loadSportyBetIndex.
-      const detail = sidecar.detailByKey.get(sidecarKey(raw.home, raw.away));
-      if (detail) {
+      const key = sidecarKey(raw.home, raw.away);
+      const detail = sidecar.detailByKey.get(key);
+      if (detail && !job.state?.pipeline?.fetched?.sportyBetStats) {
         const existing = (job.state?.pipeline?.fetched ?? {}) as Record<string, unknown>;
         job = {
           ...job,

@@ -1,5 +1,5 @@
 import type { BatchResult } from "@oracle/engine";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RawLeg } from "../../../apps/booking/src/loadCode.js";
 import type { PuntLeg } from "../src/punt.js";
 import { counterSlip, loadedSlipToJobs, rawLegToMarketSide } from "../src/punt.js";
@@ -170,5 +170,27 @@ describe("loadedSlipToJobs", () => {
     const legs = await loadedSlipToJobs(slip, { oddsApiKey: undefined });
     expect(legs).toHaveLength(2);
     expect(legs.every((l) => l.job === null)).toBe(true);
+  });
+
+  it("builds a job from sidecar when odds-api has no coverage", async () => {
+    // Use a fixture that is in today's real sidecar (scraped by scrape_fixtures.py).
+    // The test verifies structural properties rather than exact league names — the
+    // sidecar is live data so exact league strings can vary.
+    const slip = {
+      code: "X",
+      legs: [rawLeg({ home: "Bonsucesso FC RJ", away: "Resende FC RJ", league: "Carioca" })],
+      totalOdds: 2,
+      loadedAt: "",
+    };
+    const legs = await loadedSlipToJobs(slip, { oddsApiKey: undefined });
+
+    expect(legs).toHaveLength(1);
+    // Sidecar fallback produces a non-null job — fixture is no longer dropped.
+    expect(legs[0]!.job).not.toBeNull();
+    expect(legs[0]!.job?.home).toBe("Bonsucesso FC RJ");
+    expect(legs[0]!.job?.away).toBe("Resende FC RJ");
+    // Sidecar stats/odds wired into pipeline.fetched.
+    const fetched = legs[0]!.job?.state?.pipeline?.fetched as Record<string, unknown> | undefined;
+    expect(fetched?.sportyBetOdds).toBeDefined();
   });
 });
