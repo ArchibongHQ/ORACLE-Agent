@@ -6,19 +6,24 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadSportyBetIndex,
   predictabilityScore,
-  scoreFixture,
-  selectFixtures,
   type SelectionCandidate,
-  sidecarKey,
   type SportyBetEventDetail,
   type SportyBetIndex,
+  scoreFixture,
+  selectFixtures,
+  sidecarKey,
 } from "../src/selectFixtures.js";
 
 // Fixed clock: 2026-06-11 10:00 UTC
 const NOW = new Date("2026-06-11T10:00:00Z");
 const TODAY = "2026-06-11";
 
-function job(home: string, away: string, league = "Premier League", kickoff = "2026-06-11T15:00:00Z"): FixtureJob {
+function job(
+  home: string,
+  away: string,
+  league = "Premier League",
+  kickoff = "2026-06-11T15:00:00Z"
+): FixtureJob {
   return { home, away, league, kickoff };
 }
 
@@ -26,7 +31,9 @@ function cand(j: FixtureJob, hasBulkOdds = false): SelectionCandidate {
   return { job: j, hasBulkOdds, llmEligible: false };
 }
 
-function index(events: Array<{ home: string; away: string; marketCount?: number }>): SportyBetIndex {
+function index(
+  events: Array<{ home: string; away: string; marketCount?: number }>
+): SportyBetIndex {
   const withCounts = events.map((ev) => ({ ...ev, marketCount: ev.marketCount ?? 0 }));
   const byKey = new Map<string, number>();
   for (const ev of withCounts) {
@@ -64,7 +71,10 @@ describe("predictabilityScore", () => {
       odds: { "1x2": { home: 1.3, draw: 5.5, away: 12 }, dnb: { home: 1.15 } },
       stats: {
         xg: { home: { xgf: 2.3, xga: 0.5 }, away: { xgf: 0.6, xga: 2.0 } },
-        goals: { home: { avg_scored: 2.2, avg_conceded: 0.6 }, away: { avg_scored: 0.7, avg_conceded: 2.0 } },
+        goals: {
+          home: { avg_scored: 2.2, avg_conceded: 0.6 },
+          away: { avg_scored: 0.7, avg_conceded: 2.0 },
+        },
         form: { home: { w: 4, d: 1, l: 0 }, away: { w: 0, d: 1, l: 4 } },
       },
       statscoverage: { leaguetable: true, formtable: true, headtohead: false },
@@ -77,7 +87,10 @@ describe("predictabilityScore", () => {
       odds: { "1x2": { home: 2.0, draw: 3.2, away: 3.8 } },
       stats: {
         xg: { home: { xgf: 1.0, xga: 1.0 }, away: { xgf: 1.0, xga: 1.0 } },
-        goals: { home: { avg_scored: 1.0, avg_conceded: 1.0 }, away: { avg_scored: 1.0, avg_conceded: 1.0 } },
+        goals: {
+          home: { avg_scored: 1.0, avg_conceded: 1.0 },
+          away: { avg_scored: 1.0, avg_conceded: 1.0 },
+        },
         form: { home: { w: 2, d: 1, l: 2 }, away: { w: 2, d: 1, l: 2 } },
       },
       statscoverage: { leaguetable: true, formtable: true, headtohead: true },
@@ -90,14 +103,19 @@ describe("predictabilityScore", () => {
     const withWeak = detail({ odds: { "1x2": { home: 2.0, draw: 3.2, away: 3.5 } } });
     const withoutOdds = detail({ odds: null });
     // Both should produce same 1X2 contribution (0) — i.e. same score
-    expect(predictabilityScore(withWeak, "La Liga")).toBe(predictabilityScore(withoutOdds, "La Liga"));
+    expect(predictabilityScore(withWeak, "La Liga")).toBe(
+      predictabilityScore(withoutOdds, "La Liga")
+    );
   });
 
   it("cup/friendly/trophy league name applies a soft penalty (score decreases)", () => {
     const d = detail({
       stats: {
         xg: { home: { xgf: 1.5, xga: 0.8 }, away: { xgf: 0.8, xga: 1.5 } },
-        goals: { home: { avg_scored: 1.5, avg_conceded: 0.8 }, away: { avg_scored: 0.8, avg_conceded: 1.5 } },
+        goals: {
+          home: { avg_scored: 1.5, avg_conceded: 0.8 },
+          away: { avg_scored: 0.8, avg_conceded: 1.5 },
+        },
         form: { home: { w: 3, d: 1, l: 1 }, away: { w: 1, d: 1, l: 3 } },
       },
       statscoverage: { leaguetable: true, formtable: true, headtohead: false },
@@ -108,11 +126,17 @@ describe("predictabilityScore", () => {
   it("low-data fixture (no stats, coverage all false) gets a soft penalty", () => {
     const withData = detail({
       stats: {
-        goals: { home: { avg_scored: 1.8, avg_conceded: 1.0 }, away: { avg_scored: 1.0, avg_conceded: 1.8 } },
+        goals: {
+          home: { avg_scored: 1.8, avg_conceded: 1.0 },
+          away: { avg_scored: 1.0, avg_conceded: 1.8 },
+        },
       },
       statscoverage: { leaguetable: true, formtable: true, headtohead: false },
     });
-    const noData = detail({ stats: null, statscoverage: { leaguetable: false, formtable: false, headtohead: false } });
+    const noData = detail({
+      stats: null,
+      statscoverage: { leaguetable: false, formtable: false, headtohead: false },
+    });
     expect(predictabilityScore(noData, "Obscure League")).toBeLessThan(
       predictabilityScore(withData, "Obscure League")
     );
@@ -152,7 +176,10 @@ describe("scoreFixture", () => {
         odds: { "1x2": { home: 1.3, draw: 5, away: 11 }, dnb: { home: 1.15 } },
         stats: {
           xg: { home: { xgf: 2.2, xga: 0.6 }, away: { xgf: 0.7, xga: 1.9 } },
-          goals: { home: { avg_scored: 2.1, avg_conceded: 0.7 }, away: { avg_scored: 0.8, avg_conceded: 1.8 } },
+          goals: {
+            home: { avg_scored: 2.1, avg_conceded: 0.7 },
+            away: { avg_scored: 0.8, avg_conceded: 1.8 },
+          },
           form: { home: { w: 4, d: 1, l: 0 }, away: { w: 0, d: 1, l: 4 } },
         },
         statscoverage: { leaguetable: true, formtable: true, headtohead: false },

@@ -45,10 +45,7 @@ function batchWith(
       home: j.home,
       away: j.away,
       decision: {
-        primaryPick:
-          j.pick === "NO_EDGE"
-            ? { market: "1x2", side: "home", odds: 1.5 }
-            : j.pick,
+        primaryPick: j.pick === "NO_EDGE" ? { market: "1x2", side: "home", odds: 1.5 } : j.pick,
         grade: j.pick === "NO_EDGE" ? "NO_EDGE" : "STRONG",
         confidence: j.confidence,
         rationale: "",
@@ -175,4 +172,3 @@ describe("loadedSlipToJobs", () => {
     expect(legs.every((l) => l.job === null)).toBe(true);
   });
 });
-

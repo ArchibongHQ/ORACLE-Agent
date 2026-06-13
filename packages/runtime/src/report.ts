@@ -111,7 +111,10 @@ function renderCard(job: BatchJobResult): string {
     grade === "NO_EDGE"
       ? `${gradeStr} — ${esc(pick.market)}${pick.side ? ` (${esc(pick.side)})` : ""} <span style="color:#64748b">@ ${pick.odds}</span>`
       : `${gradeStr} — ${esc(pick.market)}${pick.side ? ` — ${esc(pick.side)}` : ""} <span style="color:#fbbf24">@ ${pick.odds}</span>`;
-  const stakeStr = pick.stake && grade !== "NO_EDGE" ? `<span class="pick-stake">${pct(pick.stake)} Kelly</span>` : "";
+  const stakeStr =
+    pick.stake && grade !== "NO_EDGE"
+      ? `<span class="pick-stake">${pct(pick.stake)} Kelly</span>`
+      : "";
   const altPick = d.altPick;
   const altStr = altPick ? `${esc(altPick.market)} @ ${altPick.odds}` : "—";
 

@@ -30,31 +30,26 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildNotifiers, formatSummaryText, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
-  CLV_ELIGIBLE_LEAGUES,
-  ORACLE_PRIORITY_LEAGUES,
   buildConfig,
+  CLV_ELIGIBLE_LEAGUES,
   fetchFixtureByName,
   fetchTodaysFixtures,
   formatPuntResult,
   loadEnv,
   markFulfilled,
   markPrompted,
+  ORACLE_PRIORITY_LEAGUES,
   resolveDay,
   runAnalysis,
   runPuntAnalysis,
   validateConfig,
 } from "@oracle/runtime";
 import { GBrainAdapter } from "@oracle/storage";
-import {
-  buildNotifiers,
-  formatSummaryText,
-  notifyAll,
-  summarizeBatch,
-} from "@oracle/notify";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -65,8 +60,7 @@ const ENV_PATH = join(ROOT, ".env");
 
 let env = loadEnv(ENV_PATH);
 
-const API = (token: string, method: string) =>
-  `https://api.telegram.org/bot${token}/${method}`;
+const API = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
 
 // ── ACL ───────────────────────────────────────────────────────────────────────
 
@@ -115,11 +109,7 @@ async function sendMessage(text: string): Promise<void> {
   await sendTo(CHAT_ID(), text);
 }
 
-async function sendDocumentTo(
-  chatId: string,
-  filePath: string,
-  caption: string
-): Promise<void> {
+async function sendDocumentTo(chatId: string, filePath: string, caption: string): Promise<void> {
   const token = TOKEN();
   if (!token || !existsSync(filePath)) return;
   try {
@@ -166,9 +156,10 @@ function latestManifest(): Record<string, unknown> | null {
       .sort()
       .reverse();
     if (!files[0]) return null;
-    return JSON.parse(
-      readFileSync(join(ROOT, ".tmp/manifests", files[0]), "utf8")
-    ) as Record<string, unknown>;
+    return JSON.parse(readFileSync(join(ROOT, ".tmp/manifests", files[0]), "utf8")) as Record<
+      string,
+      unknown
+    >;
   } catch {
     return null;
   }
@@ -180,7 +171,10 @@ function checkWorkerProcess(): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(
       "powershell",
-      ["-Command", "Get-Process node -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"],
+      [
+        "-Command",
+        "Get-Process node -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count",
+      ],
       (err, stdout) => resolve(!err && parseInt(stdout.trim(), 10) > 0)
     );
   });
@@ -259,7 +253,9 @@ async function handleStatus(chatId: string): Promise<void> {
   }
 
   const workerRunning = await checkWorkerProcess();
-  lines.push(`\n${workerRunning ? "🟢" : "🔴"} Worker daemon: ${workerRunning ? "running" : "stopped"}`);
+  lines.push(
+    `\n${workerRunning ? "🟢" : "🔴"} Worker daemon: ${workerRunning ? "running" : "stopped"}`
+  );
 
   await sendTo(chatId, lines.join("\n"));
 }
@@ -321,7 +317,9 @@ async function handlePicks(chatId: string): Promise<void> {
     await sendTo(
       chatId,
       `ℹ️ Last batch was on ${batchDate ?? "unknown"}, not today.\n` +
-        (isAdmin(chatId) ? "Use /run to trigger a fresh batch." : "Picks will be available after the 09:00 run.")
+        (isAdmin(chatId)
+          ? "Use /run to trigger a fresh batch."
+          : "Picks will be available after the 09:00 run.")
     );
     return;
   }
@@ -363,13 +361,16 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
     /* no reports dir */
   }
 
-  await sendTo(chatId, `ℹ️ No reports found. ${isAdmin(chatId) ? "Use /run to generate one." : "Check back after the 09:00 batch."}`);
+  await sendTo(
+    chatId,
+    `ℹ️ No reports found. ${isAdmin(chatId) ? "Use /run to generate one." : "Check back after the 09:00 batch."}`
+  );
 }
 
 async function handleAnalyze(chatId: string, query: string, league?: string): Promise<void> {
   const parts = query.match(/^(.+?)\s+vs\.?\s+(.+)$/i);
   if (!parts) {
-    await sendTo(chatId, '⚠️ Format: `/analyze Home vs Away` or `/analyze Home vs Away, League`');
+    await sendTo(chatId, "⚠️ Format: `/analyze Home vs Away` or `/analyze Home vs Away, League`");
     return;
   }
   const home = parts[1]!.trim();
@@ -449,11 +450,7 @@ async function handleRun(chatId: string): Promise<void> {
       return;
     }
 
-    const { batch } = await runAnalysis(
-      jobs,
-      { storage, config },
-      { trigger: "manual" }
-    );
+    const { batch } = await runAnalysis(jobs, { storage, config }, { trigger: "manual" });
 
     const summary = summarizeBatch(batch);
 
@@ -494,7 +491,10 @@ async function handleScrape(chatId: string): Promise<void> {
     if (err) {
       await sendTo(chatId, `⚠️ Scrape error:\n\`\`\`\n${err.message}\n\`\`\``);
     } else {
-      await sendTo(chatId, `✅ Scrape complete:\n\`\`\`\n${summary || stderr.slice(0, 300)}\n\`\`\``);
+      await sendTo(
+        chatId,
+        `✅ Scrape complete:\n\`\`\`\n${summary || stderr.slice(0, 300)}\n\`\`\``
+      );
     }
   });
 }
@@ -534,10 +534,16 @@ async function handleResolve(chatId: string): Promise<void> {
 }
 
 async function handleKaggle(chatId: string): Promise<void> {
-  await sendTo(chatId, "📦 Triggering Kaggle refresh… (runs in background, may take several minutes)");
+  await sendTo(
+    chatId,
+    "📦 Triggering Kaggle refresh… (runs in background, may take several minutes)"
+  );
   const python = process.platform === "win32" ? "python" : "python3";
   const scripts = [
-    ["fetch_odds_timeseries.py", ["--btb-dir", ".tmp/kaggle/beat-the-bookie", "--ah-dir", ".tmp/kaggle/ah-odds"]],
+    [
+      "fetch_odds_timeseries.py",
+      ["--btb-dir", ".tmp/kaggle/beat-the-bookie", "--ah-dir", ".tmp/kaggle/ah-odds"],
+    ],
     ["fetch_spi.py", []],
     ["fetch_fbref.py", []],
     ["fetch_transfermarkt.py", ["--player-scores-dir", ".tmp/kaggle/player-scores"]],
@@ -637,7 +643,10 @@ async function handleConfigSet(chatId: string, key: string, value: string): Prom
     env = loadEnv(ENV_PATH);
     await sendTo(chatId, `✅ \`${k}\` set to \`${value}\` and reloaded.`);
   } catch (err) {
-    await sendTo(chatId, `⚠️ Failed to write .env: ${err instanceof Error ? err.message : String(err)}`);
+    await sendTo(
+      chatId,
+      `⚠️ Failed to write .env: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
 }
 
@@ -648,13 +657,12 @@ async function handleErrors(chatId: string): Promise<void> {
     return;
   }
 
-  const errors = manifest["errors"] as Array<{ code: string; message: string; fixtureId?: string }> | undefined;
+  const errors = manifest["errors"] as
+    | Array<{ code: string; message: string; fixtureId?: string }>
+    | undefined;
 
   if (!errors?.length) {
-    await sendTo(
-      chatId,
-      `✅ *No errors* in last batch (${String(manifest["runId"] ?? "?")}).`
-    );
+    await sendTo(chatId, `✅ *No errors* in last batch (${String(manifest["runId"] ?? "?")}).`);
     return;
   }
 
@@ -674,8 +682,12 @@ async function handleCost(chatId: string): Promise<void> {
     return;
   }
 
-  const cost = manifest["cost"] as { estimatedUsd: number | null; ceilingUsd: number | null; halted: boolean } | undefined;
-  const totals = manifest["totals"] as { analysed: number; actionable: number; errors: number } | undefined;
+  const cost = manifest["cost"] as
+    | { estimatedUsd: number | null; ceilingUsd: number | null; halted: boolean }
+    | undefined;
+  const totals = manifest["totals"] as
+    | { analysed: number; actionable: number; errors: number }
+    | undefined;
 
   const lines = [
     `💰 *Cost — ${String(manifest["runId"] ?? "last batch")}*`,
@@ -707,9 +719,7 @@ async function handleValidate(chatId: string): Promise<void> {
 
 async function handleCoverage(chatId: string): Promise<void> {
   const clv = [...CLV_ELIGIBLE_LEAGUES].sort();
-  const priority = [...ORACLE_PRIORITY_LEAGUES]
-    .filter((l) => !CLV_ELIGIBLE_LEAGUES.has(l))
-    .sort();
+  const priority = [...ORACLE_PRIORITY_LEAGUES].filter((l) => !CLV_ELIGIBLE_LEAGUES.has(l)).sort();
 
   const lines = [
     "*League Coverage*\n",
@@ -734,13 +744,17 @@ async function handleLineups(chatId: string): Promise<void> {
   }
 
   try {
-    const raw = JSON.parse(readFileSync(lineupsPath, "utf8")) as Record<string, { fetchedAt?: string }>;
+    const raw = JSON.parse(readFileSync(lineupsPath, "utf8")) as Record<
+      string,
+      { fetchedAt?: string }
+    >;
     const count = Object.keys(raw).length;
     const sample = Object.values(raw)[0];
     const fetchedAt = sample?.fetchedAt ?? "unknown";
-    const age = fetchedAt !== "unknown"
-      ? `${Math.round((Date.now() - new Date(fetchedAt).getTime()) / 60_000)}m ago`
-      : "unknown";
+    const age =
+      fetchedAt !== "unknown"
+        ? `${Math.round((Date.now() - new Date(fetchedAt).getTime()) / 60_000)}m ago`
+        : "unknown";
 
     await sendTo(
       chatId,
@@ -794,7 +808,7 @@ async function handleMessage(chatId: string, text: string): Promise<void> {
     const fixture = commaIdx >= 0 ? query.slice(0, commaIdx).trim() : query.trim();
     const league = commaIdx >= 0 ? query.slice(commaIdx + 1).trim() : undefined;
     if (!fixture) {
-      await sendTo(chatId, '⚠️ Usage: `/analyze Home vs Away` or `/analyze Home vs Away, League`');
+      await sendTo(chatId, "⚠️ Usage: `/analyze Home vs Away` or `/analyze Home vs Away, League`");
       return;
     }
     return handleAnalyze(chatId, fixture, league);
@@ -834,7 +848,11 @@ async function handleMessage(chatId: string, text: string): Promise<void> {
 
   if (cmd === "/config") {
     const key = args[0];
-    const value = args.slice(1).join(" ").replace(/[\r\n]/g, " ").trim();
+    const value = args
+      .slice(1)
+      .join(" ")
+      .replace(/[\r\n]/g, " ")
+      .trim();
     if (!key || !value) {
       await sendTo(chatId, "⚠️ Usage: `/config KEY value`");
       return;
@@ -898,8 +916,7 @@ export async function runBot(): Promise<void> {
   }
 }
 
-const isMain =
-  process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isMain = process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   runBot().catch((e) => {
     console.error(e);

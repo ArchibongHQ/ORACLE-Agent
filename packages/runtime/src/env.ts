@@ -78,7 +78,9 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
   const hw = detectHardware();
   const gpuCapable = isGpuCapable(hw);
   const autoResearchRequested = env.ORACLE_AUTORESEARCH_ENABLED?.toLowerCase() === "true";
-  const maxFixturesRaw = Math.floor(Number(env.MAX_FIXTURES_PER_RUN ?? DEFAULT_MAX_FIXTURES_PER_RUN));
+  const maxFixturesRaw = Math.floor(
+    Number(env.MAX_FIXTURES_PER_RUN ?? DEFAULT_MAX_FIXTURES_PER_RUN)
+  );
 
   return {
     geminiApiKey: env.GEMINI_API_KEY ?? "",

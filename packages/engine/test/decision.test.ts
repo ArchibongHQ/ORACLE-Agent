@@ -2,7 +2,12 @@
  *  LLM path: mocked via vi.mock('@oracle/llm'). Fallback path: real deterministic logic. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionContext } from "../src/decision/index.js";
-import { buildEligibleBets, decide, gradeFromEV, validateSelection } from "../src/decision/index.js";
+import {
+  buildEligibleBets,
+  decide,
+  gradeFromEV,
+  validateSelection,
+} from "../src/decision/index.js";
 import type { DecisionOutput, EVMarket, PickRef } from "../src/types.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────

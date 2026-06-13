@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildConfig } from "../src/env.js";
 import {
   buildOddsProviders,
   type NormalizedOdds,
   type OddsProvider,
   runOddsChain,
 } from "../src/oddsProviders.js";
-import { buildConfig } from "../src/env.js";
 
 // ── Test doubles ──────────────────────────────────────────────────────────────
 
@@ -666,7 +666,12 @@ describe("SportsGameOdds provider fetch", () => {
     const spy = vi.spyOn(globalThis, "fetch");
     const providers = buildOddsProviders({ sportsGameOddsKey: "k" });
     const sgo = providers.find((p) => p.name === "sportsgameodds")!;
-    const res = await sgo.fetch("Boca Juniors", "River Plate", "Copa Libertadores", "2026-06-12T22:00:00Z");
+    const res = await sgo.fetch(
+      "Boca Juniors",
+      "River Plate",
+      "Copa Libertadores",
+      "2026-06-12T22:00:00Z"
+    );
     expect(res).toBeNull();
     expect(spy).not.toHaveBeenCalled();
   });

@@ -61,9 +61,7 @@ describe("makeSportyBetSidecarProvider fetch", () => {
   });
 
   it("returns null when the file is missing (readFile throws ENOENT)", async () => {
-    vi.mocked(readFile).mockRejectedValue(
-      Object.assign(new Error("ENOENT"), { code: "ENOENT" })
-    );
+    vi.mocked(readFile).mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     expect(await PROVIDER.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)).toBeNull();
   });
 
@@ -75,9 +73,7 @@ describe("makeSportyBetSidecarProvider fetch", () => {
   });
 
   it("returns null when events is not an array", async () => {
-    vi.mocked(readFile).mockResolvedValue(
-      JSON.stringify({ date: TODAY, events: null }) as never
-    );
+    vi.mocked(readFile).mockResolvedValue(JSON.stringify({ date: TODAY, events: null }) as never);
     expect(await PROVIDER.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)).toBeNull();
   });
 
@@ -89,9 +85,7 @@ describe("makeSportyBetSidecarProvider fetch", () => {
   });
 
   it("returns null when the matching event has no 1x2 odds block", async () => {
-    vi.mocked(readFile).mockResolvedValue(
-      sidecarWith("Arsenal", "Chelsea", null) as never
-    );
+    vi.mocked(readFile).mockResolvedValue(sidecarWith("Arsenal", "Chelsea", null) as never);
     expect(await PROVIDER.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)).toBeNull();
   });
 

@@ -128,7 +128,13 @@ export async function loadSportyBetIndex(
       if (typeof ev.eventId === "string" && ev.eventId) {
         try {
           const baseStats = (ev.stats as SportyBetStats | null) ?? null;
-          const xgBlock = ev.xg as { home?: { xgf?: number; xga?: number } | null; away?: { xgf?: number; xga?: number } | null } | null | undefined;
+          const xgBlock = ev.xg as
+            | {
+                home?: { xgf?: number; xga?: number } | null;
+                away?: { xgf?: number; xga?: number } | null;
+              }
+            | null
+            | undefined;
           const stats: SportyBetStats | null =
             baseStats != null || xgBlock != null
               ? { ...(baseStats ?? {}), ...(xgBlock != null ? { xg: xgBlock } : {}) }
@@ -221,10 +227,12 @@ export function predictabilityScore(
   const hForm = stats?.form?.home;
   const aForm = stats?.form?.away;
   if (hForm && aForm) {
-    const hW = hForm.w ?? 0, hL = hForm.l ?? 0;
-    const aW = aForm.w ?? 0, aL = aForm.l ?? 0;
+    const hW = hForm.w ?? 0,
+      hL = hForm.l ?? 0;
+    const aW = aForm.w ?? 0,
+      aL = aForm.l ?? 0;
     // One-sided form dominance drives predictability
-    const formDiff = Math.abs((hW - hL) - (aW - aL));
+    const formDiff = Math.abs(hW - hL - (aW - aL));
     formScore = Math.min(15, (formDiff / 4) * 15);
   }
 

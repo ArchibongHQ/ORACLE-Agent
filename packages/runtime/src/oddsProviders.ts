@@ -24,8 +24,8 @@
  *  Providers whose key is absent are skipped silently (config.ts pattern).
  */
 import { readFile } from "node:fs/promises";
-import { namesMatch } from "./teamNames.js";
 import { SPORTYBET_SIDECAR_PATH } from "./selectFixtures.js";
+import { namesMatch } from "./teamNames.js";
 
 /** 1X2 consensus result. Field-compatible with @oracle/llm OddsAcquisitionResult
  *  so it drops straight into the state-building in fixtures.ts geminiOddsGapFill. */
@@ -592,9 +592,7 @@ export function makeSportyBetSidecarProvider(sidecarPath: string): OddsProvider 
       const today = kickoff.slice(0, 10);
       if (raw.date !== today || !Array.isArray(raw.events)) return null;
 
-      const ev = raw.events.find(
-        (e) => namesMatch(e.home, home) && namesMatch(e.away, away)
-      );
+      const ev = raw.events.find((e) => namesMatch(e.home, home) && namesMatch(e.away, away));
       if (!ev?.odds?.["1x2"]) return null;
 
       const o1x2 = ev.odds["1x2"];

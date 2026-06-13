@@ -277,7 +277,10 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
     // ORACLE disagrees: replace if its confidence clears the punter's implied edge by the margin,
     // AND the grade is not NO_EDGE (we never force-swap onto a negative-EV ORACLE pick).
     const hisImplied = impliedConfidence(raw.odds);
-    if (oracle.grade !== "NO_EDGE" && oracle.confidence - hisImplied >= ADJUST_MIN_CONFIDENCE_DELTA) {
+    if (
+      oracle.grade !== "NO_EDGE" &&
+      oracle.confidence - hisImplied >= ADJUST_MIN_CONFIDENCE_DELTA
+    ) {
       const adjusted: ActionablePick = {
         home: raw.home,
         away: raw.away,

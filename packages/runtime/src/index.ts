@@ -27,6 +27,10 @@ export {
 export type { PuntDayState } from "./puntState.js";
 export { markFulfilled, markPrompted, readPuntState, shouldReprompt } from "./puntState.js";
 export { renderReport, writeReport } from "./report.js";
+export type { ResolveResult } from "./resolveFixtures.js";
+export { computeRealisedClv, formatClv, resolveRecords } from "./resolveFixtures.js";
+export type { PuntResult } from "./runPunt.js";
+export { formatPuntResult, runPuntAnalysis } from "./runPunt.js";
 export type {
   SelectionCandidate,
   SelectionResult,
@@ -41,7 +45,3 @@ export {
   selectFixtures,
   sidecarKey,
 } from "./selectFixtures.js";
-export type { ResolveResult } from "./resolveFixtures.js";
-export { computeRealisedClv, formatClv, resolveRecords } from "./resolveFixtures.js";
-export type { PuntResult } from "./runPunt.js";
-export { formatPuntResult, runPuntAnalysis } from "./runPunt.js";

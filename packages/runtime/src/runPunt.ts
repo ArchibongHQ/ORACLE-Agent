@@ -2,14 +2,14 @@
  *  loadBookingCode → loadedSlipToJobs → runAnalysis → counterSlip → bookAccumulator(adjusted).
  *  Called by the Telegram bot, the web /punt route, and the CLI. Never throws — error in-band. */
 
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadBookingCode } from "@oracle/booking";
 import type { BatchResult, OracleConfig } from "@oracle/engine";
 import type { ActionablePick } from "@oracle/notify";
 import type { StoragePort } from "@oracle/storage";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
 import { runAnalysis } from "./analyze.js";
 import type { CounterLeg } from "./punt.js";
 import { counterSlip, loadedSlipToJobs } from "./punt.js";
