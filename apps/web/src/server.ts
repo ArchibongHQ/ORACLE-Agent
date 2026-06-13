@@ -4,7 +4,7 @@
  *  GET /reports/:date → serve a previously generated report
  *  GET /health    → liveness probe
  *
- *  Binds 127.0.0.1 by default (single power user; auth deferred to the cloud stage — PRD §1.3). */
+ *  Binds 0.0.0.0 by default for cloud deployment (set HOST=127.0.0.1 for local-only). Auth deferred — PRD §1.3. */
 
 import { readFile } from "node:fs/promises";
 import http from "node:http";

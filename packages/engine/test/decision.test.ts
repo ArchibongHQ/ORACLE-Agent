@@ -2,7 +2,7 @@
  *  LLM path: mocked via vi.mock('@oracle/llm'). Fallback path: real deterministic logic. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionContext } from "../src/decision/index.js";
-import { buildEligibleBets, decide, validateSelection } from "../src/decision/index.js";
+import { buildEligibleBets, decide, gradeFromEV, validateSelection } from "../src/decision/index.js";
 import type { DecisionOutput, EVMarket, PickRef } from "../src/types.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -298,6 +298,18 @@ describe("validateSelection", () => {
     expect(result.primaryPick.market).toBe("Goals O/U");
   });
 
+  it("preserves grade field on a valid pass-through pick", () => {
+    const pick: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1 },
+      confidence: 0.7,
+      grade: "STRONG",
+      rationale: "good edge",
+      rejectedAndWhy: [],
+    };
+    const result = validateSelection(pick, eligible);
+    expect(result.grade).toBe("STRONG");
+  });
+
   it("rejects 1x2 MoneyLine when drawRisk=VERY_HIGH", () => {
     const pick: DecisionOutput = {
       primaryPick: { market: "1x2", side: "Home Win", odds: 2.1 },
@@ -309,6 +321,14 @@ describe("validateSelection", () => {
     const result = validateSelection(pick, eligible, { mlAllowed: true, drawRisk: "VERY_HIGH" });
     // Should fall back to non-1x2 top (Goals O/U)
     expect(result.primaryPick.market).toBe("Goals O/U");
+  });
+
+  it("gradeFromEV boundary: ev=0 → NO_EDGE, ev<0 → NO_EDGE, ev=0.049 → LEAN, ev=0.05 → STRONG", () => {
+    expect(gradeFromEV(0)).toBe("NO_EDGE");
+    expect(gradeFromEV(-0.01)).toBe("NO_EDGE");
+    expect(gradeFromEV(0.049)).toBe("LEAN");
+    expect(gradeFromEV(0.05)).toBe("STRONG");
+    expect(gradeFromEV(0.2)).toBe("STRONG");
   });
 
   it("returns NO_EDGE placeholder when VERY_HIGH draw risk and only 1x2 eligible", () => {

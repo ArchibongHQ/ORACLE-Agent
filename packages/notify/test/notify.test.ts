@@ -72,7 +72,7 @@ const sampleSummary: BatchSummary = {
 };
 
 describe("summarizeBatch", () => {
-  it("extracts only actionable (non-NO_BET) picks", () => {
+  it("extracts only actionable (non-NO_EDGE) picks", () => {
     const s = summarizeBatch(fakeBatch(), "http://x/r");
     expect(s.actionable).toHaveLength(1);
     expect(s.actionable[0]?.home).toBe("Arsenal");

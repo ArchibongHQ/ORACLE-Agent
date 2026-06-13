@@ -943,6 +943,9 @@ def _fetch_fixture_detail(event_id: str) -> dict:
     Any sub-call failure degrades that field to None — never raises.
     """
     mid = event_id.rsplit(":", 1)[-1]
+    # Validate mid is numeric-only before using it in Gismo URL paths to prevent path traversal
+    if not mid.isdigit():
+        return {"odds": None, "stats": None, "statscoverage": {}}
     import urllib.parse as _uparse
     eid_enc = _uparse.quote(event_id)
 

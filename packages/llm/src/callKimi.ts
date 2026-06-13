@@ -12,12 +12,12 @@ import { MODELS } from "./cascade.js";
 const ENDPOINT = "https://api.moonshot.ai/v1/chat/completions";
 
 /** Shared swarm-worker system prompt — one independent analyst voting on the best pick. */
-const VOTE_SYSTEM = `You are one independent betting analyst in a panel. Read the fixture analysis and eligible bets, then vote for the single best pick (or NO_BET). Return ONLY valid JSON, no markdown:
-{"pick":"<exact market label or NO_BET>","confidence":0.0,"rationale":"<one sentence>"}`;
+const VOTE_SYSTEM = `You are one independent betting analyst in a panel. Read the fixture analysis and eligible bets, then vote for the single best pick (or NO_EDGE if no pick is justified). Return ONLY valid JSON, no markdown:
+{"pick":"<exact market label or NO_EDGE>","confidence":0.0,"rationale":"<one sentence>"}`;
 
 /** One swarm worker's structured vote on a fixture. */
 export interface KimiVote {
-  pick: string; // market label the worker would back, or "NO_BET"
+  pick: string; // market label the worker would back, or "NO_EDGE"
   confidence: number; // 0–1 self-reported confidence
   rationale: string;
   model: string;

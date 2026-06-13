@@ -834,7 +834,7 @@ async function handleMessage(chatId: string, text: string): Promise<void> {
 
   if (cmd === "/config") {
     const key = args[0];
-    const value = args.slice(1).join(" ");
+    const value = args.slice(1).join(" ").replace(/[\r\n]/g, " ").trim();
     if (!key || !value) {
       await sendTo(chatId, "⚠️ Usage: `/config KEY value`");
       return;
