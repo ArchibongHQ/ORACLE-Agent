@@ -19,8 +19,9 @@ const ROOT = join(__dir, "../../..");
 const SIDECAR_PATH = join(ROOT, ".tmp/fixtures/sportybet_today.json");
 
 /** Spawn scrape_fixtures.py if the SportyBet sidecar is missing or stale. Fire-and-wait,
- *  fail-open: a scrape error never aborts the punt analysis. */
-async function refreshSidecarIfStale(): Promise<void> {
+ *  fail-open: a scrape error never aborts the punt analysis.
+ * @internal exported for testing only */
+export async function refreshSidecarIfStale(): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   try {
     if (existsSync(SIDECAR_PATH)) {
