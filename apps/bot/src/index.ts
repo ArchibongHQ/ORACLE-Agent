@@ -442,7 +442,8 @@ async function handleRun(chatId: string): Promise<void> {
       config.apiFootballKey,
       config.oddsApiIoKey,
       config.oddsPapiKey,
-      config.sportsGameOddsKey
+      config.sportsGameOddsKey,
+      config.maxFixturesPerRun
     );
 
     if (!jobs.length) {
@@ -551,22 +552,30 @@ async function handleKaggle(chatId: string): Promise<void> {
     ["fetch_xg.py", ["--kaggle-ppda-dir", ".tmp/kaggle/xg-ppda"]],
   ] as const;
 
-  let completed = 0;
   const total = scripts.length;
+  let completed = 0;
 
-  for (const [script, args] of scripts) {
-    await new Promise<void>((resolve) => {
-      execFile(python, [join(ROOT, "tools", script), ...args], { cwd: ROOT }, async (err) => {
-        completed++;
-        if (err) {
-          await sendTo(chatId, `⚠️ ${script}: ${err.message}`);
-        } else {
-          await sendTo(chatId, `✅ ${script} (${completed}/${total})`);
-        }
-        resolve();
-      });
-    });
-  }
+  await Promise.all(
+    scripts.map(
+      ([script, args]) =>
+        new Promise<void>((resolve) => {
+          execFile(
+            python,
+            [join(ROOT, "tools", script), ...args],
+            { cwd: ROOT },
+            async (err) => {
+              completed++;
+              if (err) {
+                await sendTo(chatId, `⚠️ ${script}: ${err.message}`);
+              } else {
+                await sendTo(chatId, `✅ ${script} (${completed}/${total})`);
+              }
+              resolve();
+            }
+          );
+        })
+    )
+  );
 
   await sendTo(chatId, "✅ Kaggle refresh complete.");
 }
@@ -626,6 +635,16 @@ async function handleConfigSet(chatId: string, key: string, value: string): Prom
     await sendTo(
       chatId,
       `❌ \`${key}\` is not a writable setting.\n\nWritable keys:\n${[...ALLOWED_KEYS].map((k) => `• \`${k}\``).join("\n")}`
+    );
+    return;
+  }
+
+  // Guard value content: allow digits, letters, dots, underscores, plus, minus only.
+  // This prevents newline injection and dotenv-structure corruption.
+  if (!/^[\w.+-]{1,256}$/.test(value)) {
+    await sendTo(
+      chatId,
+      "❌ Value contains invalid characters. Only alphanumeric, `.`, `+`, `-`, `_` allowed (max 256 chars)."
     );
     return;
   }
@@ -906,7 +925,7 @@ export async function runBot(): Promise<void> {
         offset = upd.update_id + 1;
         const msg = upd.message;
         if (!msg?.text) continue;
-        void handleMessage(String(msg.chat.id), msg.text);
+        await handleMessage(String(msg.chat.id), msg.text);
       }
     } catch (err) {
       console.warn(

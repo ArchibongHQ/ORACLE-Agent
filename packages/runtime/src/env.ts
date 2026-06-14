@@ -29,16 +29,24 @@ export function loadEnv(path: string): Record<string, string> {
   }
 
   // On Railway, process.env is the source of truth (Variables panel).
-  // Merge it on top of the file so Railway vars always win.
-  const isCloud = !!(process.env.RAILWAY_ENVIRONMENT ?? process.env.RAILWAY_PROJECT_ID);
+  // Only merge process.env when actually running on Railway — locally, .env is authoritative
+  // so shell variables don't silently override developer config.
+  // Only promote to cloud-defaults when RAILWAY_ENVIRONMENT is exactly "production"
+  // so that staging/PR-preview deployments keep safe conservative values.
+  const railwayEnv = process.env.RAILWAY_ENVIRONMENT;
+  const isCloud = !!(railwayEnv ?? process.env.RAILWAY_PROJECT_ID);
+  const isProductionCloud =
+    railwayEnv === "production" || (!railwayEnv && !!process.env.RAILWAY_PROJECT_ID);
   const merged: Record<string, string> = { ...fromFile };
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined) merged[k] = v;
+  if (isCloud) {
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined) merged[k] = v;
+    }
   }
 
-  // Auto-promote throttled local defaults → cloud values when on Railway
-  // and the variable was NOT explicitly set in the Railway Variables panel.
-  if (isCloud) {
+  // Auto-promote throttled local defaults → cloud values only in production.
+  // Explicit Railway Variables panel entries always win (checked via process.env).
+  if (isProductionCloud) {
     if (!process.env.BATCH_CONCURRENCY) merged.BATCH_CONCURRENCY = "8";
     if (!process.env.ENABLE_SWARM) merged.ENABLE_SWARM = "true";
     if (!process.env.ENABLE_SPORTYBET_BOOKING) merged.ENABLE_SPORTYBET_BOOKING = "true";
