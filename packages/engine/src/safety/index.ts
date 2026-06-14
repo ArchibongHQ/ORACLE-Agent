@@ -402,29 +402,37 @@ export class MLSafetyFilter {
       reason: `Dog GS:${dogGS.toFixed(2)}`,
     });
 
-    const totalXG = ((resData.bayesian_lH as number) ?? 0) + ((resData.bayesian_lA as number) ?? 0);
-    const goalsEnvOk = totalXG >= 2.3 && totalXG <= 3.2;
-    if (totalXG <= 2.1) {
+    const bayesH = resData.bayesian_lH as number | undefined;
+    const bayesA = resData.bayesian_lA as number | undefined;
+    const totalXG = bayesH !== undefined && bayesA !== undefined ? bayesH + bayesA : undefined;
+    // S7: only hard-reject when we have xG data AND it is genuinely low.
+    // When sidecar-only (no sharp xG source), skip the gate rather than hard-reject on null.
+    if (totalXG !== undefined) {
+      const goalsEnvOk = totalXG >= 2.3 && totalXG <= 3.2;
+      if (totalXG <= 2.1) {
+        filters.push({
+          id: "S7",
+          name: "Goals Environment",
+          pass: false,
+          reason: `xG ${totalXG.toFixed(2)} ≤ 2.1 (HARD REJECT)`,
+        });
+        return this._buildResult(
+          filters,
+          false,
+          "HARD REJECT: low-scoring environment",
+          resData,
+          telemetry
+        );
+      }
       filters.push({
         id: "S7",
-        name: "Goals Environment",
-        pass: false,
-        reason: `xG ${totalXG.toFixed(2)} ≤ 2.1 (HARD REJECT)`,
+        name: "Goals Environment 2.3–3.2",
+        pass: goalsEnvOk,
+        reason: `xG ${totalXG.toFixed(2)}`,
       });
-      return this._buildResult(
-        filters,
-        false,
-        "HARD REJECT: low-scoring environment",
-        resData,
-        telemetry
-      );
+    } else {
+      filters.push({ id: "S7", name: "Goals Environment", pass: true, reason: "xG unavailable — skipped" });
     }
-    filters.push({
-      id: "S7",
-      name: "Goals Environment 2.3–3.2",
-      pass: goalsEnvOk,
-      reason: `xG ${totalXG.toFixed(2)}`,
-    });
 
     const favRest = (favIsHome ? (telemetry.restH ?? 7) : (telemetry.restA ?? 7)) as number;
     filters.push({
@@ -481,7 +489,7 @@ export class MLSafetyFilter {
       );
 
     const trapCount = [
-      totalXG <= 2.1,
+      totalXG !== undefined && totalXG <= 2.1,
       !favIsHome && eloDiff < 150,
       favRest < 4,
       motivScore < 0.8,
@@ -511,54 +519,64 @@ export class MLSafetyFilter {
         telemetry
       );
 
-    const sharpDelta = (resData.sharpDelta as number) ?? 0;
+    // S16: only hard-reject when we have confirmed sharp-book data fading the selection.
+    // When sharpDelta is absent (sidecar-only, no Odds API), skip rather than hard-reject.
+    const rawSharpDelta = resData.sharpDelta as number | undefined;
     const sharpBooks = (resData.fetched as Record<string, unknown> | undefined)?.odds as
       | Record<string, unknown>
       | undefined;
     const sharpBookCount =
       (sharpBooks?.sharp_consensus as Record<string, number> | undefined)?.bookCount ?? 0;
-    if (sharpDelta > 0.1 && sharpBookCount >= 2) {
+    if (rawSharpDelta !== undefined) {
+      if (rawSharpDelta > 0.1 && sharpBookCount >= 2) {
+        filters.push({
+          id: "S16",
+          name: "Sharp Consensus",
+          pass: false,
+          reason: `Sharp fading (delta:${rawSharpDelta.toFixed(3)})`,
+        });
+        return this._buildResult(
+          filters,
+          false,
+          "HARD REJECT: sharp books fading",
+          resData,
+          telemetry
+        );
+      }
       filters.push({
         id: "S16",
         name: "Sharp Consensus",
-        pass: false,
-        reason: `Sharp fading (delta:${sharpDelta.toFixed(3)})`,
+        pass: rawSharpDelta <= 0.03 || sharpBookCount < 2,
+        reason: `Delta:${rawSharpDelta.toFixed(3)}`,
       });
-      return this._buildResult(
-        filters,
-        false,
-        "HARD REJECT: sharp books fading",
-        resData,
-        telemetry
-      );
+    } else {
+      filters.push({ id: "S16", name: "Sharp Consensus", pass: true, reason: "sharp data unavailable — skipped" });
     }
-    filters.push({
-      id: "S16",
-      name: "Sharp Consensus",
-      pass: sharpDelta <= 0.03 || sharpBookCount < 2,
-      reason: `Delta:${sharpDelta.toFixed(3)}`,
-    });
 
-    const calibFactor =
-      (
-        (resData.ledger as Record<string, unknown> | undefined)?.metrics as
-          | Record<string, number>
-          | undefined
-      )?.calibFactor ?? 1.0;
-    filters.push({
-      id: "S17",
-      name: "Model Calibration Gate",
-      pass: calibFactor >= 0.85,
-      reason: `CF:${calibFactor.toFixed(3)}`,
-    });
-    if (calibFactor < 0.7)
-      return this._buildResult(
-        filters,
-        false,
-        "HARD REJECT: severe miscalibration",
-        resData,
-        telemetry
-      );
+    // S17: only hard-reject on confirmed miscalibration, not missing calibration data.
+    const rawCalibFactor = (
+      (resData.ledger as Record<string, unknown> | undefined)?.metrics as
+        | Record<string, number>
+        | undefined
+    )?.calibFactor ?? (resData.calibFactor as number | undefined);
+    if (rawCalibFactor !== undefined) {
+      filters.push({
+        id: "S17",
+        name: "Model Calibration Gate",
+        pass: rawCalibFactor >= 0.85,
+        reason: `CF:${rawCalibFactor.toFixed(3)}`,
+      });
+      if (rawCalibFactor < 0.7)
+        return this._buildResult(
+          filters,
+          false,
+          "HARD REJECT: severe miscalibration",
+          resData,
+          telemetry
+        );
+    } else {
+      filters.push({ id: "S17", name: "Model Calibration Gate", pass: true, reason: "calibration data unavailable — skipped" });
+    }
 
     return this._buildResult(filters, true, null, resData, telemetry);
   }

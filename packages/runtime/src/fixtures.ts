@@ -22,6 +22,7 @@ import {
   type SelectionCandidate,
   selectFixtures,
 } from "./selectFixtures.js";
+import { flattenSidecarOdds } from "./sidecarOdds.js";
 import { namesMatch } from "./teamNames.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -345,26 +346,48 @@ async function applySelection(
       `selected=${stats.selected} (bulkOdds=${stats.bulkOdds} priority=${stats.priority} ` +
       `droppedBulkOdds=${stats.droppedBulkOdds})\n`
   );
-  // For fixtures selected without bulk odds, inject sidecar 1x2 prices into
-  // fetched.odds so the engine reaches the EV-market scan (not short-circuited
-  // by empty eligibleBets). Mirrors jobFromSidecar() in punt.ts — same logic,
-  // same contract: only fills when the field is absent.
-  const toNum = (v: unknown): number | undefined => {
-    const n = typeof v === "string" ? parseFloat(v) : typeof v === "number" ? v : Number.NaN;
-    return Number.isFinite(n) && n > 1 ? n : undefined;
-  };
-
+  // For fixtures selected without bulk odds, inject sidecar odds (all markets)
+  // into fetched.odds so the engine reaches the EV-market scan. Also merges
+  // sportyBetStats/Odds/StatsCoverage for every fixture so the safety filter
+  // and LLM prompt have H2H, form, xG, and standings regardless of path.
   const injectSidecarOdds = (c: SelectionCandidate): FixtureJob => {
     const job = c.job;
-    if (c.hasBulkOdds) return job; // already has live odds — don't touch
+    const detail = c.sportyBetDetail;
     const existingOdds = job.state?.pipeline?.fetched?.odds as Record<string, unknown> | undefined;
-    if (existingOdds?.home && existingOdds?.away) return job; // already has 1x2
-    const sb1x2 = c.sportyBetDetail?.odds?.["1x2"];
-    if (!sb1x2) return job; // no sidecar data
-    const h = toNum(sb1x2.home);
-    const a = toNum(sb1x2.away);
-    const d = toNum(sb1x2.draw) ?? 3.4;
-    if (!h || !a) return job; // can't build a valid triple
+    const existingFetched = (job.state?.pipeline?.fetched ?? {}) as Record<string, unknown>;
+
+    // Merge full sidecar stats into every fixture (both bulk-odds and sidecar-only paths)
+    const statsEnrich = detail && !existingFetched.sportyBetStats
+      ? {
+          sportyBetStats: detail.stats,
+          sportyBetOdds: detail.odds,
+          sportyBetStatsCoverage: detail.statscoverage,
+        }
+      : {};
+
+    if (c.hasBulkOdds) {
+      // Already has live odds — only add stats if missing
+      if (Object.keys(statsEnrich).length === 0) return job;
+      return {
+        ...job,
+        state: {
+          ...job.state,
+          pipeline: {
+            ...job.state?.pipeline,
+            fetched: { ...existingFetched, ...statsEnrich },
+          },
+        },
+      };
+    }
+
+    if (!detail?.odds?.["1x2"]) return job; // no sidecar odds at all
+
+    const flat = flattenSidecarOdds(detail);
+    const h = flat["home"];
+    const d = flat["draw"] ?? 3.4;
+    const a = flat["away"];
+    if (!h || !a) return job; // can't build a valid 1x2 triple
+
     const hoursToKO = Math.max(0, (new Date(job.kickoff).getTime() - Date.now()) / 3_600_000);
     return {
       ...job,
@@ -382,8 +405,9 @@ async function applySelection(
         pipeline: {
           ...job.state?.pipeline,
           fetched: {
-            ...(job.state?.pipeline?.fetched ?? {}),
-            odds: { ...(existingOdds ?? {}), home: h, draw: d, away: a },
+            ...existingFetched,
+            ...statsEnrich,
+            odds: { ...(existingOdds ?? {}), ...flat },
           },
         },
       },
@@ -472,7 +496,7 @@ function jobFromGapOdds(job: FixtureJob, o: GapOdds): FixtureJob {
 /** For fixtures not covered by the Odds API, acquire odds from the structured
  *  free-API provider chain first (SharpAPI.io → API-Football → …), then fall back to
  *  Gemini Search for any still unresolved. Returns only jobs with confident odds. */
-async function geminiOddsGapFill(
+export async function geminiOddsGapFill(
   unmatched: FixtureJob[],
   geminiApiKey: string | undefined,
   providers: OddsProvider[] = []
@@ -820,9 +844,9 @@ export async function fetchFixtureByName(
   const hit = cached.find((j) => namesMatch(j.home, home) && namesMatch(j.away, away));
   if (hit?.state?.telemetry?.hOdds) return hit;
 
-  // 1.5. SportyBet sidecar — covers fixtures from SportyBet that are not in SPORT_TO_LEAGUE
-  //      (African, Asian, and other leagues). Provides kickoff + league context so the
-  //      Odds API / Gemini gap-fill path can proceed with a correct league hint.
+  // 1.5. SportyBet sidecar — covers fixtures from SportyBet that are not in SPORT_TO_LEAGUE.
+  //      When the sidecar has odds for this fixture, build a FixtureJob directly from it
+  //      and return immediately — no Odds API call required.
   let sidecarLeague: string | undefined;
   let sidecarKickoff: string | undefined;
   if (!hit) {
@@ -835,6 +859,31 @@ export async function fetchFixtureByName(
       if (sbHit) {
         sidecarLeague = sbHit.league ?? undefined;
         sidecarKickoff = sbHit.kickoff_utc ?? undefined;
+        // If this sidecar event has detail+odds, build the job directly — no external API needed
+        const detail = sbHit.detail ?? sidecarIndex.detailByKey.get(
+          `${home.toLowerCase()}|${away.toLowerCase()}`
+        );
+        if (detail?.odds?.["1x2"]) {
+          const flat = flattenSidecarOdds(detail);
+          if (flat["home"] && flat["away"]) {
+            return {
+              home,
+              away,
+              league: sidecarLeague ?? "Unknown",
+              kickoff: sidecarKickoff ?? new Date().toISOString(),
+              state: {
+                pipeline: {
+                  fetched: {
+                    odds: flat,
+                    sportyBetStats: detail.stats,
+                    sportyBetOdds: detail.odds,
+                    sportyBetStatsCoverage: detail.statscoverage,
+                  },
+                },
+              },
+            };
+          }
+        }
       }
     }
   }

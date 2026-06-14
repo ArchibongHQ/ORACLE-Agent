@@ -43,9 +43,12 @@ export const ORACLE_PRIORITY_LEAGUES: ReadonlySet<string> = new Set([
 export interface SportyBetOdds {
   "1x2"?: { home?: number | null; draw?: number | null; away?: number | null } | null;
   ou25?: { over?: number | null; under?: number | null } | null;
+  ou15?: { over?: number | null; under?: number | null } | null;
+  ou35?: { over?: number | null; under?: number | null } | null;
   btts?: { yes?: number | null; no?: number | null } | null;
   dc?: { "1x"?: number | null; "12"?: number | null; x2?: number | null } | null;
   dnb?: { home?: number | null; away?: number | null } | null;
+  ah?: { home?: number | null; away?: number | null; line?: number | null } | null;
 }
 
 /** Stats block from Sportradar gismo (sidecar v2). All sub-fields optional. */

@@ -6,11 +6,12 @@
 import type { LoadedSlip, RawLeg } from "@oracle/booking";
 import type { BatchJobResult, BatchResult, FixtureJob, PickRef } from "@oracle/engine";
 import type { ActionablePick } from "@oracle/notify";
-import { fetchFixtureByName } from "./fixtures.js";
+import { fetchFixtureByName, geminiOddsGapFill } from "./fixtures.js";
 import { enrichWithH2H } from "./h2h.js";
 import { enrichWithLineups } from "./lineups.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
 import { loadSportyBetIndex, sidecarKey } from "./selectFixtures.js";
+import { flattenSidecarOdds } from "./sidecarOdds.js";
 
 /** Minimum confidence margin by which ORACLE must beat the punter's implied edge to override
  *  his pick. Tunable in one place. 0.05 = ORACLE needs ≥5 pts more model confidence. */
@@ -128,26 +129,17 @@ function nameMatches(a: string, b: string): boolean {
 // ── Step 2: raw legs → analyzable jobs ───────────────────────────────────────────
 
 /** Build a minimal FixtureJob from a SportyBet sidecar event when the odds-api
- *  has no coverage for the fixture. Translates sidecar odds into the flat
- *  fetched.odds shape the execution engine reads at line 993 so EV > 0 markets
- *  are present and the LLM tier is reached (not short-circuited by empty eligibleBets). */
+ *  has no coverage for the fixture. Uses flattenSidecarOdds() to translate ALL
+ *  sidecar markets (1x2, OU1.5/2.5/3.5, BTTS, DC, DNB, AH) into the flat key
+ *  map scanMarkets() reads so EV > 0 candidates exist beyond just 1x2. */
 function jobFromSidecar(
   raw: RawLeg,
   detail: import("./selectFixtures.js").SportyBetEventDetail,
   kickoff: string,
   league: string
 ): FixtureJob {
-  // Map sidecar's nested 1x2 block → flat { home, draw, away } the engine reads.
-  // Sidecar stores odds as strings ("3.40") — parse to numbers for EV calculation.
-  const sb1x2 = detail.odds?.["1x2"];
-  const toNum = (v: unknown): number | undefined => {
-    const n = typeof v === "string" ? parseFloat(v) : typeof v === "number" ? v : Number.NaN;
-    return Number.isFinite(n) && n > 1 ? n : undefined;
-  };
-  const h = toNum(sb1x2?.home);
-  const a = toNum(sb1x2?.away);
-  const d = toNum(sb1x2?.draw) ?? 3.4;
-  const flatOdds = h && a ? { home: h, draw: d, away: a } : undefined;
+  const flat = flattenSidecarOdds(detail);
+  const hasOdds = flat["home"] !== undefined && flat["away"] !== undefined;
 
   return {
     home: raw.home,
@@ -157,7 +149,7 @@ function jobFromSidecar(
     state: {
       pipeline: {
         fetched: {
-          ...(flatOdds ? { odds: flatOdds } : {}),
+          ...(hasOdds ? { odds: flat } : {}),
           sportyBetStats: detail.stats,
           sportyBetOdds: detail.odds,
           sportyBetStatsCoverage: detail.statscoverage,
@@ -170,9 +162,10 @@ function jobFromSidecar(
 /** Resolve each raw leg to a FixtureJob (cache-first via fetchFixtureByName).
  *  Falls back to a sidecar-constructed job when the odds-api has no coverage,
  *  so every leg the punter selected gets analysed — not silently dropped.
+ *  Final fallback: Gemini gap-fill for legs still null after sidecar (Fix #7).
  *  Also merges sidecar stats into odds-api jobs so the engine has Stage-2/3
  *  context for every leg it analyses.
- *  job === null only when neither the odds-api nor the sidecar covers the fixture. */
+ *  job === null only when neither the odds-api, sidecar, nor Gemini covers the fixture. */
 export async function loadedSlipToJobs(
   slip: LoadedSlip,
   deps: {
@@ -227,6 +220,24 @@ export async function loadedSlipToJobs(
           ev?.kickoff_utc ?? `${today}T12:00:00Z`,
           ev?.league ?? raw.league ?? "Unknown"
         );
+      }
+    }
+
+    // Fix #7: Gemini gap-fill for legs still null after odds-api + sidecar.
+    // Tries the structured provider chain first (same as batch gap-fill), then
+    // Gemini Search prose. Marks the leg resolved so it gets analysed rather than
+    // passing through as NO_COVERAGE.
+    if (!job && deps.geminiApiKey) {
+      try {
+        const league = raw.league || "FIFA World Cup";
+        const kickoff = `${today}T12:00:00Z`;
+        const filled = await geminiOddsGapFill(
+          [{ home: raw.home, away: raw.away, league, kickoff }],
+          deps.geminiApiKey
+        );
+        if (filled.length) job = filled[0]!;
+      } catch {
+        // gap-fill is non-fatal
       }
     }
 

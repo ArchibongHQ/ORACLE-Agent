@@ -826,9 +826,14 @@ def _gismo_doc(query: str) -> Optional[dict]:
 
 
 def _parse_odds(markets_data: dict) -> dict:
-    """Extract 1X2, OU2.5, BTTS, DC, DNB odds from factsCenter/event markets list."""
+    """Extract 1X2, OU1.5/2.5/3.5, BTTS, DC, DNB, AH odds from factsCenter/event markets.
+
+    Market IDs: 1=1X2, 10=Over/Under (all lines), 18=Double Chance, 26=Asian Handicap,
+    29=BTTS, 11=Draw No Bet.
+    """
     result: dict[str, Optional[dict]] = {
-        "1x2": None, "ou25": None, "btts": None, "dc": None, "dnb": None,
+        "1x2": None, "ou15": None, "ou25": None, "ou35": None,
+        "btts": None, "dc": None, "dnb": None, "ah": None,
     }
     for market in markets_data.get("markets") or []:
         mid = str(market.get("id", ""))
@@ -840,16 +845,70 @@ def _parse_odds(markets_data: dict) -> dict:
             result["1x2"] = {
                 "home": outcomes.get("1"), "draw": outcomes.get("2"), "away": outcomes.get("3"),
             }
-        elif mid == "18" or ("over/under" in name and "2.5" in name):
-            result["ou25"] = {
-                "over": outcomes.get("12"), "under": outcomes.get("13"),
-            }
-        elif mid == "29" or "both teams" in name or "btts" in name:
-            result["btts"] = {"yes": outcomes.get("74"), "no": outcomes.get("76")}
-        elif mid == "10" or "double chance" in name:
+        elif mid == "10" or ("over/under" in name and "over" in name):
+            # Market 10 is Over/Under for all lines — parse by handicap value per outcome
+            for o in market.get("outcomes") or []:
+                handicap = str(o.get("handicap") or o.get("line") or "")
+                otype = (o.get("name") or o.get("type") or "").lower()
+                odds_val = o.get("odds")
+                if not odds_val:
+                    continue
+                if handicap == "1.5" or "1.5" in name:
+                    if "over" in otype or str(o.get("id")) == "12":
+                        result.setdefault("ou15", {})["over"] = odds_val  # type: ignore[index]
+                    elif "under" in otype or str(o.get("id")) == "13":
+                        result.setdefault("ou15", {})["under"] = odds_val  # type: ignore[index]
+                elif handicap == "2.5" or "2.5" in name:
+                    if "over" in otype or str(o.get("id")) == "12":
+                        result.setdefault("ou25", {})["over"] = odds_val  # type: ignore[index]
+                    elif "under" in otype or str(o.get("id")) == "13":
+                        result.setdefault("ou25", {})["under"] = odds_val  # type: ignore[index]
+                elif handicap == "3.5" or "3.5" in name:
+                    if "over" in otype or str(o.get("id")) == "12":
+                        result.setdefault("ou35", {})["over"] = odds_val  # type: ignore[index]
+                    elif "under" in otype or str(o.get("id")) == "13":
+                        result.setdefault("ou35", {})["under"] = odds_val  # type: ignore[index]
+        elif mid == "18" or "double chance" in name:
             result["dc"] = {
                 "1x": outcomes.get("9"), "12": outcomes.get("10"), "x2": outcomes.get("11"),
             }
+        elif mid == "26" or "asian handicap" in name:
+            # Pick the closest-to-zero AH line for home and away
+            best_line: Optional[float] = None
+            best_home: Optional[str] = None
+            best_away: Optional[str] = None
+            outcomes_list = market.get("outcomes") or []
+            # Group by handicap and find the home/away pair with smallest |handicap|
+            lines: dict[float, dict] = {}
+            for o in outcomes_list:
+                raw_h = o.get("handicap") or o.get("line")
+                if raw_h is None:
+                    continue
+                try:
+                    h_val = float(raw_h)
+                except (TypeError, ValueError):
+                    continue
+                otype = (o.get("name") or o.get("type") or "").lower()
+                odds_val = o.get("odds")
+                if not odds_val:
+                    continue
+                if h_val not in lines:
+                    lines[h_val] = {}
+                if "home" in otype or o.get("id") in (1, "1"):
+                    lines[h_val]["home"] = odds_val
+                elif "away" in otype or o.get("id") in (2, "2"):
+                    lines[h_val]["away"] = odds_val
+            if lines:
+                best_line = min(lines.keys(), key=lambda x: abs(x))
+                best_pair = lines[best_line]
+                if best_pair.get("home") and best_pair.get("away"):
+                    result["ah"] = {
+                        "line": best_line,
+                        "home": best_pair["home"],
+                        "away": best_pair["away"],
+                    }
+        elif mid == "29" or "both teams" in name or "btts" in name:
+            result["btts"] = {"yes": outcomes.get("74"), "no": outcomes.get("76")}
         elif mid == "11" or "draw no bet" in name:
             result["dnb"] = {"home": outcomes.get("5"), "away": outcomes.get("6")}
 
@@ -1084,6 +1143,17 @@ class SportyBetScraper:
         "&todayGames=true"
         "&timeline=1.4"
     )
+    # Secondary sweep for upcoming fixtures (next 3 days) — captures WC/tournament
+    # legs that punters book days ahead but scrape_fixtures only runs on "today".
+    API_BASE_UPCOMING = (
+        "https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents"
+        "?sportId=sr%3Asport%3A1"
+        "&marketId=1%2C18%2C10%2C29%2C11%2C26%2C36%2C14%2C60100"
+        "&pageSize=100"
+        "&pageNum={page}"
+        "&todayGames=false"
+        "&timeline=3"
+    )
 
     def __init__(self) -> None:
         # Sidecar records for the requested date — read by run_playwright_scrapers
@@ -1126,6 +1196,33 @@ class SportyBetScraper:
                     except Exception as exc:
                         _warn(f"SportyBet page {page_num}: {exc}")
                     page_num += 1
+
+            # Secondary sweep: upcoming fixtures (next 3 days, todayGames=false)
+            # Captures WC/tournament legs that land on SportyBet 1-3 days before kickoff.
+            upcoming_pages: list[dict] = []
+            try:
+                url = self.API_BASE_UPCOMING.format(page=1) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
+                resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                if resp:
+                    first_up = await resp.json()
+                    upcoming_pages.append(first_up)
+                    total_up = first_up.get("data", {}).get("totalNum", 0)
+                    fetched_up = len(first_up.get("data", {}).get("tournaments", []))
+                    page_num_up = 2
+                    while fetched_up < total_up and page_num_up <= 5:
+                        try:
+                            url = self.API_BASE_UPCOMING.format(page=page_num_up) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
+                            resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                            if resp:
+                                data = await resp.json()
+                                upcoming_pages.append(data)
+                                fetched_up += len(data.get("data", {}).get("tournaments", []))
+                        except Exception as exc:
+                            _warn(f"SportyBet upcoming page {page_num_up}: {exc}")
+                        page_num_up += 1
+            except Exception as exc:
+                _warn(f"SportyBet upcoming sweep: {exc}")
+            api_pages.extend(upcoming_pages)
 
             # Parse all captured API pages (dedup — pagination can replay events)
             seen_events: set[tuple[str, str, str]] = set()
@@ -1269,7 +1366,7 @@ def write_sportybet_sidecar(date_str: str, events: list[dict]) -> None:
     Written even when events is empty (TS selector fails open on empty list).
     Atomic write — a concurrent reader must never see a partial file.
     Each event record shape: {eventId, home, away, league, kickoff_utc, marketCount,
-      odds: {1x2, ou25, btts, dc, dnb}, stats: {form, standings, goals, h2h},
+      odds: {1x2, ou15, ou25, ou35, btts, dc, dnb, ah}, stats: {form, standings, goals, h2h},
       statscoverage: {leaguetable, formtable, headtohead, …},
       xg: {home: {xgf, xga} | null, away: {xgf, xga} | null}  # Understat top-5 only}
     """
