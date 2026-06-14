@@ -11,6 +11,7 @@ import { enrichWithH2H } from "./h2h.js";
 import { enrichWithLineups } from "./lineups.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
 import { loadSportyBetIndex, sidecarKey } from "./selectFixtures.js";
+import type { SportyBetEventDetail } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
 
 /** Minimum confidence margin by which ORACLE must beat the punter's implied edge to override
@@ -134,7 +135,7 @@ function nameMatches(a: string, b: string): boolean {
  *  map scanMarkets() reads so EV > 0 candidates exist beyond just 1x2. */
 function jobFromSidecar(
   raw: RawLeg,
-  detail: import("./selectFixtures.js").SportyBetEventDetail,
+  detail: SportyBetEventDetail,
   kickoff: string,
   league: string
 ): FixtureJob {

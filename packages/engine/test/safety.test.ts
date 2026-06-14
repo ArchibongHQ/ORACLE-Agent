@@ -177,6 +177,67 @@ describe("MLSafetyFilter hard-reject paths", () => {
   });
 });
 
+// ── MLSafetyFilter null-guard skip paths (sidecar-only fixtures) ─────────────
+// When bayesian_lH/lA, sharpDelta, or calibFactor are absent, the gate must
+// skip (pass:true) rather than hard-reject — sidecar-only fixtures have no
+// sharp data source and should not be blocked on missing optional data.
+
+describe("MLSafetyFilter null-guard skip paths", () => {
+  const f = new MLSafetyFilter();
+
+  // Baseline odds that pass S1 (fav in [1.35,1.65]) and are not a high-upset league.
+  const safeFetched = { odds: { home: 1.5, away: 3.2, draw: 4.0 }, stats: {} };
+
+  it("S7 skip: missing bayesian_lH/lA does not hard-reject (sidecar-only path)", () => {
+    const r = f.evaluate(
+      safeFetched,
+      { league: "Bundesliga" }, // no bayesian_lH or bayesian_lA
+      { restH: 6, restA: 5, motivationScore: 0.95 }
+    );
+    // Must NOT be a hard-reject — confidence should not be HARD_REJECT
+    expect(r.confidence).not.toBe("HARD_REJECT");
+  });
+
+  it("S16 skip: missing sharpDelta does not hard-reject", () => {
+    const r = f.evaluate(
+      safeFetched,
+      { bayesian_lH: 1.6, bayesian_lA: 1.0, league: "Bundesliga" }, // no sharpDelta
+      { restH: 6, restA: 5, motivationScore: 0.95 }
+    );
+    expect(r.confidence).not.toBe("HARD_REJECT");
+  });
+
+  it("S17 skip: missing calibFactor does not hard-reject", () => {
+    const r = f.evaluate(
+      safeFetched,
+      { bayesian_lH: 1.6, bayesian_lA: 1.0, sharpDelta: 0.0, league: "Bundesliga" }, // no calibFactor / ledger
+      { restH: 6, restA: 5, motivationScore: 0.95 }
+    );
+    expect(r.confidence).not.toBe("HARD_REJECT");
+  });
+
+  it("S16 hard-reject still fires when sharpDelta IS present and high", () => {
+    const r = f.evaluate(
+      safeFetched,
+      { bayesian_lH: 1.6, bayesian_lA: 1.0, sharpDelta: 0.15, league: "Bundesliga",
+        fetched: { odds: { sharp_consensus: { bookCount: 3 } } } },
+      { restH: 6, restA: 5, motivationScore: 0.95 }
+    );
+    // sharpDelta 0.15 > 0.1 with bookCount implied — should block
+    expect(r.confidence).toBe("HARD_REJECT");
+  });
+
+  it("S17 hard-reject still fires when calibFactor IS present and low", () => {
+    const r = f.evaluate(
+      safeFetched,
+      { bayesian_lH: 1.6, bayesian_lA: 1.0, sharpDelta: 0.0, league: "Bundesliga",
+        calibFactor: 0.5 },
+      { restH: 6, restA: 5, motivationScore: 0.95 }
+    );
+    expect(r.confidence).toBe("HARD_REJECT");
+  });
+});
+
 // ── ConvergenceScorer tier mapping ────────────────────────────────────────────
 
 describe("ConvergenceScorer tier mapping", () => {

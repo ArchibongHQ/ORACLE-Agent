@@ -7,7 +7,7 @@ import type { SportyBetEventDetail } from "./selectFixtures.js";
 
 const toNum = (v: unknown): number | undefined => {
   const n = typeof v === "string" ? parseFloat(v) : typeof v === "number" ? v : Number.NaN;
-  return Number.isFinite(n) && n > 1 ? n : undefined;
+  return Number.isFinite(n) && n > 1 && n <= 200 ? n : undefined;
 };
 
 /** Return a flat { key: odds } record consumable by the engine's scanMarkets().
@@ -16,13 +16,38 @@ export function flattenSidecarOdds(detail: SportyBetEventDetail): Record<string,
   const o = detail.odds;
   const flat: Record<string, number> = {};
 
-  // 1x2
+  // 1x2 — use direct prices when available; fall back to DNB-derived synthetic when null.
+  // DNB removes draw so: P(H) ≈ 1/dnb_h, P(A) ≈ 1/dnb_a. Re-norm to full 3-way market.
   const h = toNum(o?.["1x2"]?.home);
   const d = toNum(o?.["1x2"]?.draw);
   const a = toNum(o?.["1x2"]?.away);
   if (h) flat["home"] = h;
   if (d) flat["draw"] = d;
   if (a) flat["away"] = a;
+
+  if (!flat["home"] || !flat["away"]) {
+    const dnbH = toNum(o?.dnb?.home);
+    const dnbA = toNum(o?.dnb?.away);
+    if (dnbH && dnbA) {
+      // Both sides available: back out a 3-way implied probability and convert to odds
+      const pH = 1 / dnbH;
+      const pA = 1 / dnbA;
+      const pD = Math.max(0, 1 - pH - pA);
+      // Re-normalise so probabilities sum to 1 (remove bookmaker vig in DNB)
+      const total = pH + pA + pD;
+      const synH = total / pH;
+      const synA = total / pA;
+      const synD = pD > 0.01 ? total / pD : 3.4; // cap draw at 3.4 when negligible
+      if (!flat["home"]) flat["home"] = Math.round(synH * 100) / 100;
+      if (!flat["away"]) flat["away"] = Math.round(synA * 100) / 100;
+      if (!flat["draw"]) flat["draw"] = Math.round(synD * 100) / 100;
+    } else if (dnbH && !dnbA) {
+      // Only home DNB available — use as proxy for home price; skip away/draw
+      if (!flat["home"]) flat["home"] = dnbH;
+    } else if (dnbA && !dnbH) {
+      if (!flat["away"]) flat["away"] = dnbA;
+    }
+  }
 
   // Over/Under 2.5
   const ou25o = toNum(o?.ou25?.over);

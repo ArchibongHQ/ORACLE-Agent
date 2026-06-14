@@ -521,7 +521,7 @@ export async function geminiOddsGapFill(
       // Tier 1: structured providers (sharp JSON beats LLM-scraped prose).
       if (hasChain) {
         const chain = await runOddsChain(providers, job.home, job.away, job.league, job.kickoff);
-        if (chain) {
+        if (chain && [chain.home, chain.draw, chain.away].every((v) => v >= 1.01 && v <= 50)) {
           resolved = {
             home: chain.home,
             draw: chain.draw,
@@ -537,7 +537,7 @@ export async function geminiOddsGapFill(
       // Tier 2: Gemini Search consensus (degraded last resort).
       if (!resolved && ctx) {
         const g = await fetchOddsViaGemini(job.home, job.away, job.league, job.kickoff, ctx);
-        if (g) {
+        if (g && [g.home, g.draw, g.away].every((v) => v >= 1.01 && v <= 50)) {
           resolved = {
             home: g.home,
             draw: g.draw,

@@ -11,6 +11,7 @@ import type { RawLeg } from "../../../apps/booking/src/loadCode.js";
 
 vi.mock("../src/fixtures.js", () => ({
   fetchFixtureByName: vi.fn(),
+  geminiOddsGapFill: vi.fn(),
 }));
 vi.mock("../src/h2h.js", () => ({
   enrichWithH2H: vi.fn(),
@@ -28,7 +29,7 @@ vi.mock("../src/selectFixtures.js", () => ({
 
 // Import AFTER mocks are registered so the module under test picks up stubs.
 const { loadedSlipToJobs } = await import("../src/punt.js");
-const { fetchFixtureByName } = await import("../src/fixtures.js");
+const { fetchFixtureByName, geminiOddsGapFill } = await import("../src/fixtures.js");
 const { enrichWithH2H } = await import("../src/h2h.js");
 const { enrichWithNewsIntel } = await import("../src/newsIntel.js");
 const { enrichWithLineups } = await import("../src/lineups.js");
@@ -201,5 +202,65 @@ describe("loadedSlipToJobs — sidecar stats merge", () => {
     const legs = await loadedSlipToJobs(makeSlip(), { oddsApiKey: "k" });
     const fetched = legs[0]!.job?.state?.pipeline?.fetched as Record<string, unknown> | undefined;
     expect(fetched?.sportyBetStats).toBeUndefined();
+  });
+});
+
+// ── Gemini gap-fill fallback (Fix #7) ────────────────────────────────────────
+
+describe("loadedSlipToJobs — Gemini gap-fill fallback", () => {
+  it("resolves a leg via geminiOddsGapFill when odds-api and sidecar both miss", async () => {
+    const filledJob: FixtureJob = {
+      home: "Arsenal",
+      away: "Chelsea",
+      league: "Premier League",
+      kickoff: `${TODAY}T15:00:00Z`,
+      state: {
+        pipeline: {
+          fetched: {
+            odds: { home: 2.1, draw: 3.4, away: 4.0 },
+            odds_source: "gemini_search_consensus",
+          },
+        },
+      },
+    };
+
+    vi.mocked(fetchFixtureByName).mockResolvedValue(null); // odds-api miss
+    vi.mocked(loadSportyBetIndex).mockResolvedValue(null); // sidecar miss
+    vi.mocked(geminiOddsGapFill).mockResolvedValue([filledJob]); // Gemini resolves
+
+    const legs = await loadedSlipToJobs(makeSlip(), {
+      oddsApiKey: undefined,
+      geminiApiKey: "g-key",
+    });
+
+    expect(legs).toHaveLength(1);
+    const job = legs[0]!.job;
+    expect(job).not.toBeNull();
+    expect(job?.home).toBe("Arsenal");
+    const fetched = job?.state?.pipeline?.fetched as Record<string, unknown> | undefined;
+    expect(fetched?.odds_source).toBe("gemini_search_consensus");
+  });
+
+  it("leaves job null when Gemini also returns empty (no geminiApiKey)", async () => {
+    vi.mocked(fetchFixtureByName).mockResolvedValue(null);
+    vi.mocked(loadSportyBetIndex).mockResolvedValue(null);
+    // geminiOddsGapFill should NOT be called without geminiApiKey
+    vi.mocked(geminiOddsGapFill).mockResolvedValue([]);
+
+    const legs = await loadedSlipToJobs(makeSlip(), { oddsApiKey: undefined });
+    expect(legs[0]!.job).toBeNull();
+    expect(vi.mocked(geminiOddsGapFill)).not.toHaveBeenCalled();
+  });
+
+  it("leaves job null when Gemini throws (non-fatal)", async () => {
+    vi.mocked(fetchFixtureByName).mockResolvedValue(null);
+    vi.mocked(loadSportyBetIndex).mockResolvedValue(null);
+    vi.mocked(geminiOddsGapFill).mockRejectedValue(new Error("Gemini quota exceeded"));
+
+    const legs = await loadedSlipToJobs(makeSlip(), {
+      oddsApiKey: undefined,
+      geminiApiKey: "g-key",
+    });
+    expect(legs[0]!.job).toBeNull();
   });
 });

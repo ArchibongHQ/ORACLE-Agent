@@ -1035,9 +1035,13 @@ def _fetch_fixture_detail(event_id: str) -> dict:
     if mi_data:
         match = mi_data.get("match", {})
         teams = match.get("teams", {})
-        home_id = teams.get("home", {}).get("_id")
-        away_id = teams.get("away", {}).get("_id")
-        season_id = match.get("_seasonid")
+        # Validate IDs are numeric before using in Gismo URL paths (path-traversal guard)
+        _raw_home = teams.get("home", {}).get("_id")
+        _raw_away = teams.get("away", {}).get("_id")
+        _raw_season = match.get("_seasonid")
+        home_id = int(_raw_home) if str(_raw_home).isdigit() else None
+        away_id = int(_raw_away) if str(_raw_away).isdigit() else None
+        season_id = int(_raw_season) if str(_raw_season).isdigit() else None
         statscoverage = mi_data.get("statscoverage") or {}
 
     # 3. Form (stats_match_form)
@@ -1143,9 +1147,20 @@ class SportyBetScraper:
         "&todayGames=true"
         "&timeline=1.4"
     )
-    # Secondary sweep for upcoming fixtures (next 3 days) — captures WC/tournament
-    # legs that punters book days ahead but scrape_fixtures only runs on "today".
+    # Secondary sweep: todayGames=false with timeline=1 captures fixtures SportyBet
+    # serves under tournament/cup headers that the todayGames=true sweep misses
+    # (e.g. World Cup group games that appear on separate tournament pages).
     API_BASE_UPCOMING = (
+        "https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents"
+        "?sportId=sr%3Asport%3A1"
+        "&marketId=1%2C18%2C10%2C29%2C11%2C26%2C36%2C14%2C60100"
+        "&pageSize=100"
+        "&pageNum={page}"
+        "&todayGames=false"
+        "&timeline=1"
+    )
+    # Tertiary sweep: 3-day window catches WC/tournament legs punters book ahead.
+    API_BASE_3DAY = (
         "https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents"
         "?sportId=sr%3Asport%3A1"
         "&marketId=1%2C18%2C10%2C29%2C11%2C26%2C36%2C14%2C60100"
@@ -1197,32 +1212,37 @@ class SportyBetScraper:
                         _warn(f"SportyBet page {page_num}: {exc}")
                     page_num += 1
 
-            # Secondary sweep: upcoming fixtures (next 3 days, todayGames=false)
-            # Captures WC/tournament legs that land on SportyBet 1-3 days before kickoff.
-            upcoming_pages: list[dict] = []
-            try:
-                url = self.API_BASE_UPCOMING.format(page=1) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
-                resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
-                if resp:
-                    first_up = await resp.json()
-                    upcoming_pages.append(first_up)
-                    total_up = first_up.get("data", {}).get("totalNum", 0)
-                    fetched_up = len(first_up.get("data", {}).get("tournaments", []))
-                    page_num_up = 2
-                    while fetched_up < total_up and page_num_up <= 5:
-                        try:
-                            url = self.API_BASE_UPCOMING.format(page=page_num_up) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
-                            resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
-                            if resp:
-                                data = await resp.json()
-                                upcoming_pages.append(data)
-                                fetched_up += len(data.get("data", {}).get("tournaments", []))
-                        except Exception as exc:
-                            _warn(f"SportyBet upcoming page {page_num_up}: {exc}")
-                        page_num_up += 1
-            except Exception as exc:
-                _warn(f"SportyBet upcoming sweep: {exc}")
-            api_pages.extend(upcoming_pages)
+            # Secondary sweep: todayGames=false&timeline=1 — catches WC/tournament
+            # fixtures that the todayGames=true endpoint omits (e.g. World Cup groups
+            # served under separate tournament headers on SportyBet).
+            for sweep_label, sweep_base, sweep_max_pages in [
+                ("upcoming-1d", self.API_BASE_UPCOMING, 5),
+                ("upcoming-3d", self.API_BASE_3DAY, 5),
+            ]:
+                sweep_pages: list[dict] = []
+                try:
+                    url = sweep_base.format(page=1) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
+                    resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                    if resp:
+                        first_sw = await resp.json()
+                        sweep_pages.append(first_sw)
+                        total_sw = first_sw.get("data", {}).get("totalNum", 0)
+                        fetched_sw = len(first_sw.get("data", {}).get("tournaments", []))
+                        page_num_sw = 2
+                        while fetched_sw < total_sw and page_num_sw <= sweep_max_pages:
+                            try:
+                                url = sweep_base.format(page=page_num_sw) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
+                                resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                                if resp:
+                                    data = await resp.json()
+                                    sweep_pages.append(data)
+                                    fetched_sw += len(data.get("data", {}).get("tournaments", []))
+                            except Exception as exc:
+                                _warn(f"SportyBet {sweep_label} page {page_num_sw}: {exc}")
+                            page_num_sw += 1
+                except Exception as exc:
+                    _warn(f"SportyBet {sweep_label} sweep: {exc}")
+                api_pages.extend(sweep_pages)
 
             # Parse all captured API pages (dedup — pagination can replay events)
             seen_events: set[tuple[str, str, str]] = set()
