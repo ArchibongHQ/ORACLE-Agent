@@ -128,14 +128,27 @@ function nameMatches(a: string, b: string): boolean {
 // ── Step 2: raw legs → analyzable jobs ───────────────────────────────────────────
 
 /** Build a minimal FixtureJob from a SportyBet sidecar event when the odds-api
- *  has no coverage for the fixture. Carries sidecar odds/stats in pipeline.fetched
- *  so the engine has Stage-2/3 context without a paid odds-api hit. */
+ *  has no coverage for the fixture. Translates sidecar odds into the flat
+ *  fetched.odds shape the execution engine reads at line 993 so EV > 0 markets
+ *  are present and the LLM tier is reached (not short-circuited by empty eligibleBets). */
 function jobFromSidecar(
   raw: RawLeg,
   detail: import("./selectFixtures.js").SportyBetEventDetail,
   kickoff: string,
   league: string
 ): FixtureJob {
+  // Map sidecar's nested 1x2 block → flat { home, draw, away } the engine reads.
+  // Sidecar stores odds as strings ("3.40") — parse to numbers for EV calculation.
+  const sb1x2 = detail.odds?.["1x2"];
+  const toNum = (v: unknown): number | undefined => {
+    const n = typeof v === "string" ? parseFloat(v) : typeof v === "number" ? v : Number.NaN;
+    return Number.isFinite(n) && n > 1 ? n : undefined;
+  };
+  const h = toNum(sb1x2?.home);
+  const a = toNum(sb1x2?.away);
+  const d = toNum(sb1x2?.draw) ?? 3.4;
+  const flatOdds = h && a ? { home: h, draw: d, away: a } : undefined;
+
   return {
     home: raw.home,
     away: raw.away,
@@ -144,6 +157,7 @@ function jobFromSidecar(
     state: {
       pipeline: {
         fetched: {
+          ...(flatOdds ? { odds: flatOdds } : {}),
           sportyBetStats: detail.stats,
           sportyBetOdds: detail.odds,
           sportyBetStatsCoverage: detail.statscoverage,

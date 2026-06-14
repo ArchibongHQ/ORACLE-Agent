@@ -40,7 +40,16 @@ Add a minimal bearer-token auth guard to `handleRequest()` — check
 
 ### 4. Wire all environment variables
 
-In Railway → each service → Variables, paste every key from `.env`:
+In Railway → each service → Variables, paste every key from `.env`.
+
+> **Local vs Cloud flags** — three variables are intentionally throttled in `.env` for the
+> 8 GB local machine and must be set to their full values on Railway:
+>
+> | Variable | Local `.env` | Railway value |
+> | --- | --- | --- |
+> | `BATCH_CONCURRENCY` | `3` | `8` |
+> | `ENABLE_SWARM` | `false` | `true` |
+> | `ENABLE_SPORTYBET_BOOKING` | `false` | `true` |
 
 ```
 CLAUDE_API_KEY
@@ -62,6 +71,7 @@ TELEGRAM_CHAT_ID
 BANKROLL=1000
 BATCH_CONCURRENCY=8
 MAX_FIXTURES_PER_RUN=50
+ENABLE_SPORTYBET_BOOKING=true
 PORT=8787
 HOST=0.0.0.0
 WEB_SECRET=<choose a strong random token>

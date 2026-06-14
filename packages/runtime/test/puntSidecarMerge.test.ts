@@ -148,6 +148,44 @@ describe("loadedSlipToJobs — sidecar stats merge", () => {
     expect(fetched.sportyBetStats).toEqual(fakeDetail.stats);
   });
 
+  it("builds a job from sidecar when odds-api has no coverage for the fixture", async () => {
+    const fakeOdds = { "1x2": { home: 1.8, draw: 3.5, away: 4.2 } };
+    const fakeDetail = { eventId: "ev-bons", stats: null, odds: fakeOdds, statscoverage: null };
+    const fakeKey = "Bonsucesso FC RJ|Resende FC RJ";
+
+    vi.mocked(fetchFixtureByName).mockResolvedValue(null); // odds-api has no coverage
+    vi.mocked(loadSportyBetIndex).mockResolvedValue({
+      date: TODAY,
+      events: [{ home: "Bonsucesso FC RJ", away: "Resende FC RJ", marketCount: 5 }],
+      byKey: new Map([[fakeKey, 5]]),
+      detailByKey: new Map([[fakeKey, fakeDetail]]),
+    } as never);
+
+    const slip = {
+      code: "X",
+      legs: [
+        {
+          home: "Bonsucesso FC RJ",
+          away: "Resende FC RJ",
+          league: "Carioca",
+          marketDesc: "1X2",
+          outcomeDesc: "Home",
+          odds: 1.8,
+        },
+      ],
+      totalOdds: 1.8,
+      loadedAt: "",
+    };
+    const legs = await loadedSlipToJobs(slip, { oddsApiKey: undefined });
+
+    expect(legs).toHaveLength(1);
+    expect(legs[0]!.job).not.toBeNull();
+    expect(legs[0]!.job?.home).toBe("Bonsucesso FC RJ");
+    expect(legs[0]!.job?.away).toBe("Resende FC RJ");
+    const fetched = legs[0]!.job?.state?.pipeline?.fetched as Record<string, unknown> | undefined;
+    expect(fetched?.sportyBetOdds).toEqual(fakeOdds);
+  });
+
   it("skips merge entirely when fetchFixtureByName returns null (no coverage)", async () => {
     vi.mocked(fetchFixtureByName).mockResolvedValue(null);
     vi.mocked(loadSportyBetIndex).mockResolvedValue(null);

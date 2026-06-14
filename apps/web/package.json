@@ -8,7 +8,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "biome check .",
     "test": "vitest run --passWithNoTests",
-    "start": "node dist/server.js"
+    "start": "node --max-old-space-size=256 dist/server.js"
   },
   "dependencies": {
     "@oracle/engine": "workspace:*",

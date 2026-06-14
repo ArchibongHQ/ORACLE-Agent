@@ -1,6 +1,6 @@
 /** Self-contained HTML report renderer — Phase 3.
  *  No external deps; all CSS inline. One card per fixture. */
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BatchJobResult, BatchResult, PickRef } from "@oracle/engine";
 
@@ -182,10 +182,19 @@ ${cards}
 </html>`;
 }
 
-/** Write the report to .tmp/reports/oracle-{date}.html. Returns the output path. */
+/** Write the report to .tmp/reports/oracle-{date}.html.
+ *  If that file already exists (e.g. a punt run after the daily batch), writes to
+ *  oracle-{date}-{runId}.html to avoid clobbering the primary batch report. */
 export async function writeReport(batch: BatchResult, outDir = ".tmp/reports"): Promise<string> {
   await mkdir(outDir, { recursive: true });
-  const outPath = join(outDir, `oracle-${batch.date}.html`);
+  const primary = join(outDir, `oracle-${batch.date}.html`);
+  let outPath = primary;
+  try {
+    await access(primary);
+    outPath = join(outDir, `oracle-${batch.date}-${batch.runId}.html`);
+  } catch {
+    // Primary does not exist — claim it
+  }
   await writeFile(outPath, renderReport(batch), "utf8");
   return outPath;
 }

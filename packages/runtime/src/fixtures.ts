@@ -345,10 +345,58 @@ async function applySelection(
       `selected=${stats.selected} (bulkOdds=${stats.bulkOdds} priority=${stats.priority} ` +
       `droppedBulkOdds=${stats.droppedBulkOdds})\n`
   );
+  // For fixtures selected without bulk odds, inject sidecar 1x2 prices into
+  // fetched.odds so the engine reaches the EV-market scan (not short-circuited
+  // by empty eligibleBets). Mirrors jobFromSidecar() in punt.ts — same logic,
+  // same contract: only fills when the field is absent.
+  const toNum = (v: unknown): number | undefined => {
+    const n = typeof v === "string" ? parseFloat(v) : typeof v === "number" ? v : Number.NaN;
+    return Number.isFinite(n) && n > 1 ? n : undefined;
+  };
+
+  const injectSidecarOdds = (c: SelectionCandidate): FixtureJob => {
+    const job = c.job;
+    if (c.hasBulkOdds) return job; // already has live odds — don't touch
+    const existingOdds = job.state?.pipeline?.fetched?.odds as Record<string, unknown> | undefined;
+    if (existingOdds?.home && existingOdds?.away) return job; // already has 1x2
+    const sb1x2 = c.sportyBetDetail?.odds?.["1x2"];
+    if (!sb1x2) return job; // no sidecar data
+    const h = toNum(sb1x2.home);
+    const a = toNum(sb1x2.away);
+    const d = toNum(sb1x2.draw) ?? 3.4;
+    if (!h || !a) return job; // can't build a valid triple
+    const hoursToKO = Math.max(0, (new Date(job.kickoff).getTime() - Date.now()) / 3_600_000);
+    return {
+      ...job,
+      state: {
+        ...job.state,
+        telemetry: {
+          ...(job.state?.telemetry ?? {}),
+          hOdds: h,
+          dOdds: d,
+          aOdds: a,
+          ohO: h,
+          oaO: a,
+          hoursToKO,
+        },
+        pipeline: {
+          ...job.state?.pipeline,
+          fetched: {
+            ...(job.state?.pipeline?.fetched ?? {}),
+            odds: { ...(existingOdds ?? {}), home: h, draw: d, away: a },
+          },
+        },
+      },
+    };
+  };
+
+  const injected = new Map<SelectionCandidate, FixtureJob>(
+    selected.map((c) => [c, injectSidecarOdds(c)])
+  );
   return {
-    jobs: selected.map((c) => c.job),
-    withOdds: selected.filter((c) => c.hasBulkOdds).map((c) => c.job),
-    withoutOdds: selected.filter((c) => !c.hasBulkOdds).map((c) => c.job),
+    jobs: selected.map((c) => injected.get(c)!),
+    withOdds: selected.filter((c) => c.hasBulkOdds).map((c) => injected.get(c)!),
+    withoutOdds: selected.filter((c) => !c.hasBulkOdds).map((c) => injected.get(c)!),
   };
 }
 

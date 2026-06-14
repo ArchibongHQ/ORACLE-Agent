@@ -11,22 +11,27 @@ export class TelegramNotifier implements Notifier {
 
   async notify(summary: BatchSummary): Promise<void> {
     const url = `https://api.telegram.org/bot${this.botToken}/sendMessage`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        chat_id: this.chatId,
-        text: formatSummaryText(summary),
-        parse_mode: "Markdown",
-        disable_web_page_preview: true,
-      }),
-      signal: AbortSignal.timeout(10_000),
+    const body = JSON.stringify({
+      chat_id: this.chatId,
+      text: formatSummaryText(summary),
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
     });
-    if (!res.ok) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.ok) return;
       const text = await res.text().catch(() => "");
-      throw new Error(
-        `Telegram sendMessage failed: HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ""}`
-      );
+      if (attempt === 1) {
+        throw new Error(
+          `Telegram sendMessage failed: HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ""}`
+        );
+      }
+      await new Promise((r) => setTimeout(r, 3_000));
     }
   }
 }
