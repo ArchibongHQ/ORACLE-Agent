@@ -167,7 +167,9 @@ describe("goalsDataGate", () => {
     const zeroPlayed: SportyBetEventDetail = {
       eventId: "e6",
       odds: null,
-      stats: { standings: { home: { played: 0, gf: 0, ga: 0 }, away: { played: 0, gf: 0, ga: 0 } } },
+      stats: {
+        standings: { home: { played: 0, gf: 0, ga: 0 }, away: { played: 0, gf: 0, ga: 0 } },
+      },
       statscoverage: null,
     };
     expect(goalsDataGate(zeroPlayed, "Premier League", "Over 1.5")).toBe(false);
@@ -252,9 +254,9 @@ describe("pickSafestGoalsLeg", () => {
   });
 
   it("includes a leg sitting exactly on the confidence floor (>= is inclusive)", () => {
-    const atBar = okJob("A", "B", [evm("Over 1.5", 0.75, 0.7)]); // exactly default mp floor
+    const atBar = okJob("A", "B", [evm("Over 1.5", 0.72, 0.7)]); // exactly default mp floor
     expect(pickSafestGoalsLeg(atBar, { detailByKey })?.side).toBe("Over 1.5");
-    const justUnderMp = okJob("A", "B", [evm("Over 1.5", 0.7499, 0.7)]);
+    const justUnderMp = okJob("A", "B", [evm("Over 1.5", 0.7199, 0.7)]);
     expect(pickSafestGoalsLeg(justUnderMp, { detailByKey })).toBeNull();
   });
 });

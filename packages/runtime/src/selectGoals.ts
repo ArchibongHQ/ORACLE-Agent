@@ -30,7 +30,7 @@ const _EXCLUDE_RE =
 
 /** Default per-leg thresholds — the single source of truth, also consumed by
  *  buildConfig() in env.ts so an .env-less run and a coded default never drift. */
-export const DEFAULT_GOALS_MIN_CONFIDENCE = 0.75;
+export const DEFAULT_GOALS_MIN_CONFIDENCE = 0.72;
 /** Implied-probability floor. Default 0 — disabled. A high implied prob means the
  *  market already agrees the leg is likely (short odds = no value), so gating on it
  *  filters *for* the bookmaker's confidence, which is backwards for an edge-seeking
@@ -40,7 +40,7 @@ export const DEFAULT_GOALS_MIN_IMPLIED = 0;
 export const DEFAULT_GOALS_TARGET_LEGS = 39;
 
 export interface GoalsSelectOptions {
-  /** Model-probability (`mp`) floor per leg. Default 0.75. */
+  /** Model-probability (`mp`) floor per leg. Default 0.72. */
   minConfidence?: number;
   /** Implied-probability (`ip` = 1/odds) floor per leg. Default 0.70. */
   minImplied?: number;
