@@ -69,12 +69,12 @@ Eligible bets:
 ${bets || "NONE"}
 ${news ? `\nPre-match intelligence:\n${news}` : ""}
 
-Vote for the single best pick (use the EXACT label) or "NO_BET".`;
+Vote for the single best pick (use the EXACT label) or "NO_EDGE" if no pick is justified.`;
 }
 
 /** Confidence-weighted aggregation. Returns consensus + divergence. */
 function aggregate(votes: SwarmVote[]): { consensusPick: string; divergence: number } {
-  if (!votes.length) return { consensusPick: "NO_BET", divergence: 1 };
+  if (!votes.length) return { consensusPick: "NO_EDGE", divergence: 1 };
   const weight = new Map<string, number>();
   let total = 0;
   for (const v of votes) {
@@ -82,7 +82,7 @@ function aggregate(votes: SwarmVote[]): { consensusPick: string; divergence: num
     weight.set(v.pick, (weight.get(v.pick) ?? 0) + w);
     total += w;
   }
-  let bestPick = "NO_BET";
+  let bestPick = "NO_EDGE";
   let bestWeight = -1;
   for (const [pick, w] of weight) {
     if (w > bestWeight) {

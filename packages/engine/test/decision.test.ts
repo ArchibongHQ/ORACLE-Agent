@@ -2,7 +2,12 @@
  *  LLM path: mocked via vi.mock('@oracle/llm'). Fallback path: real deterministic logic. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionContext } from "../src/decision/index.js";
-import { buildEligibleBets, decide, validateSelection } from "../src/decision/index.js";
+import {
+  buildEligibleBets,
+  decide,
+  gradeFromEV,
+  validateSelection,
+} from "../src/decision/index.js";
 import type { DecisionOutput, EVMarket, PickRef } from "../src/types.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -68,9 +73,10 @@ describe("buildEligibleBets", () => {
 // ── decide — deterministic fallback path (no API key) ─────────────────────────
 
 describe("decide — deterministic fallback", () => {
-  it("returns NO_BET when eligible bets are empty", async () => {
+  it("returns NO_EDGE grade with placeholder pick when eligible bets are empty", async () => {
     const { decision } = await decide([], BASE_CTX, { claudeApiKey: "" });
-    expect(decision.primaryPick).toBe("NO_BET");
+    expect(decision.grade).toBe("NO_EDGE");
+    expect(typeof decision.primaryPick).toBe("object");
   });
 
   it("replay is null on deterministic path", async () => {
@@ -81,20 +87,31 @@ describe("decide — deterministic fallback", () => {
   it("returns top eligible bet when API key is absent", async () => {
     const bet = makeMarket();
     const { decision } = await decide([bet], BASE_CTX, { claudeApiKey: "" });
-    expect(decision.primaryPick).not.toBe("NO_BET");
-    expect((decision.primaryPick as PickRef).market).toBe("Goals O/U");
+    expect(decision.primaryPick.market).toBe("Goals O/U");
   });
 
   it("returns top bet when ctx is undefined", async () => {
     const bet = makeMarket();
     const { decision } = await decide([bet], undefined, { claudeApiKey: "key" });
-    expect((decision.primaryPick as PickRef).market).toBe("Goals O/U");
+    expect(decision.primaryPick.market).toBe("Goals O/U");
   });
 
   it("sets confidence from modelProb", async () => {
     const bet = makeMarket({ modelProb: 0.65, mp: 0.65 });
     const { decision } = await decide([bet], BASE_CTX, { claudeApiKey: "" });
     expect(decision.confidence).toBeCloseTo(0.65);
+  });
+
+  it("assigns STRONG grade when EV >= 0.05", async () => {
+    const bet = makeMarket({ ev: 0.06 });
+    const { decision } = await decide([bet], BASE_CTX, { claudeApiKey: "" });
+    expect(decision.grade).toBe("STRONG");
+  });
+
+  it("assigns LEAN grade when 0 < EV < 0.05", async () => {
+    const bet = makeMarket({ ev: 0.03 });
+    const { decision } = await decide([bet], BASE_CTX, { claudeApiKey: "" });
+    expect(decision.grade).toBe("LEAN");
   });
 });
 
@@ -219,15 +236,16 @@ describe("decide — LLM path", () => {
 // ── parseDecisionResponse (via decide with mocked callClaude) ─────────────────
 
 describe("decide — JSON parsing", () => {
-  it("strips code fences from response", async () => {
+  it("strips code fences and falls back to deterministic for legacy NO_BET string responses", async () => {
+    // Legacy LLM response with primaryPick as string — parseDecisionResponse rejects it;
+    // decide() falls back to deterministic which returns a PickRef with NO_EDGE grade.
     const wrapped =
       '```json\n{"primaryPick":"NO_BET","confidence":0,"rationale":"No edge","rejectedAndWhy":[]}\n```';
     vi.doMock("@oracle/llm", () => ({ callClaude: vi.fn().mockResolvedValue(wrapped) }));
     const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "key" });
-    // Valid output either way
-    expect(["NO_BET", "Goals O/U"]).toContain(
-      decision.primaryPick === "NO_BET" ? "NO_BET" : (decision.primaryPick as PickRef).market
-    );
+    // Valid output — primaryPick must be a PickRef object
+    expect(typeof decision.primaryPick).toBe("object");
+    expect(decision).toHaveProperty("grade");
     vi.doUnmock("@oracle/llm");
   });
 });
@@ -251,6 +269,7 @@ describe("validateSelection", () => {
     const pick: DecisionOutput = {
       primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1 },
       confidence: 0.7,
+      grade: "STRONG",
       rationale: "good edge",
       rejectedAndWhy: [],
     };
@@ -258,60 +277,77 @@ describe("validateSelection", () => {
     expect(result.primaryPick).toEqual(pick.primaryPick);
   });
 
-  it("always passes NO_BET through", () => {
-    const pick: DecisionOutput = {
-      primaryPick: "NO_BET",
-      confidence: 0,
-      rationale: "no edge",
-      rejectedAndWhy: [],
-    };
-    expect(validateSelection(pick, eligible).primaryPick).toBe("NO_BET");
-  });
-
   it("rejects pick not in eligible set → falls back to deterministic", () => {
     const pick: DecisionOutput = {
       primaryPick: { market: "Asian Handicap", side: "AH Home +0.5", odds: 1.92 },
       confidence: 0.6,
+      grade: "LEAN",
       rationale: "...",
       rejectedAndWhy: [],
     };
     const result = validateSelection(pick, eligible);
     // Should fall back to top eligible (Goals O/U)
-    expect((result.primaryPick as PickRef).market).toBe("Goals O/U");
+    expect(result.primaryPick.market).toBe("Goals O/U");
   });
 
-  it("forces NO_BET when ML filter blocked", () => {
+  it("downgrades grade to NO_EDGE when ML filter blocked (pick stays for reporting)", () => {
     const pick: DecisionOutput = {
       primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1 },
       confidence: 0.7,
+      grade: "STRONG",
       rationale: "...",
       rejectedAndWhy: [],
     };
     const result = validateSelection(pick, eligible, { mlAllowed: false, drawRisk: "LOW" });
-    expect(result.primaryPick).toBe("NO_BET");
+    expect(result.grade).toBe("NO_EDGE");
+    expect(result.primaryPick.market).toBe("Goals O/U");
+  });
+
+  it("preserves grade field on a valid pass-through pick", () => {
+    const pick: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1 },
+      confidence: 0.7,
+      grade: "STRONG",
+      rationale: "good edge",
+      rejectedAndWhy: [],
+    };
+    const result = validateSelection(pick, eligible);
+    expect(result.grade).toBe("STRONG");
   });
 
   it("rejects 1x2 MoneyLine when drawRisk=VERY_HIGH", () => {
     const pick: DecisionOutput = {
       primaryPick: { market: "1x2", side: "Home Win", odds: 2.1 },
       confidence: 0.7,
+      grade: "STRONG",
       rationale: "...",
       rejectedAndWhy: [],
     };
     const result = validateSelection(pick, eligible, { mlAllowed: true, drawRisk: "VERY_HIGH" });
     // Should fall back to non-1x2 top (Goals O/U)
-    expect((result.primaryPick as PickRef).market).toBe("Goals O/U");
+    expect(result.primaryPick.market).toBe("Goals O/U");
   });
 
-  it("returns NO_BET when VERY_HIGH draw risk and only 1x2 eligible", () => {
+  it("gradeFromEV boundary: ev=0 → NO_EDGE, ev<0 → NO_EDGE, ev=0.049 → LEAN, ev=0.05 → STRONG", () => {
+    expect(gradeFromEV(0)).toBe("NO_EDGE");
+    expect(gradeFromEV(-0.01)).toBe("NO_EDGE");
+    expect(gradeFromEV(0.049)).toBe("LEAN");
+    expect(gradeFromEV(0.05)).toBe("STRONG");
+    expect(gradeFromEV(0.2)).toBe("STRONG");
+  });
+
+  it("returns NO_EDGE placeholder when VERY_HIGH draw risk and only 1x2 eligible", () => {
     const only1x2 = [makeMarket({ cat: "1x2", market: "1x2", label: "Home Win" })];
     const pick: DecisionOutput = {
       primaryPick: { market: "1x2", side: "Home Win", odds: 2.1 },
       confidence: 0.6,
+      grade: "LEAN",
       rationale: "...",
       rejectedAndWhy: [],
     };
     const result = validateSelection(pick, only1x2, { mlAllowed: true, drawRisk: "VERY_HIGH" });
-    expect(result.primaryPick).toBe("NO_BET");
+    // nonMl is empty → deterministicDecide returns placeholder NO_EDGE
+    expect(result.grade).toBe("NO_EDGE");
+    expect(typeof result.primaryPick).toBe("object");
   });
 });

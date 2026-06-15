@@ -1,5 +1,9 @@
 """scrape_fixtures.py — populate .tmp/fixtures/today.txt from multiple sources.
 
+Also writes .tmp/fixtures/sportybet_today.json (SportyBet event sidecar with
+market counts) — consumed by packages/runtime/src/selectFixtures.ts to gate the
+pre-analysis fixture selection.
+
 Sources (in order):
   ESPN JSON API   — 16 ORACLE leagues, stdlib urllib, no key
   Sky Sports HTML — HTML-entity-encoded JSON, requires requests
@@ -25,6 +29,7 @@ import argparse
 import asyncio
 import html
 import json
+import os
 import re
 import sys
 import urllib.request
@@ -53,6 +58,9 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_CACHE = ROOT / ".tmp" / "fixtures" / "today.txt"
+# SportyBet sidecar — consumed by packages/runtime/src/selectFixtures.ts to gate
+# the pre-analysis fixture selection (membership + market depth).
+SPORTYBET_SIDECAR = ROOT / ".tmp" / "fixtures" / "sportybet_today.json"
 
 ESPN_LEAGUE_MAP: dict[str, str] = {
     "eng.1":            "Premier League",
@@ -729,6 +737,445 @@ class BetExplorerScraper:
 # Timestamps are UTC Unix ms — no timezone conversion needed.
 # todayGames=true limits to today; pageSize=100 with pagination covers all matches.
 
+def _sportybet_event_to_record(ev: dict, league: str) -> Optional[dict]:
+    """Map a pcUpcomingEvents event to a sidecar record, or None if malformed."""
+    home = ev.get("homeTeamName", "")
+    away = ev.get("awayTeamName", "")
+    ts_ms = ev.get("estimateStartTime")
+    if not (home and away and ts_ms):
+        return None
+    try:
+        kickoff = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except Exception:
+        return None
+    # marketCount is remote-controlled web content — a bad value must not
+    # abort the parse loop, just degrade to 0 for this event
+    try:
+        market_count = max(0, int(ev.get("totalMarketSize") or len(ev.get("markets") or [])))
+    except (TypeError, ValueError):
+        market_count = 0
+    return {
+        "eventId": str(ev.get("eventId", "")),
+        "home": home,
+        "away": away,
+        "league": league,
+        "kickoff_utc": kickoff,
+        "marketCount": market_count,
+    }
+
+
+# ── SportyBet per-fixture enrichment (sidecar v2) ────────────────────────────
+# Plain anonymous HTTP — no Playwright.  All endpoints verified in spike
+# (see .tmp/sportybet_api_capture/FINDINGS.md).
+
+_SB_HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0.0.0"}
+_SB_EVENT_URL = "https://www.sportybet.com/api/ng/factsCenter/event?eventId={eid}&productId=3"
+_SB_GISMO = "https://stats.fn.sportradar.com/sportybet/en/Etc:UTC/gismo/{q}"
+_SB_PACE = 0.15  # seconds between requests within one fixture's fetch
+
+# Rolling team-xG prior (built by tools/build_xg_table.py). Optional — absent for
+# leagues outside Understat's top-5 coverage; the TS scorer falls back to the
+# sidecar goals-average proxy when a team is missing.
+_XG_TABLE_PATH = Path(".tmp/xg/team_xg_table.json")
+
+
+def _load_xg_table() -> dict[str, dict]:
+    """Load the team-xG prior table, keyed by normalise()'d team name. Missing or
+    corrupt file → empty dict (xg blocks degrade to null, never fatal)."""
+    try:
+        data = json.loads(_XG_TABLE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _xg_for(table: dict[str, dict], team: str) -> Optional[dict]:
+    """Look up a team's {xgf, xga} prior by normalised name. None when uncovered."""
+    rec = table.get(normalise(team))
+    if not rec:
+        return None
+    xgf, xga = rec.get("xgf"), rec.get("xga")
+    if not isinstance(xgf, (int, float)) or not isinstance(xga, (int, float)):
+        return None
+    return {"xgf": float(xgf), "xga": float(xga)}
+
+
+def _sb_get(url: str) -> Optional[dict]:
+    try:
+        req = urllib.request.Request(url, headers=_SB_HDR)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def _gismo_doc(query: str) -> Optional[dict]:
+    """Return first doc's data dict from a gismo response, or None on any failure."""
+    j = _sb_get(_SB_GISMO.format(q=query))
+    if not j:
+        return None
+    docs = j.get("doc", [])
+    if not docs:
+        return None
+    doc = docs[0]
+    if doc.get("event") == "exception":
+        return None
+    return doc.get("data")
+
+
+def _parse_odds(markets_data: dict) -> dict:
+    """Extract 1X2, OU1.5/2.5/3.5, BTTS, DC, DNB, AH odds from factsCenter/event markets.
+
+    Market IDs: 1=1X2, 10=Over/Under (all lines), 18=Double Chance, 26=Asian Handicap,
+    29=BTTS, 11=Draw No Bet.
+    """
+    result: dict[str, Optional[dict]] = {
+        "1x2": None, "ou15": None, "ou25": None, "ou35": None,
+        "btts": None, "dc": None, "dnb": None, "ah": None,
+    }
+    for market in markets_data.get("markets") or []:
+        mid = str(market.get("id", ""))
+        name = (market.get("name") or "").lower()
+        outcomes = {str(o.get("id", "")): o.get("odds") for o in market.get("outcomes") or []}
+
+        if mid == "1" or "match result" in name or "1x2" in name:
+            # outcomes: 1=home, 2=draw, 3=away
+            result["1x2"] = {
+                "home": outcomes.get("1"), "draw": outcomes.get("2"), "away": outcomes.get("3"),
+            }
+        elif mid == "10" or ("over/under" in name and "over" in name):
+            # Market 10 is Over/Under for all lines — parse by handicap value per outcome
+            for o in market.get("outcomes") or []:
+                handicap = str(o.get("handicap") or o.get("line") or "")
+                otype = (o.get("name") or o.get("type") or "").lower()
+                odds_val = o.get("odds")
+                if not odds_val:
+                    continue
+                if handicap == "1.5" or "1.5" in name:
+                    if "over" in otype or str(o.get("id")) == "12":
+                        result.setdefault("ou15", {})["over"] = odds_val  # type: ignore[index]
+                    elif "under" in otype or str(o.get("id")) == "13":
+                        result.setdefault("ou15", {})["under"] = odds_val  # type: ignore[index]
+                elif handicap == "2.5" or "2.5" in name:
+                    if "over" in otype or str(o.get("id")) == "12":
+                        result.setdefault("ou25", {})["over"] = odds_val  # type: ignore[index]
+                    elif "under" in otype or str(o.get("id")) == "13":
+                        result.setdefault("ou25", {})["under"] = odds_val  # type: ignore[index]
+                elif handicap == "3.5" or "3.5" in name:
+                    if "over" in otype or str(o.get("id")) == "12":
+                        result.setdefault("ou35", {})["over"] = odds_val  # type: ignore[index]
+                    elif "under" in otype or str(o.get("id")) == "13":
+                        result.setdefault("ou35", {})["under"] = odds_val  # type: ignore[index]
+        elif mid == "18" or "double chance" in name:
+            result["dc"] = {
+                "1x": outcomes.get("9"), "12": outcomes.get("10"), "x2": outcomes.get("11"),
+            }
+        elif mid == "26" or "asian handicap" in name:
+            # Pick the closest-to-zero AH line for home and away
+            best_line: Optional[float] = None
+            best_home: Optional[str] = None
+            best_away: Optional[str] = None
+            outcomes_list = market.get("outcomes") or []
+            # Group by handicap and find the home/away pair with smallest |handicap|
+            lines: dict[float, dict] = {}
+            for o in outcomes_list:
+                raw_h = o.get("handicap") or o.get("line")
+                if raw_h is None:
+                    continue
+                try:
+                    h_val = float(raw_h)
+                except (TypeError, ValueError):
+                    continue
+                otype = (o.get("name") or o.get("type") or "").lower()
+                odds_val = o.get("odds")
+                if not odds_val:
+                    continue
+                if h_val not in lines:
+                    lines[h_val] = {}
+                if "home" in otype or o.get("id") in (1, "1"):
+                    lines[h_val]["home"] = odds_val
+                elif "away" in otype or o.get("id") in (2, "2"):
+                    lines[h_val]["away"] = odds_val
+            if lines:
+                best_line = min(lines.keys(), key=lambda x: abs(x))
+                best_pair = lines[best_line]
+                if best_pair.get("home") and best_pair.get("away"):
+                    result["ah"] = {
+                        "line": best_line,
+                        "home": best_pair["home"],
+                        "away": best_pair["away"],
+                    }
+        elif mid == "29" or "both teams" in name or "btts" in name:
+            result["btts"] = {"yes": outcomes.get("74"), "no": outcomes.get("76")}
+        elif mid == "11" or "draw no bet" in name:
+            result["dnb"] = {"home": outcomes.get("5"), "away": outcomes.get("6")}
+
+    return result
+
+
+def _parse_form(form_data: dict) -> Optional[dict]:
+    """Extract last-5 W/D/L from stats_match_form response.
+
+    Live gismo shape: teams.{home,away} = {team:{name,…}, form:[{type:"W"},…]}.
+    `form` is a list of recent-results objects (most-recent-first), not a string.
+    """
+    if not form_data:
+        return None
+    teams = form_data.get("teams", {})
+    out: dict[str, dict] = {}
+    for side in ("home", "away"):
+        team = teams.get(side) or {}
+        form_list = team.get("form") or []
+        # Newest-first → take the most recent 5, normalise to W/D/L letters.
+        letters = [
+            (f.get("type") or "").upper()
+            for f in form_list
+            if isinstance(f, dict) and (f.get("type") or "").upper() in ("W", "D", "L")
+        ][:5]
+        name = (team.get("team") or {}).get("name") or team.get("name")
+        out[side] = {
+            "name": name,
+            "last5": "".join(letters),
+            "w": letters.count("W"),
+            "d": letters.count("D"),
+            "l": letters.count("L"),
+        }
+    return out or None
+
+
+def _parse_standings(tables_data: dict, home_id: Optional[int], away_id: Optional[int]) -> Optional[dict]:
+    """Extract league position, points, and goals for both teams from stats_season_tables.
+
+    Live gismo shape: tables[0].tablerows[] where each row has team:{_id,…} and
+    totals fields pointsTotal / total (matches played) / goalsForTotal /
+    goalsAgainstTotal. (The old tot_pts/tot_sp/_id schema was never returned.)
+    """
+    if not tables_data:
+        return None
+    rows = (tables_data.get("tables") or [{}])[0].get("tablerows", [])
+    result: dict[str, Optional[dict]] = {}
+    for row in rows:
+        tid = (row.get("team") or {}).get("_id")
+        # Guard against None ids: a malformed row with no team._id must not match
+        # when home_id/away_id are themselves None (mirrors _parse_goals).
+        if tid is not None and tid in (home_id, away_id):
+            label = "home" if tid == home_id else "away"
+            result[label] = {
+                "pos": row.get("pos"),
+                "points": row.get("pointsTotal"),
+                "played": row.get("total"),
+                "gf": row.get("goalsForTotal"),
+                "ga": row.get("goalsAgainstTotal"),
+            }
+        if len(result) == 2:
+            break
+    return result or None
+
+
+def _parse_goals(goals_data: dict, home_id: Optional[int], away_id: Optional[int]) -> Optional[dict]:
+    """Extract per-team avg goals scored/conceded from stats_season_goals.
+
+    Live gismo shape: teams is keyed by array index ("0","1",…) — NOT by team id —
+    and each entry holds team:{_id,…}, scoredsum, concededsum, matches. The per-game
+    average is derived (scoredsum / matches). (The old avgGoalsFor/Against fields and
+    id-keyed lookup were never returned by this endpoint.)
+    """
+    if not goals_data:
+        return None
+    raw = goals_data.get("teams", {})
+    entries = (
+        list(raw.values()) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+    )
+    by_id: dict[int, dict] = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        tid = (e.get("team") or {}).get("_id")
+        if isinstance(tid, int):
+            by_id[tid] = e
+    result: dict[str, Optional[dict]] = {}
+    for label, tid in (("home", home_id), ("away", away_id)):
+        entry = by_id.get(tid) if tid is not None else None
+        if not entry:
+            continue
+        played = entry.get("matches")
+        scored = entry.get("scoredsum")
+        conceded = entry.get("concededsum")
+        if isinstance(played, int) and played > 0:
+            result[label] = {
+                "avg_scored": round(scored / played, 3) if isinstance(scored, (int, float)) else None,
+                "avg_conceded": round(conceded / played, 3) if isinstance(conceded, (int, float)) else None,
+            }
+    return result or None
+
+
+def _parse_h2h(versus_data: dict) -> Optional[dict]:
+    """Summarize H2H from stats_team_versusrecent — empty arrays are common for low-tier.
+
+    Live gismo shape: matches[].result is an object {home, away, winner} where
+    winner ∈ home/away/draw (relative to that match's home/away team), NOT a
+    string status. We count by winner. The home/away split here is per-historical-
+    match, so it reflects head-to-head dominance, not the current fixture's sides.
+    """
+    if not versus_data:
+        return None
+    matches = versus_data.get("matches") or []
+    if not matches:
+        return None
+    summary = {"total": len(matches), "home_wins": 0, "away_wins": 0, "draws": 0}
+    for m in matches[:10]:
+        res = m.get("result")
+        # Defend against the legacy string-result shape: a bare string has no
+        # .get(), so only an object carries a countable winner.
+        winner = (res.get("winner") or "").lower() if isinstance(res, dict) else ""
+        if winner == "home":
+            summary["home_wins"] += 1
+        elif winner == "away":
+            summary["away_wins"] += 1
+        elif winner == "draw":
+            summary["draws"] += 1
+    return summary
+
+
+def _fetch_fixture_detail(event_id: str) -> dict:
+    """
+    Fetch markets + stats for one fixture via anonymous plain HTTP.
+
+    Returns a dict with keys: odds, stats, statscoverage.
+    Any sub-call failure degrades that field to None — never raises.
+    """
+    mid = event_id.rsplit(":", 1)[-1]
+    # Validate mid is numeric-only before using it in Gismo URL paths to prevent path traversal
+    if not mid.isdigit():
+        return {"odds": None, "stats": None, "statscoverage": {}}
+    import urllib.parse as _uparse
+    eid_enc = _uparse.quote(event_id)
+
+    # 1. Markets (factsCenter/event)
+    import time as _time
+    event_data = _sb_get(_SB_EVENT_URL.format(eid=eid_enc))
+    _time.sleep(_SB_PACE)
+
+    odds: Optional[dict] = None
+    if event_data:
+        markets_payload = event_data.get("data", event_data)
+        odds = _parse_odds(markets_payload)
+
+    # 2. match_info → team IDs, seasonId, statscoverage
+    mi_data = _gismo_doc(f"match_info/{mid}")
+    _time.sleep(_SB_PACE)
+
+    home_id: Optional[int] = None
+    away_id: Optional[int] = None
+    season_id: Optional[int] = None
+    statscoverage: dict = {}
+
+    if mi_data:
+        match = mi_data.get("match", {})
+        teams = match.get("teams", {})
+        # Validate IDs are numeric before using in Gismo URL paths (path-traversal guard)
+        _raw_home = teams.get("home", {}).get("_id")
+        _raw_away = teams.get("away", {}).get("_id")
+        _raw_season = match.get("_seasonid")
+        home_id = int(_raw_home) if str(_raw_home).isdigit() else None
+        away_id = int(_raw_away) if str(_raw_away).isdigit() else None
+        season_id = int(_raw_season) if str(_raw_season).isdigit() else None
+        statscoverage = mi_data.get("statscoverage") or {}
+
+    # 3. Form (stats_match_form)
+    form_data = _gismo_doc(f"stats_match_form/{mid}")
+    _time.sleep(_SB_PACE)
+    form = _parse_form(form_data)
+
+    # 4. Standings (stats_season_tables)
+    standings_data = _gismo_doc(f"stats_season_tables/{season_id}") if season_id else None
+    _time.sleep(_SB_PACE)
+    standings = _parse_standings(standings_data, home_id, away_id)
+
+    # 5. Season goals (stats_season_goals)
+    goals_data = _gismo_doc(f"stats_season_goals/{season_id}") if season_id else None
+    _time.sleep(_SB_PACE)
+    goals = _parse_goals(goals_data, home_id, away_id)
+
+    # 6. H2H (stats_team_versusrecent) — empty for most low-tier pairs; parse defensively
+    h2h_data = _gismo_doc(f"stats_team_versusrecent/{home_id}/{away_id}") if (home_id and away_id) else None
+    if h2h_data:
+        _time.sleep(_SB_PACE)
+    h2h = _parse_h2h(h2h_data)
+
+    stats: dict = {}
+    if form:
+        stats["form"] = form
+    if standings:
+        stats["standings"] = standings
+    if goals:
+        stats["goals"] = goals
+    if h2h:
+        stats["h2h"] = h2h
+
+    return {
+        "odds": odds,
+        "stats": stats or None,
+        "statscoverage": statscoverage or None,
+    }
+
+
+def enrich_sportybet_events(events: list[dict]) -> list[dict]:
+    """
+    Add per-fixture odds/stats to the sidecar event list (sidecar v2).
+
+    Uses ThreadPoolExecutor(max_workers=4) — 300 fixtures ≈ 7 min.
+    Each event record gains: odds, stats, statscoverage keys.
+    A fetch failure degrades that record's fields to None; the event is not dropped.
+    """
+    import time as _time
+
+    if not events:
+        return events
+
+    xg_table = _load_xg_table()
+
+    def _xg_block(ev: dict) -> dict:
+        return {
+            "home": _xg_for(xg_table, ev.get("home", "")),
+            "away": _xg_for(xg_table, ev.get("away", "")),
+        }
+
+    def _worker(ev: dict) -> dict:
+        eid = ev.get("eventId", "")
+        xg = _xg_block(ev)
+        if not eid:
+            return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
+        try:
+            detail = _fetch_fixture_detail(eid)
+            return {**ev, **detail, "xg": xg}
+        except Exception:
+            return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
+
+    enriched: list[dict] = [{}] * len(events)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_worker, ev): i for i, ev in enumerate(events)}
+        done = 0
+        for fut in as_completed(futures):
+            idx = futures[fut]
+            try:
+                enriched[idx] = fut.result()
+            except Exception:
+                enriched[idx] = {
+                    **events[idx],
+                    "odds": None, "stats": None, "statscoverage": None,
+                    "xg": _xg_block(events[idx]),
+                }
+            done += 1
+            if done % 50 == 0:
+                print(f"[enrich] {done}/{len(events)} fixtures enriched", flush=True)
+
+    print(f"[enrich] done — {len(enriched)} fixtures enriched with odds+stats", flush=True)
+    return enriched
+
+
 class SportyBetScraper:
     PAGE_URL = "https://www.sportybet.com/ng/sport/football/today"
     API_BASE = (
@@ -740,6 +1187,32 @@ class SportyBetScraper:
         "&todayGames=true"
         "&timeline=1.4"
     )
+    # Secondary sweep: todayGames=false with timeline=1 captures fixtures SportyBet
+    # serves under tournament/cup headers that the todayGames=true sweep misses
+    # (e.g. World Cup group games that appear on separate tournament pages).
+    API_BASE_UPCOMING = (
+        "https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents"
+        "?sportId=sr%3Asport%3A1"
+        "&marketId=1%2C18%2C10%2C29%2C11%2C26%2C36%2C14%2C60100"
+        "&pageSize=100"
+        "&pageNum={page}"
+        "&todayGames=false"
+        "&timeline=1"
+    )
+    # Tertiary sweep: 3-day window catches WC/tournament legs punters book ahead.
+    API_BASE_3DAY = (
+        "https://www.sportybet.com/api/ng/factsCenter/pcUpcomingEvents"
+        "?sportId=sr%3Asport%3A1"
+        "&marketId=1%2C18%2C10%2C29%2C11%2C26%2C36%2C14%2C60100"
+        "&pageSize=100"
+        "&pageNum={page}"
+        "&todayGames=false"
+        "&timeline=3"
+    )
+
+    def __init__(self) -> None:
+        # Sidecar records for the requested date — read by run_playwright_scrapers
+        self.captured_events: list[dict] = []
 
     async def fetch(self, ctx: "BrowserContext", date_str: str) -> list[Fixture]:
         page = await ctx.new_page()
@@ -779,29 +1252,57 @@ class SportyBetScraper:
                         _warn(f"SportyBet page {page_num}: {exc}")
                     page_num += 1
 
-            # Parse all captured API pages
+            # Secondary sweep: todayGames=false&timeline=1 — catches WC/tournament
+            # fixtures that the todayGames=true endpoint omits (e.g. World Cup groups
+            # served under separate tournament headers on SportyBet).
+            for sweep_label, sweep_base, sweep_max_pages in [
+                ("upcoming-1d", self.API_BASE_UPCOMING, 5),
+                ("upcoming-3d", self.API_BASE_3DAY, 5),
+            ]:
+                sweep_pages: list[dict] = []
+                try:
+                    url = sweep_base.format(page=1) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
+                    resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                    if resp:
+                        first_sw = await resp.json()
+                        sweep_pages.append(first_sw)
+                        total_sw = first_sw.get("data", {}).get("totalNum", 0)
+                        fetched_sw = len(first_sw.get("data", {}).get("tournaments", []))
+                        page_num_sw = 2
+                        while fetched_sw < total_sw and page_num_sw <= sweep_max_pages:
+                            try:
+                                url = sweep_base.format(page=page_num_sw) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
+                                resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+                                if resp:
+                                    data = await resp.json()
+                                    sweep_pages.append(data)
+                                    fetched_sw += len(data.get("data", {}).get("tournaments", []))
+                            except Exception as exc:
+                                _warn(f"SportyBet {sweep_label} page {page_num_sw}: {exc}")
+                            page_num_sw += 1
+                except Exception as exc:
+                    _warn(f"SportyBet {sweep_label} sweep: {exc}")
+                api_pages.extend(sweep_pages)
+
+            # Parse all captured API pages (dedup — pagination can replay events)
+            seen_events: set[tuple[str, str, str]] = set()
             for api_data in api_pages:
                 tournaments = api_data.get("data", {}).get("tournaments", [])
                 for tournament in tournaments:
                     league = tournament.get("name", "Football")
                     for ev in tournament.get("events", []):
-                        home = ev.get("homeTeamName", "")
-                        away = ev.get("awayTeamName", "")
-                        ts_ms = ev.get("estimateStartTime")
-                        if not (home and away and ts_ms):
-                            continue
-                        try:
-                            kickoff = datetime.fromtimestamp(
-                                ts_ms / 1000, tz=timezone.utc
-                            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-                            # Only keep fixtures for the requested date
-                            if kickoff[:10] == date_str:
-                                fixtures.append(Fixture(
-                                    home=home, away=away,
-                                    league=league, kickoff_utc=kickoff,
-                                ))
-                        except Exception:
-                            pass
+                        record = _sportybet_event_to_record(ev, league)
+                        # Only keep fixtures for the requested date
+                        if record and record["kickoff_utc"][:10] == date_str:
+                            ev_key = (record["home"], record["away"], record["kickoff_utc"])
+                            if ev_key in seen_events:
+                                continue
+                            seen_events.add(ev_key)
+                            self.captured_events.append(record)
+                            fixtures.append(Fixture(
+                                home=record["home"], away=record["away"],
+                                league=league, kickoff_utc=record["kickoff_utc"],
+                            ))
 
         except Exception as exc:
             _warn(f"SportyBet: {exc}")
@@ -852,29 +1353,37 @@ class WhoScoredScraper:
 
 # ── Playwright runner ─────────────────────────────────────────────────────────
 
-async def run_playwright_scrapers(date_str: str) -> list[Fixture]:
+async def run_playwright_scrapers(date_str: str) -> tuple[list[Fixture], list[dict]]:
     if not HAS_PLAYWRIGHT:
         _warn("Playwright not installed — skipping JS scrapers. "
               "Run: pip install playwright && python -m playwright install chromium")
-        return []
+        return [], []
 
+    sportybet = SportyBetScraper()
     scrapers = [
         ("BBC Sport",    BBCSportScraper()),
         ("Flashscore",   FlashscoreScraper()),
         ("365Scores",    Scores365Scraper()),
         ("OneFootball",  OneFootballScraper()),
         ("BetExplorer",  BetExplorerScraper()),
-        ("SportyBet",    SportyBetScraper()),
+        ("SportyBet",    sportybet),
         ("WhoScored",    WhoScoredScraper()),
     ]
 
     results: list[Fixture] = []
     counts: dict[str, int] = {}
 
+    # On local Windows, disable GPU rendering to prevent driver crashes causing hard reboots.
+    # Auto-disabled on VPS/cloud (ORACLE_IS_VPS=true or non-Windows) where GPU is not the issue.
+    _is_local_windows = sys.platform == "win32" and os.environ.get("ORACLE_IS_VPS", "").lower() != "true"
+    _pw_args = ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+    if _is_local_windows:
+        _pw_args += ["--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer"]
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            args=_pw_args,
         )
         ctx = await browser.new_context(
             user_agent=_CHROME_UA,
@@ -902,7 +1411,7 @@ async def run_playwright_scrapers(date_str: str) -> list[Fixture]:
         summary = " ".join(f"{k.lower().replace(' ','')}:{v}" for k, v in counts.items())
         print(f"[scrape] playwright — {summary}", flush=True)
 
-    return results
+    return results, sportybet.captured_events
 
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────
@@ -916,6 +1425,27 @@ def read_cache() -> list[str]:
 def write_cache(lines: list[str]) -> None:
     FIXTURE_CACHE.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE_CACHE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_sportybet_sidecar(date_str: str, events: list[dict]) -> None:
+    """Write sidecar v2 — events enriched with odds/stats blocks.
+
+    Written even when events is empty (TS selector fails open on empty list).
+    Atomic write — a concurrent reader must never see a partial file.
+    Each event record shape: {eventId, home, away, league, kickoff_utc, marketCount,
+      odds: {1x2, ou15, ou25, ou35, btts, dc, dnb, ah}, stats: {form, standings, goals, h2h},
+      statscoverage: {leaguetable, formtable, headtohead, …},
+      xg: {home: {xgf, xga} | null, away: {xgf, xga} | null}  # Understat top-5 only}
+    """
+    SPORTYBET_SIDECAR.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "date": date_str,
+        "scraped_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "events": events,
+    }
+    tmp = SPORTYBET_SIDECAR.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, SPORTYBET_SIDECAR)
 
 
 def parse_existing_line(line: str) -> Optional[tuple[str, str, str]]:
@@ -967,8 +1497,12 @@ def main() -> None:
     espn_fixtures      = ESPNScraper().fetch_all(date_str)
     sky_fixtures       = SkySportsScraper().fetch(date_str)
     livescore_fixtures = LiveScoreScraper().fetch(date_str)
-    pw_fixtures        = ([] if args.no_playwright
-                          else asyncio.run(run_playwright_scrapers(date_str)))
+    if args.no_playwright:
+        pw_fixtures, sportybet_events = [], []
+        pw_ran = False
+    else:
+        pw_fixtures, sportybet_events = asyncio.run(run_playwright_scrapers(date_str))
+        pw_ran = HAS_PLAYWRIGHT
 
     all_new = espn_fixtures + sky_fixtures + livescore_fixtures + pw_fixtures
     existing = read_cache()
@@ -984,10 +1518,15 @@ def main() -> None:
 
     if args.dry_run:
         for line in merged:
-            print(line)
+            sys.stdout.buffer.write((line + "\n").encode("utf-8"))
         return
 
     write_cache(merged)
+    if pw_ran:
+        if sportybet_events:
+            print(f"[enrich] enriching {len(sportybet_events)} SportyBet fixtures with odds+stats …", flush=True)
+            sportybet_events = enrich_sportybet_events(sportybet_events)
+        write_sportybet_sidecar(date_str, sportybet_events)
 
 
 if __name__ == "__main__":

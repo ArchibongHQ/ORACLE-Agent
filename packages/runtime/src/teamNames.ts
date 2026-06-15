@@ -7,12 +7,16 @@
 
 /** Normalise a team name for fuzzy matching: lowercase, strip common suffixes & punctuation. */
 export function normTeam(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/\b(fc|afc|sc|cf|ac|as|ss|ssc|sv|bk|if|cd|ud)\b/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    name
+      .toLowerCase()
+      // Strip SportyBet SRL simulation-league suffix ("Sweden SRL" → "Sweden")
+      .replace(/\s+srl\b/g, "")
+      .replace(/\b(fc|afc|sc|cf|ac|as|ss|ssc|sv|bk|if|cd|ud)\b/g, "")
+      .replace(/[^a-z0-9\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 // Common international team name aliases (SportyBet / Wikipedia → Odds API / FIFA)

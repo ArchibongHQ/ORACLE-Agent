@@ -1,6 +1,6 @@
 /** Self-contained HTML report renderer — Phase 3.
  *  No external deps; all CSS inline. One card per fixture. */
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BatchJobResult, BatchResult, PickRef } from "@oracle/engine";
 
@@ -56,7 +56,7 @@ h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 16px; color: #f1f5f9; }
 
 function cardClass(job: BatchJobResult): string {
   if (job.status === "error") return "card card-error";
-  if (job.decision.primaryPick === "NO_BET") return "card card-no-bet";
+  if (job.decision.grade === "NO_EDGE") return "card card-no-bet";
   return "card card-actionable";
 }
 
@@ -102,12 +102,19 @@ function renderCard(job: BatchJobResult): string {
     flags.push(`<span class="flag flag-warn">${esc(bf)}</span>`);
   }
 
-  // Primary pick
-  const pick = d.primaryPick === "NO_BET" ? null : (d.primaryPick as PickRef);
-  const pickStr = pick
-    ? `${esc(pick.market)}${pick.side ? ` — ${esc(pick.side)}` : ""} <span style="color:#fbbf24">@ ${pick.odds}</span>`
-    : '<span style="color:#64748b">NO_BET</span>';
-  const stakeStr = pick?.stake ? `<span class="pick-stake">${pct(pick.stake)} Kelly</span>` : "";
+  // Primary pick — grade replaces the old NO_BET literal
+  const pick = d.primaryPick;
+  const grade = d.grade;
+  const gradeColor = grade === "STRONG" ? "#4ade80" : grade === "LEAN" ? "#fbbf24" : "#64748b";
+  const gradeStr = `<span style="color:${gradeColor};font-weight:700">${grade}</span>`;
+  const pickStr =
+    grade === "NO_EDGE"
+      ? `${gradeStr} — ${esc(pick.market)}${pick.side ? ` (${esc(pick.side)})` : ""} <span style="color:#64748b">@ ${pick.odds}</span>`
+      : `${gradeStr} — ${esc(pick.market)}${pick.side ? ` — ${esc(pick.side)}` : ""} <span style="color:#fbbf24">@ ${pick.odds}</span>`;
+  const stakeStr =
+    pick.stake && grade !== "NO_EDGE"
+      ? `<span class="pick-stake">${pct(pick.stake)} Kelly</span>`
+      : "";
   const altPick = d.altPick;
   const altStr = altPick ? `${esc(altPick.market)} @ ${altPick.odds}` : "—";
 
@@ -131,7 +138,7 @@ function renderCard(job: BatchJobResult): string {
   </div>
   ${flags.length ? `<div class="flags">${flags.join("")}</div>` : ""}
   <div class="picks">
-    <div class="pick-row"><span class="pick-label">Primary</span><span class="pick-val">${pickStr}</span>${stakeStr}${pick ? `<span class="confidence">${pct(d.confidence)} conf</span>` : ""}</div>
+    <div class="pick-row"><span class="pick-label">Primary</span><span class="pick-val">${pickStr}</span>${stakeStr}<span class="confidence">${pct(d.confidence)} conf</span></div>
     <div class="pick-row"><span class="pick-label">Alt</span><span class="pick-val" style="color:#94a3b8">${altStr}</span></div>
   </div>
   ${adversary ? `<div class="adversary"><span class="adv-label">Adversary:</span>${esc(adversary)}</div>` : ""}
@@ -175,10 +182,19 @@ ${cards}
 </html>`;
 }
 
-/** Write the report to .tmp/reports/oracle-{date}.html. Returns the output path. */
+/** Write the report to .tmp/reports/oracle-{date}.html.
+ *  If that file already exists (e.g. a punt run after the daily batch), writes to
+ *  oracle-{date}-{runId}.html to avoid clobbering the primary batch report. */
 export async function writeReport(batch: BatchResult, outDir = ".tmp/reports"): Promise<string> {
   await mkdir(outDir, { recursive: true });
-  const outPath = join(outDir, `oracle-${batch.date}.html`);
+  const primary = join(outDir, `oracle-${batch.date}.html`);
+  let outPath = primary;
+  try {
+    await access(primary);
+    outPath = join(outDir, `oracle-${batch.date}-${batch.runId}.html`);
+  } catch {
+    // Primary does not exist — claim it
+  }
   await writeFile(outPath, renderReport(batch), "utf8");
   return outPath;
 }

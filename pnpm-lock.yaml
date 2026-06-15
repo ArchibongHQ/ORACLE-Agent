@@ -45,9 +45,15 @@ importers:
 
   apps/bot:
     dependencies:
+      '@oracle/booking':
+        specifier: workspace:*
+        version: link:../booking
       '@oracle/engine':
         specifier: workspace:*
         version: link:../../packages/engine
+      '@oracle/notify':
+        specifier: workspace:*
+        version: link:../../packages/notify
       '@oracle/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -176,6 +182,9 @@ importers:
       '@google/genai':
         specifier: ^2.8.0
         version: 2.8.0
+      '@oracle/research':
+        specifier: workspace:*
+        version: link:../research
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -192,6 +201,22 @@ importers:
       '@oracle/engine':
         specifier: workspace:*
         version: link:../engine
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.12.4
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@24.12.4)
+
+  packages/research:
+    dependencies:
+      playwright:
+        specifier: ^1.45.0
+        version: 1.60.0
     devDependencies:
       '@types/node':
         specifier: ^24.0.0

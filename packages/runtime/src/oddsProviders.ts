@@ -10,15 +10,21 @@
  *  only fire when every sharp source above is empty or over quota.
  *
  *    1  the-odds-api      (handled upstream in fixtures.ts — not in this chain)
- *    2  OddsPapi          sharp  — Pinnacle/Singbet              [WIRED]
+ *    2  SharpAPI.io       sharp  — Pinnacle/SBOBet et al.        [WIRED]
  *    3  API-Football      net    — permanent free tier           [WIRED]
- *    4  SportsGameOdds    sharp  — Pinnacle                       [STUB]
- *    5  RapidOddsAPI      soft   — consensus                      [STUB]
- *    6  BSD / bzzoiro     soft   — no-rate-limit floor            [STUB]
+ *    4  Odds-API.io       sharp  — Pinnacle/SingBet, 100 req/hr free [WIRED]
+ *    5  SportsGameOdds    sharp  — Pinnacle, 1,000 objects/mo free   [WIRED]
+ *    6  SportyBet sidecar soft   — zero-network file read        [WIRED]
  *    7  geminiOddsGapFill (handled upstream — last resort)
+ *
+ *  Tier 4 runs before tier 5 deliberately: runOddsChain keeps hunting for a sharp
+ *  price after a soft hit, so these tiers fire often — Odds-API.io's ~72k req/mo
+ *  equivalent quota absorbs that traffic before SportsGameOdds' scarce 1,000/mo.
  *
  *  Providers whose key is absent are skipped silently (config.ts pattern).
  */
+import { readFile } from "node:fs/promises";
+import { SPORTYBET_SIDECAR_PATH } from "./selectFixtures.js";
 import { namesMatch } from "./teamNames.js";
 
 /** 1X2 consensus result. Field-compatible with @oracle/llm OddsAcquisitionResult
@@ -76,95 +82,97 @@ function validateTriple(h: number, d: number, a: number): { overround: number } 
 // Team-name matching (namesMatch) is imported from teamNames.ts — the single,
 // alias-aware source of truth shared with fixtures.ts and the OTS name-gap fix.
 
-// ── OddsPapi (tier 2, sharp) ───────────────────────────────────────────────────
-// SCHEMA: confirmed via oddspapi.io docs (structure partly inferred). Verify the
-// field paths below against one live response before trusting in production:
-//   curl "https://api.oddspapi.io/v4/fixtures?apiKey=$K&date=2026-06-09"
-//   curl "https://api.oddspapi.io/v4/odds?apiKey=$K&fixtureId=<id>"
-const ODDSPAPI_BASE = "https://api.oddspapi.io/v4";
-const ODDSPAPI_1X2_MARKET = "101"; // market id for 1X2
-const ODDSPAPI_OUTCOMES = { home: "101", draw: "102", away: "103" } as const;
-const ODDSPAPI_SHARP_BOOKS = ["pinnacle", "singbet", "betfair_ex"];
+// ── SharpAPI.io (tier 2, sharp) ────────────────────────────────────────────────
+// SCHEMA: machine-verified 2026-06-10 against live responses. One GET does it all:
+//   curl -H "X-API-Key: $K" "https://api.sharpapi.io/api/v1/odds?sport=soccer&market=moneyline&date=<YYYY-MM-DD>&q=<team>"
+// Each row is ONE selection at ONE book: { sportsbook, home_team, away_team,
+// market_type:"moneyline", selection_type:"home"|"draw"|"away", odds_decimal,
+// is_live, is_active, is_main_line, event_start_time }. Soccer moneyline is
+// 3-way, so a full 1X2 needs three rows from the same sportsbook.
+// (Replaced OddsPapi 2026-06-10: contact-sales B2B, no key, coded v4 schema was
+// confirmed wrong — real v5 schema preserved in project memory if ever revived.)
+const SHARPAPIIO_BASE = "https://api.sharpapi.io/api/v1";
+const SHARPAPIIO_SHARP_BOOKS = ["pinnacle", "sbobet", "betonline", "bookmaker", "circa"];
 
-interface OddsPapiFixture {
-  fixtureId: string;
-  participant1Name: string;
-  participant2Name: string;
-  startTime?: string;
+interface SharpApiIoOddsRow {
+  sportsbook?: string;
+  home_team?: string;
+  away_team?: string;
+  market_type?: string;
+  selection_type?: string;
+  odds_decimal?: number;
+  is_live?: boolean;
+  is_active?: boolean;
+  is_main_line?: boolean;
 }
-interface OddsPapiFixturesResponse {
-  fixtures?: OddsPapiFixture[];
-}
-interface OddsPapiOddsResponse {
-  bookmakerOdds?: Record<
-    string,
-    {
-      markets?: Record<
-        string,
-        { outcomes?: Record<string, { players?: Record<string, { price?: number }> }> }
-      >;
-    }
-  >;
+interface SharpApiIoOddsResponse {
+  data?: SharpApiIoOddsRow[];
 }
 
-/** Extract a sharp (or first-available) 1X2 triple from an OddsPapi /odds payload. */
-function parseOddsPapiOdds(
-  raw: OddsPapiOddsResponse
+/** Assemble a sharp (or first-complete) 1X2 triple from SharpAPI.io odds rows. */
+function parseSharpApiIoOdds(
+  rows: SharpApiIoOddsRow[]
 ): { h: number; d: number; a: number; book: string; sharp: boolean } | null {
-  const books = raw.bookmakerOdds ?? {};
-  const slugs = Object.keys(books);
-  // Prefer sharp books; fall back to first book that has a full 1X2.
+  // Group pregame main-line rows into per-book {home,draw,away} triples.
+  const byBook = new Map<string, Partial<Record<"home" | "draw" | "away", number>>>();
+  for (const r of rows) {
+    if (!r.sportsbook || r.is_live || r.is_active === false || r.is_main_line === false) continue;
+    if (r.market_type && r.market_type !== "moneyline") continue;
+    const side = r.selection_type;
+    if (side !== "home" && side !== "draw" && side !== "away") continue;
+    if (typeof r.odds_decimal !== "number") continue;
+    const triple = byBook.get(r.sportsbook) ?? {};
+    triple[side] ??= r.odds_decimal;
+    byBook.set(r.sportsbook, triple);
+  }
+  const books = [...byBook.keys()];
   const ordered = [
-    ...ODDSPAPI_SHARP_BOOKS.filter((s) => slugs.includes(s)),
-    ...slugs.filter((s) => !ODDSPAPI_SHARP_BOOKS.includes(s)),
+    ...SHARPAPIIO_SHARP_BOOKS.filter((s) => books.includes(s)),
+    ...books.filter((s) => !SHARPAPIIO_SHARP_BOOKS.includes(s)),
   ];
-  for (const slug of ordered) {
-    const outcomes = books[slug]?.markets?.[ODDSPAPI_1X2_MARKET]?.outcomes;
-    if (!outcomes) continue;
-    const price = (id: string) => outcomes[id]?.players?.["0"]?.price;
-    const h = price(ODDSPAPI_OUTCOMES.home);
-    const d = price(ODDSPAPI_OUTCOMES.draw);
-    const a = price(ODDSPAPI_OUTCOMES.away);
-    if (h == null || d == null || a == null) continue;
-    return { h, d, a, book: slug, sharp: ODDSPAPI_SHARP_BOOKS.includes(slug) };
+  for (const book of ordered) {
+    const t = byBook.get(book);
+    if (t?.home == null || t.draw == null || t.away == null) continue;
+    return {
+      h: t.home,
+      d: t.draw,
+      a: t.away,
+      book,
+      sharp: SHARPAPIIO_SHARP_BOOKS.includes(book),
+    };
   }
   return null;
 }
 
-export function makeOddsPapiProvider(apiKey: string | undefined): OddsProvider {
+export function makeSharpApiIoProvider(apiKey: string | undefined): OddsProvider {
   return {
-    name: "oddspapi",
+    name: "sharpapi-io",
     tier: 2,
     isSharp: true,
     hasQuota: () => !!apiKey,
     async fetch(home, away, _league, kickoff) {
       if (!apiKey) return null;
       const date = kickoff.slice(0, 10);
-      // 1. Resolve fixtureId by team-name match on the date.
-      const fxRes = await fetch(
-        `${ODDSPAPI_BASE}/fixtures?apiKey=${encodeURIComponent(apiKey)}&date=${date}`,
-        { signal: AbortSignal.timeout(15_000) }
-      );
-      if (!fxRes.ok) {
-        if (fxRes.status === 429) throw new Error("oddspapi: quota exhausted");
+      // Single call: filter server-side by date + full-text team search, then
+      // pin the exact fixture client-side with alias-aware name matching.
+      const url =
+        `${SHARPAPIIO_BASE}/odds?sport=soccer&market=moneyline` +
+        `&date=${date}&q=${encodeURIComponent(home)}&limit=100`;
+      const res = await fetch(url, {
+        headers: { "X-API-Key": apiKey },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        if (res.status === 429) throw new Error("sharpapi-io: quota exhausted");
         return null;
       }
-      const fxJson = (await fxRes.json()) as OddsPapiFixturesResponse;
-      const fixture = (fxJson.fixtures ?? []).find(
-        (f) => namesMatch(f.participant1Name, home) && namesMatch(f.participant2Name, away)
+      const json = (await res.json()) as SharpApiIoOddsResponse;
+      const rows = (json.data ?? []).filter(
+        (r) => namesMatch(r.home_team ?? "", home) && namesMatch(r.away_team ?? "", away)
       );
-      if (!fixture) return null;
+      if (!rows.length) return null;
 
-      // 2. Fetch odds for that fixture.
-      const oddsRes = await fetch(
-        `${ODDSPAPI_BASE}/odds?apiKey=${encodeURIComponent(apiKey)}&fixtureId=${encodeURIComponent(fixture.fixtureId)}`,
-        { signal: AbortSignal.timeout(15_000) }
-      );
-      if (!oddsRes.ok) {
-        if (oddsRes.status === 429) throw new Error("oddspapi: quota exhausted");
-        return null;
-      }
-      const parsed = parseOddsPapiOdds((await oddsRes.json()) as OddsPapiOddsResponse);
+      const parsed = parseSharpApiIoOdds(rows);
       if (!parsed) return null;
       const valid = validateTriple(parsed.h, parsed.d, parsed.a);
       if (!valid) return null;
@@ -173,9 +181,9 @@ export function makeOddsPapiProvider(apiKey: string | undefined): OddsProvider {
         draw: parsed.d,
         away: parsed.a,
         confidence: parsed.sharp ? 0.85 : 0.7,
-        sources: [`oddspapi:${parsed.book}`],
+        sources: [`sharpapi-io:${parsed.book}`],
         overround: valid.overround,
-        provider: "oddspapi",
+        provider: "sharpapi-io",
         isSharp: parsed.sharp,
       };
     },
@@ -297,44 +305,513 @@ export function makeApiFootballProvider(apiKey: string | undefined): OddsProvide
   };
 }
 
-// ── Stubs (tiers 4–6) ──────────────────────────────────────────────────────────
-// Registered so the chain is complete; each is a one-function fill-in. They report
-// hasQuota=false (no key wired) so the chain skips them today.
+// ── Odds-API.io (tier 4, sharp-capable) ────────────────────────────────────────
+// SCHEMA: confirmed via docs.odds-api.io (guides/fetching-odds, 2026-06-10). Free
+// tier: 100 req/hr, no card. Verify field paths against one live response:
+//   curl "https://api.odds-api.io/v3/events?sport=football&apiKey=$K"
+//   curl "https://api.odds-api.io/v3/odds?eventId=<id>&bookmakers=Pinnacle&apiKey=$K"
+// /odds returns decimal prices as strings under the "ML" market (Home/Draw/Away).
+const ODDSAPIIO_BASE = "https://api.odds-api.io/v3";
+const ODDSAPIIO_SHARP_BOOKS = ["pinnacle", "singbet"];
+const ODDSAPIIO_BOOKMAKERS = "Pinnacle,SingBet,Bet365"; // sharp first, Bet365 soft floor
+const ODDSAPIIO_ML_MARKET = "ML";
 
-function makeStubProvider(
-  name: string,
-  tier: number,
-  isSharp: boolean,
-  apiKey: string | undefined
-): OddsProvider {
+interface OddsApiIoEvent {
+  id: number | string;
+  home?: string;
+  away?: string;
+  date?: string;
+}
+interface OddsApiIoMarket {
+  name?: string;
+  odds?: Array<{ home?: string | number; draw?: string | number; away?: string | number }>;
+}
+interface OddsApiIoOddsResponse {
+  bookmakers?: Record<string, OddsApiIoMarket[]>;
+}
+
+/** Extract a sharp (or first-available) ML triple from an Odds-API.io /odds payload. */
+function parseOddsApiIoOdds(
+  raw: OddsApiIoOddsResponse
+): { h: number; d: number; a: number; book: string; sharp: boolean } | null {
+  const books = raw.bookmakers ?? {};
+  const names = Object.keys(books);
+  const ordered = [
+    ...names.filter((n) => ODDSAPIIO_SHARP_BOOKS.includes(n.toLowerCase())),
+    ...names.filter((n) => !ODDSAPIIO_SHARP_BOOKS.includes(n.toLowerCase())),
+  ];
+  for (const book of ordered) {
+    const ml = (books[book] ?? []).find((m) => m.name === ODDSAPIIO_ML_MARKET)?.odds?.[0];
+    if (!ml) continue;
+    const h = Number(ml.home);
+    const d = Number(ml.draw);
+    const a = Number(ml.away);
+    if ([h, d, a].some((v) => !Number.isFinite(v))) continue;
+    return { h, d, a, book, sharp: ODDSAPIIO_SHARP_BOOKS.includes(book.toLowerCase()) };
+  }
+  return null;
+}
+
+export function makeOddsApiIoProvider(apiKey: string | undefined): OddsProvider {
   return {
-    name,
-    tier,
-    isSharp,
-    hasQuota: () => false, // not implemented — never selected until fetch() is written
-    async fetch() {
+    name: "odds-api-io",
+    tier: 4,
+    isSharp: true,
+    hasQuota: () => !!apiKey,
+    async fetch(home, away, _league, kickoff) {
       if (!apiKey) return null;
-      throw new Error(`${name}: provider not implemented`);
+      const date = kickoff.slice(0, 10);
+      // 1. Resolve the event id. Narrow to the kickoff day server-side so the
+      //    payload stays small (provider mandates apiKey in query string, not header).
+      const evRes = await fetch(
+        `${ODDSAPIIO_BASE}/events?sport=football&startsAfter=${date}T00:00:00Z&startsBefore=${date}T23:59:59Z&apiKey=${encodeURIComponent(apiKey)}`,
+        { signal: AbortSignal.timeout(15_000) }
+      );
+      if (!evRes.ok) {
+        if (evRes.status === 429) throw new Error("odds-api-io: quota exhausted");
+        return null;
+      }
+      const evJson = (await evRes.json()) as OddsApiIoEvent[] | { events?: OddsApiIoEvent[] };
+      const events = Array.isArray(evJson) ? evJson : (evJson.events ?? []);
+      const event = events.find(
+        (e) =>
+          namesMatch(e.home ?? "", home) &&
+          namesMatch(e.away ?? "", away) &&
+          (!e.date || e.date.slice(0, 10) === date)
+      );
+      if (!event) return null;
+
+      // 2. Fetch odds for that event, sharp books first.
+      const oddsRes = await fetch(
+        `${ODDSAPIIO_BASE}/odds?eventId=${encodeURIComponent(String(event.id))}&bookmakers=${encodeURIComponent(ODDSAPIIO_BOOKMAKERS)}&apiKey=${encodeURIComponent(apiKey)}`,
+        { signal: AbortSignal.timeout(15_000) }
+      );
+      if (!oddsRes.ok) {
+        if (oddsRes.status === 429) throw new Error("odds-api-io: quota exhausted");
+        return null;
+      }
+      const parsed = parseOddsApiIoOdds((await oddsRes.json()) as OddsApiIoOddsResponse);
+      if (!parsed) return null;
+      const valid = validateTriple(parsed.h, parsed.d, parsed.a);
+      if (!valid) return null;
+      return {
+        home: parsed.h,
+        draw: parsed.d,
+        away: parsed.a,
+        confidence: parsed.sharp ? 0.85 : 0.7,
+        sources: [`odds-api-io:${parsed.book}`],
+        overround: valid.overround,
+        provider: "odds-api-io",
+        isSharp: parsed.sharp,
+      };
+    },
+  };
+}
+
+// ── SportsGameOdds (tier 5, sharp-capable) ─────────────────────────────────────
+// SCHEMA: partially machine-verified live 2026-06-12 (one MLS event):
+//   teams.{home,away}.names.{long,medium,short} and status.startsAt confirmed.
+//   ml3way oddIDs + byBookmaker still doc-inferred only — the event had no priced
+//   odds yet (MLS on World Cup break; re-verify when fixtures price up):
+//   curl -H "X-Api-Key: $K" "https://api.sportsgameodds.com/v2/events?leagueID=MLS&startsAfter=<date>&oddsAvailable=true&limit=50"
+// Free tier bills per OBJECT RETURNED (1,000/mo) — keep limit tight, never page.
+// Free tier REQUIRES leagueID (sportID-wide queries 400: "must specify a leagueID
+// or eventID at this subscription tier") and only unlocks MLS + UCL (verified
+// live 2026-06-12 via GET /v2/leagues?sportID=SOCCER). Unmapped/locked leagues
+// are skipped client-side so no quota or roundtrip is wasted.
+// Odds are AMERICAN format strings (e.g. "-112") and need decimal conversion.
+const SGO_BASE = "https://api.sportsgameodds.com/v2";
+// ORACLE league name → SGO leagueID. Only IDs confirmed against the live API are
+// listed (EPL exists but is locked on the free tier — kept for a future upgrade).
+const SGO_LEAGUE_IDS: Record<string, string> = {
+  MLS: "MLS",
+  "Champions League": "UEFA_CHAMPIONS_LEAGUE",
+  "Premier League": "EPL",
+};
+// oddID pattern: {statID}-{statEntityID}-{periodID}-{betTypeID}-{sideID}
+const SGO_ML3WAY_ODD_IDS = {
+  home: "points-home-game-ml3way-home",
+  draw: "points-all-game-ml3way-draw",
+  away: "points-away-game-ml3way-away",
+} as const;
+const SGO_SHARP_BOOKS = ["pinnacle"];
+
+/** American ("-112" / "+150") → decimal. NaN-propagating on bad input. */
+function americanToDecimal(odds: string | number | undefined): number {
+  const a = Number(odds);
+  if (!Number.isFinite(a) || a === 0) return NaN;
+  return a > 0 ? 1 + a / 100 : 1 + 100 / Math.abs(a);
+}
+
+interface SgoBookmakerOdd {
+  odds?: string | number;
+  available?: boolean;
+}
+interface SgoOdd {
+  odds?: string | number; // consensus (bookOdds) — soft fallback
+  byBookmaker?: Record<string, SgoBookmakerOdd>;
+}
+interface SgoTeam {
+  names?: { long?: string; medium?: string; short?: string };
+  name?: string;
+}
+interface SgoEvent {
+  eventID?: string;
+  status?: { startsAt?: string };
+  teams?: { home?: SgoTeam; away?: SgoTeam };
+  odds?: Record<string, SgoOdd>;
+}
+interface SgoEventsResponse {
+  data?: SgoEvent[];
+}
+
+function sgoTeamName(t: SgoTeam | undefined): string {
+  return t?.names?.long ?? t?.names?.medium ?? t?.name ?? "";
+}
+
+/** Extract the 3-way ML triple from an SGO event — Pinnacle first, consensus fallback. */
+function parseSgoEvent(
+  event: SgoEvent
+): { h: number; d: number; a: number; book: string; sharp: boolean } | null {
+  const odds = event.odds ?? {};
+  const homeOdd = odds[SGO_ML3WAY_ODD_IDS.home];
+  const drawOdd = odds[SGO_ML3WAY_ODD_IDS.draw];
+  const awayOdd = odds[SGO_ML3WAY_ODD_IDS.away];
+  if (!homeOdd || !drawOdd || !awayOdd) return null;
+  // Prefer a sharp book carried on all three sides.
+  for (const book of SGO_SHARP_BOOKS) {
+    const side = (o: SgoOdd) => {
+      const b = o.byBookmaker?.[book];
+      return b && b.available !== false ? americanToDecimal(b.odds) : NaN;
+    };
+    const h = side(homeOdd);
+    const d = side(drawOdd);
+    const a = side(awayOdd);
+    if ([h, d, a].every(Number.isFinite)) return { h, d, a, book, sharp: true };
+  }
+  // Fall back to the consensus price on the odd itself.
+  const h = americanToDecimal(homeOdd.odds);
+  const d = americanToDecimal(drawOdd.odds);
+  const a = americanToDecimal(awayOdd.odds);
+  if ([h, d, a].some((v) => !Number.isFinite(v))) return null;
+  return { h, d, a, book: "consensus", sharp: false };
+}
+
+export function makeSportsGameOddsProvider(apiKey: string | undefined): OddsProvider {
+  return {
+    name: "sportsgameodds",
+    tier: 5,
+    isSharp: true,
+    hasQuota: () => !!apiKey,
+    async fetch(home, away, league, kickoff) {
+      if (!apiKey) return null;
+      const leagueId = SGO_LEAGUE_IDS[league];
+      if (!leagueId) return null; // league not served by SGO (or locked) — free skip
+      const date = kickoff.slice(0, 10);
+      // Single call: events + odds in one payload (each event returned = 1 billed
+      // object on the 1,000/mo free tier, so the day window + limit stay tight).
+      const res = await fetch(
+        `${SGO_BASE}/events?leagueID=${leagueId}&startsAfter=${date}T00:00:00Z&startsBefore=${date}T23:59:59Z&oddsAvailable=true&limit=50`,
+        { headers: { "X-Api-Key": apiKey }, signal: AbortSignal.timeout(15_000) }
+      );
+      if (!res.ok) {
+        if (res.status === 429) throw new Error("sportsgameodds: quota exhausted");
+        return null;
+      }
+      const json = (await res.json()) as SgoEventsResponse;
+      const event = (json.data ?? []).find(
+        (e) =>
+          namesMatch(sgoTeamName(e.teams?.home), home) &&
+          namesMatch(sgoTeamName(e.teams?.away), away)
+      );
+      if (!event) return null;
+      const parsed = parseSgoEvent(event);
+      if (!parsed) return null;
+      const valid = validateTriple(parsed.h, parsed.d, parsed.a);
+      if (!valid) return null;
+      return {
+        home: parsed.h,
+        draw: parsed.d,
+        away: parsed.a,
+        confidence: parsed.sharp ? 0.85 : 0.68,
+        sources: [`sportsgameodds:${parsed.book}`],
+        overround: valid.overround,
+        provider: "sportsgameodds",
+        isSharp: parsed.sharp,
+      };
+    },
+  };
+}
+
+// ── OddsPapi (tier 4, sharp-capable) ──────────────────────────────────────────
+// SCHEMA: machine-verified 2026-06-13 against live responses.
+//   GET /v4/odds-by-tournaments?bookmaker=pinnacle&tournamentIds=<id>&apiKey=<key>
+// returns an ARRAY of fixtures. Each fixture:
+//   { fixtureId, participant1Id (home), participant2Id (away), sportId, tournamentId,
+//     startTime: "ISO8601", hasOdds,
+//     bookmakerOdds: { <slug>: { markets: { "<marketId>": { outcomes: {
+//       "<outcomeId>": { players: { "0": { active, price, ... } } } } } } } } }
+// Market 101 = Full Time Result (1X2). Outcomes 101=home, 102=draw, 103=away.
+// Participant names are NOT inline — resolve via GET /v4/participants?sportId=10
+// (returns { "<id>": "<teamName>", ... } for all soccer participants). Cached at
+// module level; fetched once per process. The provider falls back to SBOBet if
+// Pinnacle has no quote for the fixture (sbobet is the only other sharp on the
+// platform — confirmed via /v4/bookmakers).
+// Rate limit: ~4 req/s observed (RATE_LIMITED response includes retryAfter).
+
+const ODDSPAPI_BASE = "https://api.oddspapi.io";
+const ODDSPAPI_SOCCER_SPORT_ID = 10;
+const ODDSPAPI_1X2_MARKET_ID = "101";
+const ODDSPAPI_1X2_HOME_OUTCOME = "101";
+const ODDSPAPI_1X2_DRAW_OUTCOME = "102";
+const ODDSPAPI_1X2_AWAY_OUTCOME = "103";
+const ODDSPAPI_SHARP_BOOKS = ["pinnacle", "sbobet"] as const;
+
+// ORACLE league name → OddsPapi tournamentId. Only IDs verified live 2026-06-13
+// are listed; unmapped leagues are skipped client-side (no roundtrip).
+const ODDSPAPI_TOURNAMENT_IDS: Record<string, number> = {
+  "Premier League": 17,
+  Championship: 18,
+  "La Liga": 8,
+  Bundesliga: 35,
+  "Serie A": 23,
+  "Ligue 1": 34,
+  Eredivisie: 37,
+  "Primeira Liga": 238,
+  "Belgian Pro League": 38,
+  "Scottish Premiership": 36,
+  "Champions League": 7,
+  "Europa League": 679,
+  "Conference League": 34480,
+  "J League": 196,
+  MLS: 242,
+  "FIFA World Cup": 24660,
+};
+
+interface OddsPapiOutcomePlayer {
+  active?: boolean;
+  price?: number;
+}
+interface OddsPapiOutcome {
+  players?: Record<string, OddsPapiOutcomePlayer>;
+}
+interface OddsPapiMarket {
+  marketActive?: boolean;
+  outcomes?: Record<string, OddsPapiOutcome>;
+}
+interface OddsPapiBookmakerEntry {
+  bookmakerIsActive?: boolean;
+  suspended?: boolean;
+  markets?: Record<string, OddsPapiMarket>;
+}
+interface OddsPapiFixture {
+  fixtureId?: string;
+  participant1Id?: number;
+  participant2Id?: number;
+  startTime?: string;
+  hasOdds?: boolean;
+  bookmakerOdds?: Record<string, OddsPapiBookmakerEntry>;
+}
+
+/** Module-level participant map (sportId=10). Lazy-initialised on first fetch
+ *  via primeOddsPapiParticipants; ~18k entries, ~500KB JSON. */
+let oddsPapiParticipants: Map<number, string> | null = null;
+
+/** Exposed for testing — lets tests reset the participant cache between cases. */
+export function _resetOddsPapiParticipantCache(): void {
+  oddsPapiParticipants = null;
+}
+
+async function primeOddsPapiParticipants(apiKey: string): Promise<Map<number, string> | null> {
+  if (oddsPapiParticipants) return oddsPapiParticipants;
+  const res = await fetch(
+    `${ODDSPAPI_BASE}/v4/participants?sportId=${ODDSPAPI_SOCCER_SPORT_ID}&apiKey=${encodeURIComponent(apiKey)}`,
+    { signal: AbortSignal.timeout(20_000) }
+  );
+  if (!res.ok) {
+    if (res.status === 429) throw new Error("oddspapi: quota exhausted");
+    return null;
+  }
+  const json = (await res.json()) as Record<string, string>;
+  const map = new Map<number, string>();
+  for (const [idStr, name] of Object.entries(json)) {
+    const id = Number(idStr);
+    if (Number.isFinite(id) && typeof name === "string") map.set(id, name);
+  }
+  oddsPapiParticipants = map;
+  return map;
+}
+
+/** Pick a sharp triple from a fixture's bookmakerOdds. Returns null if neither
+ *  pinnacle nor sbobet has all three 1X2 outcomes priced and active. */
+function parseOddsPapiTriple(
+  fixture: OddsPapiFixture
+): { h: number; d: number; a: number; book: string; sharp: boolean } | null {
+  const odds = fixture.bookmakerOdds ?? {};
+  for (const book of ODDSPAPI_SHARP_BOOKS) {
+    const entry = odds[book];
+    if (!entry?.bookmakerIsActive || entry.suspended) continue;
+    const market = entry.markets?.[ODDSPAPI_1X2_MARKET_ID];
+    if (!market?.marketActive) continue;
+    const outcomes = market.outcomes ?? {};
+    const price = (id: string): number => {
+      const player = outcomes[id]?.players?.["0"];
+      return player && player.active !== false ? Number(player.price) : NaN;
+    };
+    const h = price(ODDSPAPI_1X2_HOME_OUTCOME);
+    const d = price(ODDSPAPI_1X2_DRAW_OUTCOME);
+    const a = price(ODDSPAPI_1X2_AWAY_OUTCOME);
+    if ([h, d, a].every(Number.isFinite)) return { h, d, a, book, sharp: true };
+  }
+  return null;
+}
+
+export function makeOddsPapiProvider(apiKey: string | undefined): OddsProvider {
+  return {
+    name: "oddspapi",
+    tier: 4,
+    isSharp: true,
+    hasQuota: () => !!apiKey,
+    async fetch(home, away, league, kickoff) {
+      if (!apiKey) return null;
+      const tournamentId = ODDSPAPI_TOURNAMENT_IDS[league];
+      if (!tournamentId) return null; // league not mapped — skip
+
+      const participants = await primeOddsPapiParticipants(apiKey);
+      if (!participants) return null;
+
+      const res = await fetch(
+        `${ODDSPAPI_BASE}/v4/odds-by-tournaments?bookmaker=pinnacle&tournamentIds=${tournamentId}&apiKey=${encodeURIComponent(apiKey)}`,
+        { signal: AbortSignal.timeout(20_000) }
+      );
+      if (!res.ok) {
+        if (res.status === 429) throw new Error("oddspapi: quota exhausted");
+        return null;
+      }
+      const fixtures = (await res.json()) as OddsPapiFixture[];
+      if (!Array.isArray(fixtures)) return null;
+
+      const date = kickoff.slice(0, 10);
+      const fixture = fixtures.find((f) => {
+        if (!f.hasOdds || !f.startTime?.startsWith(date)) return false;
+        const homeName = participants.get(Number(f.participant1Id));
+        const awayName = participants.get(Number(f.participant2Id));
+        return !!homeName && !!awayName && namesMatch(homeName, home) && namesMatch(awayName, away);
+      });
+      if (!fixture) return null;
+
+      const parsed = parseOddsPapiTriple(fixture);
+      if (!parsed) return null;
+      const valid = validateTriple(parsed.h, parsed.d, parsed.a);
+      if (!valid) return null;
+
+      return {
+        home: parsed.h,
+        draw: parsed.d,
+        away: parsed.a,
+        confidence: 0.85,
+        sources: [`oddspapi:${parsed.book}`],
+        overround: valid.overround,
+        provider: "oddspapi",
+        isSharp: parsed.sharp,
+      };
+    },
+  };
+}
+
+// ── SportyBet sidecar (tier 6, soft, zero-network) ────────────────────────────
+// Reads 1X2 odds from .tmp/fixtures/sportybet_today.json, which scrape_fixtures.py
+// populates via the anonymous factsCenter/event API. No rate-limit risk — pure
+// file I/O. Acts as the free floor before the Gemini/web-search degraded path.
+// Overround threshold is relaxed to 0.25 because retail books carry larger margins
+// than the sharp sources above; the engine treats this result as "degraded".
+
+const SB_MAX_OVERROUND = 0.25;
+
+interface SbSidecarEvent {
+  home: string;
+  away: string;
+  odds?: {
+    "1x2"?: { home?: number | null; draw?: number | null; away?: number | null } | null;
+  } | null;
+}
+interface SbSidecarFile {
+  date?: string;
+  events?: SbSidecarEvent[];
+}
+
+/** Validate a SportyBet 1X2 triple (wider overround tolerance for retail book). */
+function validateSbTriple(h: number, d: number, a: number): { overround: number } | null {
+  for (const v of [h, d, a]) {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < MIN_PRICE || v > MAX_PRICE) {
+      return null;
+    }
+  }
+  const overround = 1 / h + 1 / d + 1 / a - 1;
+  if (overround < MIN_OVERROUND || overround > SB_MAX_OVERROUND) return null;
+  return { overround };
+}
+
+export function makeSportyBetSidecarProvider(sidecarPath: string): OddsProvider {
+  return {
+    name: "sportybet-sidecar",
+    tier: 6,
+    isSharp: false,
+    hasQuota: () => true, // always available — file read, no API key needed
+    async fetch(home, away, _league, kickoff) {
+      let raw: SbSidecarFile;
+      try {
+        raw = JSON.parse(await readFile(sidecarPath, "utf8")) as SbSidecarFile;
+      } catch {
+        return null; // sidecar absent (--no-playwright run or first boot)
+      }
+      const today = kickoff.slice(0, 10);
+      if (raw.date !== today || !Array.isArray(raw.events)) return null;
+
+      const ev = raw.events.find((e) => namesMatch(e.home, home) && namesMatch(e.away, away));
+      if (!ev?.odds?.["1x2"]) return null;
+
+      const o1x2 = ev.odds["1x2"];
+      const h = Number(o1x2?.home ?? NaN);
+      const d = Number(o1x2?.draw ?? NaN);
+      const a = Number(o1x2?.away ?? NaN);
+
+      const valid = validateSbTriple(h, d, a);
+      if (!valid) return null;
+
+      return {
+        home: h,
+        draw: d,
+        away: a,
+        confidence: 0.62,
+        sources: ["sportybet-sidecar"],
+        overround: valid.overround,
+        provider: "sportybet-sidecar",
+        isSharp: false,
+      };
     },
   };
 }
 
 export interface OddsProviderKeys {
-  oddsPapiKey?: string;
+  sharpApiIoKey?: string;
   apiFootballKey?: string;
+  oddsApiIoKey?: string;
+  oddsPapiKey?: string;
   sportsGameOddsKey?: string;
-  rapidOddsApiKey?: string;
-  bsdKey?: string;
+  /** Override sidecar file path — defaults to .tmp/fixtures/sportybet_today.json. */
+  sportyBetSidecarPath?: string;
 }
 
 /** Build the full provider registry in tier order. */
 export function buildOddsProviders(keys: OddsProviderKeys): OddsProvider[] {
   return [
-    makeOddsPapiProvider(keys.oddsPapiKey),
+    makeSharpApiIoProvider(keys.sharpApiIoKey),
     makeApiFootballProvider(keys.apiFootballKey),
-    makeStubProvider("sportsgameodds", 4, true, keys.sportsGameOddsKey),
-    makeStubProvider("rapidoddsapi", 5, false, keys.rapidOddsApiKey),
-    makeStubProvider("bsd", 6, false, keys.bsdKey),
+    makeOddsApiIoProvider(keys.oddsApiIoKey),
+    makeOddsPapiProvider(keys.oddsPapiKey),
+    makeSportsGameOddsProvider(keys.sportsGameOddsKey),
+    makeSportyBetSidecarProvider(keys.sportyBetSidecarPath ?? SPORTYBET_SIDECAR_PATH),
   ].sort((a, b) => a.tier - b.tier);
 }
 

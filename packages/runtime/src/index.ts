@@ -31,3 +31,27 @@ export type { ResolveResult } from "./resolveFixtures.js";
 export { computeRealisedClv, formatClv, resolveRecords } from "./resolveFixtures.js";
 export type { PuntResult } from "./runPunt.js";
 export { formatPuntResult, runPuntAnalysis } from "./runPunt.js";
+export type {
+  SelectionCandidate,
+  SelectionResult,
+  SelectionStats,
+  SportyBetIndex,
+} from "./selectFixtures.js";
+export {
+  DEFAULT_MAX_FIXTURES_PER_RUN,
+  loadSportyBetIndex,
+  ORACLE_PRIORITY_LEAGUES,
+  scoreFixture,
+  selectFixtures,
+  sidecarKey,
+} from "./selectFixtures.js";
+export type { GoalsLeg, GoalsSelectionResult, GoalsSelectOptions } from "./selectGoals.js";
+export {
+  DEFAULT_GOALS_MIN_CONFIDENCE,
+  DEFAULT_GOALS_MIN_IMPLIED,
+  DEFAULT_GOALS_TARGET_LEGS,
+  GOALS_MARKETS,
+  goalsDataGate,
+  pickSafestGoalsLeg,
+  selectGoalsAccumulator,
+} from "./selectGoals.js";

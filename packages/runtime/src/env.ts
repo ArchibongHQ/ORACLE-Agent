@@ -3,11 +3,24 @@
 import { readFileSync } from "node:fs";
 import type { AgentError, OracleConfig } from "@oracle/engine";
 import { detectHardware, isGpuCapable } from "./hardware.js";
+import { DEFAULT_MAX_FIXTURES_PER_RUN } from "./selectFixtures.js";
+import {
+  DEFAULT_GOALS_MIN_CONFIDENCE,
+  DEFAULT_GOALS_MIN_IMPLIED,
+  DEFAULT_GOALS_TARGET_LEGS,
+} from "./selectGoals.js";
 
-/** Parse a flat KEY=VALUE .env file into a record. Missing file → {} (never throws). */
+/**
+ * Parse a flat KEY=VALUE .env file into a record, then merge Railway process env on top.
+ * On Railway, RAILWAY_ENVIRONMENT is injected automatically — we use it to promote the
+ * three variables that are throttled locally (concurrency, swarm, booking) to cloud values,
+ * unless they are already explicitly set in Railway's Variables panel.
+ * Missing file → {} (never throws).
+ */
 export function loadEnv(path: string): Record<string, string> {
+  let fromFile: Record<string, string> = {};
   try {
-    return Object.fromEntries(
+    fromFile = Object.fromEntries(
       readFileSync(path, "utf8")
         .split("\n")
         .filter((l) => l.includes("=") && !l.startsWith("#"))
@@ -17,8 +30,34 @@ export function loadEnv(path: string): Record<string, string> {
         })
     );
   } catch {
-    return {};
+    /* no .env file — Railway supplies everything via process.env */
   }
+
+  // On Railway, process.env is the source of truth (Variables panel).
+  // Only merge process.env when actually running on Railway — locally, .env is authoritative
+  // so shell variables don't silently override developer config.
+  // Only promote to cloud-defaults when RAILWAY_ENVIRONMENT is exactly "production"
+  // so that staging/PR-preview deployments keep safe conservative values.
+  const railwayEnv = process.env.RAILWAY_ENVIRONMENT;
+  const isCloud = !!(railwayEnv ?? process.env.RAILWAY_PROJECT_ID);
+  const isProductionCloud =
+    railwayEnv === "production" || (!railwayEnv && !!process.env.RAILWAY_PROJECT_ID);
+  const merged: Record<string, string> = { ...fromFile };
+  if (isCloud) {
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined) merged[k] = v;
+    }
+  }
+
+  // Auto-promote throttled local defaults → cloud values only in production.
+  // Explicit Railway Variables panel entries always win (checked via process.env).
+  if (isProductionCloud) {
+    if (!process.env.BATCH_CONCURRENCY) merged.BATCH_CONCURRENCY = "8";
+    if (!process.env.ENABLE_SWARM) merged.ENABLE_SWARM = "true";
+    if (!process.env.ENABLE_SPORTYBET_BOOKING) merged.ENABLE_SPORTYBET_BOOKING = "true";
+  }
+
+  return merged;
 }
 
 /** Key diagnostics — maps config field → .env var name + human description. */
@@ -72,11 +111,35 @@ export function validateConfig(config: OracleConfig): AgentError[] {
   );
 }
 
-/** Build an OracleConfig from a parsed env record. Defaults: bankroll=1000, CONFIDENCE_WEIGHTED. */
+/** True when running inside a Railway deployment (Railway injects this automatically). */
+function isRailway(env: Record<string, string>): boolean {
+  return !!env.RAILWAY_ENVIRONMENT || !!env.RAILWAY_PROJECT_ID;
+}
+
+/** Build an OracleConfig from a parsed env record. Defaults: bankroll=1000, CONFIDENCE_WEIGHTED.
+ *  On Railway, resource-throttled local defaults are automatically promoted to cloud values
+ *  unless the env var is explicitly overridden in the Railway Variables panel. */
 export function buildConfig(env: Record<string, string>): OracleConfig {
   const hw = detectHardware();
   const gpuCapable = isGpuCapable(hw);
+  const cloud = isRailway(env);
   const autoResearchRequested = env.ORACLE_AUTORESEARCH_ENABLED?.toLowerCase() === "true";
+  const maxFixturesRaw = Math.floor(
+    Number(env.MAX_FIXTURES_PER_RUN ?? DEFAULT_MAX_FIXTURES_PER_RUN)
+  );
+
+  // On Railway: promote conservative local defaults → full cloud values.
+  // Explicit env vars always win — Railway Variables panel overrides these.
+  const batchConcurrency = Number(env.BATCH_CONCURRENCY ?? (cloud ? 8 : 3));
+  const enableSwarmFlag =
+    env.ENABLE_SWARM !== undefined ? env.ENABLE_SWARM.toLowerCase() === "true" : cloud; // default true on Railway, false locally
+
+  if (cloud) {
+    process.stdout.write(
+      `[config] Railway environment detected — cloud defaults active` +
+        ` (concurrency=${batchConcurrency}, swarm=${enableSwarmFlag})\n`
+    );
+  }
 
   return {
     geminiApiKey: env.GEMINI_API_KEY ?? "",
@@ -88,19 +151,32 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     footballDataApiKey: env.FOOTBALL_DATA_API_KEY,
     apiFootballKey: env.API_FOOTBALL_KEY,
     oddsApiKey: env.ODDS_API_KEY,
+    sharpApiIoKey: env.SHARPAPI_IO_KEY,
+    oddsApiIoKey: env.ODDS_API_IO_KEY,
     oddsPapiKey: env.ODDSPAPI_KEY,
+    sportsGameOddsKey: env.SPORTS_GAMEODDS_KEY,
     bankroll: Number(env.BANKROLL ?? 1000),
     rankingMode: "CONFIDENCE_WEIGHTED",
     // Web search fallback for odds when Odds API fails
     enableWebSearchOddsFallback: env.ENABLE_WEB_SEARCH_FALLBACK?.toLowerCase() !== "false",
     webOddsMinConsensus: Number(env.WEB_ODDS_MIN_CONSENSUS ?? 3),
     webOddsVarianceThreshold: Number(env.WEB_ODDS_VARIANCE_THRESHOLD ?? 0.025),
-    // T0 news intel + swarm — opt-in; off unless the key is present and the flag set
-    enableNewsIntel: env.ENABLE_NEWS_INTEL?.toLowerCase() === "true" && !!env.PERPLEXITY_API_KEY,
-    enableSwarm:
-      env.ENABLE_SWARM?.toLowerCase() === "true" &&
-      (!!env.KIMI_API_KEY || !!env.OPENROUTER_API_KEY),
-    batchConcurrency: Number(env.BATCH_CONCURRENCY ?? 8),
+    // T0 news intel + swarm — opt-in; on when the flag is set AND any provider key
+    // is present. Gemini-only enables the Google AI-Mode fallback (no Perplexity needed).
+    enableNewsIntel:
+      env.ENABLE_NEWS_INTEL?.toLowerCase() === "true" &&
+      (!!env.PERPLEXITY_API_KEY || !!env.GEMINI_API_KEY),
+    enableSwarm: enableSwarmFlag && (!!env.KIMI_API_KEY || !!env.OPENROUTER_API_KEY),
+    batchConcurrency,
+    // Pre-analysis fixture cap — bounds per-run odds/LLM quota spend
+    maxFixturesPerRun:
+      Number.isFinite(maxFixturesRaw) && maxFixturesRaw >= 1
+        ? maxFixturesRaw
+        : DEFAULT_MAX_FIXTURES_PER_RUN,
+    // Goals-only accumulator pipeline thresholds (runGoalsBatch)
+    goalsMinConfidence: Number(env.GOALS_MIN_CONFIDENCE ?? DEFAULT_GOALS_MIN_CONFIDENCE),
+    goalsMinImplied: Number(env.GOALS_MIN_IMPLIED ?? DEFAULT_GOALS_MIN_IMPLIED),
+    goalsTargetLegs: Math.floor(Number(env.GOALS_TARGET_LEGS ?? DEFAULT_GOALS_TARGET_LEGS)),
     // Hardware capabilities — detected at startup, never hardcoded
     hasNvidiaGpu: hw.hasNvidiaGpu,
     isVps: hw.isVps,

@@ -1,11 +1,18 @@
-/** T0 — News / team intelligence layer (Perplexity Sonar).
- *  Complements Gemini acquisition: Gemini grounding finds ODDS; Sonar finds NEWS —
+/** T0 — News / team intelligence layer.
+ *  Complements Gemini acquisition: Gemini grounding finds ODDS; this layer finds NEWS —
  *  injury confirmations, suspensions, lineup leaks, motivation + travel flags, with citations.
  *
- *  OpenAI-compatible endpoint (https://api.perplexity.ai/chat/completions).
- *  Primary model: sonar-pro; falls back to sonar on error.
- *  Returns null when no key, low confidence (<0.4), or any failure — NEVER throws.
+ *  Two acquisition paths, merged by `fetchNewsEnsemble`:
+ *    1. Perplexity Sonar (OpenAI-compatible, https://api.perplexity.ai/chat/completions).
+ *    2. Google "AI Mode" scrape (Playwright) reshaped into structured JSON via Gemini —
+ *       the no-Perplexity-key fallback. Mirrors the fetchOddsViaGemini reshape pattern.
+ *
+ *  Every path returns null when no key, low confidence (<0.4), or any failure — NEVER throws.
  *  Verified June 2026: sonar/sonar-pro current; $1/$1 and $3/$15 per 1M tokens. */
+
+import { GoogleGenAI } from "@google/genai";
+import { scrapeGoogleAiMode } from "@oracle/research";
+import { MODELS } from "./cascade.js";
 
 export interface NewsIntelResult {
   injuries: string[]; // confirmed absences
@@ -13,9 +20,10 @@ export interface NewsIntelResult {
   lineupHints: string[]; // pre-match confirmed starters / formation
   motivationFlags: string[]; // trophy chase, relegation pressure, cup hangover
   travelFlags: string[]; // back-to-back away legs, long travel
-  sources: string[]; // Perplexity citation URLs
+  sources: string[]; // citation URLs
   confidence: number; // 0–1; low = no relevant news found
-  model: string;
+  model: string; // provider/model that produced this result
+  observedAt: string; // ISO timestamp of acquisition (recency anchor)
 }
 
 const ENDPOINT = "https://api.perplexity.ai/chat/completions";
@@ -113,7 +121,8 @@ export async function fetchNewsIntelligence(
         travelFlags: asStringArray(obj.travelFlags),
         sources: result.citations.slice(0, 10),
         confidence,
-        model,
+        model: `perplexity-${model}`,
+        observedAt: new Date().toISOString(),
       };
     } catch {
       // cascade to next model
@@ -121,4 +130,136 @@ export async function fetchNewsIntelligence(
   }
 
   return null;
+}
+
+const GEMINI_RESHAPE_SYSTEM = `You are a football pre-match intelligence extractor. You are given raw search-result prose about a match. Extract ONLY confirmed, sourced facts into the requested JSON. Never speculate. Return ONLY valid JSON, no markdown.`;
+
+/** fetchNewsViaGoogleAiMode — Perplexity-absent fallback.
+ *  Scrapes Google "AI Mode" for team news, then reshapes the prose into the exact
+ *  NewsIntelResult JSON via Gemini (mirrors fetchOddsViaGemini). Non-fatal → null. */
+export async function fetchNewsViaGoogleAiMode(
+  home: string,
+  away: string,
+  league: string,
+  kickoff: string,
+  geminiKey: string
+): Promise<NewsIntelResult | null> {
+  if (!geminiKey) return null;
+
+  const date = kickoff.slice(0, 10);
+  const query = `${home} vs ${away} ${league} ${date} confirmed team news injuries suspensions lineup`;
+
+  const scraped = await scrapeGoogleAiMode(query);
+  if (!scraped || !scraped.text) return null;
+
+  const reshapePrompt = `${buildPrompt(home, away, league, kickoff)}
+
+Use ONLY the following researched prose as your source material (do not invent facts beyond it):
+"""
+${scraped.text}
+"""`;
+
+  const ai = new GoogleGenAI({ apiKey: geminiKey });
+  const cascade = [MODELS.GEMINI_FLASH, MODELS.GEMINI_FLASH_LITE];
+
+  for (const modelId of cascade) {
+    try {
+      const result = await ai.models.generateContent({
+        model: modelId,
+        contents: `${GEMINI_RESHAPE_SYSTEM}\n\n${reshapePrompt}`,
+        config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } },
+      });
+
+      const text = (result.text ?? "").trim();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) continue;
+
+      const obj = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+      const confidence = Math.max(0, Math.min(1, Number(obj.confidence ?? 0)));
+      if (confidence < MIN_CONFIDENCE) return null;
+
+      return {
+        injuries: asStringArray(obj.injuries),
+        suspensions: asStringArray(obj.suspensions),
+        lineupHints: asStringArray(obj.lineupHints),
+        motivationFlags: asStringArray(obj.motivationFlags),
+        travelFlags: asStringArray(obj.travelFlags),
+        sources: scraped.sources.slice(0, 10),
+        confidence,
+        model: `google-ai-mode-${modelId}`,
+        observedAt: scraped.observedAt,
+      };
+    } catch {
+      // cascade to next model
+    }
+  }
+
+  return null;
+}
+
+/** Merge two NewsIntelResults: union items, prefer more-recent observedAt, and
+ *  boost confidence when both providers independently report the same fact
+ *  (ensemble verification). */
+function mergeResults(a: NewsIntelResult, b: NewsIntelResult): NewsIntelResult {
+  const dedupe = (xs: string[]): string[] =>
+    Array.from(new Set(xs.map((s) => s.trim()).filter(Boolean)));
+  const agreement = (xs: string[], ys: string[]): number => {
+    const ly = ys.map((y) => y.toLowerCase());
+    return xs.filter((x) =>
+      ly.some((y) => y.includes(x.toLowerCase()) || x.toLowerCase().includes(y))
+    ).length;
+  };
+
+  const overlaps =
+    agreement(a.injuries, b.injuries) +
+    agreement(a.suspensions, b.suspensions) +
+    agreement(a.lineupHints, b.lineupHints);
+
+  // Base on the stronger result, then boost for cross-provider agreement.
+  const base = Math.max(a.confidence, b.confidence);
+  const boost = Math.min(0.2, overlaps * 0.05);
+  const confidence = Math.min(1, base + boost);
+
+  const newer = a.observedAt >= b.observedAt ? a : b;
+
+  return {
+    injuries: dedupe([...a.injuries, ...b.injuries]),
+    suspensions: dedupe([...a.suspensions, ...b.suspensions]),
+    lineupHints: dedupe([...a.lineupHints, ...b.lineupHints]),
+    motivationFlags: dedupe([...a.motivationFlags, ...b.motivationFlags]),
+    travelFlags: dedupe([...a.travelFlags, ...b.travelFlags]),
+    sources: dedupe([...a.sources, ...b.sources]).slice(0, 14),
+    confidence,
+    model: "ensemble",
+    observedAt: newer.observedAt,
+  };
+}
+
+/** fetchNewsEnsemble — run available providers in parallel and merge with
+ *  recency + agreement weighting. Perplexity (if key) + Google AI-Mode (if geminiKey).
+ *  Returns the single best/merged NewsIntelResult, or null if all paths yield nothing. */
+export async function fetchNewsEnsemble(
+  home: string,
+  away: string,
+  league: string,
+  kickoff: string,
+  opts: { perplexityKey?: string; geminiKey?: string }
+): Promise<NewsIntelResult | null> {
+  const tasks: Array<Promise<NewsIntelResult | null>> = [];
+  if (opts.perplexityKey)
+    tasks.push(fetchNewsIntelligence(home, away, league, kickoff, opts.perplexityKey));
+  if (opts.geminiKey)
+    tasks.push(fetchNewsViaGoogleAiMode(home, away, league, kickoff, opts.geminiKey));
+  if (!tasks.length) return null;
+
+  const settled = await Promise.allSettled(tasks);
+  const results = settled
+    .filter((s): s is PromiseFulfilledResult<NewsIntelResult | null> => s.status === "fulfilled")
+    .map((s) => s.value)
+    .filter((r): r is NewsIntelResult => r !== null);
+
+  if (!results.length) return null;
+  if (results.length === 1) return results[0] ?? null;
+
+  return results.reduce((acc, r) => mergeResults(acc, r));
 }

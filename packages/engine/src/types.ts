@@ -32,11 +32,16 @@ export interface SoftContextItem {
   observedAt: string; // ISO-8601; must be < kickoff (anti-leakage)
 }
 
+/** Edge confidence grade — replaces "NO_BET" literal across all output surfaces.
+ *  STRONG: EV ≥ 0.05; LEAN: 0 < EV < 0.05; NO_EDGE: EV ≤ 0 (honest no-edge verdict). */
+export type ConfidenceGrade = "STRONG" | "LEAN" | "NO_EDGE";
+
 /** The structured JSON the LLM decision layer must return (PRD §6, Appendix B). */
 export interface DecisionOutput {
-  primaryPick: PickRef | "NO_BET";
+  primaryPick: PickRef;
   altPick?: PickRef;
-  confidence: number; // 0–1
+  confidence: number; // 0–1 (numeric, for backward compat with existing callers)
+  grade: ConfidenceGrade; // human-facing label derived from EV
   rationale: string;
   rejectedAndWhy: string[];
 }
@@ -88,7 +93,10 @@ export interface OracleConfig {
   footballDataApiKey?: string;
   apiFootballKey?: string;
   oddsApiKey?: string;
-  oddsPapiKey?: string; // structured free-odds fallback (OddsPapi, sharp books)
+  sharpApiIoKey?: string; // structured free-odds fallback (SharpAPI.io, sharp books)
+  oddsApiIoKey?: string; // structured free-odds fallback (Odds-API.io, 100 req/hr free)
+  oddsPapiKey?: string; // structured free-odds fallback (OddsPapi v4, Pinnacle/SBOBet)
+  sportsGameOddsKey?: string; // structured free-odds fallback (SportsGameOdds, Pinnacle)
   bankroll: number;
   rankingMode?: RankingMode; // default CONFIDENCE_WEIGHTED
   useBivariatePoisson?: boolean; // PRD §8.1, default false
@@ -114,6 +122,11 @@ export interface OracleConfig {
   enableNewsIntel?: boolean; // T0: Perplexity Sonar news/injury/lineup intelligence
   enableSwarm?: boolean; // Level-2: per-fixture sub-agent swarm (APEX/PRIME)
   batchConcurrency?: number; // Level-1: max concurrent fixtures (default 8)
+  maxFixturesPerRun?: number; // pre-analysis fixture selection cap (default 50)
+  // Goals-only accumulator pipeline (runGoalsBatch) — gates per-leg selection
+  goalsMinConfidence?: number; // model `mp` floor per goals leg (default 0.75)
+  goalsMinImplied?: number; // implied-prob floor per goals leg (default 0.70)
+  goalsTargetLegs?: number; // max legs in the goals accumulator (default 39)
   // Hardware capabilities (populated at runtime boundary, never inside @oracle/engine)
   isVps?: boolean; // ORACLE_IS_VPS=true or systemd-detect-virt detects VM
   hasNvidiaGpu?: boolean; // nvidia-smi available and returned a GPU name
@@ -286,7 +299,8 @@ export interface FixtureOutcome {
   league: string;
   kickoff: string;
   status: "ok" | "error";
-  pick: PickRef | "NO_BET" | null;
+  pick: PickRef | null;
+  grade: ConfidenceGrade | null;
   confidence: number | null;
   errorCode: AgentErrorCode | null;
   errorMessage: string | null;

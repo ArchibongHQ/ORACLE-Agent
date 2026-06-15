@@ -7,7 +7,8 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "lint": "turbo run lint"
+    "lint": "turbo run lint",
+    "start:local": "node scripts/start-local.js"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",

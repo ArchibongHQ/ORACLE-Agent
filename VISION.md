@@ -37,7 +37,8 @@ evidence-backed betting intelligence — autonomously and reliably.
         Kaggle Phase 2 (FBref PPDA, injuries, referee strictness, match-xG wired into GBM),
         BTB gzip parser (54k matches), all 15 Kaggle dataset dirs downloaded + processed,
         GBM retrained with 110-feature matrix (top5 delta -0.0009, base delta +0.0000 — advisory),
-        API-Football lineups wired into decision-layer soft context (enrichWithLineups + worker pre-batch fetch)
+        API-Football lineups wired into decision-layer soft context (enrichWithLineups + worker pre-batch fetch),
+        free-odds fallback tiers 4–5 wired (Odds-API.io 100 req/hr + SportsGameOdds 1,000 obj/mo, Pinnacle-sharp)
 - Now: Top up API credits (Anthropic + Gemini) → run live batch → monitor World Cup window
 - Next: Consider Pinnacle odds API for higher-quality OTS coverage (BTB skews non-top5)
 - Later: Multi-user tier, live odds feed integration

@@ -43,7 +43,11 @@ function fakeBatch(overrides: Partial<Record<string, unknown>> = {}) {
         away: "B",
         league: "L",
         kickoff: "k",
-        decision: { primaryPick: "NO_BET", confidence: 0 },
+        decision: {
+          primaryPick: { market: "1x2", side: "home", odds: 1.5 },
+          grade: "NO_EDGE",
+          confidence: 0,
+        },
       },
     ],
     ...overrides,
@@ -72,7 +76,7 @@ const sampleSummary: BatchSummary = {
 };
 
 describe("summarizeBatch", () => {
-  it("extracts only actionable (non-NO_BET) picks", () => {
+  it("extracts only actionable (non-NO_EDGE) picks", () => {
     const s = summarizeBatch(fakeBatch(), "http://x/r");
     expect(s.actionable).toHaveLength(1);
     expect(s.actionable[0]?.home).toBe("Arsenal");

@@ -50,12 +50,33 @@ Manual: `node apps/worker/dist/index.js --run-now` (triggers batch then resoluti
 - **Rate limit (429)**: classify as `RATE_LIMITED`, retry with exponential backoff (§11A)
 - **Already resolved**: `upsertBulk` on `fixtureId` ensures idempotency — safe to re-run
 
+## Structured Free-API Odds Fallback (v2026.10+)
+
+Before any web-search synthesis, the gap-fill tries the structured provider chain in
+`packages/runtime/src/oddsProviders.ts` (tier order, stop at first sharp price):
+
+| Tier | Provider | Env key | Free quota | Sharp? |
+| --- | --- | --- | --- | --- |
+| 2 | SharpAPI.io | `SHARPAPI_IO_KEY` | trial tier (api.sharpapi.io) | yes (Pinnacle/SBOBet/BetOnline) |
+| 3 | API-Football | `API_FOOTBALL_KEY` | permanent free | no (net consensus) |
+| 4 | Odds-API.io | `ODDS_API_IO_KEY` | 100 req/hr | yes when Pinnacle/SingBet present |
+| 5 | SportsGameOdds | `SPORTS_GAMEODDS_KEY` | 1,000 objects/mo | yes (Pinnacle), American-format odds |
+
+Quota notes learned at integration (2026-06-10):
+
+- Tier 4 runs before tier 5 on purpose — SportsGameOdds bills per *object returned*
+  (1,000/mo is tiny), so the generous Odds-API.io quota absorbs the sharp-hunting traffic.
+- SportsGameOdds responses use American odds (`"-112"`); the provider converts to decimal.
+- Missing key = tier silently skipped; 429 = provider treated as quota-exhausted for that run.
+- SportsGameOdds 3-way moneyline oddIDs (`points-*-game-ml3way-*`) are schema-inferred from
+  docs — machine-verify against one live response when the key first lands.
+
 ## Web Search Fallback (v2026.9+)
 
 When the Odds API fails with quota exhaustion (429) during batch fixture fetch:
 
 1. **Primary source**: Odds API (as above) → live odds from Pinnacle, BetFair, etc.
-2. **Fallback trigger**: Odds API returns 429 or timeout after all sport keys attempted
+2. **Fallback trigger**: Odds API returns 429 or timeout after all sport keys attempted; structured provider chain (above) also empty
 3. **Web search synthesis**: Invoke `tools/scrape_live_odds.py --fixtures <fixture_cache>` to scrape live odds from:
    - Flashscore, BetExplorer, SofaScore (Playwright-based dynamic sites)
    - Betfair public API (no auth required)

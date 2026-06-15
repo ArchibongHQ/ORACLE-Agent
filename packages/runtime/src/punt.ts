@@ -6,7 +6,14 @@
 import type { LoadedSlip, RawLeg } from "@oracle/booking";
 import type { BatchJobResult, BatchResult, FixtureJob, PickRef } from "@oracle/engine";
 import type { ActionablePick } from "@oracle/notify";
-import { fetchFixtureByName } from "./fixtures.js";
+import type { StoragePort } from "@oracle/storage";
+import { fetchFixtureByName, geminiOddsGapFill } from "./fixtures.js";
+import { enrichWithH2H } from "./h2h.js";
+import { enrichWithLineups } from "./lineups.js";
+import { enrichWithNewsIntel } from "./newsIntel.js";
+import type { SportyBetEventDetail } from "./selectFixtures.js";
+import { loadSportyBetIndex, sidecarKey } from "./selectFixtures.js";
+import { flattenSidecarOdds } from "./sidecarOdds.js";
 
 /** Minimum confidence margin by which ORACLE must beat the punter's implied edge to override
  *  his pick. Tunable in one place. 0.05 = ORACLE needs ≥5 pts more model confidence. */
@@ -123,12 +130,57 @@ function nameMatches(a: string, b: string): boolean {
 
 // ── Step 2: raw legs → analyzable jobs ───────────────────────────────────────────
 
+/** Build a minimal FixtureJob from a SportyBet sidecar event when the odds-api
+ *  has no coverage for the fixture. Uses flattenSidecarOdds() to translate ALL
+ *  sidecar markets (1x2, OU1.5/2.5/3.5, BTTS, DC, DNB, AH) into the flat key
+ *  map scanMarkets() reads so EV > 0 candidates exist beyond just 1x2. */
+function jobFromSidecar(
+  raw: RawLeg,
+  detail: SportyBetEventDetail,
+  kickoff: string,
+  league: string
+): FixtureJob {
+  const flat = flattenSidecarOdds(detail);
+  const hasOdds = flat["home"] !== undefined && flat["away"] !== undefined;
+
+  return {
+    home: raw.home,
+    away: raw.away,
+    league,
+    kickoff,
+    state: {
+      pipeline: {
+        fetched: {
+          ...(hasOdds ? { odds: flat } : {}),
+          sportyBetStats: detail.stats,
+          sportyBetOdds: detail.odds,
+          sportyBetStatsCoverage: detail.statscoverage,
+        },
+      },
+    },
+  };
+}
+
 /** Resolve each raw leg to a FixtureJob (cache-first via fetchFixtureByName).
- *  job === null marks a no-coverage pass-through leg. */
+ *  Falls back to a sidecar-constructed job when the odds-api has no coverage,
+ *  so every leg the punter selected gets analysed — not silently dropped.
+ *  Final fallback: Gemini gap-fill for legs still null after sidecar (Fix #7).
+ *  Also merges sidecar stats into odds-api jobs so the engine has Stage-2/3
+ *  context for every leg it analyses.
+ *  job === null only when neither the odds-api, sidecar, nor Gemini covers the fixture. */
 export async function loadedSlipToJobs(
   slip: LoadedSlip,
-  deps: { oddsApiKey: string | undefined; geminiApiKey?: string | undefined }
+  deps: {
+    oddsApiKey: string | undefined;
+    geminiApiKey?: string | undefined;
+    footballDataApiKey?: string | undefined;
+    perplexityApiKey?: string | undefined;
+    storage?: StoragePort | undefined;
+  }
 ): Promise<PuntLeg[]> {
+  const today = new Date().toISOString().slice(0, 10);
+  const sidecar = await loadSportyBetIndex(today);
+
   const out: PuntLeg[] = [];
   for (const raw of slip.legs) {
     let job: FixtureJob | null = null;
@@ -143,6 +195,96 @@ export async function loadedSlipToJobs(
     } catch {
       job = null;
     }
+
+    // When the odds-api missed, fall back to a job built from the sidecar so no
+    // fixture is silently dropped — the sidecar has team names, league, kickoff,
+    // and Sportradar stats for every event SportyBet lists today.
+    if (!job && sidecar) {
+      const key = sidecarKey(raw.home, raw.away);
+      const detail = sidecar.detailByKey.get(key);
+      if (!detail) {
+        // Try namesMatch fallback for fuzzy team-name variants
+        const ev = sidecar.events.find(
+          (e) => nameMatches(e.home, raw.home) && nameMatches(e.away, raw.away)
+        );
+        if (ev?.detail) {
+          job = jobFromSidecar(
+            raw,
+            ev.detail,
+            ev.kickoff_utc ?? `${today}T12:00:00Z`,
+            ev.league ?? raw.league ?? "Unknown"
+          );
+        }
+      } else {
+        const ev = sidecar.events.find((e) => sidecarKey(e.home, e.away) === key);
+        job = jobFromSidecar(
+          raw,
+          detail,
+          ev?.kickoff_utc ?? `${today}T12:00:00Z`,
+          ev?.league ?? raw.league ?? "Unknown"
+        );
+      }
+    }
+
+    // Fix #7: Gemini gap-fill for legs still null after odds-api + sidecar.
+    // Tries the structured provider chain first (same as batch gap-fill), then
+    // Gemini Search prose. Marks the leg resolved so it gets analysed rather than
+    // passing through as NO_COVERAGE.
+    if (!job && deps.geminiApiKey) {
+      try {
+        const league = raw.league || "FIFA World Cup";
+        const kickoff = `${today}T12:00:00Z`;
+        const filled = await geminiOddsGapFill(
+          [{ home: raw.home, away: raw.away, league, kickoff }],
+          deps.geminiApiKey
+        );
+        if (filled.length) job = filled[0]!;
+      } catch {
+        // gap-fill is non-fatal
+      }
+    }
+
+    // Enrich each resolved job with H2H, news intelligence, and confirmed lineups —
+    // the same chain fetchTodaysFixtures runs for the daily batch.
+    if (job) {
+      try {
+        [job] = await enrichWithH2H([job], deps.footballDataApiKey);
+        [job] = await enrichWithNewsIntel([job], {
+          perplexityApiKey: deps.perplexityApiKey,
+          geminiApiKey: deps.geminiApiKey,
+          storage: deps.storage,
+        });
+        [job] = await enrichWithLineups([job]);
+      } catch {
+        // enrichment is non-fatal — job falls through with whatever partial state it has
+      }
+    }
+
+    // Merge sidecar stats into odds-api jobs (sidecar-constructed jobs already
+    // carry this in pipeline.fetched from jobFromSidecar).
+    if (job && sidecar) {
+      const key = sidecarKey(raw.home, raw.away);
+      const detail = sidecar.detailByKey.get(key);
+      if (detail && !job.state?.pipeline?.fetched?.sportyBetStats) {
+        const existing = (job.state?.pipeline?.fetched ?? {}) as Record<string, unknown>;
+        job = {
+          ...job,
+          state: {
+            ...job.state,
+            pipeline: {
+              ...job.state?.pipeline,
+              fetched: {
+                ...existing,
+                sportyBetStats: detail.stats,
+                sportyBetOdds: detail.odds,
+                sportyBetStatsCoverage: detail.statscoverage,
+              },
+            },
+          },
+        };
+      }
+    }
+
     out.push({ raw, job });
   }
   return out;
@@ -150,18 +292,23 @@ export async function loadedSlipToJobs(
 
 // ── Step 3: counter-slip decision ────────────────────────────────────────────────
 
-/** ORACLE's actionable pick for a given fixture, if the batch produced one (not NO_BET). */
+/** ORACLE's best pick for a given fixture from the batch.
+ *  Returns the primaryPick regardless of grade — the engine always emits one
+ *  (even NO_EDGE jobs carry a best-market pick). The confidence delta in
+ *  counterSlip decides whether to override the punter's selection. */
 function findActionable(
   batch: BatchResult,
   home: string,
   away: string
-): { pick: PickRef; confidence: number } | null {
+): { pick: PickRef; confidence: number; grade: string } | null {
   for (const j of batch.jobs as BatchJobResult[]) {
     if (j.status !== "ok") continue;
     if (!nameMatches(j.home, home) || !nameMatches(j.away, away)) continue;
-    const p = j.decision.primaryPick;
-    if (p === "NO_BET") return null;
-    return { pick: p as PickRef, confidence: j.decision.confidence };
+    return {
+      pick: j.decision.primaryPick,
+      confidence: j.decision.confidence,
+      grade: j.decision.grade,
+    };
   }
   return null;
 }
@@ -191,14 +338,14 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
     const oracle = findActionable(batch, raw.home, raw.away);
     const his = rawLegToMarketSide(raw);
 
-    // ORACLE has no actionable edge (NO_BET) — keep his pick.
+    // Batch ran but this fixture produced no result row (engine error, not NO_EDGE).
     if (!oracle) {
       return {
         raw,
         verdict: "KEPT_LOW_CONVICTION",
         pick: pickFromRaw(raw),
         oracleConfidence: null,
-        note: "ORACLE returned NO_BET on this fixture",
+        note: "fixture not found in batch output",
       };
     }
 
@@ -212,12 +359,17 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
         verdict: "CONFIRMED",
         pick: { ...pickFromRaw(raw, oracle.confidence) },
         oracleConfidence: oracle.confidence,
+        note: oracle.grade === "NO_EDGE" ? "ORACLE best pick matches (no positive EV)" : undefined,
       };
     }
 
-    // ORACLE disagrees: replace only if its confidence clears the punter's implied edge by the margin.
+    // ORACLE disagrees: replace if its confidence clears the punter's implied edge by the margin,
+    // AND the grade is not NO_EDGE (we never force-swap onto a negative-EV ORACLE pick).
     const hisImplied = impliedConfidence(raw.odds);
-    if (oracle.confidence - hisImplied >= ADJUST_MIN_CONFIDENCE_DELTA) {
+    if (
+      oracle.grade !== "NO_EDGE" &&
+      oracle.confidence - hisImplied >= ADJUST_MIN_CONFIDENCE_DELTA
+    ) {
       const adjusted: ActionablePick = {
         home: raw.home,
         away: raw.away,
@@ -238,13 +390,16 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
       };
     }
 
-    // ORACLE disagrees but not strongly enough — keep his pick.
+    // ORACLE disagrees but not strongly enough, or grade is NO_EDGE — keep his pick.
     return {
       raw,
       verdict: "KEPT_LOW_CONVICTION",
       pick: pickFromRaw(raw, oracle.confidence),
       oracleConfidence: oracle.confidence,
-      note: `ORACLE edge ${(oracle.confidence - hisImplied).toFixed(3)} below ${ADJUST_MIN_CONFIDENCE_DELTA} threshold`,
+      note:
+        oracle.grade === "NO_EDGE"
+          ? `ORACLE grade NO_EDGE on this fixture — punter's pick kept`
+          : `ORACLE edge ${(oracle.confidence - hisImplied).toFixed(3)} below ${ADJUST_MIN_CONFIDENCE_DELTA} threshold`,
     };
   });
 }

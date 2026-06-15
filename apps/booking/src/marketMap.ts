@@ -28,6 +28,11 @@ export function fuzzyMatch(query: string, candidate: string): boolean {
 export function mapMarket(cat: string, side: string | null): MarketMapping | null {
   const c = normalise(cat);
   const s = normalise(side ?? "");
+  // Goal/handicap LINES must come from the RAW side — normalise() strips the
+  // decimal point, so "Over 0.5" → "over 05" and a line regex on `s` yields
+  // "05" instead of "0.5", producing a SportyBet selection that never matches.
+  const lineFrom = (raw: string | null): string | null =>
+    raw?.match(/(\d+(?:\.\d+)?)/)?.[1] ?? null;
 
   // ── 1x2 / Match Result ───────────────────────────────────────────────────
   if (c.includes("1x2") || c.includes("match result") || c.includes("full time result")) {
@@ -36,10 +41,23 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
     if (s.includes("away") || s.includes("2")) return { sportyMarket: "1X2", sportySelection: "2" };
   }
 
+  // ── Team Total (e.g. "Home Total Over 0.5") ──────────────────────────────
+  // Must precede the generic goals/total branch below — cat "team total"
+  // contains "total" and would otherwise misroute to the match-total market.
+  if (c.includes("team total")) {
+    const line = lineFrom(side);
+    if (line && (s.includes("over") || s.includes("under"))) {
+      const dir = s.includes("under") ? "Under" : "Over";
+      if (s.includes("home"))
+        return { sportyMarket: "Home Team Total", sportySelection: `${dir} ${line}` };
+      if (s.includes("away"))
+        return { sportyMarket: "Away Team Total", sportySelection: `${dir} ${line}` };
+    }
+  }
+
   // ── Goals Over/Under ─────────────────────────────────────────────────────
   if (c.includes("goal") || c.includes("o/u") || c.includes("over under") || c.includes("total")) {
-    const lineMatch = s.match(/([\d.]+)/);
-    const line = lineMatch ? lineMatch[1] : null;
+    const line = lineFrom(side);
     if (line) {
       if (s.includes("over") || s.startsWith("o"))
         return { sportyMarket: "Over/Under", sportySelection: `Over ${line}` };

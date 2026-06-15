@@ -4,7 +4,7 @@
  *  GET /reports/:date → serve a previously generated report
  *  GET /health    → liveness probe
  *
- *  Binds 127.0.0.1 by default (single power user; auth deferred to the cloud stage — PRD §1.3). */
+ *  Binds 0.0.0.0 by default for cloud deployment (set HOST=127.0.0.1 for local-only). Auth deferred — PRD §1.3. */
 
 import { readFile } from "node:fs/promises";
 import http from "node:http";
@@ -199,7 +199,7 @@ export interface ServerOptions {
 /** Start the HTTP server. Owns a single GBrainAdapter unless deps are injected (tests). */
 export function startServer(opts: ServerOptions = {}): http.Server {
   const port = opts.port ?? Number(process.env.PORT ?? 8787);
-  const host = opts.host ?? "127.0.0.1";
+  const host = opts.host ?? process.env.HOST ?? "0.0.0.0";
   const deps: WebDeps = opts.deps ?? {
     storage: new GBrainAdapter(join(ROOT, ".tmp/gbrain")),
     config: buildConfig(loadEnv(join(ROOT, ".env"))),

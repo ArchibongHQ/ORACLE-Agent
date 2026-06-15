@@ -61,9 +61,9 @@ describe("enrichWithLineups", () => {
     const soft = out[0]?.state?.telemetry?.softContext as Array<Record<string, unknown>>;
     expect(soft).toHaveLength(2);
     expect(soft[0]).toMatchObject({ kind: "lineup", source: "api-football-lineups" });
-    expect(soft[0]?.["text"]).toContain("formation 4-3-3");
-    expect(soft[0]?.["text"]).toContain("confirmed XI — Raya, Saliba, Rice");
-    expect(soft[1]?.["text"]).toContain("expected XI — Sanchez, Colwill");
+    expect(soft[0]?.text).toContain("formation 4-3-3");
+    expect(soft[0]?.text).toContain("confirmed XI — Raya, Saliba, Rice");
+    expect(soft[1]?.text).toContain("expected XI — Sanchez, Colwill");
   });
 
   it("preserves existing soft context and appends lineup items", async () => {

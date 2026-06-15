@@ -9,8 +9,8 @@
     "lint": "biome check .",
     "test": "vitest run --passWithNoTests",
     "smoke": "node --experimental-vm-modules dist/smoke.js",
-    "start": "node dist/index.js",
-    "start:now": "node dist/index.js --run-now",
+    "start": "node --max-old-space-size=512 dist/index.js",
+    "start:now": "node --max-old-space-size=512 dist/index.js --run-now",
     "refresh-kaggle": "node dist/index.js --refresh-kaggle",
     "export-store": "node dist/export-store.js",
     "import-backfill": "node dist/import-backfill.js"
