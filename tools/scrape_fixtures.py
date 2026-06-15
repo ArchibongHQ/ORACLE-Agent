@@ -1333,10 +1333,17 @@ async def run_playwright_scrapers(date_str: str) -> tuple[list[Fixture], list[di
     results: list[Fixture] = []
     counts: dict[str, int] = {}
 
+    # On local Windows, disable GPU rendering to prevent driver crashes causing hard reboots.
+    # Auto-disabled on VPS/cloud (ORACLE_IS_VPS=true or non-Windows) where GPU is not the issue.
+    _is_local_windows = sys.platform == "win32" and os.environ.get("ORACLE_IS_VPS", "").lower() != "true"
+    _pw_args = ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+    if _is_local_windows:
+        _pw_args += ["--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer"]
+
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            args=_pw_args,
         )
         ctx = await browser.new_context(
             user_agent=_CHROME_UA,

@@ -9,6 +9,8 @@
 export function normTeam(name: string): string {
   return name
     .toLowerCase()
+    // Strip SportyBet SRL simulation-league suffix ("Sweden SRL" → "Sweden")
+    .replace(/\s+srl\b/g, "")
     .replace(/\b(fc|afc|sc|cf|ac|as|ss|ssc|sv|bk|if|cd|ud)\b/g, "")
     .replace(/[^a-z0-9\s]/g, "")
     .replace(/\s+/g, " ")
