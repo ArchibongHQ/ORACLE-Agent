@@ -431,7 +431,12 @@ export class MLSafetyFilter {
         reason: `xG ${totalXG.toFixed(2)}`,
       });
     } else {
-      filters.push({ id: "S7", name: "Goals Environment", pass: true, reason: "xG unavailable — skipped" });
+      filters.push({
+        id: "S7",
+        name: "Goals Environment",
+        pass: true,
+        reason: "xG unavailable — skipped",
+      });
     }
 
     const favRest = (favIsHome ? (telemetry.restH ?? 7) : (telemetry.restA ?? 7)) as number;
@@ -550,15 +555,21 @@ export class MLSafetyFilter {
         reason: `Delta:${rawSharpDelta.toFixed(3)}`,
       });
     } else {
-      filters.push({ id: "S16", name: "Sharp Consensus", pass: true, reason: "sharp data unavailable — skipped" });
+      filters.push({
+        id: "S16",
+        name: "Sharp Consensus",
+        pass: true,
+        reason: "sharp data unavailable — skipped",
+      });
     }
 
     // S17: only hard-reject on confirmed miscalibration, not missing calibration data.
-    const rawCalibFactor = (
-      (resData.ledger as Record<string, unknown> | undefined)?.metrics as
-        | Record<string, number>
-        | undefined
-    )?.calibFactor ?? (resData.calibFactor as number | undefined);
+    const rawCalibFactor =
+      (
+        (resData.ledger as Record<string, unknown> | undefined)?.metrics as
+          | Record<string, number>
+          | undefined
+      )?.calibFactor ?? (resData.calibFactor as number | undefined);
     if (rawCalibFactor !== undefined) {
       filters.push({
         id: "S17",
@@ -575,7 +586,12 @@ export class MLSafetyFilter {
           telemetry
         );
     } else {
-      filters.push({ id: "S17", name: "Model Calibration Gate", pass: true, reason: "calibration data unavailable — skipped" });
+      filters.push({
+        id: "S17",
+        name: "Model Calibration Gate",
+        pass: true,
+        reason: "calibration data unavailable — skipped",
+      });
     }
 
     return this._buildResult(filters, true, null, resData, telemetry);

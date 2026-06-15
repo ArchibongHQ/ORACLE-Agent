@@ -44,7 +44,9 @@ export async function bookAccumulator(picks: ActionablePick[]): Promise<BookingR
     headless: true,
     args: [
       "--no-sandbox",
-      ...(isLocalWindows ? ["--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer"] : []),
+      ...(isLocalWindows
+        ? ["--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer"]
+        : []),
     ],
   });
   try {

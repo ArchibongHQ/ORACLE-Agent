@@ -31,7 +31,8 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
   // Goal/handicap LINES must come from the RAW side — normalise() strips the
   // decimal point, so "Over 0.5" → "over 05" and a line regex on `s` yields
   // "05" instead of "0.5", producing a SportyBet selection that never matches.
-  const lineFrom = (raw: string | null): string | null => raw?.match(/(\d+(?:\.\d+)?)/)?.[1] ?? null;
+  const lineFrom = (raw: string | null): string | null =>
+    raw?.match(/(\d+(?:\.\d+)?)/)?.[1] ?? null;
 
   // ── 1x2 / Match Result ───────────────────────────────────────────────────
   if (c.includes("1x2") || c.includes("match result") || c.includes("full time result")) {

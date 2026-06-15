@@ -561,20 +561,15 @@ async function handleKaggle(chatId: string): Promise<void> {
     scripts.map(
       ([script, args]) =>
         new Promise<void>((resolve) => {
-          execFile(
-            python,
-            [join(ROOT, "tools", script), ...args],
-            { cwd: ROOT },
-            async (err) => {
-              completed++;
-              if (err) {
-                await sendTo(chatId, `⚠️ ${script}: ${err.message}`);
-              } else {
-                await sendTo(chatId, `✅ ${script} (${completed}/${total})`);
-              }
-              resolve();
+          execFile(python, [join(ROOT, "tools", script), ...args], { cwd: ROOT }, async (err) => {
+            completed++;
+            if (err) {
+              await sendTo(chatId, `⚠️ ${script}: ${err.message}`);
+            } else {
+              await sendTo(chatId, `✅ ${script} (${completed}/${total})`);
             }
-          );
+            resolve();
+          });
         })
     )
   );

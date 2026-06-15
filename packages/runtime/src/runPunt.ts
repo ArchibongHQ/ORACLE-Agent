@@ -40,9 +40,15 @@ export async function refreshSidecarIfStale(): Promise<void> {
         // On local Windows, child.kill() leaves chrome.exe orphaned (separate process tree).
         // Use taskkill /F /T to kill the whole tree. On VPS/Linux, SIGTERM cascades normally.
         if (process.platform === "win32" && process.env["ORACLE_IS_VPS"] !== "true" && child.pid) {
-          import("node:child_process").then(({ execFileSync }) => {
-            try { execFileSync("taskkill", ["/F", "/T", "/PID", String(child.pid)]); } catch { /* ignore */ }
-          }).catch(() => child.kill());
+          import("node:child_process")
+            .then(({ execFileSync }) => {
+              try {
+                execFileSync("taskkill", ["/F", "/T", "/PID", String(child.pid)]);
+              } catch {
+                /* ignore */
+              }
+            })
+            .catch(() => child.kill());
         } else {
           child.kill();
         }

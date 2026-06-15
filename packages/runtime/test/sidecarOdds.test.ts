@@ -1,11 +1,16 @@
 /** Unit tests for flattenSidecarOdds() — pure function, all branches. */
 
 import { describe, expect, it } from "vitest";
-import { flattenSidecarOdds } from "../src/sidecarOdds.js";
 import type { SportyBetEventDetail } from "../src/selectFixtures.js";
+import { flattenSidecarOdds } from "../src/sidecarOdds.js";
 
 function detail(odds: Record<string, unknown>): SportyBetEventDetail {
-  return { eventId: "test", odds, stats: null, statscoverage: {} } as unknown as SportyBetEventDetail;
+  return {
+    eventId: "test",
+    odds,
+    stats: null,
+    statscoverage: {},
+  } as unknown as SportyBetEventDetail;
 }
 
 describe("flattenSidecarOdds — 1x2 direct", () => {
@@ -32,9 +37,7 @@ describe("flattenSidecarOdds — 1x2 direct", () => {
 
 describe("flattenSidecarOdds — DNB synthetic 1x2 fallback", () => {
   it("reconstructs home/draw/away when 1x2 is absent but DNB has both sides", () => {
-    const flat = flattenSidecarOdds(
-      detail({ dnb: { home: 1.6, away: 2.5 } })
-    );
+    const flat = flattenSidecarOdds(detail({ dnb: { home: 1.6, away: 2.5 } }));
     expect(flat["home"]).toBeDefined();
     expect(flat["away"]).toBeDefined();
     expect(flat["draw"]).toBeDefined();
@@ -101,9 +104,7 @@ describe("flattenSidecarOdds — Draw No Bet explicit keys", () => {
 
 describe("flattenSidecarOdds — Double Chance", () => {
   it("maps dc_1x, dc_x2, dc_12", () => {
-    const flat = flattenSidecarOdds(
-      detail({ dc: { "1x": 1.2, x2: 1.6, "12": 1.1 } })
-    );
+    const flat = flattenSidecarOdds(detail({ dc: { "1x": 1.2, x2: 1.6, "12": 1.1 } }));
     expect(flat["dc_1x"]).toBe(1.2);
     expect(flat["dc_x2"]).toBe(1.6);
     expect(flat["dc_12"]).toBe(1.1);
@@ -112,25 +113,19 @@ describe("flattenSidecarOdds — Double Chance", () => {
 
 describe("flattenSidecarOdds — Asian Handicap", () => {
   it("maps ah_h and ah_a generic keys", () => {
-    const flat = flattenSidecarOdds(
-      detail({ ah: { home: 1.9, away: 2.0, line: 0 } })
-    );
+    const flat = flattenSidecarOdds(detail({ ah: { home: 1.9, away: 2.0, line: 0 } }));
     expect(flat["ah_h"]).toBe(1.9);
     expect(flat["ah_a"]).toBe(2.0);
   });
 
   it("maps line-specific key e.g. ah_hp05 for line 0.5", () => {
-    const flat = flattenSidecarOdds(
-      detail({ ah: { home: 1.85, away: 2.05, line: 0.5 } })
-    );
+    const flat = flattenSidecarOdds(detail({ ah: { home: 1.85, away: 2.05, line: 0.5 } }));
     expect(flat["ah_hp05"]).toBe(1.85);
     expect(flat["ah_ap05"]).toBe(2.05);
   });
 
   it("maps line-specific key ah_hp25 for line 2.5", () => {
-    const flat = flattenSidecarOdds(
-      detail({ ah: { home: 1.7, away: 2.2, line: 2.5 } })
-    );
+    const flat = flattenSidecarOdds(detail({ ah: { home: 1.7, away: 2.2, line: 2.5 } }));
     expect(flat["ah_hp25"]).toBe(1.7);
     expect(flat["ah_ap25"]).toBe(2.2);
   });

@@ -753,18 +753,15 @@ describe("OddsPapi provider fetch", () => {
   }
 
   it("returns a valid sharp triple when Pinnacle has the fixture", async () => {
-    mockOddsPapiFetch(
-      { [HOME_ID]: "Arsenal FC", [AWAY_ID]: "Chelsea FC" },
-      [
-        {
-          participant1Id: HOME_ID,
-          participant2Id: AWAY_ID,
-          startTime: KICKOFF,
-          hasOdds: true,
-          bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
-        },
-      ]
-    );
+    mockOddsPapiFetch({ [HOME_ID]: "Arsenal FC", [AWAY_ID]: "Chelsea FC" }, [
+      {
+        participant1Id: HOME_ID,
+        participant2Id: AWAY_ID,
+        startTime: KICKOFF,
+        hasOdds: true,
+        bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
+      },
+    ]);
     const providers = buildOddsProviders({ oddsPapiKey: "k" });
     const oddspapi = providers.find((p) => p.name === "oddspapi")!;
     const res = await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF);
@@ -778,34 +775,31 @@ describe("OddsPapi provider fetch", () => {
   });
 
   it("falls back to SBOBet when Pinnacle 1X2 is unpriced", async () => {
-    mockOddsPapiFetch(
-      { [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" },
-      [
-        {
-          participant1Id: HOME_ID,
-          participant2Id: AWAY_ID,
-          startTime: KICKOFF,
-          hasOdds: true,
-          bookmakerOdds: {
-            pinnacle: { bookmakerIsActive: false, markets: {} },
-            sbobet: {
-              bookmakerIsActive: true,
-              suspended: false,
-              markets: {
-                "101": {
-                  marketActive: true,
-                  outcomes: {
-                    "101": { players: { "0": { active: true, price: 1.95 } } },
-                    "102": { players: { "0": { active: true, price: 3.5 } } },
-                    "103": { players: { "0": { active: true, price: 4.0 } } },
-                  },
+    mockOddsPapiFetch({ [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" }, [
+      {
+        participant1Id: HOME_ID,
+        participant2Id: AWAY_ID,
+        startTime: KICKOFF,
+        hasOdds: true,
+        bookmakerOdds: {
+          pinnacle: { bookmakerIsActive: false, markets: {} },
+          sbobet: {
+            bookmakerIsActive: true,
+            suspended: false,
+            markets: {
+              "101": {
+                marketActive: true,
+                outcomes: {
+                  "101": { players: { "0": { active: true, price: 1.95 } } },
+                  "102": { players: { "0": { active: true, price: 3.5 } } },
+                  "103": { players: { "0": { active: true, price: 4.0 } } },
                 },
               },
             },
           },
         },
-      ]
-    );
+      },
+    ]);
     const providers = buildOddsProviders({ oddsPapiKey: "k" });
     const oddspapi = providers.find((p) => p.name === "oddspapi")!;
     const res = await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF);
@@ -822,36 +816,30 @@ describe("OddsPapi provider fetch", () => {
   });
 
   it("returns null when no fixture matches the kickoff date", async () => {
-    mockOddsPapiFetch(
-      { [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" },
-      [
-        {
-          participant1Id: HOME_ID,
-          participant2Id: AWAY_ID,
-          startTime: "2026-06-14T15:00:00Z", // wrong day
-          hasOdds: true,
-          bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
-        },
-      ]
-    );
+    mockOddsPapiFetch({ [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" }, [
+      {
+        participant1Id: HOME_ID,
+        participant2Id: AWAY_ID,
+        startTime: "2026-06-14T15:00:00Z", // wrong day
+        hasOdds: true,
+        bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
+      },
+    ]);
     const providers = buildOddsProviders({ oddsPapiKey: "k" });
     const oddspapi = providers.find((p) => p.name === "oddspapi")!;
     expect(await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)).toBeNull();
   });
 
   it("returns null when no fixture matches the team names", async () => {
-    mockOddsPapiFetch(
-      { [HOME_ID]: "Liverpool", [AWAY_ID]: "Everton" },
-      [
-        {
-          participant1Id: HOME_ID,
-          participant2Id: AWAY_ID,
-          startTime: KICKOFF,
-          hasOdds: true,
-          bookmakerOdds: pinnacle1x2(2.0, 3.4, 4.0),
-        },
-      ]
-    );
+    mockOddsPapiFetch({ [HOME_ID]: "Liverpool", [AWAY_ID]: "Everton" }, [
+      {
+        participant1Id: HOME_ID,
+        participant2Id: AWAY_ID,
+        startTime: KICKOFF,
+        hasOdds: true,
+        bookmakerOdds: pinnacle1x2(2.0, 3.4, 4.0),
+      },
+    ]);
     const providers = buildOddsProviders({ oddsPapiKey: "k" });
     const oddspapi = providers.find((p) => p.name === "oddspapi")!;
     expect(await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)).toBeNull();
@@ -867,24 +855,21 @@ describe("OddsPapi provider fetch", () => {
     });
     const providers = buildOddsProviders({ oddsPapiKey: "k" });
     const oddspapi = providers.find((p) => p.name === "oddspapi")!;
-    await expect(
-      oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)
-    ).rejects.toThrow("quota exhausted");
+    await expect(oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF)).rejects.toThrow(
+      "quota exhausted"
+    );
   });
 
   it("caches /v4/participants across calls (one GET per session)", async () => {
-    const spy = mockOddsPapiFetch(
-      { [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" },
-      [
-        {
-          participant1Id: HOME_ID,
-          participant2Id: AWAY_ID,
-          startTime: KICKOFF,
-          hasOdds: true,
-          bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
-        },
-      ]
-    );
+    const spy = mockOddsPapiFetch({ [HOME_ID]: "Arsenal", [AWAY_ID]: "Chelsea" }, [
+      {
+        participant1Id: HOME_ID,
+        participant2Id: AWAY_ID,
+        startTime: KICKOFF,
+        hasOdds: true,
+        bookmakerOdds: pinnacle1x2(2.1, 3.4, 3.5),
+      },
+    ]);
     const providers = buildOddsProviders({ oddsPapiKey: "k" });
     const oddspapi = providers.find((p) => p.name === "oddspapi")!;
     await oddspapi.fetch("Arsenal", "Chelsea", "Premier League", KICKOFF);

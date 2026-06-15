@@ -50,8 +50,8 @@ export {
   DEFAULT_GOALS_MIN_CONFIDENCE,
   DEFAULT_GOALS_MIN_IMPLIED,
   DEFAULT_GOALS_TARGET_LEGS,
-  goalsDataGate,
   GOALS_MARKETS,
+  goalsDataGate,
   pickSafestGoalsLeg,
   selectGoalsAccumulator,
 } from "./selectGoals.js";

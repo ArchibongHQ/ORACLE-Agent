@@ -11,8 +11,8 @@ import { fetchFixtureByName, geminiOddsGapFill } from "./fixtures.js";
 import { enrichWithH2H } from "./h2h.js";
 import { enrichWithLineups } from "./lineups.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
-import { loadSportyBetIndex, sidecarKey } from "./selectFixtures.js";
 import type { SportyBetEventDetail } from "./selectFixtures.js";
+import { loadSportyBetIndex, sidecarKey } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
 
 /** Minimum confidence margin by which ORACLE must beat the punter's implied edge to override

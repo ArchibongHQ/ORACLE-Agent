@@ -201,10 +201,13 @@ ${scraped.text}
  *  boost confidence when both providers independently report the same fact
  *  (ensemble verification). */
 function mergeResults(a: NewsIntelResult, b: NewsIntelResult): NewsIntelResult {
-  const dedupe = (xs: string[]): string[] => Array.from(new Set(xs.map((s) => s.trim()).filter(Boolean)));
+  const dedupe = (xs: string[]): string[] =>
+    Array.from(new Set(xs.map((s) => s.trim()).filter(Boolean)));
   const agreement = (xs: string[], ys: string[]): number => {
     const ly = ys.map((y) => y.toLowerCase());
-    return xs.filter((x) => ly.some((y) => y.includes(x.toLowerCase()) || x.toLowerCase().includes(y))).length;
+    return xs.filter((x) =>
+      ly.some((y) => y.includes(x.toLowerCase()) || x.toLowerCase().includes(y))
+    ).length;
   };
 
   const overlaps =
@@ -243,8 +246,10 @@ export async function fetchNewsEnsemble(
   opts: { perplexityKey?: string; geminiKey?: string }
 ): Promise<NewsIntelResult | null> {
   const tasks: Array<Promise<NewsIntelResult | null>> = [];
-  if (opts.perplexityKey) tasks.push(fetchNewsIntelligence(home, away, league, kickoff, opts.perplexityKey));
-  if (opts.geminiKey) tasks.push(fetchNewsViaGoogleAiMode(home, away, league, kickoff, opts.geminiKey));
+  if (opts.perplexityKey)
+    tasks.push(fetchNewsIntelligence(home, away, league, kickoff, opts.perplexityKey));
+  if (opts.geminiKey)
+    tasks.push(fetchNewsViaGoogleAiMode(home, away, league, kickoff, opts.geminiKey));
   if (!tasks.length) return null;
 
   const settled = await Promise.allSettled(tasks);

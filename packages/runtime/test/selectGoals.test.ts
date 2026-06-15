@@ -174,10 +174,7 @@ describe("pickSafestGoalsLeg", () => {
   });
 
   it("picks the highest-mp qualifying goals leg (safest)", () => {
-    const job = okJob("A", "B", [
-      evm("Over 1.5", 0.92, 0.8),
-      evm("Over 2.5", 0.78, 0.72),
-    ]);
+    const job = okJob("A", "B", [evm("Over 1.5", 0.92, 0.8), evm("Over 2.5", 0.78, 0.72)]);
     const leg = pickSafestGoalsLeg(job, { detailByKey });
     expect(leg?.side).toBe("Over 1.5");
     expect(leg?.mp).toBeCloseTo(0.92);

@@ -5,16 +5,14 @@
  * Use: node scripts/start-local.js  (or: pnpm start:local)
  */
 
-"use strict";
-
 const { spawn } = require("node:child_process");
 const { join } = require("node:path");
 
 const ROOT = join(__dirname, "..");
 
 const services = [
-  { label: "oracle-web",    filter: "@oracle/web",    script: "start" },
-  { label: "oracle-bot",    filter: "@oracle/bot",    script: "start" },
+  { label: "oracle-web", filter: "@oracle/web", script: "start" },
+  { label: "oracle-bot", filter: "@oracle/bot", script: "start" },
   { label: "oracle-worker", filter: "@oracle/worker", script: "start" },
 ];
 
@@ -22,11 +20,11 @@ const children = [];
 
 function launch(svc) {
   process.stdout.write(`[start-local] launching ${svc.label}...\n`);
-  const child = spawn(
-    "pnpm",
-    ["--filter", svc.filter, "run", svc.script],
-    { cwd: ROOT, stdio: "inherit", shell: true }
-  );
+  const child = spawn("pnpm", ["--filter", svc.filter, "run", svc.script], {
+    cwd: ROOT,
+    stdio: "inherit",
+    shell: true,
+  });
   child.on("exit", (code) => {
     process.stderr.write(`[start-local] ${svc.label} exited with code ${code ?? "?"}\n`);
   });
@@ -36,12 +34,22 @@ function launch(svc) {
 function killAll(signal) {
   process.stdout.write(`\n[start-local] shutting down all services...\n`);
   for (const c of children) {
-    try { c.kill(signal); } catch (_) { /* already dead */ }
+    try {
+      c.kill(signal);
+    } catch (_) {
+      /* already dead */
+    }
   }
 }
 
-process.on("SIGINT",  () => { killAll("SIGINT");  setTimeout(() => process.exit(0), 2000); });
-process.on("SIGTERM", () => { killAll("SIGTERM"); setTimeout(() => process.exit(0), 2000); });
+process.on("SIGINT", () => {
+  killAll("SIGINT");
+  setTimeout(() => process.exit(0), 2000);
+});
+process.on("SIGTERM", () => {
+  killAll("SIGTERM");
+  setTimeout(() => process.exit(0), 2000);
+});
 
 // Stagger: web → 3s → bot → 3s → worker
 launch(services[0]);

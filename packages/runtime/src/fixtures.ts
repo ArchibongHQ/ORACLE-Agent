@@ -12,6 +12,7 @@ import type { FixtureJob, RunState } from "@oracle/engine";
 import { parseFixtureList } from "@oracle/engine";
 import type { LLMCallContext } from "@oracle/llm";
 import { fetchOddsViaGemini } from "@oracle/llm";
+import type { StoragePort } from "@oracle/storage";
 import { enrichWithH2H } from "./h2h.js";
 import { enrichWithLineups } from "./lineups.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
@@ -24,7 +25,6 @@ import {
 } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
 import { namesMatch } from "./teamNames.js";
-import type { StoragePort } from "@oracle/storage";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -358,13 +358,14 @@ async function applySelection(
     const existingFetched = (job.state?.pipeline?.fetched ?? {}) as Record<string, unknown>;
 
     // Merge full sidecar stats into every fixture (both bulk-odds and sidecar-only paths)
-    const statsEnrich = detail && !existingFetched.sportyBetStats
-      ? {
-          sportyBetStats: detail.stats,
-          sportyBetOdds: detail.odds,
-          sportyBetStatsCoverage: detail.statscoverage,
-        }
-      : {};
+    const statsEnrich =
+      detail && !existingFetched.sportyBetStats
+        ? {
+            sportyBetStats: detail.stats,
+            sportyBetOdds: detail.odds,
+            sportyBetStatsCoverage: detail.statscoverage,
+          }
+        : {};
 
     if (c.hasBulkOdds) {
       // Already has live odds — only add stats if missing
@@ -734,7 +735,11 @@ export async function fetchTodaysFixtures(
 
   const oddsJobs: FixtureJob[] = [];
   const errors: string[] = [];
-  let quotaExhausted = false;
+  // Set when the Odds API is unusable for the whole run — either quota exhausted
+  // (429) or a dead/invalid key (401). Both mean every league call will fail
+  // identically, so we stop hammering and route to the same degraded fallback
+  // (web search → cache + structured-provider/Gemini gap-fill) below.
+  let oddsApiUnusable = false;
 
   for (const [sportKey, league] of Object.entries(SPORT_TO_LEAGUE)) {
     try {
@@ -746,8 +751,11 @@ export async function fetchTodaysFixtures(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       errors.push(`${sportKey}: ${msg}`);
-      if (msg.includes("quota")) {
-        quotaExhausted = true;
+      // A dead key (invalid key / 401) is run-fatal just like an exhausted quota:
+      // every remaining league would 401 too, so break and fall through to the
+      // degraded path instead of looping the dead key across all 16 leagues.
+      if (msg.includes("quota") || msg.includes("invalid key")) {
+        oddsApiUnusable = true;
         break;
       }
     }
@@ -781,28 +789,19 @@ export async function fetchTodaysFixtures(
     };
   }
 
-  // Quota exhausted — try web search fallback then Gemini on cached
-  if (quotaExhausted && enableWebSearchFallback) {
-    const cached = await readCachedJobs();
-    if (cached.length > 0) {
-      const sel = await applySelection(cachedCandidates(cached), maxFixturesPerRun);
-      if (sel.jobs.length > 0) {
-        const enhanced = await fetchWebSearchOdds(sel.jobs, true);
-        const enrichedJobs = await enrich(enhanced);
-        return {
-          jobs: enrichedJobs,
-          source: "web_search_consensus",
-          quality: "degraded",
-          fetchedAt: new Date().toISOString(),
-        };
-      }
-    }
-  }
-
-  // Fall back to cache + Gemini gap-fill
+  // Odds API unusable (quota exhausted OR dead key) — degraded cascade over the
+  // cached/scraped fixtures, best source first:
+  //   1. structured free-API providers + Gemini search  (geminiOddsGapFill)
+  //   2. Python web-scraper consensus                    (fetchWebSearchOdds)
+  //   3. raw cache with no odds                          (no_odds)
+  // Structured providers run before the slower, lower-quality web scraper so a
+  // dead/exhausted Odds API key still yields priced, analysable fixtures.
   const cached = await readCachedJobs();
   if (cached.length) {
     const sel = await applySelection(cachedCandidates(cached), maxFixturesPerRun);
+
+    // 1. Structured providers (SharpAPI → API-Football → Odds-API.io → OddsPapi →
+    //    SportyBet sidecar) then Gemini search — the real fallback chain.
     const filled = await geminiOddsGapFill(sel.jobs, geminiApiKey, oddsProviders);
     if (filled.length > 0) {
       const enrichedJobs = await enrich(filled);
@@ -813,6 +812,20 @@ export async function fetchTodaysFixtures(
         fetchedAt: new Date().toISOString(),
       };
     }
+
+    // 2. Python web-scraper consensus — deeper, slower fallback.
+    if (enableWebSearchFallback && sel.jobs.length > 0) {
+      const enhanced = await fetchWebSearchOdds(sel.jobs, true);
+      const enrichedJobs = await enrich(enhanced);
+      return {
+        jobs: enrichedJobs,
+        source: "web_search_consensus",
+        quality: "degraded",
+        fetchedAt: new Date().toISOString(),
+      };
+    }
+
+    // 3. Nothing priced — return raw cache, marked no_odds.
     return {
       jobs: sel.jobs,
       source: sel.jobs.length ? "cache" : "empty",
@@ -866,9 +879,9 @@ export async function fetchFixtureByName(
         sidecarLeague = sbHit.league ?? undefined;
         sidecarKickoff = sbHit.kickoff_utc ?? undefined;
         // If this sidecar event has detail+odds, build the job directly — no external API needed
-        const detail = sbHit.detail ?? sidecarIndex.detailByKey.get(
-          `${home.toLowerCase()}|${away.toLowerCase()}`
-        );
+        const detail =
+          sbHit.detail ??
+          sidecarIndex.detailByKey.get(`${home.toLowerCase()}|${away.toLowerCase()}`);
         if (detail?.odds?.["1x2"]) {
           const flat = flattenSidecarOdds(detail);
           if (flat["home"] && flat["away"]) {

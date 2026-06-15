@@ -52,9 +52,7 @@ export async function scrapeGoogleAiMode(query: string): Promise<GoogleAiModeRes
       extraHTTPHeaders: { "Accept-Language": "en-GB,en;q=0.9" },
     });
     // Mask the automation flag so the AI-Mode surface renders.
-    await context.addInitScript(
-      "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})",
-    );
+    await context.addInitScript("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})");
 
     const page = await context.newPage();
     const url = `https://www.google.com/search?q=${encodeURIComponent(query)}&udm=50`;
@@ -91,7 +89,7 @@ async function dismissConsent(page: import("playwright").Page): Promise<void> {
     'button:has-text("Accept all")',
     'button:has-text("Reject all")',
     'button:has-text("I agree")',
-    '#L2AGLb',
+    "#L2AGLb",
   ];
   for (const sel of selectors) {
     try {
@@ -112,12 +110,7 @@ async function extractOverviewText(page: import("playwright").Page): Promise<str
   // AI-Mode renders the overview inside the main content region. These selectors
   // are deliberately broad — Google rotates class names, so we anchor on roles
   // and the search container rather than brittle hashed classes.
-  const candidates = [
-    '[data-rcs]',
-    'div[role="main"]',
-    '#rso',
-    '#search',
-  ];
+  const candidates = ["[data-rcs]", 'div[role="main"]', "#rso", "#search"];
   for (const sel of candidates) {
     try {
       const loc = page.locator(sel).first();
@@ -135,11 +128,13 @@ async function extractOverviewText(page: import("playwright").Page): Promise<str
 /** Collect citation/source hrefs from the overview region. */
 async function extractSourceLinks(page: import("playwright").Page): Promise<string[]> {
   try {
-    const hrefs = await page.locator('div[role="main"] a[href^="http"]').evaluateAll((els) =>
-      els
-        .map((el) => (el as HTMLAnchorElement).href)
-        .filter((h) => h && !h.includes("google.com") && !h.includes("gstatic.com")),
-    );
+    const hrefs = await page
+      .locator('div[role="main"] a[href^="http"]')
+      .evaluateAll((els) =>
+        els
+          .map((el) => (el as HTMLAnchorElement).href)
+          .filter((h) => h && !h.includes("google.com") && !h.includes("gstatic.com"))
+      );
     return Array.from(new Set(hrefs)).slice(0, 20);
   } catch {
     return [];

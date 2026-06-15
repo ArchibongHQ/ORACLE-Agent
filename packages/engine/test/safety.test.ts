@@ -219,8 +219,13 @@ describe("MLSafetyFilter null-guard skip paths", () => {
   it("S16 hard-reject still fires when sharpDelta IS present and high", () => {
     const r = f.evaluate(
       safeFetched,
-      { bayesian_lH: 1.6, bayesian_lA: 1.0, sharpDelta: 0.15, league: "Bundesliga",
-        fetched: { odds: { sharp_consensus: { bookCount: 3 } } } },
+      {
+        bayesian_lH: 1.6,
+        bayesian_lA: 1.0,
+        sharpDelta: 0.15,
+        league: "Bundesliga",
+        fetched: { odds: { sharp_consensus: { bookCount: 3 } } },
+      },
       { restH: 6, restA: 5, motivationScore: 0.95 }
     );
     // sharpDelta 0.15 > 0.1 with bookCount implied — should block
@@ -230,8 +235,13 @@ describe("MLSafetyFilter null-guard skip paths", () => {
   it("S17 hard-reject still fires when calibFactor IS present and low", () => {
     const r = f.evaluate(
       safeFetched,
-      { bayesian_lH: 1.6, bayesian_lA: 1.0, sharpDelta: 0.0, league: "Bundesliga",
-        calibFactor: 0.5 },
+      {
+        bayesian_lH: 1.6,
+        bayesian_lA: 1.0,
+        sharpDelta: 0.0,
+        league: "Bundesliga",
+        calibFactor: 0.5,
+      },
       { restH: 6, restA: 5, motivationScore: 0.95 }
     );
     expect(r.confidence).toBe("HARD_REJECT");

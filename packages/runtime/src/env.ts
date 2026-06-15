@@ -132,9 +132,7 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
   // Explicit env vars always win — Railway Variables panel overrides these.
   const batchConcurrency = Number(env.BATCH_CONCURRENCY ?? (cloud ? 8 : 3));
   const enableSwarmFlag =
-    env.ENABLE_SWARM !== undefined
-      ? env.ENABLE_SWARM.toLowerCase() === "true"
-      : cloud; // default true on Railway, false locally
+    env.ENABLE_SWARM !== undefined ? env.ENABLE_SWARM.toLowerCase() === "true" : cloud; // default true on Railway, false locally
 
   if (cloud) {
     process.stdout.write(

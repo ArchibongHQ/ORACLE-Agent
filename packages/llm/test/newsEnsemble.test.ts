@@ -122,7 +122,10 @@ describe("fetchNewsEnsemble", () => {
     scrapeMock.mockResolvedValue({ text: "x", sources: ["https://g"], observedAt: OBSERVED });
     generateContentMock.mockResolvedValueOnce(g(RESHAPED));
 
-    const res = await fetchNewsEnsemble("H", "A", "L", KO, { perplexityKey: "pk", geminiKey: "gk" });
+    const res = await fetchNewsEnsemble("H", "A", "L", KO, {
+      perplexityKey: "pk",
+      geminiKey: "gk",
+    });
     expect(res?.model).toBe("ensemble");
     // Both report the same injury + lineup → confidence boosted above the 0.7 base.
     expect(res?.confidence).toBeGreaterThan(0.7);
@@ -137,7 +140,10 @@ describe("fetchNewsEnsemble", () => {
     scrapeMock.mockResolvedValue({ text: "x", sources: ["https://g"], observedAt: OBSERVED });
     generateContentMock.mockResolvedValueOnce(g(RESHAPED));
 
-    const res = await fetchNewsEnsemble("H", "A", "L", KO, { perplexityKey: "pk", geminiKey: "gk" });
+    const res = await fetchNewsEnsemble("H", "A", "L", KO, {
+      perplexityKey: "pk",
+      geminiKey: "gk",
+    });
     expect(res?.model).toContain("google-ai-mode");
   });
 
