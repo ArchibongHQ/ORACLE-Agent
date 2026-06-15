@@ -67,6 +67,13 @@ export function flattenSidecarOdds(detail: SportyBetEventDetail): Record<string,
   if (ou35o) flat["over_3.5"] = ou35o;
   if (ou35u) flat["under_3.5"] = ou35u;
 
+  // Team totals Over 0.5 — engine reads home_ou_over_0_5 / away_ou_over_0_5 for the
+  // "Home/Away Total Over 0.5" goals-accumulator legs (execution/index.ts BLOCK 3).
+  const ttHomeO = toNum(o?.tt_home_05?.over);
+  const ttAwayO = toNum(o?.tt_away_05?.over);
+  if (ttHomeO) flat["home_ou_over_0_5"] = ttHomeO;
+  if (ttAwayO) flat["away_ou_over_0_5"] = ttAwayO;
+
   // BTTS
   const bttsY = toNum(o?.btts?.yes);
   const bttsN = toNum(o?.btts?.no);

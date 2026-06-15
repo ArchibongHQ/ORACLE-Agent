@@ -45,6 +45,10 @@ export interface SportyBetOdds {
   ou25?: { over?: number | null; under?: number | null } | null;
   ou15?: { over?: number | null; under?: number | null } | null;
   ou35?: { over?: number | null; under?: number | null } | null;
+  /** Home team-total Over/Under 0.5 (SportyBet market id 19). */
+  tt_home_05?: { over?: number | null; under?: number | null } | null;
+  /** Away team-total Over/Under 0.5 (SportyBet market id 20). */
+  tt_away_05?: { over?: number | null; under?: number | null } | null;
   btts?: { yes?: number | null; no?: number | null } | null;
   dc?: { "1x"?: number | null; "12"?: number | null; x2?: number | null } | null;
   dnb?: { home?: number | null; away?: number | null } | null;
@@ -349,13 +353,19 @@ export function selectFixtures(
       const key = sidecarKey(c.job.home, c.job.away);
       let marketCount = idx.byKey.get(key);
       let detail = idx.detailByKey.get(key);
-      if (marketCount === undefined) {
+      // Fuzzy fallback when the exact key misses EITHER the market count or the
+      // enrichment detail. The sidecar keys fixtures under full club names
+      // (e.g. "GIF Sundsvall") while the scraped/cached job often carries the
+      // short form ("Sundsvall"), so the exact sidecarKey can hit byKey but miss
+      // detailByKey (or vice-versa). Without the detail, injectSidecarOdds attaches
+      // no odds and the engine grades the fixture NO_EDGE — the OTS name-gap.
+      if (marketCount === undefined || detail === undefined) {
         const ev = idx.events.find(
           (e) => namesMatch(e.home, c.job.home) && namesMatch(e.away, c.job.away)
         );
         if (ev) {
-          marketCount = ev.marketCount;
-          detail = ev.detail;
+          if (marketCount === undefined) marketCount = ev.marketCount;
+          if (detail === undefined) detail = ev.detail;
         }
       }
       if (marketCount !== undefined) {

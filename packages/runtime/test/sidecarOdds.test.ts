@@ -86,6 +86,24 @@ describe("flattenSidecarOdds — totals (OU)", () => {
   });
 });
 
+describe("flattenSidecarOdds — team totals Over 0.5", () => {
+  it("maps tt_home_05.over to home_ou_over_0_5", () => {
+    const flat = flattenSidecarOdds(detail({ tt_home_05: { over: 1.3, under: 3.33 } }));
+    expect(flat["home_ou_over_0_5"]).toBe(1.3);
+  });
+
+  it("maps tt_away_05.over to away_ou_over_0_5", () => {
+    const flat = flattenSidecarOdds(detail({ tt_away_05: { over: 1.18, under: 4.5 } }));
+    expect(flat["away_ou_over_0_5"]).toBe(1.18);
+  });
+
+  it("omits team-total keys when absent or invalid", () => {
+    const flat = flattenSidecarOdds(detail({ tt_home_05: { over: 1.0 } }));
+    expect(flat["home_ou_over_0_5"]).toBeUndefined();
+    expect(flat["away_ou_over_0_5"]).toBeUndefined();
+  });
+});
+
 describe("flattenSidecarOdds — BTTS", () => {
   it("maps btts_yes and btts_no", () => {
     const flat = flattenSidecarOdds(detail({ btts: { yes: 1.75, no: 2.1 } }));

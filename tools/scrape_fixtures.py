@@ -826,53 +826,74 @@ def _gismo_doc(query: str) -> Optional[dict]:
 
 
 def _parse_odds(markets_data: dict) -> dict:
-    """Extract 1X2, OU1.5/2.5/3.5, BTTS, DC, DNB, AH odds from factsCenter/event markets.
+    """Extract 1X2, OU1.5/2.5/3.5, team-totals, BTTS, DC, DNB, AH odds from
+    factsCenter/event markets.
 
-    Market IDs: 1=1X2, 10=Over/Under (all lines), 18=Double Chance, 26=Asian Handicap,
-    29=BTTS, 11=Draw No Bet.
+    Market IDs (machine-verified live 2026-06-15 against sr:match:67126172):
+      1=1X2, 18=Over/Under (total goals), 19=Home O/U, 20=Away O/U,
+      10=Double Chance, 29=BTTS (name "GG/NG"), 11=Draw No Bet, 16=Asian Handicap.
+    The goals line lives in market["specifier"] as "total=1.5"/"2.5"/"3.5" — NOT in
+    the outcome's handicap/line/name. Over/Under outcomes: id 12 = Over (desc
+    "Over <line>"), id 13 = Under. Half-time / 1st-/2nd-half variants carry distinct
+    ids (68/69/70/…) and are excluded by the exact-id match below.
     """
     result: dict[str, Optional[dict]] = {
         "1x2": None, "ou15": None, "ou25": None, "ou35": None,
+        "tt_home_05": None, "tt_away_05": None,
         "btts": None, "dc": None, "dnb": None, "ah": None,
     }
+
+    def _ou_line_key(spec: Optional[str]) -> Optional[str]:
+        """Map a 'total=<line>' specifier to the ou15/ou25/ou35 result key."""
+        if not spec:
+            return None
+        line = spec.split("total=", 1)[-1].strip() if "total=" in spec else ""
+        return {"1.5": "ou15", "2.5": "ou25", "3.5": "ou35"}.get(line)
+
+    def _fill_over_under(market: dict, target: dict) -> None:
+        """Populate {over,under} from an O/U market's outcomes (id 12=over, 13=under)."""
+        for o in market.get("outcomes") or []:
+            odds_val = o.get("odds")
+            if not odds_val:
+                continue
+            oid = str(o.get("id", ""))
+            desc = (o.get("desc") or o.get("name") or "").lower()
+            if oid == "12" or desc.startswith("over"):
+                target["over"] = odds_val
+            elif oid == "13" or desc.startswith("under"):
+                target["under"] = odds_val
+
     for market in markets_data.get("markets") or []:
         mid = str(market.get("id", ""))
         name = (market.get("name") or "").lower()
+        spec = market.get("specifier")
         outcomes = {str(o.get("id", "")): o.get("odds") for o in market.get("outcomes") or []}
 
-        if mid == "1" or "match result" in name or "1x2" in name:
+        if mid == "1":
             # outcomes: 1=home, 2=draw, 3=away
             result["1x2"] = {
                 "home": outcomes.get("1"), "draw": outcomes.get("2"), "away": outcomes.get("3"),
             }
-        elif mid == "10" or ("over/under" in name and "over" in name):
-            # Market 10 is Over/Under for all lines — parse by handicap value per outcome
-            for o in market.get("outcomes") or []:
-                handicap = str(o.get("handicap") or o.get("line") or "")
-                otype = (o.get("name") or o.get("type") or "").lower()
-                odds_val = o.get("odds")
-                if not odds_val:
-                    continue
-                if handicap == "1.5" or "1.5" in name:
-                    if "over" in otype or str(o.get("id")) == "12":
-                        result.setdefault("ou15", {})["over"] = odds_val  # type: ignore[index]
-                    elif "under" in otype or str(o.get("id")) == "13":
-                        result.setdefault("ou15", {})["under"] = odds_val  # type: ignore[index]
-                elif handicap == "2.5" or "2.5" in name:
-                    if "over" in otype or str(o.get("id")) == "12":
-                        result.setdefault("ou25", {})["over"] = odds_val  # type: ignore[index]
-                    elif "under" in otype or str(o.get("id")) == "13":
-                        result.setdefault("ou25", {})["under"] = odds_val  # type: ignore[index]
-                elif handicap == "3.5" or "3.5" in name:
-                    if "over" in otype or str(o.get("id")) == "12":
-                        result.setdefault("ou35", {})["over"] = odds_val  # type: ignore[index]
-                    elif "under" in otype or str(o.get("id")) == "13":
-                        result.setdefault("ou35", {})["under"] = odds_val  # type: ignore[index]
-        elif mid == "18" or "double chance" in name:
+        elif mid == "18":
+            # Total-goals Over/Under — one market per line, line in the specifier.
+            key = _ou_line_key(spec)
+            if key:
+                result[key] = result.get(key) or {}
+                _fill_over_under(market, result[key])  # type: ignore[arg-type]
+        elif mid == "19" and spec == "total=0.5":
+            # Home team total Over/Under 0.5 → engine label "Home Total Over 0.5".
+            result["tt_home_05"] = result.get("tt_home_05") or {}
+            _fill_over_under(market, result["tt_home_05"])  # type: ignore[arg-type]
+        elif mid == "20" and spec == "total=0.5":
+            # Away team total Over/Under 0.5 → engine label "Away Total Over 0.5".
+            result["tt_away_05"] = result.get("tt_away_05") or {}
+            _fill_over_under(market, result["tt_away_05"])  # type: ignore[arg-type]
+        elif mid == "10":
+            # Double Chance: outcomes 9=1X, 10=12, 11=X2.
             result["dc"] = {
                 "1x": outcomes.get("9"), "12": outcomes.get("10"), "x2": outcomes.get("11"),
             }
-        elif mid == "26" or "asian handicap" in name:
+        elif mid == "16" or "asian handicap" in name:
             # Pick the closest-to-zero AH line for home and away
             best_line: Optional[float] = None
             best_home: Optional[str] = None
