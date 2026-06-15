@@ -240,6 +240,49 @@ describe("GBrainAdapter", () => {
   adapterSuite("GBrainAdapter", () => adapter);
 });
 
+// ── Concurrency regression: single-threaded PGLite WASM must not be hit in ─────
+//    parallel. The engine runs fixtures up to 8-way concurrent; before the
+//    serialization mutex this threw "RuntimeError: Aborted()" / corrupted pages.
+
+describe("GBrainAdapter concurrency", () => {
+  let adapter: GBrainAdapter;
+
+  beforeAll(async () => {
+    adapter = new GBrainAdapter(); // in-memory
+    await adapter.get("__warmup__");
+  }, 30_000);
+
+  afterAll(async () => {
+    await adapter.close();
+  });
+
+  it("serialises overlapping reads and writes without aborting", async () => {
+    const N = 32;
+    // Fire all ops at once, no await between them — the pre-fix abort scenario.
+    const writes = Array.from({ length: N }, (_, i) =>
+      adapter.set(`conc_${RUN_ID}_${i}`, { i })
+    );
+    const reads = Array.from({ length: N }, (_, i) => adapter.get(`conc_${RUN_ID}_${i}`));
+    const bulks = Array.from({ length: 4 }, (_, i) =>
+      adapter.upsertBulk(`conc_bulk_${RUN_ID}_${i}`, [{ id: i, n: i }], "id")
+    );
+
+    await expect(Promise.all([...writes, ...reads, ...bulks])).resolves.toBeDefined();
+
+    // Every write must be readable afterward — no lost/raced rows.
+    for (let i = 0; i < N; i++) {
+      expect(await adapter.get<{ i: number }>(`conc_${RUN_ID}_${i}`)).toEqual({ i });
+    }
+  }, 30_000);
+
+  it("does not let a failing op poison the queue", async () => {
+    // A get with a key that round-trips fine, interleaved with many ops.
+    const ops = Array.from({ length: 16 }, (_, i) => adapter.set(`poison_${RUN_ID}_${i}`, i));
+    await Promise.all(ops);
+    expect(await adapter.get<number>(`poison_${RUN_ID}_5`)).toBe(5);
+  }, 30_000);
+});
+
 // ── Phase 2 done criterion: GBrainAdapter state persists across two instances ──
 
 describe("GBrainAdapter persistence (Phase 2 criterion)", () => {

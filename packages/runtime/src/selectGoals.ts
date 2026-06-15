@@ -12,7 +12,7 @@
  */
 import type { BatchJobResult, EVMarket } from "@oracle/engine";
 import type { SportyBetEventDetail } from "./selectFixtures.js";
-import { sidecarKey } from "./selectFixtures.js";
+import { findSidecarDetail } from "./selectFixtures.js";
 
 /** The only market labels (EVMarket.label) allowed in the goals accumulator.
  *  "Team Over 0.5" in the spec maps to the two team-total labels the engine emits. */
@@ -31,7 +31,12 @@ const _EXCLUDE_RE =
 /** Default per-leg thresholds — the single source of truth, also consumed by
  *  buildConfig() in env.ts so an .env-less run and a coded default never drift. */
 export const DEFAULT_GOALS_MIN_CONFIDENCE = 0.75;
-export const DEFAULT_GOALS_MIN_IMPLIED = 0.7;
+/** Implied-probability floor. Default 0 — disabled. A high implied prob means the
+ *  market already agrees the leg is likely (short odds = no value), so gating on it
+ *  filters *for* the bookmaker's confidence, which is backwards for an edge-seeking
+ *  accumulator. Selection instead requires a positive model edge (mp > ip). Kept as
+ *  an opt-in knob (set GOALS_MIN_IMPLIED) for callers who want a hard price floor. */
+export const DEFAULT_GOALS_MIN_IMPLIED = 0;
 export const DEFAULT_GOALS_TARGET_LEGS = 39;
 
 export interface GoalsSelectOptions {
@@ -70,35 +75,58 @@ export interface GoalsSelectionResult {
   counts: { over15: number; over25: number; teamOver05: number };
 }
 
-/** True when at least one team has parseable last-5 goal data (form last5 or
- *  a non-zero scoring average) — the lenient-tier minimum signal. */
+type Side = "home" | "away";
+
+/** Per-team average goals scored. Prefer an explicit goals.avg_scored; when the
+ *  scraper only provides league-table standings (gf/played) — the common case for
+ *  lower divisions — derive scored = gf / played. Returns null when neither exists. */
+function avgScored(detail: SportyBetEventDetail | undefined, side: Side): number | null {
+  const direct = detail?.stats?.goals?.[side]?.avg_scored;
+  if (typeof direct === "number" && direct > 0) return direct;
+  const st = detail?.stats?.standings?.[side];
+  if (st && typeof st.gf === "number" && typeof st.played === "number" && st.played > 0) {
+    return st.gf / st.played;
+  }
+  return null;
+}
+
+/** Per-team average goals conceded. Prefer goals.avg_conceded; otherwise derive
+ *  ga / played from standings. Returns null when neither exists. */
+function avgConceded(detail: SportyBetEventDetail | undefined, side: Side): number | null {
+  const direct = detail?.stats?.goals?.[side]?.avg_conceded;
+  if (typeof direct === "number" && direct >= 0) return direct;
+  const st = detail?.stats?.standings?.[side];
+  if (st && typeof st.ga === "number" && typeof st.played === "number" && st.played > 0) {
+    return st.ga / st.played;
+  }
+  return null;
+}
+
+/** True when at least one team has a usable scoring signal (explicit goals
+ *  average or standings-derived gf/played) — the lenient-tier minimum. */
 function hasAnyGoalsSignal(detail: SportyBetEventDetail | undefined): boolean {
-  const g = detail?.stats?.goals;
-  if (!g) return false;
-  const h = g.home;
-  const a = g.away;
-  const hScored = typeof h?.avg_scored === "number" && h.avg_scored > 0;
-  const aScored = typeof a?.avg_scored === "number" && a.avg_scored > 0;
-  return hScored || aScored;
+  const h = avgScored(detail, "home");
+  const a = avgScored(detail, "away");
+  return (h !== null && h > 0) || (a !== null && a > 0);
+}
+
+/** A team has a usable defensive figure when a conceded average exists (explicit
+ *  or standings-derived) OR the league table simply carries a goals-against count. */
+function hasDefenceFigure(detail: SportyBetEventDetail | undefined, side: Side): boolean {
+  if (avgConceded(detail, side) !== null) return true;
+  const ga = detail?.stats?.standings?.[side]?.ga;
+  return typeof ga === "number" && ga >= 0;
 }
 
 /** True when BOTH teams have a scoring average AND a conceded/defensive figure —
  *  the strict-tier requirement for Over 2.5 (needs goals from both sides). */
 function hasBothTeamsGoalsAndDefence(detail: SportyBetEventDetail | undefined): boolean {
-  const g = detail?.stats?.goals;
-  const s = detail?.stats?.standings;
-  if (!g) return false;
-  const homeScored = typeof g.home?.avg_scored === "number" && g.home.avg_scored > 0;
-  const awayScored = typeof g.away?.avg_scored === "number" && g.away.avg_scored > 0;
-  if (!homeScored || !awayScored) return false;
-  // Defensive figure: per-team conceded average OR league-table goals-against.
-  const homeDef =
-    (typeof g.home?.avg_conceded === "number" && g.home.avg_conceded >= 0) ||
-    (typeof s?.home?.ga === "number" && s.home.ga >= 0);
-  const awayDef =
-    (typeof g.away?.avg_conceded === "number" && g.away.avg_conceded >= 0) ||
-    (typeof s?.away?.ga === "number" && s.away.ga >= 0);
-  return homeDef && awayDef;
+  const homeScored = avgScored(detail, "home");
+  const awayScored = avgScored(detail, "away");
+  if (homeScored === null || homeScored <= 0 || awayScored === null || awayScored <= 0) {
+    return false;
+  }
+  return hasDefenceFigure(detail, "home") && hasDefenceFigure(detail, "away");
 }
 
 /** Tiered data gate. Returns true when the fixture's data supports `market`.
@@ -128,13 +156,26 @@ export function pickSafestGoalsLeg(
   if (job.status !== "ok") return null;
   const minConfidence = opts.minConfidence ?? DEFAULT_GOALS_MIN_CONFIDENCE;
   const minImplied = opts.minImplied ?? DEFAULT_GOALS_MIN_IMPLIED;
-  const detail = opts.detailByKey?.get(sidecarKey(job.home, job.away));
+  const detail = findSidecarDetail(opts.detailByKey, job.home, job.away);
 
-  const candidates = (job.result.evMarkets ?? [])
-    .filter((m: EVMarket) => GOALS_MARKETS.has(m.label))
-    .filter((m: EVMarket) => !m.veto)
-    .filter((m: EVMarket) => m.mp >= minConfidence && m.ip >= minImplied)
-    .filter((m: EVMarket) => goalsDataGate(detail, job.league, m.label));
+  const all = job.result.evMarkets ?? [];
+  const sGoals = all.filter((m: EVMarket) => GOALS_MARKETS.has(m.label));
+  const sVeto = sGoals.filter((m: EVMarket) => !m.veto);
+  // Confidence floor + positive model edge (mp > ip). The implied floor is opt-in
+  // (default 0) — see DEFAULT_GOALS_MIN_IMPLIED for why a hard price floor is off.
+  const sBars = sVeto.filter(
+    (m: EVMarket) => m.mp >= minConfidence && m.mp > m.ip && m.ip >= minImplied
+  );
+  const candidates = sBars.filter((m: EVMarket) => goalsDataGate(detail, job.league, m.label));
+
+  if (process.env.ORACLE_DEBUG_GOALS === "1") {
+    process.stderr.write(
+      `[debug-goals] ${job.home} v ${job.away} | ev=${all.length} goalsMkt=${sGoals.length} ` +
+        `postVeto=${sVeto.length} postBars=${sBars.length} postGate=${candidates.length} ` +
+        `detail=${detail ? "Y" : "N"} ` +
+        `topMp=${sGoals.length ? Math.max(...sGoals.map((m) => m.mp)).toFixed(2) : "-"}\n`
+    );
+  }
 
   if (candidates.length === 0) return null;
   // Safest = highest model probability.

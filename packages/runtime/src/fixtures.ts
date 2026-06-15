@@ -419,6 +419,15 @@ async function applySelection(
   const injected = new Map<SelectionCandidate, FixtureJob>(
     selected.map((c) => [c, injectSidecarOdds(c)])
   );
+  if (process.env.ORACLE_DEBUG_INJECT === "1") {
+    const withDetail = selected.filter((c) => c.sportyBetDetail).length;
+    const withOdds = [...injected.values()].filter(
+      (j) => Number(j.state?.telemetry?.hOdds ?? 0) > 1
+    ).length;
+    process.stderr.write(
+      `[debug-inject] selected=${selected.length} withDetail=${withDetail} withInjectedOdds=${withOdds}\n`
+    );
+  }
   return {
     jobs: selected.map((c) => injected.get(c)!),
     withOdds: selected.filter((c) => c.hasBulkOdds).map((c) => injected.get(c)!),
@@ -800,32 +809,42 @@ export async function fetchTodaysFixtures(
   if (cached.length) {
     const sel = await applySelection(cachedCandidates(cached), maxFixturesPerRun);
 
-    // 1. Structured providers (SharpAPI → API-Football → Odds-API.io → OddsPapi →
-    //    SportyBet sidecar) then Gemini search — the real fallback chain.
-    const filled = await geminiOddsGapFill(sel.jobs, geminiApiKey, oddsProviders);
-    if (filled.length > 0) {
-      const enrichedJobs = await enrich(filled);
+    // applySelection already injected FULL sidecar odds (1X2 + ou15/ou25/team-totals)
+    // into every fixture that matched the SportyBet sidecar — those are the priced,
+    // analysable jobs. Keep them as-is; only the ones STILL without a 1X2 price need
+    // the structured-provider / Gemini gap-fill. Replacing the whole set with the
+    // gap-fill output (1X2-only) would discard the richer sidecar goals markets.
+    const hasOdds = (j: FixtureJob): boolean =>
+      Number(j.state?.telemetry?.hOdds ?? 0) > 1 ||
+      Number((j.state?.pipeline?.fetched?.odds as Record<string, number> | undefined)?.home ?? 0) >
+        1;
+    const priced = sel.jobs.filter(hasOdds);
+    const unpriced = sel.jobs.filter((j) => !hasOdds(j));
+
+    // Gap-fill only the unpriced remainder via structured providers → Gemini search.
+    const gapFilled = await geminiOddsGapFill(unpriced, geminiApiKey, oddsProviders);
+    const gapKeys = new Set(gapFilled.map((j) => `${j.home}|${j.away}|${j.kickoff}`));
+    // Python web-scraper consensus for whatever the structured chain still missed.
+    const stillUnpriced = unpriced.filter(
+      (j) => !gapKeys.has(`${j.home}|${j.away}|${j.kickoff}`)
+    );
+    const webFilled =
+      enableWebSearchFallback && stillUnpriced.length > 0
+        ? (await fetchWebSearchOdds(stillUnpriced, true)).filter(hasOdds)
+        : [];
+
+    const allPriced = [...priced, ...gapFilled, ...webFilled];
+    if (allPriced.length > 0) {
+      const enrichedJobs = await enrich(allPriced);
       return {
         jobs: enrichedJobs,
-        source: "web_search_consensus",
+        source: priced.length ? "cache" : "web_search_consensus",
         quality: "degraded",
         fetchedAt: new Date().toISOString(),
       };
     }
 
-    // 2. Python web-scraper consensus — deeper, slower fallback.
-    if (enableWebSearchFallback && sel.jobs.length > 0) {
-      const enhanced = await fetchWebSearchOdds(sel.jobs, true);
-      const enrichedJobs = await enrich(enhanced);
-      return {
-        jobs: enrichedJobs,
-        source: "web_search_consensus",
-        quality: "degraded",
-        fetchedAt: new Date().toISOString(),
-      };
-    }
-
-    // 3. Nothing priced — return raw cache, marked no_odds.
+    // Nothing priced anywhere — return raw selection, marked no_odds.
     return {
       jobs: sel.jobs,
       source: sel.jobs.length ? "cache" : "empty",
