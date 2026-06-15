@@ -143,6 +143,36 @@ describe("goalsDataGate", () => {
     expect(goalsDataGate(standingsOnlyDef, "Premier League", "Over 2.5")).toBe(true);
   });
 
+  it("derives scoring signal from standings gf/played when stats.goals is absent", () => {
+    // Production shape: scraper emits form + standings but no goals block.
+    const standingsOnly: SportyBetEventDetail = {
+      eventId: "e5",
+      odds: null,
+      stats: {
+        standings: {
+          home: { played: 12, gf: 16, ga: 5 },
+          away: { played: 12, gf: 16, ga: 14 },
+        },
+      },
+      statscoverage: null,
+    };
+    // Lenient tier: single-team gf/played > 0 suffices.
+    expect(goalsDataGate(standingsOnly, "Premier League", "Over 1.5")).toBe(true);
+    expect(goalsDataGate(standingsOnly, "Premier League", "Home Total Over 0.5")).toBe(true);
+    // Strict tier: both teams score (gf>0) + both have ga → passes.
+    expect(goalsDataGate(standingsOnly, "Premier League", "Over 2.5")).toBe(true);
+  });
+
+  it("rejects standings with zero gf or zero played (no real signal)", () => {
+    const zeroPlayed: SportyBetEventDetail = {
+      eventId: "e6",
+      odds: null,
+      stats: { standings: { home: { played: 0, gf: 0, ga: 0 }, away: { played: 0, gf: 0, ga: 0 } } },
+      statscoverage: null,
+    };
+    expect(goalsDataGate(zeroPlayed, "Premier League", "Over 1.5")).toBe(false);
+  });
+
   it("Over 2.5 strict: rejects when both teams score but neither defensive figure exists", () => {
     const noDefence: SportyBetEventDetail = {
       eventId: "e4",
@@ -190,15 +220,39 @@ describe("pickSafestGoalsLeg", () => {
     expect(leg?.side).toBe("Over 1.5");
   });
 
-  it("respects veto and the implied-prob floor", () => {
+  it("respects veto", () => {
     const vetoed = okJob("A", "B", [{ ...evm("Over 1.5", 0.9, 0.8), veto: "X" }]);
     expect(pickSafestGoalsLeg(vetoed, { detailByKey })).toBeNull();
-    const lowIp = okJob("A", "B", [evm("Over 1.5", 0.9, 0.6)]); // ip below 0.70
-    expect(pickSafestGoalsLeg(lowIp, { detailByKey })).toBeNull();
   });
 
-  it("includes a leg sitting exactly on both thresholds (>= is inclusive)", () => {
-    const atBar = okJob("A", "B", [evm("Over 1.5", 0.75, 0.7)]); // exactly default floors
+  it("admits a low-implied leg by default (no hard price floor, edge positive)", () => {
+    // mp 0.9 over ip 0.6 (odds ~1.67) — rejected under the old ip>=0.70 floor,
+    // now qualifies: high confidence + positive model edge (mp > ip).
+    const lowIp = okJob("A", "B", [evm("Over 1.5", 0.9, 0.6)]);
+    expect(pickSafestGoalsLeg(lowIp, { detailByKey })?.side).toBe("Over 1.5");
+  });
+
+  it("requires a positive model edge (mp > ip)", () => {
+    // High confidence but the market already prices it higher — no edge, rejected.
+    const noEdge = okJob("A", "B", [evm("Over 1.5", 0.8, 0.85)]);
+    expect(pickSafestGoalsLeg(noEdge, { detailByKey })).toBeNull();
+  });
+
+  it("honours an opt-in implied floor when minImplied is supplied", () => {
+    const lowIp = okJob("A", "B", [evm("Over 1.5", 0.9, 0.6)]);
+    expect(pickSafestGoalsLeg(lowIp, { detailByKey, minImplied: 0.7 })).toBeNull();
+  });
+
+  it("recovers a regional-suffix mismatch via tolerant lookup (Ferroviaria ~ Ferroviaria SP)", () => {
+    // Sidecar keyed under the suffixed name; engine job uses the bare name.
+    const suffixed = detailMap([["Ferroviaria SP", "Barra FC SC", thinDetail()]]);
+    const job = okJob("Ferroviaria", "Barra FC", [evm("Over 1.5", 0.8, 0.62)]);
+    const leg = pickSafestGoalsLeg(job, { detailByKey: suffixed });
+    expect(leg?.side).toBe("Over 1.5"); // exact key missed; namesMatch scan found it
+  });
+
+  it("includes a leg sitting exactly on the confidence floor (>= is inclusive)", () => {
+    const atBar = okJob("A", "B", [evm("Over 1.5", 0.75, 0.7)]); // exactly default mp floor
     expect(pickSafestGoalsLeg(atBar, { detailByKey })?.side).toBe("Over 1.5");
     const justUnderMp = okJob("A", "B", [evm("Over 1.5", 0.7499, 0.7)]);
     expect(pickSafestGoalsLeg(justUnderMp, { detailByKey })).toBeNull();

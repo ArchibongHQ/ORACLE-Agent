@@ -21,6 +21,12 @@ import { renderReport, writeReport } from "./report.js";
 import type { ResolveResult } from "./resolveFixtures.js";
 import { resolveRecords } from "./resolveFixtures.js";
 
+/** Cap the persisted run-manifest history. The local PGlite store rewrites this
+ *  whole array on every run; without a cap it grows unbounded and eventually
+ *  corrupts the WASM heap. 90 ≈ a quarter of daily+goals runs — ample for
+ *  recent-history queries while keeping the blob small. */
+const MAX_MANIFEST_HISTORY = 90;
+
 /** CLV-eligible leagues (Tier-1 with Pinnacle coverage). */
 export const CLV_ELIGIBLE_LEAGUES = new Set([
   "Premier League",
@@ -112,11 +118,21 @@ export async function runAnalysis(
   });
 
   if (persist && records.length > 0) {
-    await storage.upsertBulk(
-      STORAGE_KEYS.analysisRecords,
-      records as unknown as Record<string, unknown>[],
-      "analysisId"
-    );
+    // Persistence is best-effort: a storage failure (e.g. a corrupted local
+    // PGlite store) must never abort the run before selection + notify happen.
+    try {
+      await storage.upsertBulk(
+        STORAGE_KEYS.analysisRecords,
+        records as unknown as Record<string, unknown>[],
+        "analysisId"
+      );
+    } catch (err) {
+      process.stderr.write(
+        `[analyze] WARN: analysisRecords persist failed (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`
+      );
+    }
   }
 
   // Report
@@ -181,9 +197,31 @@ export async function runAnalysis(
   };
 
   if (persist) {
-    const existing = (await storage.get<RunManifest[]>(STORAGE_KEYS.runManifests)) ?? [];
-    await storage.set(STORAGE_KEYS.runManifests, [...existing, manifest]);
-    await writeManifest(manifest);
+    // Best-effort: never let a storage abort kill the run before it returns to
+    // the caller (which still has to select + notify). Also cap the manifest
+    // history so the local store can't grow unbounded into WASM-heap corruption.
+    try {
+      const existing = (await storage.get<RunManifest[]>(STORAGE_KEYS.runManifests)) ?? [];
+      const capped = [...existing, manifest].slice(-MAX_MANIFEST_HISTORY);
+      await storage.set(STORAGE_KEYS.runManifests, capped);
+    } catch (err) {
+      process.stderr.write(
+        `[analyze] WARN: runManifests persist failed (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`
+      );
+    }
+    // The on-disk manifest JSON is the canonical record; keep it even if the
+    // DB write above failed.
+    try {
+      await writeManifest(manifest);
+    } catch (err) {
+      process.stderr.write(
+        `[analyze] WARN: manifest file write failed (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`
+      );
+    }
   }
 
   return { batch, records, manifest, reportHtml, reportPath };

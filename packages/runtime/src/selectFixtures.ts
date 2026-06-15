@@ -105,6 +105,30 @@ export function sidecarKey(home: string, away: string): string {
   return `${resolveAlias(home)}|${resolveAlias(away)}`;
 }
 
+/** Look up a fixture's sidecar detail tolerantly. Tries the exact canonical key
+ *  first (fast path); on a miss, scans for a key whose two halves both `namesMatch`
+ *  the requested teams. This recovers regional-suffix mismatches the canonical key
+ *  can't collapse — e.g. engine "Ferroviaria" vs sidecar "Ferroviaria SP" (Brazilian
+ *  state codes are not stripped by normTeam). Returns undefined when no key matches
+ *  (the fixture genuinely isn't in the sidecar). */
+export function findSidecarDetail(
+  detailByKey: Map<string, SportyBetEventDetail> | undefined,
+  home: string,
+  away: string
+): SportyBetEventDetail | undefined {
+  if (!detailByKey) return undefined;
+  const exact = detailByKey.get(sidecarKey(home, away));
+  if (exact) return exact;
+  for (const [key, detail] of detailByKey) {
+    const sep = key.indexOf("|");
+    if (sep < 0) continue;
+    const kh = key.slice(0, sep);
+    const ka = key.slice(sep + 1);
+    if (namesMatch(kh, home) && namesMatch(ka, away)) return detail;
+  }
+  return undefined;
+}
+
 /** Load .tmp/fixtures/sportybet_today.json. Returns null when the file is
  *  missing, corrupt, or stale (`date` !== today) — callers fail open.
  *  The sidecar is scraped web content: each event is shape-validated so one
