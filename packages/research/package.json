@@ -1,5 +1,5 @@
 {
-  "name": "@oracle/llm",
+  "name": "@oracle/research",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,9 +18,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.52.0",
-    "@google/genai": "^2.8.0",
-    "@oracle/research": "workspace:*"
+    "playwright": "^1.45.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -24,6 +24,7 @@ import {
 } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
 import { namesMatch } from "./teamNames.js";
+import type { StoragePort } from "@oracle/storage";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -687,7 +688,8 @@ export async function fetchTodaysFixtures(
   oddsApiIoKey?: string,
   oddsPapiKey?: string,
   sportsGameOddsKey?: string,
-  maxFixturesPerRun: number = DEFAULT_MAX_FIXTURES_PER_RUN
+  maxFixturesPerRun: number = DEFAULT_MAX_FIXTURES_PER_RUN,
+  storage?: StoragePort
 ): Promise<FetchResult> {
   // Structured free-API odds providers (SharpAPI.io → API-Football → Odds-API.io
   // → OddsPapi → SportsGameOdds). Built once; the gap-fill tries this chain
@@ -704,7 +706,11 @@ export async function fetchTodaysFixtures(
   // API-Football lineups (file-read from fetch_lineups.py output) merge last.
   const enrich = async (jobs: FixtureJob[]): Promise<FixtureJob[]> => {
     const withH2H = await enrichWithH2H(jobs, footballDataApiKey);
-    const withNews = await enrichWithNewsIntel(withH2H, perplexityApiKey);
+    const withNews = await enrichWithNewsIntel(withH2H, {
+      perplexityApiKey,
+      geminiApiKey,
+      storage,
+    });
     return enrichWithLineups(withNews);
   };
 

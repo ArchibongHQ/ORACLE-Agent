@@ -6,6 +6,7 @@
 import type { LoadedSlip, RawLeg } from "@oracle/booking";
 import type { BatchJobResult, BatchResult, FixtureJob, PickRef } from "@oracle/engine";
 import type { ActionablePick } from "@oracle/notify";
+import type { StoragePort } from "@oracle/storage";
 import { fetchFixtureByName, geminiOddsGapFill } from "./fixtures.js";
 import { enrichWithH2H } from "./h2h.js";
 import { enrichWithLineups } from "./lineups.js";
@@ -174,6 +175,7 @@ export async function loadedSlipToJobs(
     geminiApiKey?: string | undefined;
     footballDataApiKey?: string | undefined;
     perplexityApiKey?: string | undefined;
+    storage?: StoragePort | undefined;
   }
 ): Promise<PuntLeg[]> {
   const today = new Date().toISOString().slice(0, 10);
@@ -247,7 +249,11 @@ export async function loadedSlipToJobs(
     if (job) {
       try {
         [job] = await enrichWithH2H([job], deps.footballDataApiKey);
-        [job] = await enrichWithNewsIntel([job], deps.perplexityApiKey);
+        [job] = await enrichWithNewsIntel([job], {
+          perplexityApiKey: deps.perplexityApiKey,
+          geminiApiKey: deps.geminiApiKey,
+          storage: deps.storage,
+        });
         [job] = await enrichWithLineups([job]);
       } catch {
         // enrichment is non-fatal — job falls through with whatever partial state it has

@@ -7,8 +7,12 @@ export type { KimiVote } from "./callKimi.js";
 // Swarm worker (Kimi K2.6 + OpenRouter fallbacks)
 export { callKimiVote, callOpenRouterVote } from "./callKimi.js";
 export type { NewsIntelResult } from "./callNewsIntel.js";
-// T0 — news / team intelligence (Perplexity Sonar)
-export { fetchNewsIntelligence } from "./callNewsIntel.js";
+// T0 — news / team intelligence (Perplexity Sonar + Google AI-Mode ensemble)
+export {
+  fetchNewsEnsemble,
+  fetchNewsIntelligence,
+  fetchNewsViaGoogleAiMode,
+} from "./callNewsIntel.js";
 export type { OddsAcquisitionResult } from "./callOdds.js";
 // Odds acquisition
 export { fetchOddsViaGemini } from "./callOdds.js";

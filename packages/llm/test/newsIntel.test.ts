@@ -47,7 +47,7 @@ describe("fetchNewsIntelligence", () => {
       motivationFlags: ["relegation battle"],
       sources: ["https://a", "https://b"],
       confidence: 0.8,
-      model: "sonar-pro",
+      model: "perplexity-sonar-pro",
     });
     expect(postedModels(fetchMock)).toEqual(["sonar-pro"]);
   });
@@ -63,7 +63,7 @@ describe("fetchNewsIntelligence", () => {
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(sonarResponse(GOOD_CONTENT, ["https://c"]));
     const res = await fetchNewsIntelligence("H", "A", "L", KO, "pk");
-    expect(res?.model).toBe("sonar");
+    expect(res?.model).toBe("perplexity-sonar");
     expect(postedModels(fetchMock)).toEqual(["sonar-pro", "sonar"]);
   });
 

@@ -1,4 +1,4 @@
-/** T0 news / team intelligence enrichment (Perplexity Sonar).
+/** T0 news / team intelligence enrichment (Perplexity Sonar + Google AI-Mode ensemble).
  *
  *  Runtime pre-batch step (mirrors h2h.ts): fetches injuries/suspensions/lineups/
  *  motivation/travel for each fixture and merges them into
@@ -6,17 +6,20 @@
  *  layer — not the engine — so file caching stays out of the fs-free engine.
  *
  *  Flow per fixture:
- *    1. Check .tmp/news_intel/<slug>.json cache (TTL 2h — news firms up near kickoff)
- *    2. Call fetchNewsIntelligence (Perplexity Sonar, sonar-pro -> sonar)
- *    3. Convert result to SoftContextItem[] and merge into telemetry.softContext
- *    4. Never throws — returns jobs unchanged on any failure
+ *    1. Check .tmp/news_intel/<slug>.json file cache (TTL 2h — fast same-day reuse)
+ *    2. Check GBrain (news:<slug>) — durable cross-day memory; rehydrate file cache on hit
+ *    3. fetchNewsEnsemble — Perplexity Sonar + Google AI-Mode in parallel, merged
+ *    4. Persist acquisition to BOTH file cache and GBrain (storage.set)
+ *    5. Convert result to SoftContextItem[] and merge into telemetry.softContext
+ *    6. Never throws — returns jobs unchanged on any failure
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FixtureJob } from "@oracle/engine";
-import { fetchNewsIntelligence, type NewsIntelResult } from "@oracle/llm";
+import { fetchNewsEnsemble, type NewsIntelResult } from "@oracle/llm";
+import type { StoragePort } from "@oracle/storage";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -66,13 +69,14 @@ async function writeCache(home: string, away: string, data: NewsCache): Promise<
   );
 }
 
-/** Convert a NewsIntelResult into advisory SoftContextItems (same mapping the engine used). */
+/** Convert a NewsIntelResult into advisory SoftContextItems (same mapping the engine used).
+ *  `source` carries provenance: perplexity-… | google-ai-mode-… | ensemble.
+ *  `observedAt` is the acquisition recency anchor carried through from the provider. */
 function toSoftContext(intel: NewsIntelResult): SoftContextItem[] {
-  const observedAt = new Date().toISOString();
+  const observedAt = intel.observedAt ?? new Date().toISOString();
   const items: SoftContextItem[] = [];
   const push = (kind: SoftContextItem["kind"], texts: string[]) => {
-    for (const text of texts)
-      items.push({ kind, text, source: `perplexity-${intel.model}`, observedAt });
+    for (const text of texts) items.push({ kind, text, source: intel.model, observedAt });
   };
   push("injury", intel.injuries);
   push("injury", intel.suspensions); // suspensions are absence signals, same kind
@@ -82,13 +86,42 @@ function toSoftContext(intel: NewsIntelResult): SoftContextItem[] {
   return items;
 }
 
-/** Enrich up to MAX_JOBS fixtures with Perplexity news intelligence.
- *  Cache-first; merges into job.state.telemetry.softContext. Never throws. */
+export interface NewsIntelOpts {
+  /** Perplexity Sonar key — enables the Sonar path. */
+  perplexityApiKey?: string;
+  /** Gemini key — enables the Google AI-Mode scrape + reshape fallback. */
+  geminiApiKey?: string;
+  /** Durable GBrain store for cross-day "remember this match" persistence. */
+  storage?: StoragePort;
+}
+
+const gbrainKey = (home: string, away: string): string => `news:${slug(home, away)}`;
+
+/** GBrain durable lookup, honoring the same 2h recency window as the file cache. */
+async function readGbrain(
+  storage: StoragePort | undefined,
+  home: string,
+  away: string
+): Promise<NewsCache | null> {
+  if (!storage) return null;
+  try {
+    const data = await storage.get<NewsCache>(gbrainKey(home, away));
+    if (data && Date.now() - new Date(data.fetchedAt).getTime() < CACHE_TTL_MS) return data;
+  } catch {
+    /* miss */
+  }
+  return null;
+}
+
+/** Enrich up to MAX_JOBS fixtures with ensemble news intelligence.
+ *  Lookup order per fixture: file cache -> GBrain -> ensemble acquisition.
+ *  Persists acquisitions to BOTH file cache and GBrain. Never throws. */
 export async function enrichWithNewsIntel(
   jobs: FixtureJob[],
-  apiKey: string | undefined
+  opts: NewsIntelOpts
 ): Promise<FixtureJob[]> {
-  if (!apiKey) return jobs;
+  const { perplexityApiKey, geminiApiKey, storage } = opts;
+  if (!perplexityApiKey && !geminiApiKey) return jobs;
 
   const eligible = jobs.map((job, idx) => ({ job, idx })).slice(0, MAX_JOBS);
   if (eligible.length === 0) return jobs;
@@ -99,21 +132,37 @@ export async function enrichWithNewsIntel(
 
   for (const { job, idx } of eligible) {
     try {
+      // 1. file cache (fast same-day reuse)
       let cached = await readCache(job.home, job.away);
 
+      // 2. GBrain durable memory — rehydrate file cache on hit so next run is local
+      if (!cached) {
+        const fromGbrain = await readGbrain(storage, job.home, job.away);
+        if (fromGbrain) {
+          cached = fromGbrain;
+          await writeCache(job.home, job.away, cached);
+        }
+      }
+
+      // 3. acquire via ensemble (Perplexity + Google AI-Mode in parallel)
       if (!cached) {
         if (apiCalls > 0) await new Promise((r) => setTimeout(r, REQ_DELAY_MS));
-        const intel = await fetchNewsIntelligence(
-          job.home,
-          job.away,
-          job.league,
-          job.kickoff,
-          apiKey
-        );
+        const intel = await fetchNewsEnsemble(job.home, job.away, job.league, job.kickoff, {
+          perplexityKey: perplexityApiKey,
+          geminiKey: geminiApiKey,
+        });
         apiCalls++;
         if (intel) {
           cached = { ...intel, fetchedAt: new Date().toISOString() };
+          // 4. persist to BOTH file cache and GBrain
           await writeCache(job.home, job.away, cached);
+          if (storage) {
+            try {
+              await storage.set(gbrainKey(job.home, job.away), cached);
+            } catch {
+              /* GBrain persist is best-effort */
+            }
+          }
         }
       }
 

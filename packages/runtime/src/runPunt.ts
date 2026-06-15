@@ -127,6 +127,7 @@ export async function runPuntAnalysis(
     geminiApiKey: config.geminiApiKey,
     footballDataApiKey: config.footballDataApiKey,
     perplexityApiKey: config.perplexityApiKey,
+    storage: config.enableNewsIntel ? storage : undefined,
   });
   const jobs = puntLegs.map((l) => l.job).filter((j): j is NonNullable<typeof j> => j !== null);
 

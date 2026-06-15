@@ -158,8 +158,11 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     enableWebSearchOddsFallback: env.ENABLE_WEB_SEARCH_FALLBACK?.toLowerCase() !== "false",
     webOddsMinConsensus: Number(env.WEB_ODDS_MIN_CONSENSUS ?? 3),
     webOddsVarianceThreshold: Number(env.WEB_ODDS_VARIANCE_THRESHOLD ?? 0.025),
-    // T0 news intel + swarm — opt-in; off unless the key is present and the flag set
-    enableNewsIntel: env.ENABLE_NEWS_INTEL?.toLowerCase() === "true" && !!env.PERPLEXITY_API_KEY,
+    // T0 news intel + swarm — opt-in; on when the flag is set AND any provider key
+    // is present. Gemini-only enables the Google AI-Mode fallback (no Perplexity needed).
+    enableNewsIntel:
+      env.ENABLE_NEWS_INTEL?.toLowerCase() === "true" &&
+      (!!env.PERPLEXITY_API_KEY || !!env.GEMINI_API_KEY),
     enableSwarm: enableSwarmFlag && (!!env.KIMI_API_KEY || !!env.OPENROUTER_API_KEY),
     batchConcurrency,
     // Pre-analysis fixture cap — bounds per-run odds/LLM quota spend

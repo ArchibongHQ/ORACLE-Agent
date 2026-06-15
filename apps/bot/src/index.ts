@@ -432,6 +432,7 @@ async function handleRun(chatId: string): Promise<void> {
 
   try {
     const newsKey = config.enableNewsIntel ? config.perplexityApiKey : undefined;
+    const newsStorage = config.enableNewsIntel ? storage : undefined;
     const { jobs } = await fetchTodaysFixtures(
       config.oddsApiKey,
       true,
@@ -443,7 +444,8 @@ async function handleRun(chatId: string): Promise<void> {
       config.oddsApiIoKey,
       config.oddsPapiKey,
       config.sportsGameOddsKey,
-      config.maxFixturesPerRun
+      config.maxFixturesPerRun,
+      newsStorage
     );
 
     if (!jobs.length) {

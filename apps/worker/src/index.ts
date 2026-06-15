@@ -217,7 +217,9 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
   await fetchLineups();
   const storage = new GBrainAdapter(DB_PATH);
 
+  // News intel runs when enabled; Perplexity key optional (Gemini AI-Mode fallback covers it).
   const newsKey = config.enableNewsIntel ? config.perplexityApiKey : undefined;
+  const newsStorage = config.enableNewsIntel ? storage : undefined;
   const { jobs, source: _source } = await fetchTodaysFixtures(
     config.oddsApiKey,
     true,
@@ -229,7 +231,8 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     config.oddsApiIoKey,
     config.oddsPapiKey,
     config.sportsGameOddsKey,
-    config.maxFixturesPerRun
+    config.maxFixturesPerRun,
+    newsStorage
   );
 
   if (!jobs.length) {
