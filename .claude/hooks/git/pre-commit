@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Blocks commit if TypeScript typecheck fails on staged .ts/.tsx files.
+# Blocks commit if staged .ts/.tsx files fail TypeScript typecheck or Biome
+# formatting. Biome formatting is enforced by CI (`biome ci .`); checking it here
+# stops format-only failures from reaching CI after a merge.
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 STAGED_TS=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx)$' || true)
 
 if [ -n "$STAGED_TS" ]; then
+  cd "$REPO_ROOT" || exit 1
+
   echo "[pre-commit] TypeScript files staged. Running typecheck..."
-  cd "$REPO_ROOT" && pnpm turbo run typecheck 2>&1 | tail -20
-  TYPECHECK_EXIT=$?
-  if [ $TYPECHECK_EXIT -ne 0 ]; then
+  pnpm turbo run typecheck 2>&1 | tail -20
+  # ${PIPESTATUS[0]} is pnpm's exit code; $? would be tail's.
+  TYPECHECK_EXIT=${PIPESTATUS[0]}
+  if [ "$TYPECHECK_EXIT" -ne 0 ]; then
     echo ""
     echo "================================================================"
     echo "  TYPECHECK FAILED. Fix errors before committing."
@@ -16,6 +21,22 @@ if [ -n "$STAGED_TS" ]; then
     exit 1
   fi
   echo "[pre-commit] Typecheck passed."
+
+  echo "[pre-commit] Checking Biome formatting on staged files..."
+  # Check only the staged files — fast and matches what landed in the commit.
+  # `biome format` (no --write) exits non-zero when content differs.
+  echo "$STAGED_TS" | xargs pnpm exec biome format 2>&1 | tail -20
+  FORMAT_EXIT=${PIPESTATUS[1]}
+  if [ "$FORMAT_EXIT" -ne 0 ]; then
+    echo ""
+    echo "================================================================"
+    echo "  BIOME FORMAT CHECK FAILED. CI ('biome ci .') will reject this."
+    echo "  Fix it now:  pnpm exec biome format --write <files>"
+    echo "  Then re-stage and commit."
+    echo "================================================================"
+    exit 1
+  fi
+  echo "[pre-commit] Biome formatting clean."
 fi
 
 exit 0
