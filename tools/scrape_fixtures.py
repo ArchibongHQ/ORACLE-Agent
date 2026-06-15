@@ -916,41 +916,56 @@ def _parse_odds(markets_data: dict) -> dict:
 
 
 def _parse_form(form_data: dict) -> Optional[dict]:
-    """Extract last-5 W/D/L and goals from stats_match_form response."""
+    """Extract last-5 W/D/L from stats_match_form response.
+
+    Live gismo shape: teams.{home,away} = {team:{name,…}, form:[{type:"W"},…]}.
+    `form` is a list of recent-results objects (most-recent-first), not a string.
+    """
     if not form_data:
         return None
     teams = form_data.get("teams", {})
     out: dict[str, dict] = {}
     for side in ("home", "away"):
-        team = teams.get(side, {})
-        form_str = team.get("form", "")
-        matches = [m for m in (form_str or "") if m in ("W", "D", "L")][-5:]
+        team = teams.get(side) or {}
+        form_list = team.get("form") or []
+        # Newest-first → take the most recent 5, normalise to W/D/L letters.
+        letters = [
+            (f.get("type") or "").upper()
+            for f in form_list
+            if isinstance(f, dict) and (f.get("type") or "").upper() in ("W", "D", "L")
+        ][:5]
+        name = (team.get("team") or {}).get("name") or team.get("name")
         out[side] = {
-            "name": team.get("name"),
-            "last5": "".join(matches),
-            "w": matches.count("W"),
-            "d": matches.count("D"),
-            "l": matches.count("L"),
+            "name": name,
+            "last5": "".join(letters),
+            "w": letters.count("W"),
+            "d": letters.count("D"),
+            "l": letters.count("L"),
         }
     return out or None
 
 
 def _parse_standings(tables_data: dict, home_id: Optional[int], away_id: Optional[int]) -> Optional[dict]:
-    """Extract league position and points for both teams from stats_season_tables."""
+    """Extract league position, points, and goals for both teams from stats_season_tables.
+
+    Live gismo shape: tables[0].tablerows[] where each row has team:{_id,…} and
+    totals fields pointsTotal / total (matches played) / goalsForTotal /
+    goalsAgainstTotal. (The old tot_pts/tot_sp/_id schema was never returned.)
+    """
     if not tables_data:
         return None
     rows = (tables_data.get("tables") or [{}])[0].get("tablerows", [])
     result: dict[str, Optional[dict]] = {}
     for row in rows:
-        tid = row.get("_id")
+        tid = (row.get("team") or {}).get("_id")
         if tid in (home_id, away_id):
             label = "home" if tid == home_id else "away"
             result[label] = {
                 "pos": row.get("pos"),
-                "points": row.get("tot_pts"),
-                "played": row.get("tot_sp"),
-                "gf": row.get("tot_gf"),
-                "ga": row.get("tot_ga"),
+                "points": row.get("pointsTotal"),
+                "played": row.get("total"),
+                "gf": row.get("goalsForTotal"),
+                "ga": row.get("goalsAgainstTotal"),
             }
         if len(result) == 2:
             break
@@ -958,30 +973,50 @@ def _parse_standings(tables_data: dict, home_id: Optional[int], away_id: Optiona
 
 
 def _parse_goals(goals_data: dict, home_id: Optional[int], away_id: Optional[int]) -> Optional[dict]:
-    """Extract per-team avg goals scored/conceded from stats_season_goals."""
+    """Extract per-team avg goals scored/conceded from stats_season_goals.
+
+    Live gismo shape: teams is keyed by array index ("0","1",…) — NOT by team id —
+    and each entry holds team:{_id,…}, scoredsum, concededsum, matches. The per-game
+    average is derived (scoredsum / matches). (The old avgGoalsFor/Against fields and
+    id-keyed lookup were never returned by this endpoint.)
+    """
     if not goals_data:
         return None
     raw = goals_data.get("teams", {})
-    # Gismo may return teams as a dict keyed by team_id or as a list of team objects
-    if isinstance(raw, list):
-        team_entries: dict = {str(t.get("_id", t.get("id", ""))): t for t in raw if isinstance(t, dict)}
-    else:
-        team_entries = raw if isinstance(raw, dict) else {}
+    entries = (
+        list(raw.values()) if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+    )
+    by_id: dict[int, dict] = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        tid = (e.get("team") or {}).get("_id")
+        if isinstance(tid, int):
+            by_id[tid] = e
     result: dict[str, Optional[dict]] = {}
     for label, tid in (("home", home_id), ("away", away_id)):
-        if tid is None:
+        entry = by_id.get(tid) if tid is not None else None
+        if not entry:
             continue
-        entry = team_entries.get(str(tid))
-        if entry:
+        played = entry.get("matches")
+        scored = entry.get("scoredsum")
+        conceded = entry.get("concededsum")
+        if isinstance(played, int) and played > 0:
             result[label] = {
-                "avg_scored": entry.get("avgGoalsFor"),
-                "avg_conceded": entry.get("avgGoalsAgainst"),
+                "avg_scored": round(scored / played, 3) if isinstance(scored, (int, float)) else None,
+                "avg_conceded": round(conceded / played, 3) if isinstance(conceded, (int, float)) else None,
             }
     return result or None
 
 
 def _parse_h2h(versus_data: dict) -> Optional[dict]:
-    """Summarize H2H from stats_team_versusrecent — empty arrays are common for low-tier."""
+    """Summarize H2H from stats_team_versusrecent — empty arrays are common for low-tier.
+
+    Live gismo shape: matches[].result is an object {home, away, winner} where
+    winner ∈ home/away/draw (relative to that match's home/away team), NOT a
+    string status. We count by winner. The home/away split here is per-historical-
+    match, so it reflects head-to-head dominance, not the current fixture's sides.
+    """
     if not versus_data:
         return None
     matches = versus_data.get("matches") or []
@@ -989,12 +1024,12 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
         return None
     summary = {"total": len(matches), "home_wins": 0, "away_wins": 0, "draws": 0}
     for m in matches[:10]:
-        res = (m.get("result") or "").upper()
-        if res == "HOME":
+        winner = ((m.get("result") or {}).get("winner") or "").lower()
+        if winner == "home":
             summary["home_wins"] += 1
-        elif res == "AWAY":
+        elif winner == "away":
             summary["away_wins"] += 1
-        elif res == "DRAW":
+        elif winner == "draw":
             summary["draws"] += 1
     return summary
 
