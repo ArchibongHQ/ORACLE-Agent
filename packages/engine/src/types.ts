@@ -123,6 +123,10 @@ export interface OracleConfig {
   enableSwarm?: boolean; // Level-2: per-fixture sub-agent swarm (APEX/PRIME)
   batchConcurrency?: number; // Level-1: max concurrent fixtures (default 8)
   maxFixturesPerRun?: number; // pre-analysis fixture selection cap (default 50)
+  // Goals-only accumulator pipeline (runGoalsBatch) — gates per-leg selection
+  goalsMinConfidence?: number; // model `mp` floor per goals leg (default 0.75)
+  goalsMinImplied?: number; // implied-prob floor per goals leg (default 0.70)
+  goalsTargetLegs?: number; // max legs in the goals accumulator (default 39)
   // Hardware capabilities (populated at runtime boundary, never inside @oracle/engine)
   isVps?: boolean; // ORACLE_IS_VPS=true or systemd-detect-virt detects VM
   hasNvidiaGpu?: boolean; // nvidia-smi available and returned a GPU name

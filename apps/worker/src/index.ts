@@ -8,14 +8,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sendPuntPrompt } from "@oracle/bot";
 import type { RunManifest } from "@oracle/engine";
+import type { ActionablePick, BatchSummary } from "@oracle/notify";
 import { buildNotifiers, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
   buildConfig,
   fetchTodaysFixtures,
   loadEnv,
+  loadSportyBetIndex,
   markPrompted,
   resolveDay,
   runAnalysis,
+  selectGoalsAccumulator,
   shouldReprompt,
 } from "@oracle/runtime";
 import { GBrainAdapter } from "@oracle/storage";
@@ -297,6 +300,135 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
   await storage.close();
 }
 
+// ── Goals-only accumulator (08:30 UTC = 09:30 WAT) ────────────────────────────
+// Independent pipeline: reuses the engine output but selects ONLY Over 1.5 /
+// Over 2.5 / Team Over 0.5 legs whose data heavily supports goals, ranks them by
+// model confidence, caps at goalsTargetLegs (a ceiling, never a fill target),
+// books one SportyBet code, and pushes a goals-tagged Telegram message. Shares no
+// state with runDailyBatch.
+
+const GOALS_TAG = "GOALS ACCA (Over 1.5/2.5/Team 0.5)";
+
+async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  // Reuse a fresh sidecar; scrape only when stale (date !== today) to avoid a
+  // redundant Playwright run when the 06:00/09:00 scrape already ran.
+  let index = await loadSportyBetIndex(today);
+  if (!index) {
+    const sportyBetCount = await scrapeFixtures();
+    checkSportyBetStreak(sportyBetCount);
+    index = await loadSportyBetIndex(today);
+  }
+
+  const storage = new GBrainAdapter(DB_PATH);
+  const newsKey = config.enableNewsIntel ? config.perplexityApiKey : undefined;
+  const newsStorage = config.enableNewsIntel ? storage : undefined;
+  const { jobs } = await fetchTodaysFixtures(
+    config.oddsApiKey,
+    true,
+    config.geminiApiKey,
+    config.footballDataApiKey,
+    newsKey,
+    config.sharpApiIoKey,
+    config.apiFootballKey,
+    config.oddsApiIoKey,
+    config.oddsPapiKey,
+    config.sportsGameOddsKey,
+    config.maxFixturesPerRun,
+    newsStorage
+  );
+
+  if (!jobs.length) {
+    await storage.close();
+    return;
+  }
+
+  const { batch, reportPath } = await runAnalysis(
+    jobs,
+    { storage, config },
+    {
+      trigger,
+      batchOptions: {
+        onProgress: ({ completed, total, current }) => {
+          if (current) process.stdout.write(`[goals] ${completed}/${total}: ${current}\n`);
+        },
+      },
+    }
+  );
+
+  const selection = selectGoalsAccumulator(batch.jobs, {
+    minConfidence: config.goalsMinConfidence,
+    minImplied: config.goalsMinImplied,
+    target: config.goalsTargetLegs,
+    detailByKey: index?.detailByKey,
+  });
+
+  process.stdout.write(
+    `[goals] selected ${selection.legs.length}/${selection.target} ` +
+      `(over15=${selection.counts.over15} over25=${selection.counts.over25} ` +
+      `teamover05=${selection.counts.teamOver05}; qualified=${selection.qualified} of ${selection.analysed})\n`
+  );
+
+  const actionable: ActionablePick[] = selection.legs.map((l) => ({
+    home: l.home,
+    away: l.away,
+    league: l.league,
+    kickoff: l.kickoff,
+    market: l.market,
+    side: l.side,
+    odds: l.odds,
+    stakePct: 0, // accumulator leg — no per-leg Kelly stake
+    confidence: l.mp,
+  }));
+
+  const summary: BatchSummary = {
+    date: `${batch.date} — ${GOALS_TAG}`,
+    analysed: selection.analysed,
+    actionableCount: actionable.length,
+    errors: batch.errorCount,
+    actionable,
+    ...(reportPath ? { reportUrl: reportPath } : {}),
+  };
+
+  // ── SportyBet booking (off by default; never blocks delivery) ──────────────
+  if (env.ENABLE_SPORTYBET_BOOKING === "true" && actionable.length > 0) {
+    try {
+      const { bookAccumulator } = await import("@oracle/booking");
+      const booking = await bookAccumulator(actionable);
+      if (booking.code) {
+        summary.bookingCode = booking.code;
+        summary.bookingLoadUrl = booking.loadUrl ?? undefined;
+        summary.bookingUnmatched = booking.unmatched;
+        if (booking.loadUrl)
+          process.stdout.write(`[goals-booking] ${booking.code}: ${booking.loadUrl}\n`);
+        if (booking.unmatched.length)
+          process.stderr.write(
+            `[goals-booking] ${booking.unmatched.length} leg(s) unmatched on SportyBet\n`
+          );
+      } else {
+        summary.bookingError = booking.error ?? "no code returned";
+      }
+    } catch (err) {
+      summary.bookingError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  // Notify — even with 0 legs (sends a "no goals slip today" note; never books empty).
+  const notifiers = buildNotifiers(env);
+  if (notifiers.length) {
+    await notifyAll(notifiers, summary);
+  }
+
+  writeHeartbeat("lastGoalsBatch", {
+    trigger,
+    analysed: selection.analysed,
+    legs: selection.legs.length,
+    target: selection.target,
+    booked: Boolean(summary.bookingCode),
+  });
+  await storage.close();
+}
+
 // ── Resolve yesterday (14:00) ────────────────────────────────────────────────
 
 async function resolveYesterdayFixtures(): Promise<void> {
@@ -344,6 +476,9 @@ cron.schedule("0 0 * * *", () => logJob("scrape-fixtures@00:00", scrapeFixtures)
 cron.schedule("0 6 * * *", () => logJob("scrape-fixtures@06:00", scrapeFixtures));
 cron.schedule("45 11 * * *", () => logJob("scrape-fixtures@11:45", scrapeFixtures));
 
+// Goals-only accumulator (08:30 UTC = 09:30 WAT) — reuses fresh sidecar, scrapes if stale
+cron.schedule("30 8 * * *", () => logJob("goals-batch", () => runGoalsBatch("scheduled")));
+
 // Daily batch (09:00) — scrapeFixtures() runs as its first step
 cron.schedule("0 9 * * *", () => logJob("daily-batch", () => runDailyBatch("scheduled")));
 
@@ -374,6 +509,14 @@ if (process.argv.includes("--run-now")) {
       process.stderr.write(`[worker] --run-now FAILED — ${msg}\n`);
       process.exit(1);
     });
+}
+
+if (process.argv.includes("--run-goals-now")) {
+  runGoalsBatch("manual").catch((err: unknown) => {
+    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    process.stderr.write(`[worker] --run-goals-now FAILED — ${msg}\n`);
+    process.exit(1);
+  });
 }
 
 if (process.argv.includes("--refresh-kaggle")) {

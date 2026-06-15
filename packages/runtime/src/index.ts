@@ -45,3 +45,10 @@ export {
   selectFixtures,
   sidecarKey,
 } from "./selectFixtures.js";
+export type { GoalsLeg, GoalsSelectionResult, GoalsSelectOptions } from "./selectGoals.js";
+export {
+  goalsDataGate,
+  GOALS_MARKETS,
+  pickSafestGoalsLeg,
+  selectGoalsAccumulator,
+} from "./selectGoals.js";

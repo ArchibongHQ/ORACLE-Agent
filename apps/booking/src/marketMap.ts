@@ -36,6 +36,21 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
     if (s.includes("away") || s.includes("2")) return { sportyMarket: "1X2", sportySelection: "2" };
   }
 
+  // ── Team Total (e.g. "Home Total Over 0.5") ──────────────────────────────
+  // Must precede the generic goals/total branch below — cat "team total"
+  // contains "total" and would otherwise misroute to the match-total market.
+  if (c.includes("team total")) {
+    const lineMatch = s.match(/([\d.]+)/);
+    const line = lineMatch ? lineMatch[1] : null;
+    if (line && (s.includes("over") || s.includes("under"))) {
+      const dir = s.includes("under") ? "Under" : "Over";
+      if (s.includes("home"))
+        return { sportyMarket: "Home Team Total", sportySelection: `${dir} ${line}` };
+      if (s.includes("away"))
+        return { sportyMarket: "Away Team Total", sportySelection: `${dir} ${line}` };
+    }
+  }
+
   // ── Goals Over/Under ─────────────────────────────────────────────────────
   if (c.includes("goal") || c.includes("o/u") || c.includes("over under") || c.includes("total")) {
     const lineMatch = s.match(/([\d.]+)/);

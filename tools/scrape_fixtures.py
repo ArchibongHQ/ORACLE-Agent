@@ -1478,7 +1478,7 @@ def main() -> None:
 
     if args.dry_run:
         for line in merged:
-            print(line)
+            sys.stdout.buffer.write((line + "\n").encode("utf-8"))
         return
 
     write_cache(merged)
