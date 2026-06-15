@@ -129,6 +129,29 @@ describe("goalsDataGate", () => {
     expect(goalsDataGate(thinDetail(), "Premier League", "Home Total Over 0.5")).toBe(true);
     expect(goalsDataGate(undefined, "Premier League", "Over 1.5")).toBe(false);
   });
+
+  it("Over 2.5 strict: standings ga satisfies the defensive figure when avg_conceded is absent", () => {
+    const standingsOnlyDef: SportyBetEventDetail = {
+      eventId: "e3",
+      odds: null,
+      stats: {
+        goals: { home: { avg_scored: 2.0 }, away: { avg_scored: 1.7 } }, // no avg_conceded
+        standings: { home: { ga: 14 }, away: { ga: 19 } },
+      },
+      statscoverage: null,
+    };
+    expect(goalsDataGate(standingsOnlyDef, "Premier League", "Over 2.5")).toBe(true);
+  });
+
+  it("Over 2.5 strict: rejects when both teams score but neither defensive figure exists", () => {
+    const noDefence: SportyBetEventDetail = {
+      eventId: "e4",
+      odds: null,
+      stats: { goals: { home: { avg_scored: 2.0 }, away: { avg_scored: 1.7 } } }, // no conceded, no standings
+      statscoverage: null,
+    };
+    expect(goalsDataGate(noDefence, "Premier League", "Over 2.5")).toBe(false);
+  });
 });
 
 // ── pickSafestGoalsLeg ───────────────────────────────────────────────────────
@@ -176,6 +199,13 @@ describe("pickSafestGoalsLeg", () => {
     const lowIp = okJob("A", "B", [evm("Over 1.5", 0.9, 0.6)]); // ip below 0.70
     expect(pickSafestGoalsLeg(lowIp, { detailByKey })).toBeNull();
   });
+
+  it("includes a leg sitting exactly on both thresholds (>= is inclusive)", () => {
+    const atBar = okJob("A", "B", [evm("Over 1.5", 0.75, 0.7)]); // exactly default floors
+    expect(pickSafestGoalsLeg(atBar, { detailByKey })?.side).toBe("Over 1.5");
+    const justUnderMp = okJob("A", "B", [evm("Over 1.5", 0.7499, 0.7)]);
+    expect(pickSafestGoalsLeg(justUnderMp, { detailByKey })).toBeNull();
+  });
 });
 
 // ── selectGoalsAccumulator ───────────────────────────────────────────────────
@@ -222,6 +252,14 @@ describe("selectGoalsAccumulator", () => {
     const res = selectGoalsAccumulator(jobs, { detailByKey, target: 39 });
     expect(res.legs).toHaveLength(1);
     expect(res.analysed).toBe(2);
+  });
+
+  it("target 0 yields no legs but still reports all qualifiers", () => {
+    const detailByKey = detailMap([["A", "B", richDetail()]]);
+    const jobs = [okJob("A", "B", [evm("Over 1.5", 0.95, 0.9)])];
+    const res = selectGoalsAccumulator(jobs, { detailByKey, target: 0 });
+    expect(res.legs).toHaveLength(0);
+    expect(res.qualified).toBe(1);
   });
 });
 

@@ -49,6 +49,21 @@ class TestParseForm:
         assert out["home"]["last5"] == ""
         assert out["home"]["w"] == 0
 
+    def test_counts_draws_and_ignores_non_dict_entries(self):
+        data = {
+            "teams": {
+                "home": {
+                    "team": {"name": "X"},
+                    # mix a draw and a stray non-dict element (malformed feed)
+                    "form": [{"type": "D"}, "garbage", {"type": "W"}, {"type": "D"}],
+                },
+                "away": {"team": {"name": "Y"}, "form": []},
+            }
+        }
+        out = _parse_form(data)
+        assert out["home"]["last5"] == "DWD"  # non-dict skipped, no raise
+        assert out["home"]["d"] == 2 and out["home"]["w"] == 1
+
 
 class TestParseStandings:
     DATA = {
@@ -81,6 +96,13 @@ class TestParseStandings:
     def test_none_on_empty(self):
         assert _parse_standings(None, HOME_ID, AWAY_ID) is None
 
+    def test_null_team_id_row_does_not_match_null_target_ids(self):
+        # Regression: when home_id/away_id are None (non-digit feed ids) but a
+        # season was still resolved, a malformed row with no team._id must NOT
+        # match via `None in (None, None)` and get mislabeled as a real team.
+        data = {"tables": [{"tablerows": [{"team": {}, "pos": 1, "pointsTotal": 30}]}]}
+        assert _parse_standings(data, None, None) is None
+
 
 class TestParseGoals:
     # teams keyed by array index, team id nested, raw sums (not averages)
@@ -104,6 +126,12 @@ class TestParseGoals:
     def test_none_on_empty(self):
         assert _parse_goals(None, HOME_ID, AWAY_ID) is None
 
+    def test_string_team_id_is_skipped(self):
+        # Documents current behaviour: ids are matched as ints (isinstance check),
+        # so a stringified team._id is not matched. Live match_info ids are ints.
+        data = {"teams": {"0": {"team": {"_id": str(HOME_ID)}, "scoredsum": 9, "matches": 11}}}
+        assert _parse_goals(data, HOME_ID, AWAY_ID) is None
+
 
 class TestParseH2H:
     DATA = {
@@ -121,3 +149,15 @@ class TestParseH2H:
     def test_none_on_empty_matches(self):
         assert _parse_h2h({"matches": []}) is None
         assert _parse_h2h({}) is None
+
+    def test_legacy_string_result_does_not_raise(self):
+        # A bare-string result (legacy schema) has no .get() — must be ignored,
+        # not crash. Valid winner-object matches still count.
+        data = {
+            "matches": [
+                {"result": "home"},  # legacy string shape
+                {"result": {"home": 2, "away": 1, "winner": "home"}},
+            ]
+        }
+        out = _parse_h2h(data)
+        assert out == {"total": 2, "home_wins": 1, "away_wins": 0, "draws": 0}

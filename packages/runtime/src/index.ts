@@ -47,6 +47,9 @@ export {
 } from "./selectFixtures.js";
 export type { GoalsLeg, GoalsSelectionResult, GoalsSelectOptions } from "./selectGoals.js";
 export {
+  DEFAULT_GOALS_MIN_CONFIDENCE,
+  DEFAULT_GOALS_MIN_IMPLIED,
+  DEFAULT_GOALS_TARGET_LEGS,
   goalsDataGate,
   GOALS_MARKETS,
   pickSafestGoalsLeg,

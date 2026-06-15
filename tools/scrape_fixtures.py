@@ -958,7 +958,9 @@ def _parse_standings(tables_data: dict, home_id: Optional[int], away_id: Optiona
     result: dict[str, Optional[dict]] = {}
     for row in rows:
         tid = (row.get("team") or {}).get("_id")
-        if tid in (home_id, away_id):
+        # Guard against None ids: a malformed row with no team._id must not match
+        # when home_id/away_id are themselves None (mirrors _parse_goals).
+        if tid is not None and tid in (home_id, away_id):
             label = "home" if tid == home_id else "away"
             result[label] = {
                 "pos": row.get("pos"),
@@ -1024,7 +1026,10 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
         return None
     summary = {"total": len(matches), "home_wins": 0, "away_wins": 0, "draws": 0}
     for m in matches[:10]:
-        winner = ((m.get("result") or {}).get("winner") or "").lower()
+        res = m.get("result")
+        # Defend against the legacy string-result shape: a bare string has no
+        # .get(), so only an object carries a countable winner.
+        winner = (res.get("winner") or "").lower() if isinstance(res, dict) else ""
         if winner == "home":
             summary["home_wins"] += 1
         elif winner == "away":

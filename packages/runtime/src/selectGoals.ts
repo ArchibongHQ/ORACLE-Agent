@@ -28,9 +28,11 @@ export const GOALS_MARKETS: ReadonlySet<string> = new Set([
 const _EXCLUDE_RE =
   /cup|copa|coupe|pokal|trophy|shield|supercup|friendly|test\s*match|derby|derbi|clasico|clásico/i;
 
-const DEFAULT_MIN_CONFIDENCE = 0.75;
-const DEFAULT_MIN_IMPLIED = 0.7;
-const DEFAULT_TARGET_LEGS = 39;
+/** Default per-leg thresholds — the single source of truth, also consumed by
+ *  buildConfig() in env.ts so an .env-less run and a coded default never drift. */
+export const DEFAULT_GOALS_MIN_CONFIDENCE = 0.75;
+export const DEFAULT_GOALS_MIN_IMPLIED = 0.7;
+export const DEFAULT_GOALS_TARGET_LEGS = 39;
 
 export interface GoalsSelectOptions {
   /** Model-probability (`mp`) floor per leg. Default 0.75. */
@@ -124,8 +126,8 @@ export function pickSafestGoalsLeg(
   opts: GoalsSelectOptions = {}
 ): GoalsLeg | null {
   if (job.status !== "ok") return null;
-  const minConfidence = opts.minConfidence ?? DEFAULT_MIN_CONFIDENCE;
-  const minImplied = opts.minImplied ?? DEFAULT_MIN_IMPLIED;
+  const minConfidence = opts.minConfidence ?? DEFAULT_GOALS_MIN_CONFIDENCE;
+  const minImplied = opts.minImplied ?? DEFAULT_GOALS_MIN_IMPLIED;
   const detail = opts.detailByKey?.get(sidecarKey(job.home, job.away));
 
   const candidates = (job.result.evMarkets ?? [])
@@ -157,7 +159,7 @@ export function selectGoalsAccumulator(
   jobs: BatchJobResult[],
   opts: GoalsSelectOptions = {}
 ): GoalsSelectionResult {
-  const target = opts.target ?? DEFAULT_TARGET_LEGS;
+  const target = opts.target ?? DEFAULT_GOALS_TARGET_LEGS;
   const all: GoalsLeg[] = [];
   for (const job of jobs) {
     const leg = pickSafestGoalsLeg(job, opts);

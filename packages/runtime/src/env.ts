@@ -4,6 +4,11 @@ import { readFileSync } from "node:fs";
 import type { AgentError, OracleConfig } from "@oracle/engine";
 import { detectHardware, isGpuCapable } from "./hardware.js";
 import { DEFAULT_MAX_FIXTURES_PER_RUN } from "./selectFixtures.js";
+import {
+  DEFAULT_GOALS_MIN_CONFIDENCE,
+  DEFAULT_GOALS_MIN_IMPLIED,
+  DEFAULT_GOALS_TARGET_LEGS,
+} from "./selectGoals.js";
 
 /**
  * Parse a flat KEY=VALUE .env file into a record, then merge Railway process env on top.
@@ -171,9 +176,9 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
         ? maxFixturesRaw
         : DEFAULT_MAX_FIXTURES_PER_RUN,
     // Goals-only accumulator pipeline thresholds (runGoalsBatch)
-    goalsMinConfidence: Number(env.GOALS_MIN_CONFIDENCE ?? 0.75),
-    goalsMinImplied: Number(env.GOALS_MIN_IMPLIED ?? 0.7),
-    goalsTargetLegs: Math.floor(Number(env.GOALS_TARGET_LEGS ?? 39)),
+    goalsMinConfidence: Number(env.GOALS_MIN_CONFIDENCE ?? DEFAULT_GOALS_MIN_CONFIDENCE),
+    goalsMinImplied: Number(env.GOALS_MIN_IMPLIED ?? DEFAULT_GOALS_MIN_IMPLIED),
+    goalsTargetLegs: Math.floor(Number(env.GOALS_TARGET_LEGS ?? DEFAULT_GOALS_TARGET_LEGS)),
     // Hardware capabilities — detected at startup, never hardcoded
     hasNvidiaGpu: hw.hasNvidiaGpu,
     isVps: hw.isVps,
