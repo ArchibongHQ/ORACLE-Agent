@@ -259,9 +259,7 @@ describe("GBrainAdapter concurrency", () => {
   it("serialises overlapping reads and writes without aborting", async () => {
     const N = 32;
     // Fire all ops at once, no await between them — the pre-fix abort scenario.
-    const writes = Array.from({ length: N }, (_, i) =>
-      adapter.set(`conc_${RUN_ID}_${i}`, { i })
-    );
+    const writes = Array.from({ length: N }, (_, i) => adapter.set(`conc_${RUN_ID}_${i}`, { i }));
     const reads = Array.from({ length: N }, (_, i) => adapter.get(`conc_${RUN_ID}_${i}`));
     const bulks = Array.from({ length: 4 }, (_, i) =>
       adapter.upsertBulk(`conc_bulk_${RUN_ID}_${i}`, [{ id: i, n: i }], "id")
