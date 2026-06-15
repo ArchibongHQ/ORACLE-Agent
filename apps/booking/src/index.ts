@@ -39,7 +39,14 @@ export async function bookAccumulator(picks: ActionablePick[]): Promise<BookingR
 
   if (!picks.length) return { ...empty, unmatched: [], error: "no actionable picks to book" };
 
-  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const isLocalWindows = process.platform === "win32" && process.env["ORACLE_IS_VPS"] !== "true";
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      ...(isLocalWindows ? ["--disable-gpu", "--disable-dev-shm-usage", "--disable-software-rasterizer"] : []),
+    ],
+  });
   try {
     const context = await browser.newContext({
       userAgent:
