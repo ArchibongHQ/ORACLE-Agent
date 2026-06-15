@@ -825,9 +825,7 @@ export async function fetchTodaysFixtures(
     const gapFilled = await geminiOddsGapFill(unpriced, geminiApiKey, oddsProviders);
     const gapKeys = new Set(gapFilled.map((j) => `${j.home}|${j.away}|${j.kickoff}`));
     // Python web-scraper consensus for whatever the structured chain still missed.
-    const stillUnpriced = unpriced.filter(
-      (j) => !gapKeys.has(`${j.home}|${j.away}|${j.kickoff}`)
-    );
+    const stillUnpriced = unpriced.filter((j) => !gapKeys.has(`${j.home}|${j.away}|${j.kickoff}`));
     const webFilled =
       enableWebSearchFallback && stillUnpriced.length > 0
         ? (await fetchWebSearchOdds(stillUnpriced, true)).filter(hasOdds)
