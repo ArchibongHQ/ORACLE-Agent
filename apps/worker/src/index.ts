@@ -31,6 +31,36 @@ const env = loadEnv(join(ROOT, ".env"));
 const config = buildConfig(env);
 const DB_PATH = join(ROOT, ".tmp/gbrain");
 
+// One-shot CLI mode: any of these flags runs a single job and exits, instead of
+// starting the cron daemon. Detected up front so the cron schedules below are
+// skipped — otherwise the registered timers keep the event loop alive forever
+// and the process hangs after the job finishes (looking like a timeout).
+const ONE_SHOT_FLAGS = ["--run-now", "--run-goals-now", "--refresh-kaggle"] as const;
+const IS_ONE_SHOT = process.argv.some((a) => ONE_SHOT_FLAGS.includes(a as never));
+
+// Run a single async job to completion, then flush stdio and exit deterministically.
+// Flushing matters because stdout to a pipe (non-TTY parent) is async-buffered on
+// some platforms; a bare process.exit can drop the last buffered lines.
+async function runOnce(label: string, job: () => Promise<void>): Promise<void> {
+  try {
+    await job();
+    await flushStdio();
+    process.exit(0);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    process.stderr.write(`[worker] ${label} FAILED — ${msg}\n`);
+    await flushStdio();
+    process.exit(1);
+  }
+}
+
+// Resolve once both stdout and stderr have drained their write buffers.
+function flushStdio(): Promise<void> {
+  const drain = (s: NodeJS.WriteStream): Promise<void> =>
+    s.writableLength === 0 ? Promise.resolve() : new Promise((r) => s.write("", () => r()));
+  return Promise.all([drain(process.stdout), drain(process.stderr)]).then(() => undefined);
+}
+
 // ── Job logging + heartbeat ───────────────────────────────────────────────────
 // Every cron job runs through logJob so a failure is always visible in the log,
 // and successful batch/resolve runs stamp .tmp/worker_heartbeat.json (read by
@@ -471,26 +501,30 @@ async function sendDailyPuntPrompt(retry: boolean): Promise<void> {
   await sendPuntPrompt();
 }
 
-// Fixture scrape — standalone runs (12am, 6am, 11:45am)
-cron.schedule("0 0 * * *", () => logJob("scrape-fixtures@00:00", scrapeFixtures));
-cron.schedule("0 6 * * *", () => logJob("scrape-fixtures@06:00", scrapeFixtures));
-cron.schedule("45 11 * * *", () => logJob("scrape-fixtures@11:45", scrapeFixtures));
+// Cron daemon — skipped entirely in one-shot CLI mode (see IS_ONE_SHOT above) so a
+// single --run-* invocation exits cleanly instead of being held open by these timers.
+if (!IS_ONE_SHOT) {
+  // Fixture scrape — standalone runs (12am, 6am, 11:45am)
+  cron.schedule("0 0 * * *", () => logJob("scrape-fixtures@00:00", scrapeFixtures));
+  cron.schedule("0 6 * * *", () => logJob("scrape-fixtures@06:00", scrapeFixtures));
+  cron.schedule("45 11 * * *", () => logJob("scrape-fixtures@11:45", scrapeFixtures));
 
-// Goals-only accumulator (08:30 UTC = 09:30 WAT) — reuses fresh sidecar, scrapes if stale
-cron.schedule("30 8 * * *", () => logJob("goals-batch", () => runGoalsBatch("scheduled")));
+  // Goals-only accumulator (08:30 UTC = 09:30 WAT) — reuses fresh sidecar, scrapes if stale
+  cron.schedule("30 8 * * *", () => logJob("goals-batch", () => runGoalsBatch("scheduled")));
 
-// Daily batch (09:00) — scrapeFixtures() runs as its first step
-cron.schedule("0 9 * * *", () => logJob("daily-batch", () => runDailyBatch("scheduled")));
+  // Daily batch (09:00) — scrapeFixtures() runs as its first step
+  cron.schedule("0 9 * * *", () => logJob("daily-batch", () => runDailyBatch("scheduled")));
 
-cron.schedule("0 14 * * *", () => logJob("resolve-yesterday", resolveYesterdayFixtures));
+  cron.schedule("0 14 * * *", () => logJob("resolve-yesterday", resolveYesterdayFixtures));
 
-// Weekly Kaggle refresh — Saturday 03:00 UTC
-cron.schedule("0 3 * * 6", () => logJob("kaggle-refresh", runWeeklyKaggleRefresh));
+  // Weekly Kaggle refresh — Saturday 03:00 UTC
+  cron.schedule("0 3 * * 6", () => logJob("kaggle-refresh", runWeeklyKaggleRefresh));
 
-// Punt prompt — 10:00 (first), 12:00 + 13:00 (retry only if no code received yet)
-cron.schedule("0 10 * * *", () => logJob("punt-prompt", () => sendDailyPuntPrompt(false)));
-cron.schedule("0 12 * * *", () => logJob("punt-prompt-retry", () => sendDailyPuntPrompt(true)));
-cron.schedule("0 13 * * *", () => logJob("punt-prompt-retry", () => sendDailyPuntPrompt(true)));
+  // Punt prompt — 10:00 (first), 12:00 + 13:00 (retry only if no code received yet)
+  cron.schedule("0 10 * * *", () => logJob("punt-prompt", () => sendDailyPuntPrompt(false)));
+  cron.schedule("0 12 * * *", () => logJob("punt-prompt-retry", () => sendDailyPuntPrompt(true)));
+  cron.schedule("0 13 * * *", () => logJob("punt-prompt-retry", () => sendDailyPuntPrompt(true)));
+}
 
 // Graceful shutdown — stop cron schedules so the daemon exits cleanly under SIGINT/SIGTERM.
 for (const sig of ["SIGINT", "SIGTERM"] as const) {
@@ -502,27 +536,16 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 }
 
 if (process.argv.includes("--run-now")) {
-  runDailyBatch("manual")
-    .then(() => resolveYesterdayFixtures())
-    .catch((err: unknown) => {
-      const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      process.stderr.write(`[worker] --run-now FAILED — ${msg}\n`);
-      process.exit(1);
-    });
+  void runOnce("--run-now", async () => {
+    await runDailyBatch("manual");
+    await resolveYesterdayFixtures();
+  });
 }
 
 if (process.argv.includes("--run-goals-now")) {
-  runGoalsBatch("manual").catch((err: unknown) => {
-    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
-    process.stderr.write(`[worker] --run-goals-now FAILED — ${msg}\n`);
-    process.exit(1);
-  });
+  void runOnce("--run-goals-now", () => runGoalsBatch("manual"));
 }
 
 if (process.argv.includes("--refresh-kaggle")) {
-  runWeeklyKaggleRefresh().catch((err: unknown) => {
-    const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
-    process.stderr.write(`[worker] --refresh-kaggle FAILED — ${msg}\n`);
-    process.exit(1);
-  });
+  void runOnce("--refresh-kaggle", () => runWeeklyKaggleRefresh());
 }
