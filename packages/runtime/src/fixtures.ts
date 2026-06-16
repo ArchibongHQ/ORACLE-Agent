@@ -743,12 +743,16 @@ export async function fetchTodaysFixtures(
   const dateTo = `${windowEnd.toISOString().slice(0, 10)}T00:00:00Z`;
 
   const oddsJobs: FixtureJob[] = [];
+  // Per-league failures worth surfacing (HTTP 5xx, parse errors, etc.). A dead
+  // key (401) or exhausted quota (429) is NOT an error here — it's an expected
+  // degraded-mode signal handled separately so it doesn't spam stderr every run.
   const errors: string[] = [];
   // Set when the Odds API is unusable for the whole run — either quota exhausted
   // (429) or a dead/invalid key (401). Both mean every league call will fail
   // identically, so we stop hammering and route to the same degraded fallback
   // (web search → cache + structured-provider/Gemini gap-fill) below.
   let oddsApiUnusable = false;
+  let unusableReason = "";
 
   for (const [sportKey, league] of Object.entries(SPORT_TO_LEAGUE)) {
     try {
@@ -759,18 +763,27 @@ export async function fetchTodaysFixtures(
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`${sportKey}: ${msg}`);
       // A dead key (invalid key / 401) is run-fatal just like an exhausted quota:
-      // every remaining league would 401 too, so break and fall through to the
-      // degraded path instead of looping the dead key across all 16 leagues.
+      // every remaining league would fail identically, so stop and fall through
+      // to the degraded path instead of looping the dead key across all leagues.
+      // Record it as a degradation reason, not a per-league error (no log spam).
       if (msg.includes("quota") || msg.includes("invalid key")) {
         oddsApiUnusable = true;
+        unusableReason = msg.includes("quota") ? "quota exhausted" : "invalid key";
         break;
       }
+      errors.push(`${sportKey}: ${msg}`);
     }
   }
 
+  // Only surface genuinely unexpected per-league failures. The 401/429
+  // degradation is logged once, concisely, below — not as an error list.
   if (errors.length) process.stderr.write(`[fixtures] odds api errors: ${errors.join("; ")}\n`);
+  if (oddsApiUnusable) {
+    process.stderr.write(
+      `[fixtures] odds api unavailable (${unusableReason}) — using fallback odds\n`
+    );
+  }
 
   if (oddsJobs.length > 0) {
     // Merge into today.txt without overwriting scraped fixtures
