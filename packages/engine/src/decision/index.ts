@@ -200,12 +200,18 @@ export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
 export async function decide(
   eligibleBets: EVMarket[],
   ctx?: DecisionContext,
-  config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey" | "openrouterApiKey">
+  config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey" | "openrouterApiKey">,
+  forceDeterministic = false
 ): Promise<DecisionResult> {
   if (!eligibleBets.length) {
     // No positive-EV bets — return the placeholder NO_EDGE pick
     return deterministicDecide([], "No positive-EV bets — NO_EDGE grade");
   }
+
+  // Two-tier gate: fixtures outside the top-N (by composite stats score) get the
+  // full deterministic engine analysis but skip the paid/slow LLM decision tier.
+  // Only the top-N (llmEligible) reach Claude/Gemini/OpenRouter for final picks.
+  if (forceDeterministic) return deterministicDecide(eligibleBets);
 
   // Skip paid LLM tiers when context is missing
   if (!ctx) return deterministicDecide(eligibleBets);

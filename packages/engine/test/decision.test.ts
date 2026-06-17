@@ -113,6 +113,20 @@ describe("decide — deterministic fallback", () => {
     const { decision } = await decide([bet], BASE_CTX, { claudeApiKey: "" });
     expect(decision.grade).toBe("LEAN");
   });
+
+  it("forceDeterministic=true skips the LLM tier even with a Claude key present", async () => {
+    // Two-tier gate: fixtures outside the top-N must NOT call the LLM. If the
+    // LLM tier were reached, callClaude (mocked to throw) would surface; instead
+    // we must get the deterministic result with a null replay.
+    const callClaude = vi.fn().mockRejectedValue(new Error("LLM should not be called"));
+    vi.doMock("@oracle/llm", () => ({ callClaude }));
+    const bet = makeMarket({ ev: 0.06 });
+    const { decision, replay } = await decide([bet], BASE_CTX, { claudeApiKey: "key" }, true);
+    expect(callClaude).not.toHaveBeenCalled();
+    expect(replay).toBeNull();
+    expect(decision.grade).toBe("STRONG");
+    vi.doUnmock("@oracle/llm");
+  });
 });
 
 // ── decide — LLM path (mocked) ────────────────────────────────────────────────

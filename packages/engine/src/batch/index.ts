@@ -292,6 +292,14 @@ export async function runBatch(
             softContext: state.telemetry?.softContext as SoftContextItem[] | undefined,
           };
 
+          // Two-tier gate: only the top-N fixtures (by composite stats score,
+          // flagged llmEligible at selection) reach the paid/slow LLM layers
+          // (briefing, swarm, decide, CVL). Every other fixture still gets the
+          // full deterministic engine analysis but skips all LLM calls. Default
+          // true when the flag is absent (e.g. ad-hoc /analyze) so single-fixture
+          // paths keep their LLM analysis.
+          const llmEligible = state.telemetry?.llmEligible !== false;
+
           // B7: route based on convergence tier
           let briefingText: string | undefined;
           let briefingFlags: string[] | undefined; // captured for report surfacing
@@ -304,6 +312,7 @@ export async function runBatch(
 
             // B1: optional briefing layer for APEX/PRIME fixtures
             if (
+              llmEligible &&
               route.useBriefing &&
               config.enableBriefing &&
               (config.claudeApiKey || config.geminiApiKey || config.openrouterApiKey)
@@ -345,6 +354,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             // AUGMENTS the decision only — injects advisory consensus + divergence into
             // softContext. It never sets primaryPick; decide()/validateSelection remain authoritative.
             if (
+              llmEligible &&
               route.swarmWorkers > 0 &&
               config.enableSwarm &&
               (config.kimiApiKey || config.openrouterApiKey)
@@ -378,7 +388,8 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           const { decision: rawDecision, replay: decisionReplay } = await decide(
             eligible,
             decisionCtx,
-            config
+            config,
+            !llmEligible // force deterministic for fixtures outside the top-N
           );
           const mlFilter = { mlAllowed: decisionCtx.mlAllowed, drawRisk: decisionCtx.drawRisk };
           const decision = validateSelection(rawDecision, eligible, mlFilter);
@@ -391,6 +402,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             // Swarm high-divergence escalates to a CVL pass even on lower tiers.
             const cvlTriggered = (route.useCVL || swarmDivergence) && config.enableCVL;
             if (
+              llmEligible &&
               cvlTriggered &&
               (config.claudeApiKey || config.openrouterApiKey) &&
               rawDecision.grade !== "NO_EDGE"

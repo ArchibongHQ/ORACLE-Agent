@@ -416,8 +416,21 @@ async function applySelection(
     };
   };
 
+  // Stamp the per-candidate llmEligible flag (top-N by composite score) onto the
+  // job's telemetry so it survives the SelectionCandidate -> FixtureJob rebuild.
+  // runBatch reads this to gate the expensive LLM decision tier: every fixture
+  // still gets the full deterministic stats/safety analysis, but only the top-N
+  // hit the paid/slow LLM decide() path. Without this stamp the flag is lost and
+  // all fixtures get LLM-analyzed, defeating the cap entirely.
+  const stampEligible = (job: FixtureJob, eligible: boolean): FixtureJob => ({
+    ...job,
+    state: {
+      ...job.state,
+      telemetry: { ...(job.state?.telemetry ?? {}), llmEligible: eligible },
+    },
+  });
   const injected = new Map<SelectionCandidate, FixtureJob>(
-    selected.map((c) => [c, injectSidecarOdds(c)])
+    selected.map((c) => [c, stampEligible(injectSidecarOdds(c), c.llmEligible)])
   );
   // Post-injection odds check — NOT c.hasBulkOdds (the pre-injection flag).
   // injectSidecarOdds often successfully attaches real SportyBet sidecar odds
