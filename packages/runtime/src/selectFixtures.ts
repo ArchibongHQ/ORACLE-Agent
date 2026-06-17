@@ -330,6 +330,8 @@ export interface SelectionStats {
   priority: number;
   /** Fixtures routed to paid LLM tiers (top-N by score). */
   llmRouted: number;
+  /** Near-duplicate fixtures collapsed before the LLM cap (same match, name variants). */
+  deduped: number;
   /** Total fixtures that will be analyzed (deterministic + LLM). */
   analyzed: number;
   /** Fixtures with already-paid bulk odds that the SportyBet gate excluded —
@@ -404,7 +406,7 @@ export function selectFixtures(
     : todayOnly.filter((c) => c.hasBulkOdds).length - gated.filter((c) => c.hasBulkOdds).length;
 
   // Score all gated fixtures; top-N (by cap) get llmEligible = true
-  const scored = gated
+  const scoredAll = gated
     .map((c) => ({ c, score: scoreFixture(c, marketCounts.get(c) ?? 0, now) }))
     .sort(
       (a, b) =>
@@ -412,6 +414,26 @@ export function selectFixtures(
         a.c.job.kickoff.localeCompare(b.c.job.kickoff) ||
         a.c.job.home.localeCompare(b.c.job.home)
     );
+
+  // Collapse near-duplicate fixtures before the cap. Multiple sources/sweeps emit
+  // the same match under name variants the canonical sidecarKey can't merge
+  // (e.g. "Ilves vs Jaro" and "Tampereen Ilves vs FF Jaro"). Both would otherwise
+  // occupy a slate slot — and, worse, a scarce top-N LLM slot. We keep the first
+  // (highest-scoring) variant of each match. Two fixtures are the same when both
+  // sides namesMatch and they kick off on the same UTC day (substring-tolerant
+  // namesMatch can over-match alone — e.g. "United" vs "Leeds United" — so both
+  // sides + same day is the conservative AND gate).
+  const scored: typeof scoredAll = [];
+  for (const s of scoredAll) {
+    const day = new Date(s.c.job.kickoff).toISOString().slice(0, 10);
+    const dup = scored.some(
+      (k) =>
+        new Date(k.c.job.kickoff).toISOString().slice(0, 10) === day &&
+        namesMatch(k.c.job.home, s.c.job.home) &&
+        namesMatch(k.c.job.away, s.c.job.away)
+    );
+    if (!dup) scored.push(s);
+  }
 
   const llmCap = Math.max(0, opts.cap);
   const selected: SelectionCandidate[] = scored.map((s, i) => ({
@@ -429,6 +451,7 @@ export function selectFixtures(
       selected: selected.length,
       analyzed: selected.length,
       llmRouted: selected.filter((c) => c.llmEligible).length,
+      deduped: scoredAll.length - scored.length,
       bulkOdds: selected.filter((c) => c.hasBulkOdds).length,
       priority: selected.filter((c) => ORACLE_PRIORITY_LEAGUES.has(c.job.league)).length,
       droppedBulkOdds,

@@ -274,6 +274,27 @@ describe("selectFixtures", () => {
     expect(selected.map((c) => c.job.home)).toEqual(["Early", "Alpha", "Zeta"]);
   });
 
+  it("collapses near-duplicate fixtures (name variants, same day) keeping the highest scorer", () => {
+    const pool = [
+      cand(job("Ilves", "Jaro", "Veikkausliiga", "2026-06-11T15:00:00Z"), true), // higher score (bulk odds)
+      cand(job("Tampereen Ilves", "FF Jaro", "Veikkausliiga", "2026-06-11T15:00:00Z"), false),
+    ];
+    const { selected, stats } = selectFixtures(pool, { cap: 50, sportyBet: null, now: NOW });
+    expect(selected).toHaveLength(1);
+    expect(selected[0]?.job.home).toBe("Ilves");
+    expect(stats.deduped).toBe(1);
+  });
+
+  it("does not collapse genuinely distinct fixtures that share no name overlap", () => {
+    const pool = [
+      cand(job("Ilves", "Jaro", "Veikkausliiga")),
+      cand(job("Arsenal", "Chelsea", "Premier League")),
+    ];
+    const { selected, stats } = selectFixtures(pool, { cap: 50, sportyBet: null, now: NOW });
+    expect(selected).toHaveLength(2);
+    expect(stats.deduped).toBe(0);
+  });
+
   it("keeps only SportyBet-listed fixtures when the index is present", () => {
     const idx = index([{ home: "Arsenal FC", away: "Chelsea FC", marketCount: 30 }]);
     const pool = [
