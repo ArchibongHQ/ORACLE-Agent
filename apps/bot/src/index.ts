@@ -34,6 +34,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildNotifiers, formatSummaryText, notifyAll, summarizeBatch } from "@oracle/notify";
+import type { BatchSummary } from "@oracle/notify";
 import {
   buildConfig,
   CLV_ELIGIBLE_LEAGUES,
@@ -50,6 +51,30 @@ import {
   validateConfig,
 } from "@oracle/runtime";
 import { GBrainAdapter } from "@oracle/storage";
+
+// ── Human-in-loop gate (Phase 5 #1) ──────────────────────────────────────────
+// When auto-booking is enabled, ORACLE must NOT place a live stake without
+// explicit admin confirmation. A pending booking is stored here for 60 seconds;
+// the admin must reply /confirm YES (or /confirm NO) to proceed or cancel.
+
+interface PendingBooking {
+  summary: BatchSummary;
+  expiresAt: number;
+}
+
+const pendingBookings = new Map<string, PendingBooking>();
+
+/** Store a pending booking for the given chatId. Expires after 60 s. */
+function setPendingBooking(chatId: string, summary: BatchSummary): void {
+  pendingBookings.set(chatId, { summary, expiresAt: Date.now() + 60_000 });
+}
+
+function popPendingBooking(chatId: string): BatchSummary | null {
+  const entry = pendingBookings.get(chatId);
+  pendingBookings.delete(chatId);
+  if (!entry || Date.now() > entry.expiresAt) return null;
+  return entry.summary;
+}
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -205,6 +230,7 @@ function helpText(forAdmin: boolean): string {
     "─────────────────────",
     "*Admin Commands*",
     "/run — Trigger the full daily analysis batch immediately",
+    "/confirm YES|NO — Confirm or cancel a pending SportyBet booking (60 s window after /run)",
     "/scrape — Fire the SportyBet fixture scraper right now (pre-batch)",
     "/resolve — Resolve yesterday's fixtures and compute CLV",
     "/kaggle — Trigger the weekly Kaggle dataset refresh on-demand",
@@ -458,26 +484,24 @@ async function handleRun(chatId: string): Promise<void> {
 
     const summary = summarizeBatch(batch);
 
-    if (env.ENABLE_SPORTYBET_BOOKING === "true" && summary.actionable.length > 0) {
-      try {
-        const { bookAccumulator } = await import("@oracle/booking");
-        const booking = await bookAccumulator(summary.actionable);
-        if (booking.code) {
-          summary.bookingCode = booking.code;
-          summary.bookingLoadUrl = booking.loadUrl ?? undefined;
-          summary.bookingUnmatched = booking.unmatched;
-        } else {
-          summary.bookingError = booking.error ?? "no code returned";
-        }
-      } catch (err) {
-        summary.bookingError = err instanceof Error ? err.message : String(err);
-      }
-    }
-
     await sendTo(chatId, formatSummaryText(summary));
 
     const notifiers = buildNotifiers(env);
     if (notifiers.length) await notifyAll(notifiers, summary);
+
+    // Phase 5 #1 — Human-in-loop gate before irreversible stake placement.
+    // Do NOT auto-book. Instead, ask for explicit confirmation within 60 s.
+    if (env.ENABLE_SPORTYBET_BOOKING === "true" && summary.actionable.length > 0) {
+      setPendingBooking(chatId, summary);
+      await sendTo(
+        chatId,
+        `⚠️ *Booking pending — irreversible action*\n` +
+          `${summary.actionable.length} pick(s) ready to book on SportyBet.\n\n` +
+          `Reply within 60 s:\n` +
+          `• \`/confirm YES\` — place the accumulator now\n` +
+          `• \`/confirm NO\` — cancel (no booking made)`
+      );
+    }
   } catch (err) {
     await sendTo(chatId, `⚠️ Batch failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
@@ -501,6 +525,41 @@ async function handleScrape(chatId: string): Promise<void> {
       );
     }
   });
+}
+
+async function handleConfirm(chatId: string, answer: string): Promise<void> {
+  const summary = popPendingBooking(chatId);
+  if (!summary) {
+    await sendTo(
+      chatId,
+      "ℹ️ No pending booking (expired or already processed). Run /run again to start a new batch."
+    );
+    return;
+  }
+  if (answer.toUpperCase() !== "YES") {
+    await sendTo(chatId, "✅ Booking cancelled — no stake placed.");
+    return;
+  }
+  await sendTo(chatId, "⏳ Placing accumulator on SportyBet…");
+  try {
+    const { bookAccumulator } = await import("@oracle/booking");
+    const booking = await bookAccumulator(summary.actionable);
+    if (booking.code) {
+      summary.bookingCode = booking.code;
+      summary.bookingLoadUrl = booking.loadUrl ?? undefined;
+      summary.bookingUnmatched = booking.unmatched;
+      await sendTo(
+        chatId,
+        `✅ *Booked* — code: \`${booking.code}\`\n` +
+          (booking.loadUrl ? `Load: ${booking.loadUrl}` : "") +
+          (booking.unmatched?.length ? `\n⚠️ ${booking.unmatched.length} leg(s) unmatched` : "")
+      );
+    } else {
+      await sendTo(chatId, `⚠️ Booking failed: ${booking.error ?? "no code returned"}`);
+    }
+  } catch (err) {
+    await sendTo(chatId, `⚠️ Booking failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function handleResolve(chatId: string): Promise<void> {
@@ -853,6 +912,10 @@ async function handleMessage(chatId: string, text: string): Promise<void> {
   }
 
   if (cmd === "/run") return handleRun(chatId);
+  if (cmd === "/confirm") {
+    const answer = args[0] ?? "";
+    return handleConfirm(chatId, answer);
+  }
   if (cmd === "/scrape") return handleScrape(chatId);
   if (cmd === "/resolve") return handleResolve(chatId);
   if (cmd === "/kaggle") return handleKaggle(chatId);

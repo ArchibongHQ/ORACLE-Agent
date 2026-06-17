@@ -1121,3 +1121,72 @@ export class AntiSycophancyCircuit {
 }
 
 clamp; // satisfy import
+
+// ── Reversibility weighting (Phase 5 principle #10) ──────────────────────────
+// Irreversible actions (live stake placement, booking submission) require a
+// higher minimum EV threshold and a stricter convergence tier before ORACLE
+// gives the green light. Reversible actions (analysis, logging, notifications)
+// use the standard thresholds from the existing safety pipeline.
+
+export type ActionKind = "irreversible" | "reversible";
+
+export interface ReversibilityVeto {
+  vetoed: boolean;
+  reason: string | null;
+  /** Minimum EV required for this action kind. */
+  evFloor: number;
+  /** Minimum convergence tier score required. */
+  scoreFloor: number;
+}
+
+/**
+ * Apply reversibility-weighted veto logic (arXiv 2604.14228, principle #10).
+ *
+ * For irreversible actions (live stake, booking):
+ *   - EV must exceed 0.12 (vs. standard 0.03).
+ *   - Convergence score must be ≥ 13 (PRIME or better).
+ *   - Any HARD_REJECT from MLSafetyFilter propagates unconditionally.
+ *
+ * For reversible actions the standard thresholds apply; this function
+ * always returns vetoed=false so the caller can proceed normally.
+ */
+export function weighReversibility(
+  kind: ActionKind,
+  ev: number,
+  convergenceScore: number,
+  mlAllowed: boolean
+): ReversibilityVeto {
+  if (kind === "reversible") {
+    return { vetoed: false, reason: null, evFloor: 0.03, scoreFloor: 8 };
+  }
+
+  // Irreversible — harder gates.
+  const EV_FLOOR = 0.12;
+  const SCORE_FLOOR = 13; // PRIME tier minimum
+
+  if (!mlAllowed) {
+    return {
+      vetoed: true,
+      reason: "REVERSIBILITY_VETO: MLSafetyFilter hard-rejected this fixture — live stake blocked",
+      evFloor: EV_FLOOR,
+      scoreFloor: SCORE_FLOOR,
+    };
+  }
+  if (ev < EV_FLOOR) {
+    return {
+      vetoed: true,
+      reason: `REVERSIBILITY_VETO: EV ${(ev * 100).toFixed(1)}% below irreversible floor (${(EV_FLOOR * 100).toFixed(0)}%) — live stake blocked`,
+      evFloor: EV_FLOOR,
+      scoreFloor: SCORE_FLOOR,
+    };
+  }
+  if (convergenceScore < SCORE_FLOOR) {
+    return {
+      vetoed: true,
+      reason: `REVERSIBILITY_VETO: Convergence score ${convergenceScore} below PRIME floor (${SCORE_FLOOR}) — live stake blocked`,
+      evFloor: EV_FLOOR,
+      scoreFloor: SCORE_FLOOR,
+    };
+  }
+  return { vetoed: false, reason: null, evFloor: EV_FLOOR, scoreFloor: SCORE_FLOOR };
+}

@@ -33,8 +33,19 @@ export { PostmortemRegistry, postmortemRegistry, RAGSystem, ROOT_CAUSES } from "
 export type { TeamRating } from "./ratings/index.js";
 export { TeamRatingsEngine } from "./ratings/index.js";
 export * from "./regime/index.js";
-export type { AntiSycophancyResult, ConvergenceResult, MLSafetyResult } from "./safety/index.js";
-export { AntiSycophancyCircuit, ConvergenceScorer, MLSafetyFilter } from "./safety/index.js";
+export type {
+  ActionKind,
+  AntiSycophancyResult,
+  ConvergenceResult,
+  MLSafetyResult,
+  ReversibilityVeto,
+} from "./safety/index.js";
+export {
+  AntiSycophancyCircuit,
+  ConvergenceScorer,
+  MLSafetyFilter,
+  weighReversibility,
+} from "./safety/index.js";
 export type {
   AgentError,
   AgentErrorCode,
