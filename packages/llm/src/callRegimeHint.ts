@@ -99,13 +99,13 @@ export async function callRegimeHint(
       const raw = await callOpenRouterJson(
         REGIME_SYSTEM,
         softContextSummary,
-        OPENROUTER_MODELS.GLM_4_5_AIR,
+        OPENROUTER_MODELS.GPT_OSS_120B,
         ctx.config.openrouterApiKey,
         0
       );
       if (raw) {
         const parsed = parseHintResponse(raw);
-        return { ...parsed, model: OPENROUTER_MODELS.GLM_4_5_AIR, advisory: true };
+        return { ...parsed, model: OPENROUTER_MODELS.GPT_OSS_120B, advisory: true };
       }
     } catch {
       // still advisory

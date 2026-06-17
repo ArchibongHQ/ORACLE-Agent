@@ -37,13 +37,18 @@ export const OPENROUTER_MODELS = {
   QWEN3_235B_THINKING: "qwen/qwen3-235b-a22b-thinking-2507", // cheapest near-frontier reasoning
   MIMO_V2_5_PRO: "xiaomi/mimo-v2.5-pro", // beats Claude Opus on SWE-bench Pro
   QWEN3_CODER_NEXT: "qwen/qwen3-coder-next", // SWE-bench Verified >70%, 80B MoE
-  // Tier 3 — free (:free variants)
-  GPT_OSS_120B: "openai/gpt-oss-120b:free", // 117B MoE, leading complex logic
-  DEEPSEEK_R1: "deepseek/deepseek-r1:free", // o1-level reasoning, open CoT
-  KIMI_K2_FREE: "moonshotai/kimi-k2.6:free", // same model as KIMI_SWARM, free tier
-  GLM_4_5_AIR: "z-ai/glm-4.5-air:free", // hybrid thinking mode, native tool use
-  DEEPSEEK_V4_FLASH: "deepseek/deepseek-v4-flash:free", // 284B MoE, 1M context, fast
-  LLAMA_3_3_70B: "meta-llama/llama-3.3-70b-instruct:free", // best general open-source
+  // Tier 3 — free (:free variants). Verified live on the project OpenRouter
+  // account 2026-06-17: GPT_OSS_120B + NEMOTRON_SUPER_120B respond with zero
+  // credits; the rest are free but can 429 (transient upstream rate-limit) —
+  // kept as deeper fallbacks so a busy model just rolls to the next. The old
+  // DeepSeek-R1/V4, GLM-4.5-Air, and Kimi-K2.6 ":free" slugs were RETIRED by
+  // OpenRouter (now 404 "unavailable for free") and removed from the cascade.
+  GPT_OSS_120B: "openai/gpt-oss-120b:free", // 117B MoE — CONFIRMED working free
+  NEMOTRON_SUPER_120B: "nvidia/nemotron-3-super-120b-a12b:free", // 120B MoE, 1M ctx — CONFIRMED working free
+  QWEN3_NEXT_80B: "qwen/qwen3-next-80b-a3b-instruct:free", // 80B MoE, 262K ctx — free (can 429)
+  NEMOTRON_NANO_30B: "nvidia/nemotron-3-nano-30b-a3b:free", // 30B reasoning, 256K ctx — free
+  GPT_OSS_20B: "openai/gpt-oss-20b:free", // 20B MoE — lighter free fallback
+  LLAMA_3_3_70B: "meta-llama/llama-3.3-70b-instruct:free", // 70B general — free (can 429)
 } as const;
 
 export type OpenRouterModelId = (typeof OPENROUTER_MODELS)[keyof typeof OPENROUTER_MODELS];

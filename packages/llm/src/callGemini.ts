@@ -36,13 +36,15 @@ export async function fetchGeminiWithCascade(prompt: string, ctx: LLMCallContext
     }
   }
 
-  // Tier 2/3: OpenRouter — Qwen3 235B → GLM-4.5 Air → DeepSeek V4 Flash (free text, no jsonMode)
+  // Tier 2/3: OpenRouter — working free models first (GPT-OSS-120B → Nemotron
+  // Super 120B → Qwen3-Next 80B), free text, no jsonMode. Retired :free slugs
+  // (GLM-4.5-Air, DeepSeek-V4-Flash) removed — they 404 on OpenRouter now.
   const orKey = ctx.config.openrouterApiKey;
   if (orKey) {
     for (const model of [
-      OPENROUTER_MODELS.QWEN3_235B_THINKING,
-      OPENROUTER_MODELS.GLM_4_5_AIR,
-      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
+      OPENROUTER_MODELS.QWEN3_NEXT_80B,
     ]) {
       const text = await callOpenRouter([{ role: "user", content: prompt }], model, orKey, {
         temperature: 0,

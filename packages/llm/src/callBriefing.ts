@@ -145,11 +145,11 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
     const t3 = await callOpenRouterJson(
       BRIEFING_OR_SYSTEM,
       prompt,
-      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.GPT_OSS_120B,
       ctx.config.openrouterApiKey,
       0
     );
-    if (t3) return { text: t3, model: OPENROUTER_MODELS.DEEPSEEK_R1, flags };
+    if (t3) return { text: t3, model: OPENROUTER_MODELS.GPT_OSS_120B, flags };
   }
 
   throw new Error("callBriefing: no LLM available");

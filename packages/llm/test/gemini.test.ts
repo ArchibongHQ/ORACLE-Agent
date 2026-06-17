@@ -65,8 +65,8 @@ describe("fetchGeminiWithCascade", () => {
       .mockResolvedValueOnce(chatResponse("or-text"));
     expect(await fetchGeminiWithCascade("p", ctxWithOr)).toBe("or-text");
     expect(postedModels(fetchMock)).toEqual([
-      OPENROUTER_MODELS.QWEN3_235B_THINKING,
-      OPENROUTER_MODELS.GLM_4_5_AIR,
+      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
     ]);
   });
 
@@ -77,9 +77,9 @@ describe("fetchGeminiWithCascade", () => {
       /Gemini cascade exhausted/
     );
     expect(postedModels(fetchMock)).toEqual([
-      OPENROUTER_MODELS.QWEN3_235B_THINKING,
-      OPENROUTER_MODELS.GLM_4_5_AIR,
-      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
+      OPENROUTER_MODELS.QWEN3_NEXT_80B,
     ]);
   });
 });

@@ -331,10 +331,17 @@ async function _tryOpenRouter(
   }
 
   const { callOpenRouterJson, OPENROUTER_MODELS } = await import("@oracle/llm");
+  // Working-free models first (verified live on the project account, no credits
+  // needed), then paid GLMs as a last resort for when the account is funded.
+  // Cycling through several free models means a transient 429 on one just rolls
+  // to the next instead of dropping straight to the deterministic fallback.
   for (const model of [
-    OPENROUTER_MODELS.GLM_5_2,
-    OPENROUTER_MODELS.DEEPSEEK_R1,
     OPENROUTER_MODELS.GPT_OSS_120B,
+    OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
+    OPENROUTER_MODELS.QWEN3_NEXT_80B,
+    OPENROUTER_MODELS.GPT_OSS_20B,
+    OPENROUTER_MODELS.LLAMA_3_3_70B,
+    OPENROUTER_MODELS.GLM_5_2,
     OPENROUTER_MODELS.GLM_5_1,
   ]) {
     const raw = await callOpenRouterJson(

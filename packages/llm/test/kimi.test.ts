@@ -71,20 +71,20 @@ describe("callOpenRouterVote", () => {
     fetchMock.mockResolvedValue(
       chatResponse('{"pick":"Home Win","confidence":0.6,"rationale":"r"}')
     );
-    const vote = await callOpenRouterVote("p", OPENROUTER_MODELS.KIMI_K2_FREE, "or");
+    const vote = await callOpenRouterVote("p", OPENROUTER_MODELS.GPT_OSS_120B, "or");
     expect(vote).toEqual({
       pick: "Home Win",
       confidence: 0.6,
       rationale: "r",
-      model: OPENROUTER_MODELS.KIMI_K2_FREE,
+      model: OPENROUTER_MODELS.GPT_OSS_120B,
     });
     const [url, opts] = fetchMock.mock.calls[0] as [string, { body: string }];
     expect(url).toContain("openrouter.ai");
-    expect((JSON.parse(opts.body) as { model: string }).model).toBe(OPENROUTER_MODELS.KIMI_K2_FREE);
+    expect((JSON.parse(opts.body) as { model: string }).model).toBe(OPENROUTER_MODELS.GPT_OSS_120B);
   });
 
   it("returns null when the transport fails", async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 429 });
-    expect(await callOpenRouterVote("p", OPENROUTER_MODELS.KIMI_K2_FREE, "or")).toBeNull();
+    expect(await callOpenRouterVote("p", OPENROUTER_MODELS.GPT_OSS_120B, "or")).toBeNull();
   });
 });

@@ -125,13 +125,15 @@ export async function runSwarm(
       if (config.kimiApiKey) {
         return llm.callKimiVote(prompt, config.kimiApiKey, { temperature: temp });
       }
-      // Tier 2/3: OpenRouter — first half paid MiMo, rest alternate free Kimi/Llama.
+      // Tier 2/3: OpenRouter — first half paid MiMo, rest alternate working free
+      // models (GPT-OSS-120B / Nemotron Super 120B). Kimi-K2.6:free was retired
+      // by OpenRouter (404), so swarm workers use the confirmed-working free pair.
       const orKey = config.openrouterApiKey!;
       const M = llm.OPENROUTER_MODELS;
       if (i < Math.ceil(n / 2)) {
         return llm.callOpenRouterVote(prompt, M.MIMO_V2_5_PRO, orKey, { temperature: temp });
       }
-      const freeModel = i % 2 === 0 ? M.KIMI_K2_FREE : M.LLAMA_3_3_70B;
+      const freeModel = i % 2 === 0 ? M.GPT_OSS_120B : M.NEMOTRON_SUPER_120B;
       return llm.callOpenRouterVote(prompt, freeModel, orKey, { temperature: temp });
     })
   );

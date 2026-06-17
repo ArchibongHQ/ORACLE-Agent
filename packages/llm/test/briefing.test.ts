@@ -110,15 +110,15 @@ describe("callBriefing — OpenRouter Tier 2/3", () => {
     expect(res.text).toBe('{"primaryPick":"Over 2.5"}');
   });
 
-  it("falls to DeepSeek R1 (Tier 3) when Tier 2 fails", async () => {
+  it("falls to GPT-OSS-120B (Tier 3) when Tier 2 fails", async () => {
     fetchMock
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(chatResponse('{"primaryPick":"X"}'));
     const res = await callBriefing("p", ctx);
-    expect(res.model).toBe(OPENROUTER_MODELS.DEEPSEEK_R1);
+    expect(res.model).toBe(OPENROUTER_MODELS.GPT_OSS_120B);
     expect(postedModels(fetchMock)).toEqual([
       OPENROUTER_MODELS.QWEN3_235B_THINKING,
-      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.GPT_OSS_120B,
     ]);
   });
 

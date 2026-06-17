@@ -91,15 +91,15 @@ describe("callRegimeHint (B6)", () => {
     expect((await callRegimeHint("s", ctx)).label).toBe("UNKNOWN");
   });
 
-  it("falls to GLM-4.5 Air (free) when Gemini throws and an OpenRouter key exists", async () => {
+  it("falls to GPT-OSS-120B (free) when Gemini throws and an OpenRouter key exists", async () => {
     generateContentMock.mockRejectedValue(new Error("down"));
     fetchMock.mockResolvedValue(
       chatResponse('{"label":"DEFENSIVE","rationale":"r","confidence":0.5}')
     );
     const res = await callRegimeHint("s", makeCtx({ geminiApiKey: "gk", openrouterApiKey: "or" }));
     expect(res.label).toBe("DEFENSIVE");
-    expect(res.model).toBe(OPENROUTER_MODELS.GLM_4_5_AIR);
-    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GLM_4_5_AIR]);
+    expect(res.model).toBe(OPENROUTER_MODELS.GPT_OSS_120B);
+    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GPT_OSS_120B]);
   });
 
   it("returns the UNKNOWN fallback (never throws) when no tier is available", async () => {

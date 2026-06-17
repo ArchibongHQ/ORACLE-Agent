@@ -95,7 +95,7 @@ describe("callOpenRouter", () => {
 describe("callOpenRouterJson", () => {
   it("builds system+user messages and forces jsonMode", async () => {
     fetchMock.mockResolvedValue(chatResponse('{"ok":true}'));
-    const out = await callOpenRouterJson("SYS", "USER", OPENROUTER_MODELS.DEEPSEEK_R1, "key");
+    const out = await callOpenRouterJson("SYS", "USER", OPENROUTER_MODELS.GPT_OSS_120B, "key");
     expect(out).toBe('{"ok":true}');
     const body = lastBody();
     expect(body.messages).toEqual([
@@ -108,11 +108,11 @@ describe("callOpenRouterJson", () => {
   it("returns null instead of throwing when the transport fails", async () => {
     fetchMock.mockRejectedValue(new Error("boom"));
     await expect(
-      callOpenRouterJson("SYS", "USER", OPENROUTER_MODELS.DEEPSEEK_R1, "key")
+      callOpenRouterJson("SYS", "USER", OPENROUTER_MODELS.GPT_OSS_120B, "key")
     ).resolves.toBeNull();
   });
 
   it("returns null when the key is empty", async () => {
-    expect(await callOpenRouterJson("SYS", "USER", OPENROUTER_MODELS.DEEPSEEK_R1, "")).toBeNull();
+    expect(await callOpenRouterJson("SYS", "USER", OPENROUTER_MODELS.GPT_OSS_120B, "")).toBeNull();
   });
 });
