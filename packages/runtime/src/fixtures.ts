@@ -419,19 +419,26 @@ async function applySelection(
   const injected = new Map<SelectionCandidate, FixtureJob>(
     selected.map((c) => [c, injectSidecarOdds(c)])
   );
+  // Post-injection odds check — NOT c.hasBulkOdds (the pre-injection flag).
+  // injectSidecarOdds often successfully attaches real SportyBet sidecar odds
+  // to a fixture that started with hasBulkOdds=false; routing those fixtures
+  // into geminiOddsGapFill anyway means every sidecar-priced fixture pays the
+  // full Tier 1->2->3 cost (up to a 20s Playwright spawn) for odds it already
+  // has. Split on whether the job actually carries usable odds after injection.
+  const hasUsableOdds = (j: FixtureJob): boolean => Number(j.state?.telemetry?.hOdds ?? 0) > 1;
   if (process.env.ORACLE_DEBUG_INJECT === "1") {
     const withDetail = selected.filter((c) => c.sportyBetDetail).length;
-    const withOdds = [...injected.values()].filter(
-      (j) => Number(j.state?.telemetry?.hOdds ?? 0) > 1
-    ).length;
+    const withOdds = [...injected.values()].filter(hasUsableOdds).length;
     process.stderr.write(
       `[debug-inject] selected=${selected.length} withDetail=${withDetail} withInjectedOdds=${withOdds}\n`
     );
   }
   return {
     jobs: selected.map((c) => injected.get(c)!),
-    withOdds: selected.filter((c) => c.hasBulkOdds).map((c) => injected.get(c)!),
-    withoutOdds: selected.filter((c) => !c.hasBulkOdds).map((c) => injected.get(c)!),
+    withOdds: selected.filter((c) => hasUsableOdds(injected.get(c)!)).map((c) => injected.get(c)!),
+    withoutOdds: selected
+      .filter((c) => !hasUsableOdds(injected.get(c)!))
+      .map((c) => injected.get(c)!),
   };
 }
 
