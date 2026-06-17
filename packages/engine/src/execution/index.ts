@@ -820,6 +820,11 @@ export class ExecutionEngine {
 
   private async _acquireContext(state: RunState): Promise<void> {
     if (!this._config.geminiApiKey) return;
+    // Two-tier gate: the Gemini xG/injury/context acquisition turns are the
+    // expensive LLM tier of the engine. Only the top-N fixtures (llmEligible)
+    // pay for them; the rest run fully deterministic on sidecar/scraped stats.
+    // Default true when the flag is absent (ad-hoc /analyze, single-fixture).
+    if (state.telemetry?.llmEligible === false) return;
 
     const fixture = state.pipeline?.fixture ?? {};
     const home = String(fixture.home ?? "").trim();

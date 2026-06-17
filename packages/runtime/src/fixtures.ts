@@ -344,8 +344,8 @@ async function applySelection(
     process.stderr.write("[select] WARN sportybet index unavailable — fail-open\n");
   process.stderr.write(
     `[select] pool=${stats.pool} today=${stats.today} sportybet=${stats.sportyBet} ` +
-      `selected=${stats.selected} (bulkOdds=${stats.bulkOdds} priority=${stats.priority} ` +
-      `droppedBulkOdds=${stats.droppedBulkOdds})\n`
+      `selected=${stats.selected} llmRouted=${stats.llmRouted} (bulkOdds=${stats.bulkOdds} ` +
+      `priority=${stats.priority} droppedBulkOdds=${stats.droppedBulkOdds})\n`
   );
   // For fixtures selected without bulk odds, inject sidecar odds (all markets)
   // into fetched.odds so the engine reaches the EV-market scan. Also merges
