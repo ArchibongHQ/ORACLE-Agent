@@ -32,7 +32,8 @@ export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 /** OpenRouter model IDs — Tier 2 (paid, cheap frontier) and Tier 3 (free). */
 export const OPENROUTER_MODELS = {
   // Tier 2 — paid
-  GLM_5_1: "z-ai/glm-5.1", // #1 SWE-bench Pro 58.4%, AIME 95.3%
+  GLM_5_2: "z-ai/glm-5.2", // 744B MoE, 1M context, MIT — primary decision model (2026-06-13)
+  GLM_5_1: "z-ai/glm-5.1", // #1 SWE-bench Pro 58.4%, AIME 95.3% — GLM-5.2 fallback
   QWEN3_235B_THINKING: "qwen/qwen3-235b-a22b-thinking-2507", // cheapest near-frontier reasoning
   MIMO_V2_5_PRO: "xiaomi/mimo-v2.5-pro", // beats Claude Opus on SWE-bench Pro
   QWEN3_CODER_NEXT: "qwen/qwen3-coder-next", // SWE-bench Verified >70%, 80B MoE

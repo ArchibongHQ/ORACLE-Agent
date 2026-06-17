@@ -45,6 +45,12 @@ Every failure is a chance to make the system stronger:
 4. Update the workflow with the new approach
 5. Move on with a more robust system
 
+### 6. Data is never a blocker
+A missing API key or credit MUST NEVER produce a BLOCKED / "user must get key" outcome. Every data point ORACLE needs (odds, stats, xG, lineups, injuries, results) can be acquired by querying Google.com's "AI Mode" through Playwright — the same pattern as the SportyBet sidecar scraper (`tools/scrape_fixtures.py`). Treat a missing key as "use the Playwright/Google-AI-Mode fallback tier," not as a terminal state. When planning, any step depending on a key must include the scrape fallback inline.
+
+### 7. Real-time research before any plan or decision
+Before making ANY plan or decision, carry out proper real-time research via web searches from MULTIPLE independent sources AND recent research papers. Newer/better methodologies, technologies, and papers (including football-prediction methods) ship every day; in-distribution knowledge goes stale fast. Cite sources, cross-check claims across ≥2 sources, and never assert a fact (or call something fabricated) from memory without verifying first. This is mandatory, not optional, even when confident.
+
 ---
 
 ## Code & Response Discipline

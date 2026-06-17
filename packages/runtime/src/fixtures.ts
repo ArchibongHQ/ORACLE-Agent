@@ -504,9 +504,72 @@ function jobFromGapOdds(job: FixtureJob, o: GapOdds): FixtureJob {
   return { ...job, state };
 }
 
+// ── Playwright / Google AI Mode last-resort tier ──────────────────────────────
+// Standing rule (CLAUDE.md §6): a missing key MUST NEVER leave a fixture
+// unpriced. When both the structured-provider chain AND Gemini return nothing,
+// shell out to tools/scrape_google_ai.py and parse decimal odds from the prose.
+
+/** Decimal-odds pattern: a number between 1.01 and 50, two decimal places. */
+const _ODDS_RE = /\b([1-4]\d|[1-9])\.\d{2}\b/g;
+
+/** Parse three plausible decimal-odds values (home / draw / away) from Google AI
+ *  Mode prose. Heuristic: extract all matches, filter to the valid range, take the
+ *  first three in document order. Applies the same overround gate as validateTriple
+ *  in oddsProviders.ts (2%–20%). Returns null when no valid triple is found. */
+function _parsePlaywrightOddsText(
+  text: string
+): { home: number; draw: number; away: number; overround: number } | null {
+  const matches = [...text.matchAll(_ODDS_RE)].map((m) => Number(m[0]));
+  const valid = matches.filter((v) => v >= 1.01 && v <= 50);
+  if (valid.length < 3) return null;
+  const [home, draw, away] = valid;
+  const overround = 1 / home + 1 / draw + 1 / away - 1;
+  if (overround < 0.02 || overround > 0.2) return null;
+  return { home, draw, away, overround };
+}
+
+/** Last-resort: spawn scrape_google_ai.py for one fixture, parse 1X2 from the
+ *  Google AI Mode answer. Skipped in test environments (VITEST=true) and when
+ *  ORACLE_NO_PLAYWRIGHT=true to avoid slow spawns in CI / unit tests. */
+async function fetchOddsViaPlaywright(
+  home: string,
+  away: string,
+  league: string
+): Promise<GapOdds | null> {
+  if (process.env["VITEST"] || process.env["ORACLE_NO_PLAYWRIGHT"] === "true") return null;
+  const { spawnSync } = await import("node:child_process");
+  const query = `${home} vs ${away} ${league} betting odds 1X2`;
+  const scriptPath = join(ROOT, "tools/scrape_google_ai.py");
+  const result = spawnSync("python", [scriptPath, "--query", query, "--wait-ms", "5000"], {
+    timeout: 45_000,
+    encoding: "utf8",
+    env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+  });
+  if (result.status !== 0 || !result.stdout) return null;
+  let payload: { ok?: boolean; result?: { text?: string } };
+  try {
+    payload = JSON.parse(result.stdout) as { ok?: boolean; result?: { text?: string } };
+  } catch {
+    return null;
+  }
+  if (!payload.ok || !payload.result?.text) return null;
+  const parsed = _parsePlaywrightOddsText(payload.result.text);
+  if (!parsed) return null;
+  return {
+    home: parsed.home,
+    draw: parsed.draw,
+    away: parsed.away,
+    odds_source: "playwright_google_ai",
+    odds_quality: "degraded",
+    confidence: 0.45,
+    sources: "google_ai_mode",
+  };
+}
+
 /** For fixtures not covered by the Odds API, acquire odds from the structured
  *  free-API provider chain first (SharpAPI.io → API-Football → …), then fall back to
- *  Gemini Search for any still unresolved. Returns only jobs with confident odds. */
+ *  Gemini Search, and finally to the Playwright/Google-AI-Mode scraper (§6 no-data-blocker).
+ *  Returns only jobs with confident odds. */
 export async function geminiOddsGapFill(
   unmatched: FixtureJob[],
   geminiApiKey: string | undefined,
@@ -514,7 +577,7 @@ export async function geminiOddsGapFill(
 ): Promise<FixtureJob[]> {
   if (unmatched.length === 0) return [];
   const hasChain = providers.some((p) => p.hasQuota());
-  if (!geminiApiKey && !hasChain) return [];
+  // No early-exit when both key and chain are absent — Playwright (tier 3) always fires.
 
   const ctx: LLMCallContext | null = geminiApiKey
     ? {
@@ -545,7 +608,7 @@ export async function geminiOddsGapFill(
         }
       }
 
-      // Tier 2: Gemini Search consensus (degraded last resort).
+      // Tier 2: Gemini Search consensus (degraded).
       if (!resolved && ctx) {
         const g = await fetchOddsViaGemini(job.home, job.away, job.league, job.kickoff, ctx);
         if (g && [g.home, g.draw, g.away].every((v) => v >= 1.01 && v <= 50)) {
@@ -559,6 +622,12 @@ export async function geminiOddsGapFill(
             sources: g.sources.join(","),
           };
         }
+      }
+
+      // Tier 3: Playwright / Google AI Mode — §6 no-data-blocker last resort.
+      if (!resolved) {
+        const p = await fetchOddsViaPlaywright(job.home, job.away, job.league);
+        if (p) resolved = p;
       }
 
       if (!resolved) continue;

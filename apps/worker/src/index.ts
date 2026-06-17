@@ -21,7 +21,7 @@ import {
   selectGoalsAccumulator,
   shouldReprompt,
 } from "@oracle/runtime";
-import { GBrainAdapter } from "@oracle/storage";
+import { MemoryAdapter } from "@oracle/storage";
 import cron from "node-cron";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -29,13 +29,18 @@ const ROOT = join(__dir, "../../..");
 
 const env = loadEnv(join(ROOT, ".env"));
 const config = buildConfig(env);
-const DB_PATH = join(ROOT, ".tmp/gbrain");
+const STORE_PATH = join(ROOT, ".tmp/oracle-store");
 
 // One-shot CLI mode: any of these flags runs a single job and exits, instead of
 // starting the cron daemon. Detected up front so the cron schedules below are
 // skipped — otherwise the registered timers keep the event loop alive forever
 // and the process hangs after the job finishes (looking like a timeout).
-const ONE_SHOT_FLAGS = ["--run-now", "--run-goals-now", "--refresh-kaggle"] as const;
+const ONE_SHOT_FLAGS = [
+  "--run-now",
+  "--run-goals-now",
+  "--refresh-kaggle",
+  "--run-resolve",
+] as const;
 const IS_ONE_SHOT = process.argv.some((a) => ONE_SHOT_FLAGS.includes(a as never));
 
 // Run a single async job to completion, then flush stdio and exit deterministically.
@@ -248,7 +253,7 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
   const sportyBetCount = await scrapeFixtures();
   checkSportyBetStreak(sportyBetCount);
   await fetchLineups();
-  const storage = new GBrainAdapter(DB_PATH);
+  const storage = new MemoryAdapter(STORE_PATH);
 
   // News intel runs when enabled; Perplexity key optional (Gemini AI-Mode fallback covers it).
   const newsKey = config.enableNewsIntel ? config.perplexityApiKey : undefined;
@@ -269,7 +274,6 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
   );
 
   if (!jobs.length) {
-    await storage.close();
     return;
   }
 
@@ -327,7 +331,6 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     records: records.length,
     halted: batch.cost.halted,
   });
-  await storage.close();
 }
 
 // ── Goals-only accumulator (08:30 UTC = 09:30 WAT) ────────────────────────────
@@ -350,7 +353,7 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     index = await loadSportyBetIndex(today);
   }
 
-  const storage = new GBrainAdapter(DB_PATH);
+  const storage = new MemoryAdapter(STORE_PATH);
   const newsKey = config.enableNewsIntel ? config.perplexityApiKey : undefined;
   const newsStorage = config.enableNewsIntel ? storage : undefined;
   const { jobs } = await fetchTodaysFixtures(
@@ -369,7 +372,6 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
   );
 
   if (!jobs.length) {
-    await storage.close();
     return;
   }
 
@@ -456,7 +458,6 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     target: selection.target,
     booked: Boolean(summary.bookingCode),
   });
-  await storage.close();
 }
 
 // ── Resolve yesterday (14:00) ────────────────────────────────────────────────
@@ -466,7 +467,7 @@ async function resolveYesterdayFixtures(): Promise<void> {
     process.stderr.write("[resolve] skipped — FOOTBALL_DATA_API_KEY not set\n");
     return;
   }
-  const storage = new GBrainAdapter(DB_PATH);
+  const storage = new MemoryAdapter(STORE_PATH);
   const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
   const { candidates, resolved, unmatched } = await resolveDay(
@@ -488,7 +489,6 @@ async function resolveYesterdayFixtures(): Promise<void> {
   }
 
   writeHeartbeat("lastResolve", { date: yesterday, candidates, resolved: resolved.length });
-  await storage.close();
 }
 
 // ── Punt prompt (10:00, retry 12:00 / 13:00 until fulfilled) ──────────────────
@@ -548,4 +548,8 @@ if (process.argv.includes("--run-goals-now")) {
 
 if (process.argv.includes("--refresh-kaggle")) {
   void runOnce("--refresh-kaggle", () => runWeeklyKaggleRefresh());
+}
+
+if (process.argv.includes("--run-resolve")) {
+  void runOnce("--run-resolve", () => resolveYesterdayFixtures());
 }

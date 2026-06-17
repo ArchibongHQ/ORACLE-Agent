@@ -326,9 +326,10 @@ async function _tryOpenRouter(
 
   const { callOpenRouterJson, OPENROUTER_MODELS } = await import("@oracle/llm");
   for (const model of [
-    OPENROUTER_MODELS.GLM_5_1,
-    OPENROUTER_MODELS.GPT_OSS_120B,
+    OPENROUTER_MODELS.GLM_5_2,
     OPENROUTER_MODELS.DEEPSEEK_R1,
+    OPENROUTER_MODELS.GPT_OSS_120B,
+    OPENROUTER_MODELS.GLM_5_1,
   ]) {
     const raw = await callOpenRouterJson(
       "You are ORACLE's gated betting decision engine. Return ONLY valid JSON.",
