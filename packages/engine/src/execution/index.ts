@@ -1541,7 +1541,12 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       const correlatedPairs: Array<{ a: string; b: string; rho: number }> = [];
       const vetoSet = new Set<number>();
       for (let i = 0; i < rawRes.evMarkets.length - 1; i++) {
+        // Already-vetoed/non-positive-EV markets can never be selected downstream
+        // regardless of correlation — skip the whole inner loop for them rather
+        // than computing O(n) correlation pairs that are discarded either way.
+        if (rawRes.evMarkets[i]?.veto || (rawRes.evMarkets[i]?.ev ?? 0) <= 0) continue;
         for (let j = i + 1; j < rawRes.evMarkets.length; j++) {
+          if (rawRes.evMarkets[j]?.veto || (rawRes.evMarkets[j]?.ev ?? 0) <= 0) continue;
           const rho = CorrelationMatrix.compute(
             finalMat,
             rawRes.evMarkets[i]?.label,

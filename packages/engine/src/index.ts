@@ -7,6 +7,7 @@ export type {
   FixtureJobSuccess,
 } from "./batch/index.js";
 export { parseFixtureList, runBatch } from "./batch/index.js";
+export { runPool } from "./batch/pool.js";
 export type {
   CalibrationRecord,
   SignificanceGateOptions,

@@ -9,6 +9,10 @@ import {
 } from "./cascade.js";
 import type { LLMCallContext } from "./types.js";
 
+/** Per-call timeout. Without this, a hung model in the cascade blocks every
+ *  model after it (and the entire fixture) indefinitely. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 /** fetchGeminiWithCascade — lifted from ORACLE_v2026_8_0.jsx §2.
  *  Tries each model in the acquisition cascade; returns first successful text. */
 export async function fetchGeminiWithCascade(prompt: string, ctx: LLMCallContext): Promise<string> {
@@ -20,7 +24,10 @@ export async function fetchGeminiWithCascade(prompt: string, ctx: LLMCallContext
       const result = await ai.models.generateContent({
         model: modelId,
         contents: prompt,
-        config: { thinkingConfig: { thinkingBudget: 0 } },
+        config: {
+          thinkingConfig: { thinkingBudget: 0 },
+          abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        },
       });
       const text = result.text;
       if (text) return text;
@@ -62,6 +69,7 @@ export async function callGeminiDecision(prompt: string, ctx: LLMCallContext): P
         config: {
           temperature: 0,
           thinkingConfig: { thinkingBudget: 8192 },
+          abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         },
       });
       const text = result.text;

@@ -69,6 +69,36 @@ BETFAIR_TIMEOUT = 10
 DEFAULT_MIN_CONSENSUS = 3  # Minimum sources for synthetic odds
 DEFAULT_VARIANCE_THRESHOLD = 0.025  # ±2.5% variance allowed
 
+# ── Circuit breaker ───────────────────────────────────────────────────────────
+# Sources like Betfair/SofaScore can return 403 (anti-bot/auth) for every
+# fixture in a run — that's a structural block, not a transient blip. Without
+# this, every fixture re-pays the full per-call timeout against a source that
+# will never succeed this run. After CIRCUIT_BREAKER_THRESHOLD consecutive
+# failures, skip that source for the rest of the process (reset happens
+# naturally on the next invocation).
+CIRCUIT_BREAKER_THRESHOLD = 3
+_circuit_failures: dict[str, int] = {}
+_circuit_open: set[str] = set()
+
+
+def _circuit_is_open(source: str) -> bool:
+    return source in _circuit_open
+
+
+def _circuit_record(source: str, success: bool, quiet: bool = False) -> None:
+    if success:
+        _circuit_failures[source] = 0
+        return
+    _circuit_failures[source] = _circuit_failures.get(source, 0) + 1
+    if _circuit_failures[source] >= CIRCUIT_BREAKER_THRESHOLD and source not in _circuit_open:
+        _circuit_open.add(source)
+        if not quiet:
+            print(
+                f"[{source}] circuit open after {CIRCUIT_BREAKER_THRESHOLD} consecutive failures — "
+                "skipping for the rest of this run",
+                file=sys.stderr,
+            )
+
 _CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -464,13 +494,19 @@ def scrape_consensus_odds(
 
     results: list[ScrapeResult] = []
 
+    # Sources with an open circuit (CIRCUIT_BREAKER_THRESHOLD consecutive
+    # failures this run) are skipped entirely — no thread spawned, no network
+    # call, no wait for their timeout. See _circuit_is_open/_circuit_record.
+    CIRCUIT_ELIGIBLE = {"betfair_api", "sofascore"}
+
     # Run scrapers in parallel
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {
-            executor.submit(scrape_betfair_api, home, away, quiet): "betfair_api",
-            executor.submit(scrape_sofascore, home, away, quiet): "sofascore",
-            executor.submit(scrape_betexplorer, home, away, quiet): "betexplorer",
-        }
+        futures = {}
+        if not _circuit_is_open("betfair_api"):
+            futures[executor.submit(scrape_betfair_api, home, away, quiet)] = "betfair_api"
+        if not _circuit_is_open("sofascore"):
+            futures[executor.submit(scrape_sofascore, home, away, quiet)] = "sofascore"
+        futures[executor.submit(scrape_betexplorer, home, away, quiet)] = "betexplorer"
 
         if use_playwright and HAS_PLAYWRIGHT:
             futures.update({
@@ -478,12 +514,17 @@ def scrape_consensus_odds(
             })
 
         for future in as_completed(futures, timeout=SCRAPE_TIMEOUT * 2):
+            source_name = futures[future]
             try:
                 result = future.result()
                 results.append(result)
+                if source_name in CIRCUIT_ELIGIBLE:
+                    _circuit_record(source_name, result.status == "success", quiet)
             except Exception as e:
                 if not quiet:
                     print(f"[executor] Error: {e}", file=sys.stderr)
+                if source_name in CIRCUIT_ELIGIBLE:
+                    _circuit_record(source_name, False, quiet)
 
     if not quiet:
         print(f"[oracle] Collected {len(results)} scrape results, {len([r for r in results if r.status == 'success'])} successful")

@@ -10,6 +10,10 @@ import { OPENROUTER_BASE_URL } from "./cascade.js";
 
 const ENDPOINT = `${OPENROUTER_BASE_URL}/chat/completions`;
 
+/** Per-call timeout. Without this, a hung upstream model blocks the entire
+ *  decision cascade indefinitely — native fetch has no default timeout. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export type OpenRouterMessage = {
   role: "system" | "user" | "assistant";
   content: string;
@@ -42,6 +46,7 @@ export async function callOpenRouter(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!resp.ok) return null;
 

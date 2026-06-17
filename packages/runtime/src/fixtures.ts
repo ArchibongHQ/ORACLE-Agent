@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import type { FixtureJob, RunState } from "@oracle/engine";
-import { parseFixtureList } from "@oracle/engine";
+import { parseFixtureList, runPool } from "@oracle/engine";
 import type { LLMCallContext } from "@oracle/llm";
 import { fetchOddsViaGemini } from "@oracle/llm";
 import type { StoragePort } from "@oracle/storage";
@@ -528,21 +528,53 @@ function _parsePlaywrightOddsText(
   return { home, draw, away, overround };
 }
 
+/** Run a child process asynchronously, collecting stdout. Unlike spawnSync, this
+ *  does not block the event loop — required so runPool can run multiple Playwright
+ *  scrapes concurrently instead of serializing on a blocked main thread. */
+function _spawnAsync(
+  command: string,
+  args: string[],
+  opts: { timeoutMs: number; env: NodeJS.ProcessEnv }
+): Promise<{ status: number | null; stdout: string }> {
+  return new Promise((resolve) => {
+    void import("node:child_process").then(({ spawn }) => {
+      const child = spawn(command, args, { env: opts.env });
+      let stdout = "";
+      let settled = false;
+      const finish = (status: number | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ status, stdout });
+      };
+      const timer = setTimeout(() => {
+        child.kill();
+        finish(null);
+      }, opts.timeoutMs);
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.on("error", () => finish(null));
+      child.on("close", (code) => finish(code));
+    });
+  });
+}
+
 /** Last-resort: spawn scrape_google_ai.py for one fixture, parse 1X2 from the
  *  Google AI Mode answer. Skipped in test environments (VITEST=true) and when
- *  ORACLE_NO_PLAYWRIGHT=true to avoid slow spawns in CI / unit tests. */
+ *  ORACLE_NO_PLAYWRIGHT=true to avoid slow spawns in CI / unit tests.
+ *  Uses an async spawn (not spawnSync) so runPool can run several of these
+ *  concurrently instead of blocking the event loop one fixture at a time. */
 async function fetchOddsViaPlaywright(
   home: string,
   away: string,
   league: string
 ): Promise<GapOdds | null> {
   if (process.env["VITEST"] || process.env["ORACLE_NO_PLAYWRIGHT"] === "true") return null;
-  const { spawnSync } = await import("node:child_process");
   const query = `${home} vs ${away} ${league} betting odds 1X2`;
   const scriptPath = join(ROOT, "tools/scrape_google_ai.py");
-  const result = spawnSync("python", [scriptPath, "--query", query, "--wait-ms", "5000"], {
-    timeout: 45_000,
-    encoding: "utf8",
+  const result = await _spawnAsync("python", [scriptPath, "--query", query, "--wait-ms", "5000"], {
+    timeoutMs: 45_000,
     env: { ...process.env, PYTHONIOENCODING: "utf-8" },
   });
   if (result.status !== 0 || !result.stdout) return null;
@@ -566,10 +598,21 @@ async function fetchOddsViaPlaywright(
   };
 }
 
+/** Concurrency for the gap-fill pool. Odds lookups are I/O-bound (network +
+ *  child-process spawns), so this can run well above the LLM-bound analysis
+ *  pool's concurrency without risking rate limits — each tier already has its
+ *  own quota/circuit-breaking. */
+const GAP_FILL_CONCURRENCY = 6;
+
 /** For fixtures not covered by the Odds API, acquire odds from the structured
  *  free-API provider chain first (SharpAPI.io → API-Football → …), then fall back to
  *  Gemini Search, and finally to the Playwright/Google-AI-Mode scraper (§6 no-data-blocker).
- *  Returns only jobs with confident odds. */
+ *  Returns only jobs with confident odds.
+ *
+ *  Runs fixtures through runPool (not a sequential for-loop) — the Tier 3
+ *  Playwright fallback alone can take 45-50s per fixture, so resolving them
+ *  one at a time made this function the dominant cost of the entire daily
+ *  batch on slates where ODDS_API_KEY is absent/invalid. */
 export async function geminiOddsGapFill(
   unmatched: FixtureJob[],
   geminiApiKey: string | undefined,
@@ -586,72 +629,76 @@ export async function geminiOddsGapFill(
       }
     : null;
 
-  const filled: FixtureJob[] = [];
+  await mkdir(ODDS_CACHE_DIR, { recursive: true });
 
-  for (const job of unmatched) {
-    try {
-      let resolved: GapOdds | null = null;
+  const results = await runPool<FixtureJob, FixtureJob | null>(
+    unmatched,
+    GAP_FILL_CONCURRENCY,
+    async (job) => {
+      try {
+        let resolved: GapOdds | null = null;
 
-      // Tier 1: structured providers (sharp JSON beats LLM-scraped prose).
-      if (hasChain) {
-        const chain = await runOddsChain(providers, job.home, job.away, job.league, job.kickoff);
-        if (chain && [chain.home, chain.draw, chain.away].every((v) => v >= 1.01 && v <= 50)) {
-          resolved = {
-            home: chain.home,
-            draw: chain.draw,
-            away: chain.away,
-            odds_source: chain.provider,
-            odds_quality: chain.isSharp ? "live" : "degraded",
-            confidence: chain.confidence,
-            sources: chain.sources.join(","),
-          };
+        // Tier 1: structured providers (sharp JSON beats LLM-scraped prose).
+        if (hasChain) {
+          const chain = await runOddsChain(providers, job.home, job.away, job.league, job.kickoff);
+          if (chain && [chain.home, chain.draw, chain.away].every((v) => v >= 1.01 && v <= 50)) {
+            resolved = {
+              home: chain.home,
+              draw: chain.draw,
+              away: chain.away,
+              odds_source: chain.provider,
+              odds_quality: chain.isSharp ? "live" : "degraded",
+              confidence: chain.confidence,
+              sources: chain.sources.join(","),
+            };
+          }
         }
-      }
 
-      // Tier 2: Gemini Search consensus (degraded).
-      if (!resolved && ctx) {
-        const g = await fetchOddsViaGemini(job.home, job.away, job.league, job.kickoff, ctx);
-        if (g && [g.home, g.draw, g.away].every((v) => v >= 1.01 && v <= 50)) {
-          resolved = {
-            home: g.home,
-            draw: g.draw,
-            away: g.away,
-            odds_source: "gemini_search_consensus",
-            odds_quality: "degraded",
-            confidence: g.confidence,
-            sources: g.sources.join(","),
-          };
+        // Tier 2: Gemini Search consensus (degraded).
+        if (!resolved && ctx) {
+          const g = await fetchOddsViaGemini(job.home, job.away, job.league, job.kickoff, ctx);
+          if (g && [g.home, g.draw, g.away].every((v) => v >= 1.01 && v <= 50)) {
+            resolved = {
+              home: g.home,
+              draw: g.draw,
+              away: g.away,
+              odds_source: "gemini_search_consensus",
+              odds_quality: "degraded",
+              confidence: g.confidence,
+              sources: g.sources.join(","),
+            };
+          }
         }
+
+        // Tier 3: Playwright / Google AI Mode — §6 no-data-blocker last resort.
+        if (!resolved) {
+          const p = await fetchOddsViaPlaywright(job.home, job.away, job.league);
+          if (p) resolved = p;
+        }
+
+        if (!resolved) return null;
+
+        const filledJob = jobFromGapOdds(job, resolved);
+
+        // Write odds to cache for inspection — distinct path per fixture, safe under concurrency.
+        const slug = `${job.home}_vs_${job.away}`
+          .toLowerCase()
+          .replace(/\s+/g, "_")
+          .replace(/[^a-z0-9_]/g, "");
+        await writeFile(
+          join(ODDS_CACHE_DIR, `${slug}.json`),
+          JSON.stringify(filledJob.state?.pipeline?.fetched?.odds, null, 2),
+          "utf8"
+        );
+
+        return filledJob;
+      } catch {
+        return null; // non-fatal — move to next fixture
       }
-
-      // Tier 3: Playwright / Google AI Mode — §6 no-data-blocker last resort.
-      if (!resolved) {
-        const p = await fetchOddsViaPlaywright(job.home, job.away, job.league);
-        if (p) resolved = p;
-      }
-
-      if (!resolved) continue;
-
-      const filledJob = jobFromGapOdds(job, resolved);
-      filled.push(filledJob);
-
-      // Write odds to cache for inspection
-      await mkdir(ODDS_CACHE_DIR, { recursive: true });
-      const slug = `${job.home}_vs_${job.away}`
-        .toLowerCase()
-        .replace(/\s+/g, "_")
-        .replace(/[^a-z0-9_]/g, "");
-      await writeFile(
-        join(ODDS_CACHE_DIR, `${slug}.json`),
-        JSON.stringify(filledJob.state?.pipeline?.fetched?.odds, null, 2),
-        "utf8"
-      );
-    } catch {
-      // non-fatal — move to next fixture
     }
-  }
+  );
 
-  return filled;
+  return results.filter((r): r is FixtureJob => r != null);
 }
 
 // ── Web search fallback (when Odds API fails) ──────────────────────────────────
