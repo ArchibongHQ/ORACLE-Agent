@@ -528,6 +528,29 @@ function _parsePlaywrightOddsText(
   return { home, draw, away, overround };
 }
 
+/** Tree-kill a process on timeout. child.kill() on Windows only signals the
+ *  immediate child (python.exe) — if that's killed mid-flight, Playwright's
+ *  already-launched chrome-headless-shell.exe is NOT in the same process
+ *  group and survives as an orphan (its asyncio "finally: browser.close()"
+ *  never runs because the interpreter was killed, not exited normally).
+ *  taskkill /T recurses the whole tree; plain child.kill() is the right call
+ *  everywhere else. */
+function _killTree(pid: number): void {
+  if (process.platform === "win32") {
+    void import("node:child_process").then(({ execFile }) => {
+      execFile("taskkill", ["/pid", String(pid), "/T", "/F"], () => {
+        /* best-effort — process may have already exited */
+      });
+    });
+  } else {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      /* process group may not exist if already exited */
+    }
+  }
+}
+
 /** Run a child process asynchronously, collecting stdout. Unlike spawnSync, this
  *  does not block the event loop — required so runPool can run multiple Playwright
  *  scrapes concurrently instead of serializing on a blocked main thread. */
@@ -548,7 +571,7 @@ function _spawnAsync(
         resolve({ status, stdout });
       };
       const timer = setTimeout(() => {
-        child.kill();
+        if (child.pid != null) _killTree(child.pid);
         finish(null);
       }, opts.timeoutMs);
       child.stdout?.on("data", (chunk: Buffer) => {
@@ -573,8 +596,12 @@ async function fetchOddsViaPlaywright(
   if (process.env["VITEST"] || process.env["ORACLE_NO_PLAYWRIGHT"] === "true") return null;
   const query = `${home} vs ${away} ${league} betting odds 1X2`;
   const scriptPath = join(ROOT, "tools/scrape_google_ai.py");
+  // 20s (was 45s): Google AI Mode either answers within the page's own internal
+  // timeouts (goto: 45s cap, but typically resolves in 3-8s) or it won't resolve
+  // at all — waiting the full 45s per fixture across 150+ fixtures (most lacking
+  // ODDS_API_KEY coverage) made this the dominant cost of the whole batch.
   const result = await _spawnAsync("python", [scriptPath, "--query", query, "--wait-ms", "5000"], {
-    timeoutMs: 45_000,
+    timeoutMs: 20_000,
     env: { ...process.env, PYTHONIOENCODING: "utf-8" },
   });
   if (result.status !== 0 || !result.stdout) return null;
