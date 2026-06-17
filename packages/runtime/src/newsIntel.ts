@@ -187,12 +187,12 @@ export async function enrichWithNewsIntel(
       };
       filled++;
     } catch (err) {
-      const _msg = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[newsIntel] WARN ${job.home} vs ${job.away}: ${msg}\n`);
     }
   }
 
-  if (filled > 0) {
-  }
+  process.stderr.write(`[newsIntel] filled=${filled}/${eligible.length}\n`);
 
   return enriched;
 }
