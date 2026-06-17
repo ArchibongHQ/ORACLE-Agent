@@ -12,7 +12,11 @@ export type {
   SignificanceGateOptions,
   SignificanceGateResult,
 } from "./calibration/index.js";
-export { CalibrationEngine, significanceAcceptGate } from "./calibration/index.js";
+export {
+  CalibrationEngine,
+  isotonicCalibrateFp,
+  significanceAcceptGate,
+} from "./calibration/index.js";
 export type { DecisionResult } from "./decision/index.js";
 export {
   buildEligibleBets,

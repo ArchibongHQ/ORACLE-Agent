@@ -68,11 +68,20 @@ export interface GoalsLeg {
 
 export interface GoalsSelectionResult {
   legs: GoalsLeg[];
+  /** Short-slip selection: top 4–8 legs by mp (honest win-probability slip). */
+  shortSlipLegs: GoalsLeg[];
   target: number;
   analysed: number;
   /** Fixtures with ≥1 qualifying leg before the target cap was applied. */
   qualified: number;
   counts: { over15: number; over25: number; teamOver05: number };
+  /** Correlation-adjusted joint probability for the full slip (product × league haircut). */
+  combinedProb: number;
+  /** Combined decimal odds for the full slip (product of leg odds). */
+  combinedOdds: number;
+  /** Same for the short-slip (4–8 legs). */
+  shortSlipCombinedProb: number;
+  shortSlipCombinedOdds: number;
 }
 
 type Side = "home" | "away";
@@ -193,32 +202,83 @@ export function pickSafestGoalsLeg(
   };
 }
 
+/** Intra-league correlation haircut for cross-fixture legs.
+ *  Legs from the same league share environmental factors (referee pool, weather patterns,
+ *  tactical meta). Conservative rho=0.25 matches typical observed cross-match correlation
+ *  in European football (Boshnakov et al. 2017). Penalty = 1/(1+rho). */
+function leagueCorrelationHaircut(legs: GoalsLeg[]): number {
+  const RHO_SAME_LEAGUE = 0.25;
+  if (legs.length === 0) return 1;
+  // Count same-league pairs
+  const leagueCounts: Record<string, number> = {};
+  for (const l of legs) leagueCounts[l.league] = (leagueCounts[l.league] ?? 0) + 1;
+  let penalty = 1;
+  for (const count of Object.values(leagueCounts)) {
+    if (count >= 2) {
+      // Apply haircut once per same-league pair above the first
+      const pairs = (count * (count - 1)) / 2;
+      penalty *= Math.pow(1 / (1 + RHO_SAME_LEAGUE), pairs);
+    }
+  }
+  return Math.max(0.01, penalty);
+}
+
+/** Joint probability with correlation haircut: product(mp_i) × leagueHaircut. */
+function jointProb(legs: GoalsLeg[]): number {
+  if (legs.length === 0) return 0;
+  const raw = legs.reduce((acc, l) => acc * l.mp, 1);
+  return raw * leagueCorrelationHaircut(legs);
+}
+
 /** Select the goals accumulator: one safest leg per qualifying fixture, ranked
  *  by model confidence descending, capped at `target` legs (a ceiling — fewer
- *  legs when fewer qualify; the threshold is never relaxed to force `target`). */
+ *  legs when fewer qualify; the threshold is never relaxed to force `target`).
+ *
+ *  Also surfaces a short-slip (4–8 legs) with honest joint probability so callers
+ *  can see the true win probability before stacking 39 legs. */
 export function selectGoalsAccumulator(
   jobs: BatchJobResult[],
   opts: GoalsSelectOptions = {}
 ): GoalsSelectionResult {
   const target = opts.target ?? DEFAULT_GOALS_TARGET_LEGS;
+  const SHORT_SLIP_MIN = 4;
+  const SHORT_SLIP_MAX = 8;
+
   const all: GoalsLeg[] = [];
   for (const job of jobs) {
     const leg = pickSafestGoalsLeg(job, opts);
     if (leg) all.push(leg);
   }
   all.sort((a, b) => b.mp - a.mp);
+
   const legs = all.slice(0, Math.max(0, target));
+  const shortSlipLegs = all.slice(
+    0,
+    Math.min(SHORT_SLIP_MAX, Math.max(SHORT_SLIP_MIN, all.length))
+  );
+
   const counts = { over15: 0, over25: 0, teamOver05: 0 };
   for (const l of legs) {
     if (l.side === "Over 1.5") counts.over15 += 1;
     else if (l.side === "Over 2.5") counts.over25 += 1;
     else counts.teamOver05 += 1;
   }
+
+  const combinedProb = jointProb(legs);
+  const combinedOdds = legs.reduce((acc, l) => acc * l.odds, 1);
+  const shortSlipCombinedProb = jointProb(shortSlipLegs);
+  const shortSlipCombinedOdds = shortSlipLegs.reduce((acc, l) => acc * l.odds, 1);
+
   return {
     legs,
+    shortSlipLegs,
     target,
     analysed: jobs.length,
     qualified: all.length,
     counts,
+    combinedProb,
+    combinedOdds,
+    shortSlipCombinedProb,
+    shortSlipCombinedOdds,
   };
 }

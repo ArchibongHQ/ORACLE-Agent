@@ -658,3 +658,98 @@ export function significanceAcceptGate(
 
   return { accept, delta, ciLower, ciUpper, n, effectSize, reason };
 }
+
+// ── §8.4 Isotonic regression calibration (PAVA) ──────────────────────────────
+
+/** Pool-Adjacent-Violators Algorithm — fits a monotone non-decreasing function
+ *  through (predicted, actual) pairs. Returns calibrated values at each predicted input. */
+function pava(predicted: number[], actual: number[]): number[] {
+  const n = predicted.length;
+  // Sort by predicted probability
+  const idx = Array.from({ length: n }, (_, i) => i).sort((a, b) => predicted[a]! - predicted[b]!);
+  const g: Array<{ sum: number; count: number }> = idx.map((i) => ({
+    sum: actual[i]!,
+    count: 1,
+  }));
+  // Merge violating adjacent blocks (isotonic constraint: non-decreasing)
+  let i = 0;
+  while (i < g.length - 1) {
+    if (g[i]!.sum / g[i]!.count > g[i + 1]!.sum / g[i + 1]!.count) {
+      g[i]!.sum += g[i + 1]!.sum;
+      g[i]!.count += g[i + 1]!.count;
+      g.splice(i + 1, 1);
+      if (i > 0) i--;
+    } else {
+      i++;
+    }
+  }
+  // Expand blocks back to per-sample values in original order
+  const calibrated = new Array<number>(n);
+  let gi = 0,
+    remaining = g[0]!.count;
+  for (const sortedPos of idx) {
+    calibrated[sortedPos] = g[gi]!.sum / g[gi]!.count;
+    remaining--;
+    if (remaining === 0 && gi < g.length - 1) {
+      gi++;
+      remaining = g[gi]!.count;
+    }
+  }
+  return calibrated;
+}
+
+/** §8.4 Post-hoc isotonic calibration of 1x2 probabilities against the resolution ledger.
+ *
+ *  Fits separate PAVA curves for home/draw/away using resolved bets that have both
+ *  `fp` (predicted) and `homeGoals`/`awayGoals` (actual outcome). Renormalises after fit.
+ *
+ *  Returns the calibrated fp, or the original fp if < minSamples resolved records exist.
+ *  Safe to call with an empty or partial ledger — falls back silently. */
+export function isotonicCalibrateFp(
+  fp: { home: number; draw: number; away: number },
+  resolvedBets: BetRecord[],
+  minSamples = 30
+): { home: number; draw: number; away: number } {
+  const eligible = resolvedBets.filter(
+    (b) =>
+      b.fp &&
+      typeof b.fp.home === "number" &&
+      typeof b.fp.draw === "number" &&
+      typeof b.fp.away === "number" &&
+      typeof b.homeGoals === "number" &&
+      typeof b.awayGoals === "number"
+  );
+  if (eligible.length < minSamples) return fp;
+
+  const predHome = eligible.map((b) => b.fp!.home!);
+  const predDraw = eligible.map((b) => b.fp!.draw!);
+  const predAway = eligible.map((b) => b.fp!.away!);
+  const actHome = eligible.map((b) => (b.homeGoals! > b.awayGoals! ? 1 : 0));
+  const actDraw = eligible.map((b) => (b.homeGoals! === b.awayGoals! ? 1 : 0));
+  const actAway = eligible.map((b) => (b.homeGoals! < b.awayGoals! ? 1 : 0));
+
+  const calHome = pava(predHome, actHome);
+  const calDraw = pava(predDraw, actDraw);
+  const calAway = pava(predAway, actAway);
+
+  // Interpolate calibrated value for the incoming fp using nearest-neighbour in predicted space
+  function interpolate(pred: number[], cal: number[], query: number): number {
+    let best = 0,
+      bestDist = Infinity;
+    for (let i = 0; i < pred.length; i++) {
+      const d = Math.abs(pred[i]! - query);
+      if (d < bestDist) {
+        bestDist = d;
+        best = cal[i]!;
+      }
+    }
+    return best;
+  }
+
+  const rawH = interpolate(predHome, calHome, fp.home);
+  const rawD = interpolate(predDraw, calDraw, fp.draw);
+  const rawA = interpolate(predAway, calAway, fp.away);
+  const total = rawH + rawD + rawA;
+  if (total <= 0) return fp;
+  return { home: rawH / total, draw: rawD / total, away: rawA / total };
+}

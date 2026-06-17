@@ -47,6 +47,7 @@ import {
   skellamAHCover,
   skellamProbs,
 } from "../math/index.js";
+import { isotonicCalibrateFp } from "../calibration/index.js";
 import { RAGSystem } from "../rag/index.js";
 import { AntiSycophancyCircuit, ConvergenceScorer, MLSafetyFilter } from "../safety/index.js";
 import type {
@@ -1219,7 +1220,7 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       );
 
     const finalMkt = extractMarkets(finalMat);
-    const fp = { home: finalMkt.hw, draw: finalMkt.dr, away: finalMkt.aw };
+    let fp = { home: finalMkt.hw, draw: finalMkt.dr, away: finalMkt.aw };
     let eHg = 0,
       eAg = 0;
     const N = finalMat.length;
@@ -1242,7 +1243,7 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       ahPivot = asianHandicapPivot(finalMat, lowScoreRegime, leagueAcc);
     }
 
-    // §8.2 Skellam cross-check — divergence flag + independent AH line estimate
+    // §8.2 Skellam cross-check — divergence flag + 20% blend when Skellam agrees (maxDiv < 0.05)
     let skellamCrossCheck: {
       probs: typeof fp;
       maxDivergence: number;
@@ -1260,9 +1261,19 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
         maxDivergence: parseFloat(maxDiv.toFixed(4)),
         ahCoverMinus05: parseFloat(skellamAHCover(eHg, eAg, -0.5).toFixed(4)),
       };
-      if (maxDiv > 0.05) {
+      // §8.2b blend: when Skellam and matrix agree (low divergence), nudge fp toward Skellam
+      if (maxDiv < 0.05) {
+        const w = 0.2;
+        const bH = (1 - w) * fp.home + w * skProbs.home;
+        const bD = (1 - w) * fp.draw + w * skProbs.draw;
+        const bA = (1 - w) * fp.away + w * skProbs.away;
+        const bt = bH + bD + bA;
+        fp = { home: bH / bt, draw: bD / bt, away: bA / bt };
       }
     }
+
+    // §8.4 Isotonic calibration — post-hoc PAVA fit on resolved bets (no-op if < 30 resolved)
+    fp = isotonicCalibrateFp(fp, (ledger?.bets ?? []) as Parameters<typeof isotonicCalibrateFp>[1]);
 
     const councilPenalty =
       (fetched.oracle_council as { penalty_active?: boolean } | undefined)?.penalty_active ===
