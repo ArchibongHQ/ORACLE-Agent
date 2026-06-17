@@ -598,11 +598,14 @@ async function fetchOddsViaPlaywright(
   };
 }
 
-/** Concurrency for the gap-fill pool. Odds lookups are I/O-bound (network +
- *  child-process spawns), so this can run well above the LLM-bound analysis
- *  pool's concurrency without risking rate limits — each tier already has its
- *  own quota/circuit-breaking. */
-const GAP_FILL_CONCURRENCY = 6;
+/** Concurrency for the gap-fill pool. Tiers 1-2 (provider chain, Gemini) are
+ *  plain network calls and tolerate high concurrency. Tier 3 (Playwright)
+ *  spawns a full headless Chromium browser per fixture via scrape_google_ai.py
+ *  — running 6 of those at once on a single machine causes real resource
+ *  contention (verified: 6 concurrent browser launches all stalled at ~0% CPU
+ *  for minutes, never completing). Cap the whole pool at the lower, browser-safe
+ *  concurrency since any fixture in the batch might fall through to Tier 3. */
+const GAP_FILL_CONCURRENCY = 3;
 
 /** For fixtures not covered by the Odds API, acquire odds from the structured
  *  free-API provider chain first (SharpAPI.io → API-Football → …), then fall back to
