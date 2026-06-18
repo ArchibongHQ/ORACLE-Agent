@@ -16,6 +16,11 @@ export interface OddsAcquisitionResult {
   overround: number;
 }
 
+/** Per-call timeout. The Gemini SDK's own default lets a hung Search-grounded
+ *  call stall a fixture indefinitely — bound it so the cascade falls through
+ *  to the next model (and ultimately to Tier 3 Playwright) quickly instead. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 const MIN_CONFIDENCE = 0.65;
 const MAX_OVERROUND = 0.2; // reject if implied probs sum > 1.20 (too much juice)
 const MIN_OVERROUND = 0.02; // reject if sum < 1.02 (looks fabricated)
@@ -63,6 +68,7 @@ If you cannot find odds from at least 2 sources, return: {"error": "insufficient
           temperature: 0,
           thinkingConfig: { thinkingBudget: 0 },
           tools: [{ googleSearch: {} }],
+          abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         },
       });
 
@@ -167,7 +173,11 @@ Use realistic bookmaker-style prices (implied probs should sum to 1.05–1.15).`
     const result = await ai.models.generateContent({
       model: "gemini-2.0-flash",
       contents: prompt,
-      config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } },
+      config: {
+        temperature: 0,
+        thinkingConfig: { thinkingBudget: 0 },
+        abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      },
     });
     const text = (result.text ?? "").trim();
     const jsonMatch = text.match(/\{[\s\S]*?\}/);

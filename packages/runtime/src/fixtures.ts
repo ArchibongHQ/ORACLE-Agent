@@ -616,12 +616,14 @@ async function fetchOddsViaPlaywright(
   if (process.env["VITEST"] || process.env["ORACLE_NO_PLAYWRIGHT"] === "true") return null;
   const query = `${home} vs ${away} ${league} betting odds 1X2`;
   const scriptPath = join(ROOT, "tools/scrape_google_ai.py");
-  // 20s (was 45s): Google AI Mode either answers within the page's own internal
-  // timeouts (goto: 45s cap, but typically resolves in 3-8s) or it won't resolve
-  // at all — waiting the full 45s per fixture across 150+ fixtures (most lacking
-  // ODDS_API_KEY coverage) made this the dominant cost of the whole batch.
-  const result = await _spawnAsync("python", [scriptPath, "--query", query, "--wait-ms", "5000"], {
-    timeoutMs: 20_000,
+  // 28s outer / ~18s inner (scrape_google_ai.py's own goto+wait+networkidle
+  // budget): the outer deadline must stay comfortably above the script's
+  // internal one so its own `finally: browser.close()` wins normally — a
+  // hard taskkill /T /F on a mid-flight Python process can leave
+  // chrome-headless-shell.exe orphaned on Windows (job-object quirk), and
+  // those orphans compound across runs until they starve GAP_FILL_CONCURRENCY.
+  const result = await _spawnAsync("python", [scriptPath, "--query", query, "--wait-ms", "4000"], {
+    timeoutMs: 28_000,
     env: { ...process.env, PYTHONIOENCODING: "utf-8" },
   });
   if (result.status !== 0 || !result.stdout) return null;

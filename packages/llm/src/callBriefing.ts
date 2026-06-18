@@ -12,6 +12,11 @@ import type { LLMCallContext } from "./types.js";
 const BRIEFING_OR_SYSTEM =
   "You are ORACLE's pre-match briefing analyst. Analyse the provided fixture context and return your assessment as valid JSON.";
 
+/** Per-call timeout. The Anthropic/Gemini SDKs' own defaults let a hung connection
+ *  stall a fixture indefinitely — bound it so briefing falls through to the next
+ *  tier quickly instead of hanging. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export interface BriefingResult {
   text: string;
   model: string;
@@ -47,7 +52,11 @@ async function geminiEnsembleBriefing(
       ai.models.generateContent({
         model: MODELS.GEMINI_FLASH,
         contents: prompt,
-        config: { temperature: temp, thinkingConfig: { thinkingBudget: 0 } },
+        config: {
+          temperature: temp,
+          thinkingConfig: { thinkingBudget: 0 },
+          abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        },
       })
     )
   );
@@ -79,12 +88,15 @@ async function checkFramingBias(
   try {
     const client = new Anthropic({ apiKey: ctx.config.claudeApiKey });
     const neutralPrompt = `You are a neutral analyst with no prior position. ${prompt}`;
-    const resp = await client.messages.create({
-      model: MODELS.CLAUDE_OPUS,
-      max_tokens: 1024,
-      temperature: 0,
-      messages: [{ role: "user", content: neutralPrompt }],
-    });
+    const resp = await client.messages.create(
+      {
+        model: MODELS.CLAUDE_OPUS,
+        max_tokens: 1024,
+        temperature: 0,
+        messages: [{ role: "user", content: neutralPrompt }],
+      },
+      { timeout: REQUEST_TIMEOUT_MS, maxRetries: 1 }
+    );
     const neutralText = resp.content[0]?.type === "text" ? resp.content[0].text : "";
     const kellyMatch = primaryText.match(/"stake"\s*:\s*([\d.]+)/);
     const neutralMatch = neutralText.match(/"stake"\s*:\s*([\d.]+)/);
@@ -105,12 +117,15 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
   if (ctx.config.claudeApiKey) {
     try {
       const client = new Anthropic({ apiKey: ctx.config.claudeApiKey });
-      const resp = await client.messages.create({
-        model: MODELS.CLAUDE_OPUS,
-        max_tokens: 4096,
-        temperature: 0,
-        messages: [{ role: "user", content: prompt }],
-      });
+      const resp = await client.messages.create(
+        {
+          model: MODELS.CLAUDE_OPUS,
+          max_tokens: 4096,
+          temperature: 0,
+          messages: [{ role: "user", content: prompt }],
+        },
+        { timeout: REQUEST_TIMEOUT_MS, maxRetries: 1 }
+      );
       const text = resp.content[0]?.type === "text" ? resp.content[0].text : "";
       if (text) {
         await checkFramingBias(text, prompt, ctx, flags);

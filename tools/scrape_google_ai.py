@@ -100,11 +100,17 @@ _EXTRACT_JS = """
 async def _scrape_url(ctx: BrowserContext, url: str, wait_ms: int) -> dict[str, Any]:
     page: Page = await ctx.new_page()
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        # 12s, not 45s: the Node caller (_spawnAsync in fixtures.ts) hard-kills
+        # this whole process at 20s via taskkill /T /F, which gives browser.close()
+        # in the finally block below no chance to run (orphaning chrome-headless-shell.exe
+        # — Playwright's Windows browser process isn't always reachable by /T's tree
+        # walk). Staying well under the external deadline lets the graceful
+        # asyncio path win normally instead of relying on the hard kill.
+        await page.goto(url, wait_until="domcontentloaded", timeout=10000)
         # Let client-side rendering settle (Google AI Mode + SPAs stream content in).
-        await page.wait_for_timeout(wait_ms)
+        await page.wait_for_timeout(min(wait_ms, 4000))
         try:
-            await page.wait_for_load_state("networkidle", timeout=8000)
+            await page.wait_for_load_state("networkidle", timeout=4000)
         except Exception:
             pass  # networkidle is best-effort; many SPAs never reach it
 

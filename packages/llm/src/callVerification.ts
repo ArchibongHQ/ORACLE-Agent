@@ -7,6 +7,11 @@ import { callOpenRouterJson } from "./callOpenRouter.js";
 import { MODELS, OPENROUTER_MODELS } from "./cascade.js";
 import type { LLMCallContext } from "./types.js";
 
+/** Per-call timeout. The Anthropic SDK's own default lets a hung connection
+ *  stall a fixture indefinitely — bound it so CVL falls through to OpenRouter
+ *  tiers quickly instead of hanging. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export type CvlStatus = "APPROVED" | "OVERRIDE" | "VETO" | "SKIPPED";
 
 export interface CvlResult {
@@ -71,13 +76,16 @@ export async function callVerification(prompt: string, ctx: LLMCallContext): Pro
   if (ctx.config.claudeApiKey) {
     try {
       const client = new Anthropic({ apiKey: ctx.config.claudeApiKey });
-      const resp = await client.messages.create({
-        model: MODELS.CLAUDE_SONNET,
-        max_tokens: 1024,
-        temperature: 0,
-        system: CVL_SYSTEM,
-        messages: [{ role: "user", content: prompt }],
-      });
+      const resp = await client.messages.create(
+        {
+          model: MODELS.CLAUDE_SONNET,
+          max_tokens: 1024,
+          temperature: 0,
+          system: CVL_SYSTEM,
+          messages: [{ role: "user", content: prompt }],
+        },
+        { timeout: REQUEST_TIMEOUT_MS, maxRetries: 1 }
+      );
       const text = resp.content[0]?.type === "text" ? resp.content[0].text : "";
       const parsed = parseCvlResponse(text);
       return { ...parsed, stamp: new Date().toISOString(), model: MODELS.CLAUDE_SONNET };

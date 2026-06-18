@@ -16,6 +16,13 @@ import { chromium } from "playwright";
 const CHROME_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
+/** Overall deadline for one scrape. Individual page operations already have their
+ *  own timeouts, but nothing previously bounded the whole function — a stalled
+ *  chromium.launch() (e.g. resource contention from other concurrent scrapes)
+ *  could hang forever with no outer caller able to recover, stalling every
+ *  sequential caller behind it (e.g. enrichWithNewsIntel's per-fixture loop). */
+const OVERALL_TIMEOUT_MS = 35_000;
+
 export interface GoogleAiModeResult {
   /** The AI-overview prose Google returned for the query. */
   text: string;
@@ -25,10 +32,32 @@ export interface GoogleAiModeResult {
   observedAt: string;
 }
 
-/** Scrape Google AI-Mode for an arbitrary query. Returns null on any failure. */
+/** Scrape Google AI-Mode for an arbitrary query. Returns null on any failure
+ *  or if it exceeds OVERALL_TIMEOUT_MS — the browser is force-closed in that
+ *  case too, since individual step timeouts alone don't bound the whole call
+ *  (e.g. a stalled chromium.launch() has nothing else to time it out). */
 export async function scrapeGoogleAiMode(query: string): Promise<GoogleAiModeResult | null> {
   if (!query.trim()) return null;
 
+  const browserRef: { current: Awaited<ReturnType<typeof chromium.launch>> | null } = {
+    current: null,
+  };
+  const timeout = new Promise<null>((resolve) => {
+    setTimeout(() => {
+      void browserRef.current?.close().catch(() => {
+        /* ignore close errors */
+      });
+      resolve(null);
+    }, OVERALL_TIMEOUT_MS);
+  });
+
+  return Promise.race([_scrapeGoogleAiModeInner(query, browserRef), timeout]);
+}
+
+async function _scrapeGoogleAiModeInner(
+  query: string,
+  browserRef: { current: Awaited<ReturnType<typeof chromium.launch>> | null }
+): Promise<GoogleAiModeResult | null> {
   const isLocalWindows = process.platform === "win32" && process.env["ORACLE_IS_VPS"] !== "true";
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
@@ -43,6 +72,7 @@ export async function scrapeGoogleAiMode(query: string): Promise<GoogleAiModeRes
           : []),
       ],
     });
+    browserRef.current = browser;
 
     const context = await browser.newContext({
       userAgent: CHROME_UA,

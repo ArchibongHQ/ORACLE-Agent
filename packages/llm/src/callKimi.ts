@@ -11,6 +11,10 @@ import { MODELS } from "./cascade.js";
 
 const ENDPOINT = "https://api.moonshot.ai/v1/chat/completions";
 
+/** Per-call timeout. Without this, a hung Moonshot connection blocks the swarm's
+ *  Promise.allSettled indefinitely (other voters resolve, this one never does). */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 /** Shared swarm-worker system prompt — one independent analyst voting on the best pick. */
 const VOTE_SYSTEM = `You are one independent betting analyst in a panel. Read the fixture analysis and eligible bets, then vote for the single best pick (or NO_EDGE if no pick is justified). Return ONLY valid JSON, no markdown:
 {"pick":"<exact market label or NO_EDGE>","confidence":0.0,"rationale":"<one sentence>"}`;
@@ -75,6 +79,7 @@ export async function callKimiVote(
         temperature: opts.temperature ?? 0.4, // slight diversity across workers
         max_tokens: opts.maxTokens ?? 512,
       }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!resp.ok) return null;
 
