@@ -54,6 +54,15 @@ export interface DecisionReplay {
   temperature: 0;
 }
 
+/** Shadow comparison: GLM-5.2 evaluated in parallel with the real decision tier,
+ *  never affecting primaryPick. Observability only. Absent when the OpenRouter
+ *  key is missing or the shadow call fails (fail-open, non-fatal). */
+export interface DecisionShadow {
+  model: string; // OPENROUTER_MODELS.GLM_5_2
+  pick: DecisionOutput;
+  agree: boolean; // true when shadow.pick.primaryPick.market === real pick.primaryPick.market
+}
+
 /** Reference to a specific market + odds combination. */
 export interface PickRef {
   market: string;

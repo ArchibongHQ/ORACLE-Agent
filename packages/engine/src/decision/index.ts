@@ -9,6 +9,7 @@ import type {
   DecisionContext,
   DecisionOutput,
   DecisionReplay,
+  DecisionShadow,
   EVMarket,
   OracleConfig,
   PickRef,
@@ -18,6 +19,8 @@ import type {
 export interface DecisionResult {
   decision: DecisionOutput;
   replay: DecisionReplay | null;
+  /** GLM-5.2 shadow comparison — observability only, never affects `decision`. */
+  shadow?: DecisionShadow;
 }
 
 // DecisionContext is the canonical fixture-evidence type — defined in types.ts (Appendix B),
@@ -182,6 +185,42 @@ export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
   return evMarkets.filter((m) => !m.veto && m.ev > 0);
 }
 
+// ── GLM-5.2 shadow run ────────────────────────────────────────────────────────
+
+/** Evaluates GLM-5.2 against the same prompt the real decision tier received,
+ *  for observability only — never affects the returned decision. Fail-open:
+ *  any error or missing key returns undefined. Research context: GLM-5.2 sits
+ *  at decision-layer Tier 3 (last resort) behind Claude/Gemini/free OpenRouter
+ *  models; this shadow run tests whether it would pick differently before any
+ *  cascade reordering is considered. */
+async function shadowDecideWithGlm52(
+  prompt: string,
+  openrouterKey: string,
+  realPick: DecisionOutput
+): Promise<DecisionShadow | undefined> {
+  if (!openrouterKey) return undefined;
+  try {
+    const { callOpenRouterJson, OPENROUTER_MODELS } = await import("@oracle/llm");
+    const raw = await callOpenRouterJson(
+      "You are ORACLE's gated betting decision engine. Return ONLY valid JSON.",
+      prompt,
+      OPENROUTER_MODELS.GLM_5_2,
+      openrouterKey,
+      0
+    );
+    if (!raw) return undefined;
+    const parsed = parseDecisionResponse(raw);
+    if (!parsed) return undefined;
+    return {
+      model: OPENROUTER_MODELS.GLM_5_2,
+      pick: parsed,
+      agree: parsed.primaryPick.market === realPick.primaryPick.market,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 // ── Public: decide ────────────────────────────────────────────────────────────
 
 // Model IDs come from @oracle/llm cascade.ts (MODELS / OPENROUTER_MODELS) via the same
@@ -196,8 +235,29 @@ export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
  *   3. OpenRouter     — GLM-5.1 → GPT-oss-120B → DeepSeek R1 (when openrouterApiKey present)
  *   4. Deterministic  — when all LLMs unavailable or parse fails
  *
- *  Always returns { decision, replay } — replay is null on the deterministic path. */
+ *  Always returns { decision, replay } — replay is null on the deterministic path.
+ *  When the real decision came from an LLM tier and an OpenRouter key is present,
+ *  also runs a non-blocking GLM-5.2 shadow comparison (see `shadow` on the result). */
 export async function decide(
+  eligibleBets: EVMarket[],
+  ctx?: DecisionContext,
+  config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey" | "openrouterApiKey">,
+  forceDeterministic = false
+): Promise<DecisionResult> {
+  const result = await decideInner(eligibleBets, ctx, config, forceDeterministic);
+  if (!ctx || result.replay === null || !config?.openrouterApiKey) return result;
+
+  // Skip when GLM-5.2 itself already produced the real decision (Tier 3 last
+  // resort) — shadowing it against itself is a wasted call with a trivial result.
+  const { OPENROUTER_MODELS } = await import("@oracle/llm");
+  if (result.replay.model === OPENROUTER_MODELS.GLM_5_2) return result;
+
+  const prompt = buildPrompt(eligibleBets, ctx);
+  const shadow = await shadowDecideWithGlm52(prompt, config.openrouterApiKey, result.decision);
+  return shadow ? { ...result, shadow } : result;
+}
+
+async function decideInner(
   eligibleBets: EVMarket[],
   ctx?: DecisionContext,
   config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey" | "openrouterApiKey">,

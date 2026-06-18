@@ -8,6 +8,7 @@ import type {
   AnalysisRecord,
   BatchOptions,
   BatchResult,
+  DecisionShadow,
   FixtureJob,
   FixtureOutcome,
   OracleConfig,
@@ -63,6 +64,52 @@ async function writeManifest(manifest: RunManifest, outDir = ".tmp/manifests"): 
   const outPath = join(outDir, `manifest-${manifest.runId}.json`);
   await writeFile(outPath, JSON.stringify(manifest, null, 2), "utf8");
   return outPath;
+}
+
+function slugifyFixture(home: string, away: string): string {
+  const s = (n: string) =>
+    n
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_]/g, "");
+  return `${s(home)}_vs_${s(away)}`;
+}
+
+/** Writes GLM-5.2 shadow-decision comparisons to disk for manual review — never
+ *  read back into the pipeline. One file per fixture per run, under
+ *  .tmp/decision_shadow/. Best-effort: a write failure must not abort the run. */
+async function writeDecisionShadows(
+  jobs: FixtureOutcome[],
+  shadows: Map<string, { real: PickRef; shadow: DecisionShadow }>,
+  outDir = ".tmp/decision_shadow"
+): Promise<void> {
+  if (shadows.size === 0) return;
+  await mkdir(outDir, { recursive: true });
+  for (const job of jobs) {
+    const entry = shadows.get(job.fixtureId);
+    if (!entry) continue;
+    const outPath = join(outDir, `${slugifyFixture(job.home, job.away)}.json`);
+    await writeFile(
+      outPath,
+      JSON.stringify(
+        {
+          fixtureId: job.fixtureId,
+          home: job.home,
+          away: job.away,
+          league: job.league,
+          kickoff: job.kickoff,
+          realPick: entry.real,
+          shadowModel: entry.shadow.model,
+          shadowPick: entry.shadow.pick.primaryPick,
+          agree: entry.shadow.agree,
+          writtenAt: new Date().toISOString(),
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  }
 }
 
 /** Run the full analysis pipeline over a set of fixture jobs. */
@@ -218,6 +265,23 @@ export async function runAnalysis(
     } catch (err) {
       process.stderr.write(
         `[analyze] WARN: manifest file write failed (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`
+      );
+    }
+    // GLM-5.2 shadow comparisons — observability only, never read back into the
+    // pipeline. See oracle_pending_plans (2026-06-18, GLM-5.2 decision-layer research).
+    try {
+      const shadows = new Map<string, { real: PickRef; shadow: DecisionShadow }>();
+      for (const j of batch.jobs) {
+        if (j.status === "ok" && j.decisionShadow) {
+          shadows.set(j.fixtureId, { real: j.decision.primaryPick, shadow: j.decisionShadow });
+        }
+      }
+      await writeDecisionShadows(fixtures, shadows);
+    } catch (err) {
+      process.stderr.write(
+        `[analyze] WARN: decision shadow write failed (non-fatal): ${
           err instanceof Error ? err.message : String(err)
         }\n`
       );

@@ -15,6 +15,7 @@ import type {
   AgentErrorCode,
   DecisionOutput,
   DecisionReplay,
+  DecisionShadow,
   EVMarket,
   OracleConfig,
   PickRef,
@@ -52,6 +53,7 @@ export interface FixtureJobSuccess {
   briefingFlags?: string[]; // B1 briefing flags (e.g. FRAMING_BIAS_DETECTED)
   swarmConsensus?: string; // Level-2 swarm consensus pick label
   swarmDivergence?: number; // 0–1; high = workers disagreed
+  decisionShadow?: DecisionShadow; // GLM-5.2 shadow comparison, observability only
 }
 
 export interface FixtureJobError {
@@ -385,7 +387,11 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             /* non-fatal — llm module unavailable */
           }
 
-          const { decision: rawDecision, replay: decisionReplay } = await decide(
+          const {
+            decision: rawDecision,
+            replay: decisionReplay,
+            shadow: decisionShadow,
+          } = await decide(
             eligible,
             decisionCtx,
             config,
@@ -453,6 +459,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             result: filteredResult,
             decision,
             decisionReplay,
+            decisionShadow,
             eligibleBets: eligible,
             primaryPick,
             cvlStatus,

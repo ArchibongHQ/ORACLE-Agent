@@ -247,6 +247,161 @@ describe("decide — LLM path", () => {
   });
 });
 
+// ── decide — GLM-5.2 shadow run (observability only) ──────────────────────────
+
+describe("decide — GLM-5.2 shadow run", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not run the shadow call when openrouterApiKey is absent", async () => {
+    const mockResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.78,
+      rationale: "Claude pick.",
+      rejectedAndWhy: [],
+    };
+    const callOpenRouterJson = vi.fn();
+    vi.doMock("@oracle/llm", () => ({
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(mockResponse)),
+      callOpenRouterJson,
+      OPENROUTER_MODELS: { GLM_5_2: "z-ai/glm-5.2" },
+    }));
+
+    const { decision, shadow } = await decide([makeMarket()], BASE_CTX, {
+      claudeApiKey: "test-key",
+    });
+    expect(decision.primaryPick.market).toBe("Goals O/U");
+    expect(shadow).toBeUndefined();
+    expect(callOpenRouterJson).not.toHaveBeenCalled();
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("attaches a shadow comparison when openrouterApiKey is present and GLM-5.2 agrees", async () => {
+    const realResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.78,
+      rationale: "Claude pick.",
+      rejectedAndWhy: [],
+    };
+    const shadowResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.7,
+      rationale: "GLM-5.2 shadow pick.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
+      callOpenRouterJson: vi.fn().mockResolvedValue(JSON.stringify(shadowResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+      OPENROUTER_MODELS: { GLM_5_2: "z-ai/glm-5.2" },
+    }));
+
+    const { decision, shadow } = await decide([makeMarket()], BASE_CTX, {
+      claudeApiKey: "test-key",
+      openrouterApiKey: "or-key",
+    });
+    // Real decision is untouched regardless of the shadow outcome.
+    expect(decision.primaryPick.market).toBe("Goals O/U");
+    expect(decision.rationale).toBe("Claude pick.");
+    expect(shadow?.model).toBe("z-ai/glm-5.2");
+    expect(shadow?.agree).toBe(true);
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("marks disagreement when GLM-5.2 picks a different market", async () => {
+    const realResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.78,
+      rationale: "Claude pick.",
+      rejectedAndWhy: [],
+    };
+    const shadowResponse: DecisionOutput = {
+      primaryPick: { market: "1x2", side: "home", odds: 1.8, stake: 0.02 },
+      confidence: 0.6,
+      rationale: "GLM-5.2 disagrees.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
+      callOpenRouterJson: vi.fn().mockResolvedValue(JSON.stringify(shadowResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+      OPENROUTER_MODELS: { GLM_5_2: "z-ai/glm-5.2" },
+    }));
+
+    const { decision, shadow } = await decide([makeMarket()], BASE_CTX, {
+      claudeApiKey: "test-key",
+      openrouterApiKey: "or-key",
+    });
+    expect(decision.primaryPick.market).toBe("Goals O/U"); // real decision unaffected
+    expect(shadow?.agree).toBe(false);
+    expect(shadow?.pick.primaryPick.market).toBe("1x2");
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("is fail-open: a throwing shadow call never affects the real decision", async () => {
+    const realResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.78,
+      rationale: "Claude pick.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
+      callOpenRouterJson: vi.fn().mockRejectedValue(new Error("OpenRouter down")),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+      OPENROUTER_MODELS: { GLM_5_2: "z-ai/glm-5.2" },
+    }));
+
+    const { decision, shadow } = await decide([makeMarket()], BASE_CTX, {
+      claudeApiKey: "test-key",
+      openrouterApiKey: "or-key",
+    });
+    expect(decision.primaryPick.market).toBe("Goals O/U");
+    expect(decision.rationale).toBe("Claude pick.");
+    expect(shadow).toBeUndefined();
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("skips the shadow call when GLM-5.2 itself produced the real decision (Tier 3)", async () => {
+    const glmResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.6,
+      rationale: "GLM-5.2 tier-3 pick.",
+      rejectedAndWhy: [],
+    };
+    const callOpenRouterJson = vi
+      .fn()
+      .mockResolvedValueOnce(null) // GPT_OSS_120B
+      .mockResolvedValueOnce(null) // NEMOTRON_SUPER_120B
+      .mockResolvedValueOnce(null) // QWEN3_NEXT_80B
+      .mockResolvedValueOnce(null) // GPT_OSS_20B
+      .mockResolvedValueOnce(null) // LLAMA_3_3_70B
+      .mockResolvedValueOnce(JSON.stringify(glmResponse)); // GLM_5_2 — real decision
+    vi.doMock("@oracle/llm", () => ({
+      callOpenRouterJson,
+      OPENROUTER_MODELS: {
+        GPT_OSS_120B: "openai/gpt-oss-120b:free",
+        NEMOTRON_SUPER_120B: "nvidia/nemotron-3-super-120b-a12b:free",
+        QWEN3_NEXT_80B: "qwen/qwen3-next-80b-a3b-instruct:free",
+        GPT_OSS_20B: "openai/gpt-oss-20b:free",
+        LLAMA_3_3_70B: "meta-llama/llama-3.3-70b-instruct:free",
+        GLM_5_2: "z-ai/glm-5.2",
+        GLM_5_1: "z-ai/glm-5.1",
+      },
+    }));
+
+    const { decision, shadow } = await decide([makeMarket()], BASE_CTX, {
+      openrouterApiKey: "or-key",
+    });
+    expect(decision.rationale).toBe("GLM-5.2 tier-3 pick.");
+    expect(shadow).toBeUndefined();
+    // Only the 6 cascade calls (5 free + GLM-5.2 itself) — no extra shadow call.
+    expect(callOpenRouterJson).toHaveBeenCalledTimes(6);
+    vi.doUnmock("@oracle/llm");
+  });
+});
+
 // ── parseDecisionResponse (via decide with mocked callClaude) ─────────────────
 
 describe("decide — JSON parsing", () => {

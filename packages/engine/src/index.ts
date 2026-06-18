@@ -56,6 +56,7 @@ export type {
   DecisionInput,
   DecisionOutput,
   DecisionReplay,
+  DecisionShadow,
   EVMarket,
   FixtureOutcome,
   LiquidityTag,
