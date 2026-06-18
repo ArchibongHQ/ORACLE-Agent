@@ -501,8 +501,13 @@ Keep it under 200 words. Identify the single most important risk factor.`;
   // (in-flight ones finish); per-key storage locks keep RAG/logs race-free.
   const poolResults = await runPool(jobs, concurrency, processOne, {
     onSettled: (i, r) => {
-      // Charge only billable (LLM) decisions toward the ceiling.
-      if (r.status === "ok" && r.decisionReplay !== null) costTracker.charge();
+      // Charge only billable (LLM) decisions toward the ceiling. The GLM-5.2
+      // shadow call (when present) is a second billable request — without
+      // this it would silently spend past costCeilingUsd.perRun unnoticed.
+      if (r.status === "ok" && r.decisionReplay !== null) {
+        costTracker.charge();
+        if (r.decisionShadow) costTracker.charge();
+      }
       onProgress?.({
         completed: ++completedCounter,
         total,

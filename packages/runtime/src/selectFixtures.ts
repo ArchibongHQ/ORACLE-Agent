@@ -423,12 +423,19 @@ export function selectFixtures(
   // sides namesMatch and they kick off on the same UTC day (substring-tolerant
   // namesMatch can over-match alone — e.g. "United" vs "Leeds United" — so both
   // sides + same day is the conservative AND gate).
+  // Malformed kickoff strings (upstream API schema drift) must not crash the
+  // whole batch — fall back to the raw string for day-bucketing on a bad date.
+  const dayOf = (kickoff: string): string => {
+    const d = new Date(kickoff);
+    return Number.isNaN(d.getTime()) ? kickoff : d.toISOString().slice(0, 10);
+  };
+
   const scored: typeof scoredAll = [];
   for (const s of scoredAll) {
-    const day = new Date(s.c.job.kickoff).toISOString().slice(0, 10);
+    const day = dayOf(s.c.job.kickoff);
     const dup = scored.some(
       (k) =>
-        new Date(k.c.job.kickoff).toISOString().slice(0, 10) === day &&
+        dayOf(k.c.job.kickoff) === day &&
         namesMatch(k.c.job.home, s.c.job.home) &&
         namesMatch(k.c.job.away, s.c.job.away)
     );
