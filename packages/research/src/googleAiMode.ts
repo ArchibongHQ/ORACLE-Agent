@@ -42,16 +42,22 @@ export async function scrapeGoogleAiMode(query: string): Promise<GoogleAiModeRes
   const browserRef: { current: Awaited<ReturnType<typeof chromium.launch>> | null } = {
     current: null,
   };
+  let resolveTimeout: (value: null) => void;
   const timeout = new Promise<null>((resolve) => {
-    setTimeout(() => {
-      void browserRef.current?.close().catch(() => {
-        /* ignore close errors */
-      });
-      resolve(null);
-    }, OVERALL_TIMEOUT_MS);
+    resolveTimeout = resolve;
   });
+  const timer = setTimeout(() => {
+    void browserRef.current?.close().catch(() => {
+      /* ignore close errors */
+    });
+    resolveTimeout(null);
+  }, OVERALL_TIMEOUT_MS);
 
-  return Promise.race([_scrapeGoogleAiModeInner(query, browserRef), timeout]);
+  try {
+    return await Promise.race([_scrapeGoogleAiModeInner(query, browserRef), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function _scrapeGoogleAiModeInner(
