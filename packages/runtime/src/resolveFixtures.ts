@@ -116,7 +116,15 @@ function rpsScore(
 // ── football-data.org fetch ───────────────────────────────────────────────────
 
 async function fetchFinishedMatches(apiKey: string, date: string): Promise<FDMatch[]> {
-  const params = new URLSearchParams({ dateFrom: date, dateTo: date, status: "FINISHED" });
+  // football-data.org's free tier unreliably returns 0 results for a single-day
+  // dateFrom===dateTo window even when matches exist on that exact date (observed
+  // 2026-06-19: a 1-day window returned 5 matches a same-day window missed entirely).
+  // Pad by a day on each side; findMatch() below still filters callers back down to
+  // the exact kickoff date, so this can't pull in a wrong-day match.
+  const center = new Date(`${date}T00:00:00Z`);
+  const dateFrom = new Date(center.getTime() - 86_400_000).toISOString().slice(0, 10);
+  const dateTo = new Date(center.getTime() + 86_400_000).toISOString().slice(0, 10);
+  const params = new URLSearchParams({ dateFrom, dateTo, status: "FINISHED" });
   const url = `${BASE_URL}/matches?${params}`;
   const res = await fetch(url, {
     headers: { "X-Auth-Token": apiKey },

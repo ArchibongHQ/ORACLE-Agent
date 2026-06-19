@@ -45,17 +45,22 @@ const IS_ONE_SHOT = process.argv.some((a) => ONE_SHOT_FLAGS.includes(a as never)
 
 // Run a single async job to completion, then flush stdio and exit deterministically.
 // Flushing matters because stdout to a pipe (non-TTY parent) is async-buffered on
-// some platforms; a bare process.exit can drop the last buffered lines.
+// some platforms. Use exitCode + natural exit rather than a bare process.exit():
+// on Windows, calling process.exit() while undici's keep-alive sockets from a
+// just-completed fetch() are mid-teardown trips a libuv assertion
+// (`!(handle->flags & UV_HANDLE_CLOSING)`, src/win/async.c:94). Nothing else keeps
+// the event loop alive in one-shot mode (cron timers are gated behind IS_ONE_SHOT),
+// so setting exitCode and returning lets Node exit on its own once handles settle.
 async function runOnce(label: string, job: () => Promise<void>): Promise<void> {
   try {
     await job();
     await flushStdio();
-    process.exit(0);
+    process.exitCode = 0;
   } catch (err: unknown) {
     const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
     process.stderr.write(`[worker] ${label} FAILED — ${msg}\n`);
     await flushStdio();
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
