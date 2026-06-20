@@ -32,7 +32,10 @@ Write today's fixtures to `.tmp/fixtures/today.txt`. Sources:
 - `tools/fetch_fixtures.py` (when implemented) → calls api-football or football-data.org
 
 ### 2. Run the batch
-**Scheduled (cron):** The worker runs automatically at 09:00 local time when `node dist/index.js` is running.
+**Scheduled (cron):** The worker runs automatically at 06:00 local time when `node dist/index.js` is
+running. The goals-only accumulator (`runGoalsFromBatch` in `apps/worker/src/index.ts`) fires
+immediately after, sourcing its picks exclusively from this batch's top-39 (`llmEligible`)
+fixtures — no separate cron, no second fetch.
 
 **Manual one-shot:**
 ```bash

@@ -56,6 +56,7 @@ function okJob(
     decisionReplay: null,
     eligibleBets: [],
     primaryPick: null,
+    llmEligible: true,
   };
 }
 
@@ -69,6 +70,7 @@ function errJob(home: string, away: string): BatchJobResult {
     kickoff: "2026-06-15T15:00:00Z",
     reason: "boom",
     errorCode: "NO_DATA",
+    llmEligible: true,
   };
 }
 

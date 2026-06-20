@@ -104,7 +104,14 @@ export async function handleRequest(
     } catch {
       /* worker not run yet on this machine — report null */
     }
-    return jsonRes(200, { ok: true, worker });
+    // Bot heartbeat — stamped by apps/bot after each successful Telegram poll cycle.
+    let bot: unknown = null;
+    try {
+      bot = JSON.parse(await readFile(join(ROOT, ".tmp/bot_heartbeat.json"), "utf8"));
+    } catch {
+      /* bot not run yet on this machine — report null */
+    }
+    return jsonRes(200, { ok: true, worker, bot });
   }
 
   if (method === "GET" && urlPath === "/punt") {

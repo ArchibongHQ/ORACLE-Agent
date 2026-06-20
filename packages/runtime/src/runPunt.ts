@@ -18,6 +18,26 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
 const SIDECAR_PATH = join(ROOT, ".tmp/fixtures/sportybet_today.json");
 
+// A bare "python" relies on PATH resolution, which a Windows service host does
+// not inherit the same way an interactive shell does — causing a silent spawn
+// ENOENT under Servy while working fine from a terminal. Resolve an absolute
+// path up front so behavior is identical in both contexts.
+function resolvePythonBin(): string {
+  if (process.env["PYTHON_BIN"] && existsSync(process.env["PYTHON_BIN"])) {
+    return process.env["PYTHON_BIN"];
+  }
+  if (process.platform === "win32") {
+    const candidates = [
+      join(process.env["LOCALAPPDATA"] ?? "", "Programs", "Python", "Python313", "python.exe"),
+      join(process.env["LOCALAPPDATA"] ?? "", "Python", "bin", "python.exe"),
+    ];
+    for (const c of candidates) if (existsSync(c)) return c;
+    return "python";
+  }
+  return "python3";
+}
+const PYTHON_BIN = resolvePythonBin();
+
 /** Spawn scrape_fixtures.py if the SportyBet sidecar is missing or stale. Fire-and-wait,
  *  fail-open: a scrape error never aborts the punt analysis.
  * @internal exported for testing only */
@@ -33,7 +53,7 @@ export async function refreshSidecarIfStale(): Promise<void> {
   }
   try {
     await new Promise<void>((resolve) => {
-      const child = spawn("python", [join(ROOT, "tools/scrape_fixtures.py"), "--quiet"], {
+      const child = spawn(PYTHON_BIN, [join(ROOT, "tools/scrape_fixtures.py"), "--quiet"], {
         stdio: "ignore",
       });
       const timer = setTimeout(() => {

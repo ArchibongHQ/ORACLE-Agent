@@ -48,6 +48,11 @@ export interface FixtureJobSuccess {
   decisionReplay: DecisionReplay | null;
   eligibleBets: EVMarket[];
   primaryPick: EVMarket | null;
+  /** True for the top-N by composite stats score (selection-time flag, carried
+   *  through so callers can restrict a downstream pipeline — e.g. the goals
+   *  accumulator — to the same top-N the LLM tier was gated on). Defaults to
+   *  true when telemetry.llmEligible is absent (ad-hoc /analyze, single-fixture). */
+  llmEligible: boolean;
   // ── Optional LLM-layer telemetry (for report surfacing; all may be absent) ──
   cvlStatus?: "APPROVED" | "OVERRIDE" | "VETO" | "SKIPPED"; // B2 verification verdict
   briefingFlags?: string[]; // B1 briefing flags (e.g. FRAMING_BIAS_DETECTED)
@@ -65,6 +70,7 @@ export interface FixtureJobError {
   kickoff: string;
   reason: string;
   errorCode: AgentErrorCode;
+  llmEligible: boolean;
 }
 
 export type BatchJobResult = FixtureJobSuccess | FixtureJobError;
@@ -211,6 +217,7 @@ export async function runBatch(
       kickoff: job.kickoff,
       reason: "DRY_RUN — estimate only",
       errorCode: "DRY_RUN" as AgentErrorCode,
+      llmEligible: job.state?.telemetry?.llmEligible !== false,
     }));
     return {
       runId,
@@ -242,6 +249,9 @@ export async function runBatch(
   // runnable concurrently. Returns a BatchJobResult (never throws).
   async function processOne(job: FixtureJob): Promise<BatchJobResult> {
     const fixtureId = makeFixtureId(job.home, job.away, job.kickoff);
+    // Computed once, before the try, so both the success and error paths agree —
+    // default true when absent (e.g. ad-hoc /analyze, single-fixture).
+    const llmEligible = job.state?.telemetry?.llmEligible !== false;
     try {
       return await withRetry(
         async (): Promise<FixtureJobSuccess> => {
@@ -295,12 +305,10 @@ export async function runBatch(
           };
 
           // Two-tier gate: only the top-N fixtures (by composite stats score,
-          // flagged llmEligible at selection) reach the paid/slow LLM layers
-          // (briefing, swarm, decide, CVL). Every other fixture still gets the
-          // full deterministic engine analysis but skips all LLM calls. Default
-          // true when the flag is absent (e.g. ad-hoc /analyze) so single-fixture
-          // paths keep their LLM analysis.
-          const llmEligible = state.telemetry?.llmEligible !== false;
+          // flagged llmEligible at selection, computed once above processOne's
+          // try block) reach the paid/slow LLM layers (briefing, swarm, decide,
+          // CVL). Every other fixture still gets the full deterministic engine
+          // analysis but skips all LLM calls.
 
           // B7: route based on convergence tier
           let briefingText: string | undefined;
@@ -462,6 +470,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             decisionShadow,
             eligibleBets: eligible,
             primaryPick,
+            llmEligible,
             cvlStatus,
             briefingFlags,
             swarmConsensus,
@@ -484,6 +493,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
         kickoff: job.kickoff,
         reason,
         errorCode: code,
+        llmEligible,
       };
     }
   }

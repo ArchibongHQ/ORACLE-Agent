@@ -80,6 +80,7 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
 const DB_PATH = join(ROOT, ".tmp/gbrain");
 const HEARTBEAT_FILE = join(ROOT, ".tmp", "worker_heartbeat.json");
+const BOT_HEARTBEAT_FILE = join(ROOT, ".tmp", "bot_heartbeat.json");
 const REPORTS_DIR = join(ROOT, ".tmp/reports");
 const ENV_PATH = join(ROOT, ".env");
 
@@ -966,6 +967,19 @@ interface TgUpdate {
   message?: { chat: { id: number }; text?: string };
 }
 
+/** Liveness signal for external monitoring (the worker's checkBotHeartbeatFreshness
+ *  reads this). Written after each successfully-completed poll cycle — not on every
+ *  loop tick, so a real "can't reach Telegram" gap stays visible rather than masked
+ *  by a process that's merely still running. Best-effort; a write failure must
+ *  never interrupt the poll loop itself. */
+function writeBotHeartbeat(): void {
+  try {
+    writeFileSync(BOT_HEARTBEAT_FILE, JSON.stringify({ at: new Date().toISOString() }), "utf8");
+  } catch {
+    /* best-effort */
+  }
+}
+
 export async function runBot(): Promise<void> {
   const token = TOKEN();
   const adminId = CHAT_ID();
@@ -981,6 +995,7 @@ export async function runBot(): Promise<void> {
       const url = `${API(token, "getUpdates")}?timeout=50&offset=${offset}`;
       const resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
       const data = (await resp.json()) as { ok: boolean; result?: TgUpdate[] };
+      writeBotHeartbeat(); // reached and parsed a response from Telegram — the loop is alive
       if (!data.ok || !data.result) continue;
 
       for (const upd of data.result) {
