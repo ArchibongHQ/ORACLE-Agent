@@ -31,6 +31,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import https from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildNotifiers, formatSummaryText, notifyAll, summarizeBatch } from "@oracle/notify";
@@ -88,6 +89,54 @@ let env = loadEnv(ENV_PATH);
 
 const API = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
 
+// Node's global fetch (undici) pools TLS connections and ignores a `Connection:
+// close` request header (it's a forbidden header). On some networks a pooled
+// socket is silently RST between requests, so every reused call fails with
+// "fetch failed" — observed live as the bot's getUpdates poll dying on every
+// request after the first. Routing Telegram calls through node:https with a
+// keepAlive:false agent forces a genuinely fresh connection per request, which
+// is the one shape that works here.
+const NO_KEEPALIVE_AGENT = new https.Agent({ keepAlive: false });
+
+/** Telegram API call on a fresh (non-pooled) HTTPS connection. Returns parsed JSON. */
+function tgRequest(
+  url: string,
+  opts: { method?: string; body?: string; timeoutMs?: number } = {}
+): Promise<unknown> {
+  const { method = "GET", body, timeoutMs = 15_000 } = opts;
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      new URL(url),
+      {
+        method,
+        agent: NO_KEEPALIVE_AGENT,
+        timeout: timeoutMs,
+        headers: body
+          ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) }
+          : {},
+      },
+      (res) => {
+        let data = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => {
+          data += c;
+        });
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error(String(err)));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.on("timeout", () => req.destroy(new Error("request timeout")));
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
 // ── ACL ───────────────────────────────────────────────────────────────────────
 
 function getAdminId(): string {
@@ -120,11 +169,10 @@ async function sendTo(chatId: string, text: string): Promise<void> {
   const token = TOKEN();
   if (!token) return;
   try {
-    await fetch(API(token, "sendMessage"), {
+    await tgRequest(API(token, "sendMessage"), {
       method: "POST",
-      headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
-      signal: AbortSignal.timeout(10_000),
+      timeoutMs: 10_000,
     });
   } catch {
     /* best-effort */
@@ -992,24 +1040,28 @@ export async function runBot(): Promise<void> {
 
   for (;;) {
     try {
-      // Short long-poll (5s) rather than 50s: some networks/ISPs RST a TLS
-      // connection held open for tens of seconds (Telegram long-poll throttling)
-      // even though short request-response calls succeed — observed live as a
-      // continuous "fetch failed" on every idle 50s poll. A 5s hold keeps each
-      // request short-lived (beats the connection killer) while still delivering
-      // updates within ~5s.
-      const url = `${API(token, "getUpdates")}?timeout=5&offset=${offset}`;
-      const resp = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-      const data = (await resp.json()) as { ok: boolean; result?: TgUpdate[] };
+      // Pure short-polling (timeout=0 → Telegram returns immediately) over
+      // tgRequest, which uses a fresh non-pooled HTTPS connection per call. On
+      // this network a held long-poll AND a reused keep-alive socket both get
+      // silently RST — observed live as the first poll after start succeeding
+      // while every reused poll failed with "fetch failed". An instant return
+      // on a fresh connection is the one shape that works here; the 2s pace
+      // below keeps update latency low without hammering the API.
+      const url = `${API(token, "getUpdates")}?timeout=0&offset=${offset}`;
+      const data = (await tgRequest(url, { timeoutMs: 15_000 })) as {
+        ok: boolean;
+        result?: TgUpdate[];
+      };
       writeBotHeartbeat(); // reached and parsed a response from Telegram — the loop is alive
-      if (!data.ok || !data.result) continue;
-
-      for (const upd of data.result) {
-        offset = upd.update_id + 1;
-        const msg = upd.message;
-        if (!msg?.text) continue;
-        await handleMessage(String(msg.chat.id), msg.text);
+      if (data.ok && data.result) {
+        for (const upd of data.result) {
+          offset = upd.update_id + 1;
+          const msg = upd.message;
+          if (!msg?.text) continue;
+          await handleMessage(String(msg.chat.id), msg.text);
+        }
       }
+      await new Promise((r) => setTimeout(r, 2_000));
     } catch (err) {
       console.warn(
         `[oracle-bot] poll error (retrying): ${err instanceof Error ? err.message : String(err)}`
