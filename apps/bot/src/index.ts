@@ -461,7 +461,7 @@ async function handleRun(chatId: string): Promise<void> {
     const newsStorage = config.enableNewsIntel ? storage : undefined;
     const { jobs } = await fetchTodaysFixtures(
       config.oddsApiKey,
-      true,
+      config.enableWebSearchOddsFallback,
       config.geminiApiKey,
       config.footballDataApiKey,
       newsKey,
@@ -471,7 +471,9 @@ async function handleRun(chatId: string): Promise<void> {
       config.oddsPapiKey,
       config.sportsGameOddsKey,
       config.maxFixturesPerRun,
-      newsStorage
+      newsStorage,
+      config.webOddsMinConsensus,
+      config.webOddsVarianceThreshold
     );
 
     if (!jobs.length) {

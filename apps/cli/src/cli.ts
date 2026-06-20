@@ -148,7 +148,7 @@ export async function dispatch(argv: string[]): Promise<DispatchResult> {
       try {
         const { jobs, source } = await fetchTodaysFixtures(
           config.oddsApiKey,
-          true,
+          config.enableWebSearchOddsFallback,
           undefined,
           undefined,
           undefined,
@@ -157,7 +157,10 @@ export async function dispatch(argv: string[]): Promise<DispatchResult> {
           undefined,
           undefined,
           undefined,
-          config.maxFixturesPerRun
+          config.maxFixturesPerRun,
+          undefined,
+          config.webOddsMinConsensus,
+          config.webOddsVarianceThreshold
         );
         if (!jobs.length)
           return { code: 1, output: "No fixtures available (Odds API empty and no cache)." };

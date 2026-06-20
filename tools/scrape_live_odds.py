@@ -552,6 +552,14 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print without writing")
     parser.add_argument("--quiet", action="store_true", help="Suppress output")
     parser.add_argument("--no-playwright", action="store_true", help="Skip Playwright scrapers")
+    parser.add_argument(
+        "--min-consensus", type=int, default=DEFAULT_MIN_CONSENSUS,
+        help=f"Minimum agreeing sources for consensus odds (default {DEFAULT_MIN_CONSENSUS})"
+    )
+    parser.add_argument(
+        "--variance-threshold", type=float, default=DEFAULT_VARIANCE_THRESHOLD,
+        help=f"Max allowed variance between sources, e.g. 0.025=2.5%% (default {DEFAULT_VARIANCE_THRESHOLD})"
+    )
     args = parser.parse_args()
 
     if args.match:
@@ -564,6 +572,8 @@ def main():
         home, away, league = parts[0], parts[1], "_".join(parts[2:])
         consensus = scrape_consensus_odds(
             home, away, league,
+            min_consensus=args.min_consensus,
+            variance_threshold=args.variance_threshold,
             quiet=args.quiet,
             use_playwright=not args.no_playwright
         )
@@ -593,6 +603,8 @@ def main():
             home, away, league, kickoff = match.groups()
             consensus = scrape_consensus_odds(
                 home, away, league,
+                min_consensus=args.min_consensus,
+                variance_threshold=args.variance_threshold,
                 quiet=args.quiet,
                 use_playwright=not args.no_playwright
             )

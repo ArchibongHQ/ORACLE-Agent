@@ -24,6 +24,10 @@ export interface BatchSummary {
   bookingLoadUrl?: string;
   bookingUnmatched?: ActionablePick[];
   bookingError?: string;
+  /** Standalone operational alert (e.g. "worker daemon silent for 40h") — rendered
+   *  as a leading banner line ahead of the usual pick summary when present. Used for
+   *  out-of-band warnings that aren't tied to a specific batch run. */
+  alertText?: string;
 }
 
 /** A delivery channel. Implementations are constructed only when their env is configured. */
@@ -63,9 +67,10 @@ export function summarizeBatch(batch: BatchResult, reportUrl?: string): BatchSum
 
 /** Plain-text / Markdown rendering for chat channels (Telegram, Slack). */
 export function formatSummaryText(s: BatchSummary): string {
-  const lines = [
-    `*ORACLE ${s.date}* — ${s.analysed} analysed, ${s.actionableCount} actionable, ${s.errors} errors`,
-  ];
+  const lines = s.alertText ? [`⚠️ *ORACLE alert* — ${s.alertText}`] : [];
+  lines.push(
+    `*ORACLE ${s.date}* — ${s.analysed} analysed, ${s.actionableCount} actionable, ${s.errors} errors`
+  );
   if (s.actionable.length === 0) {
     lines.push("_No actionable picks today._");
   } else {
@@ -103,7 +108,8 @@ export function formatSummaryHtml(s: BatchSummary): string {
         )
         .join("")
     : '<tr><td colspan="5">No actionable picks today.</td></tr>';
-  return `<h2>ORACLE ${s.date}</h2>
+  return `${s.alertText ? `<p><strong>⚠️ ORACLE alert — ${s.alertText}</strong></p>` : ""}
+<h2>ORACLE ${s.date}</h2>
 <p>${s.analysed} analysed · ${s.actionableCount} actionable · ${s.errors} errors</p>
 <table border="1" cellpadding="6" cellspacing="0">
 <tr><th>Fixture</th><th>Market</th><th>Odds</th><th>Stake</th><th>Conf</th></tr>

@@ -93,6 +93,53 @@ function writeHeartbeat(event: string, detail: Record<string, unknown> = {}): vo
   }
 }
 
+// Staleness alert: catches two distinct failure modes —
+// (a) called once at startup, it flags "the daemon itself was dead" (the previous
+//     process's lastBatch is already stale by the time a fresh process starts — this
+//     is exactly what happened 2026-06-18→06-20, caught only by manual inspection);
+// (b) called hourly while running, it flags "the daemon is alive but lastBatch hasn't
+//     advanced" (a job silently hanging/erroring without tripping logJob's catch).
+// It cannot detect "the daemon process itself has since died" from inside that same
+// process — that requires an external watchdog (e.g. a Windows Service supervisor),
+// which is a separate, larger change.
+const HEARTBEAT_STALE_MS = 36 * 60 * 60 * 1000; // 36h — daily batch + some slack
+let lastStaleAlertSentAt = 0;
+const STALE_ALERT_REPEAT_MS = 12 * 60 * 60 * 1000; // don't re-alert more than every 12h
+
+async function checkHeartbeatFreshness(): Promise<void> {
+  let lastBatchAt: string | undefined;
+  try {
+    const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
+      string,
+      { at?: string } | undefined
+    >;
+    lastBatchAt = current.lastBatch?.at;
+  } catch {
+    return; // no heartbeat file yet — nothing to compare against
+  }
+  if (!lastBatchAt) return;
+
+  const ageMs = Date.now() - new Date(lastBatchAt).getTime();
+  if (ageMs < HEARTBEAT_STALE_MS) return;
+  if (Date.now() - lastStaleAlertSentAt < STALE_ALERT_REPEAT_MS) return;
+  lastStaleAlertSentAt = Date.now();
+
+  const ageHours = (ageMs / 3_600_000).toFixed(1);
+  process.stderr.write(`[worker] STALE — lastBatch was ${ageHours}h ago (${lastBatchAt})\n`);
+
+  const notifiers = buildNotifiers(env);
+  if (!notifiers.length) return;
+  const alertSummary: BatchSummary = {
+    date: new Date().toISOString().slice(0, 10),
+    analysed: 0,
+    actionableCount: 0,
+    errors: 0,
+    actionable: [],
+    alertText: `daily batch hasn't run in ${ageHours}h (last: ${lastBatchAt}) — worker may be down`,
+  };
+  await notifyAll(notifiers, alertSummary);
+}
+
 function logJob(name: string, fn: () => Promise<unknown>): void {
   const started = Date.now();
   process.stdout.write(`[worker] ${new Date().toISOString()} ${name}: start\n`);
@@ -265,7 +312,7 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
   const newsStorage = config.enableNewsIntel ? storage : undefined;
   const { jobs, source: _source } = await fetchTodaysFixtures(
     config.oddsApiKey,
-    true,
+    config.enableWebSearchOddsFallback,
     config.geminiApiKey,
     config.footballDataApiKey,
     newsKey,
@@ -275,7 +322,9 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     config.oddsPapiKey,
     config.sportsGameOddsKey,
     config.maxFixturesPerRun,
-    newsStorage
+    newsStorage,
+    config.webOddsMinConsensus,
+    config.webOddsVarianceThreshold
   );
 
   if (!jobs.length) {
@@ -363,7 +412,7 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
   const newsStorage = config.enableNewsIntel ? storage : undefined;
   const { jobs } = await fetchTodaysFixtures(
     config.oddsApiKey,
-    true,
+    config.enableWebSearchOddsFallback,
     config.geminiApiKey,
     config.footballDataApiKey,
     newsKey,
@@ -373,7 +422,9 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     config.oddsPapiKey,
     config.sportsGameOddsKey,
     config.maxFixturesPerRun,
-    newsStorage
+    newsStorage,
+    config.webOddsMinConsensus,
+    config.webOddsVarianceThreshold
   );
 
   if (!jobs.length) {
@@ -512,6 +563,12 @@ async function sendDailyPuntPrompt(retry: boolean): Promise<void> {
 // Cron daemon — skipped entirely in one-shot CLI mode (see IS_ONE_SHOT above) so a
 // single --run-* invocation exits cleanly instead of being held open by these timers.
 if (!IS_ONE_SHOT) {
+  // Catches "the daemon itself was dead" — the previous process's lastBatch is
+  // already stale by the time this fresh process starts (see checkHeartbeatFreshness
+  // comment above for the two failure modes this can and can't detect).
+  void checkHeartbeatFreshness();
+  cron.schedule("0 * * * *", () => void checkHeartbeatFreshness());
+
   // Fixture scrape — standalone runs (12am, 6am, 11:45am)
   cron.schedule("0 0 * * *", () => logJob("scrape-fixtures@00:00", scrapeFixtures));
   cron.schedule("0 6 * * *", () => logJob("scrape-fixtures@06:00", scrapeFixtures));

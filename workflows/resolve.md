@@ -88,14 +88,25 @@ would be real, untested net-new work versus reusing an already-keyed, already-ve
 ## Structured Free-API Odds Fallback (v2026.10+)
 
 Before any web-search synthesis, the gap-fill tries the structured provider chain in
-`packages/runtime/src/oddsProviders.ts` (tier order, stop at first sharp price):
+`packages/runtime/src/oddsProviders.ts` (`buildOddsProviders()`, tier order via stable
+sort, stop at first sharp price). Audited against current code 2026-06-20 — the table
+below was previously missing two real providers (`oddspapi`, `sportybet-sidecar`):
 
 | Tier | Provider | Env key | Free quota | Sharp? |
 | --- | --- | --- | --- | --- |
 | 2 | SharpAPI.io | `SHARPAPI_IO_KEY` | trial tier (api.sharpapi.io) | yes (Pinnacle/SBOBet/BetOnline) |
 | 3 | API-Football | `API_FOOTBALL_KEY` | permanent free | no (net consensus) |
 | 4 | Odds-API.io | `ODDS_API_IO_KEY` | 100 req/hr | yes when Pinnacle/SingBet present |
+| 4 | OddsPapi | `ODDSPAPI_KEY` | tournament-scoped, see provider | yes (Pinnacle) |
 | 5 | SportsGameOdds | `SPORTS_GAMEODDS_KEY` | 1,000 objects/mo | yes (Pinnacle), American-format odds |
+| 6 | SportyBet sidecar | none (file read) | unlimited — zero-network | no (retail, wider overround tolerance) |
+
+Tier 4 has two providers (`Odds-API.io`, `OddsPapi`) — both run before tier 5 is tried;
+ties are broken by array order in `buildOddsProviders()` (`Odds-API.io` before
+`OddsPapi`), since `Array.sort` is stable. Tier 6 (`sportybet-sidecar`) always has
+quota (`hasQuota: () => true` — pure file read of `.tmp/fixtures/sportybet_today.json`,
+no API key) and acts as the free floor before falling through to the Gemini/web-search
+path below; its result is tagged "degraded" by the engine given retail-book overround.
 
 Quota notes learned at integration (2026-06-10):
 
@@ -108,30 +119,38 @@ Quota notes learned at integration (2026-06-10):
 
 ## Web Search Fallback (v2026.9+)
 
-When the Odds API fails with quota exhaustion (429) during batch fixture fetch:
+When the structured provider chain (above) finds nothing for a fixture, the last
+resort is `fetchWebSearchOdds()` in `packages/runtime/src/fixtures.ts`, which spawns
+`tools/scrape_live_odds.py --fixtures <fixture_cache>`:
 
-1. **Primary source**: Odds API (as above) → live odds from Pinnacle, BetFair, etc.
-2. **Fallback trigger**: Odds API returns 429 or timeout after all sport keys attempted; structured provider chain (above) also empty
-3. **Web search synthesis**: Invoke `tools/scrape_live_odds.py --fixtures <fixture_cache>` to scrape live odds from:
+1. **Trigger**: fixture has no price after both the sidecar/priced check and the
+   structured-provider + Gemini gap-fill (`stillUnpriced` in `fetchTodaysFixtures()`)
+2. **Web search synthesis**: scrapes live odds from:
    - Flashscore, BetExplorer, SofaScore (Playwright-based dynamic sites)
    - Betfair public API (no auth required)
-   - Requires ≥3 sources agree within ±2% variance for consensus acceptance
-4. **Quality tagging**: Synthetic odds tagged with `odds_source: 'web_search_consensus'` and `odds_quality: 'degraded'`
-5. **Confidence scoring**: Each fixture gets `consensus_confidence: 0.0–1.0` based on source count and variance
+   - Requires ≥`min_consensus` sources to agree within `variance_threshold` for
+     consensus acceptance (defaults: 3 sources, ±2.5% — see config flags below)
+3. **Confidence scoring**: each fixture gets a `confidence: 0.0–1.0` value based on
+   source count and variance (`compute_consensus()` in `scrape_live_odds.py`)
 
-### Config flags
-- `ENABLE_WEB_SEARCH_FALLBACK=true` (default) — attempt web scraping when Odds API fails
-- `WEB_ODDS_MIN_CONSENSUS=3` (default) — minimum sources for consensus odds
-- `WEB_ODDS_VARIANCE_THRESHOLD=0.025` (default, ±2.5%) — maximum allowed variance between sources
+### Config flags (audited against code 2026-06-20 — these are genuinely wired)
+- `ENABLE_WEB_SEARCH_FALLBACK=true` (default) — gates the whole fallback; threaded
+  through `config.enableWebSearchOddsFallback` → all 4 `fetchTodaysFixtures()` call
+  sites (`apps/worker`, `apps/bot`, `apps/cli`) → the `enableWebSearchFallback` param
+- `WEB_ODDS_MIN_CONSENSUS=3` (default) — passed as `--min-consensus` to
+  `scrape_live_odds.py`
+- `WEB_ODDS_VARIANCE_THRESHOLD=0.025` (default, ±2.5%) — passed as
+  `--variance-threshold` to `scrape_live_odds.py`
 
-### Resolution audit trail
-- `ResolutionRecord` includes `odds_source` and `odds_quality` for transparency
-- Picks made on synthetic odds are logged as `quality: 'degraded'` in FrozenOddsRegistry
-- Post-resolution analysis can filter by quality tier (live vs. degraded)
+(Prior to 2026-06-20 these three flags were read into `config` but never actually
+reached the code that would use them — all 4 call sites hardcoded `true` for the
+fallback toggle regardless of `.env`, and the consensus/variance flags were never
+passed to the Python script at all, which silently used its own internal defaults.
+Fixed this session; see commit history for `fixtures.ts`/`apps/*/src/index.ts` /
+`cli.ts` around this date if this section needs re-verifying later.)
 
 ## Acceptance criteria
 - Every analysis record from yesterday has either a matching resolution record or a logged skip reason
 - RPS values are in [0, 1]; CLV is tagged with source quality
 - Running twice on the same date produces the same resolution records (idempotent)
-- Web search fallback produces ≥80% consensus success rate for matches with fixture data
 

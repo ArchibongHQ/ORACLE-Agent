@@ -772,9 +772,11 @@ interface WebSearchOdds {
 
 async function fetchWebSearchOdds(
   jobs: FixtureJob[],
-  enableWebSearch: boolean
+  minConsensus?: number,
+  varianceThreshold?: number
 ): Promise<FixtureJob[]> {
-  if (!enableWebSearch || jobs.length === 0) return jobs;
+  // Caller already gates on config.enableWebSearchOddsFallback before reaching here.
+  if (jobs.length === 0) return jobs;
 
   try {
     const { spawnSync } = await import("node:child_process");
@@ -786,14 +788,13 @@ async function fetchWebSearchOdds(
     await writeFile(tmpPath, fixtureContent, "utf8");
 
     // Spawn Python scraper
-    const result = spawnSync(
-      "python",
-      [join(ROOT, "tools/scrape_live_odds.py"), "--fixtures", tmpPath, "--quiet"],
-      {
-        encoding: "utf8",
-        timeout: 120_000, // 2 min per fixture
-      }
-    );
+    const cliArgs = [join(ROOT, "tools/scrape_live_odds.py"), "--fixtures", tmpPath, "--quiet"];
+    if (minConsensus != null) cliArgs.push("--min-consensus", String(minConsensus));
+    if (varianceThreshold != null) cliArgs.push("--variance-threshold", String(varianceThreshold));
+    const result = spawnSync("python", cliArgs, {
+      encoding: "utf8",
+      timeout: 120_000, // 2 min per fixture
+    });
 
     if (result.error) {
       return jobs;
@@ -867,7 +868,9 @@ export async function fetchTodaysFixtures(
   oddsPapiKey?: string,
   sportsGameOddsKey?: string,
   maxFixturesPerRun: number = DEFAULT_MAX_FIXTURES_PER_RUN,
-  storage?: StoragePort
+  storage?: StoragePort,
+  webOddsMinConsensus?: number,
+  webOddsVarianceThreshold?: number
 ): Promise<FetchResult> {
   // Structured free-API odds providers (SharpAPI.io → API-Football → Odds-API.io
   // → OddsPapi → SportsGameOdds). Built once; the gap-fill tries this chain
@@ -1009,7 +1012,9 @@ export async function fetchTodaysFixtures(
     const stillUnpriced = unpriced.filter((j) => !gapKeys.has(`${j.home}|${j.away}|${j.kickoff}`));
     const webFilled =
       enableWebSearchFallback && stillUnpriced.length > 0
-        ? (await fetchWebSearchOdds(stillUnpriced, true)).filter(hasOdds)
+        ? (
+            await fetchWebSearchOdds(stillUnpriced, webOddsMinConsensus, webOddsVarianceThreshold)
+          ).filter(hasOdds)
         : [];
 
     const allPriced = [...priced, ...gapFilled, ...webFilled];

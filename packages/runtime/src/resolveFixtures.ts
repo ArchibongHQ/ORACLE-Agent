@@ -17,21 +17,6 @@ const BASE_URL = "https://api.football-data.org/v4";
 const APIFOOTBALL_BASE = "https://v3.football.api-sports.io";
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 
-// ── football-data.org competition IDs (free tier) ─────────────────────────────
-
-const _LEAGUE_TO_COMPETITION: Record<string, string> = {
-  "Premier League": "PL",
-  "La Liga": "PD",
-  Bundesliga: "BL1",
-  "Serie A": "SA",
-  "Ligue 1": "FL1",
-  "Champions League": "CL",
-  "Europa League": "EL",
-  "Primeira Liga": "PPL",
-  Championship: "ELC",
-  Eredivisie: "DED",
-};
-
 // Odds API sport keys for CLV-eligible leagues
 const LEAGUE_TO_SPORT: Record<string, string> = {
   "Premier League": "soccer_epl",
