@@ -1,10 +1,20 @@
-/** Result lookup via football-data.org — Phase 4.
+/** Result lookup — Phase 4.
  *  Takes yesterday's analysis records, fetches actual match scores,
- *  returns ResolutionRecord[] with RPS, draw-calibration, and CLV. */
+ *  returns ResolutionRecord[] with RPS, draw-calibration, and CLV.
+ *
+ *  Two result sources, tried in order:
+ *  1. API-Football (`/fixtures?date=&status=FT`) — one request covers every league
+ *     globally (confirmed live: 94 finished matches across 38 leagues in one call),
+ *     but the free tier only accepts dates in a rolling window near "today".
+ *  2. football-data.org — only ~10 major leagues + World Cup, but accepts any date.
+ *  Falls back to (2) when (1) is unavailable (no key, error, or date outside its
+ *  free-tier window) so older dates and major-league-only setups still resolve. */
 import type { AnalysisRecord, ClvSourceQuality, ResolutionRecord } from "@oracle/engine";
 import { RESOLUTION_SCHEMA_VERSION } from "@oracle/engine";
+import { namesMatch } from "./teamNames.js";
 
 const BASE_URL = "https://api.football-data.org/v4";
+const APIFOOTBALL_BASE = "https://v3.football.api-sports.io";
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 
 // ── football-data.org competition IDs (free tier) ─────────────────────────────
@@ -75,25 +85,8 @@ interface OddsH2HGame {
   }>;
 }
 
-// ── Team name normalisation ───────────────────────────────────────────────────
-
-function normalizeTeam(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(
-      /\s+(fc|afc|sc|cf|ac|as|ss|ssc|calcio|futbol club|football club|united|city|athletic|athletico|atlético)\s*$/gi,
-      ""
-    )
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function teamsMatch(a: string, b: string): boolean {
-  const na = normalizeTeam(a),
-    nb = normalizeTeam(b);
-  return na === nb || na.startsWith(nb) || nb.startsWith(na) || na.includes(nb) || nb.includes(na);
-}
+// Team-name matching (namesMatch) is imported from teamNames.ts — the single,
+// shared, alias-aware matcher also used by oddsProviders.ts. Do not reimplement here.
 
 // ── RPS ───────────────────────────────────────────────────────────────────────
 
@@ -141,6 +134,52 @@ async function fetchFinishedMatches(apiKey: string, date: string): Promise<FDMat
   return body.matches ?? [];
 }
 
+// ── API-Football fetch (primary — broad league coverage, narrow date window) ──
+
+interface AFFixture {
+  fixture: { date: string; status: { short: string } };
+  teams: { home: { name: string }; away: { name: string } };
+  goals: { home: number | null; away: number | null };
+}
+
+interface AFFixturesResponse {
+  response?: AFFixture[];
+  errors?: Record<string, string> | string[];
+}
+
+/** Returns null when the source is unusable for this date (error, no key, or the
+ *  free-tier date window rejected the request) so the caller can fall back. */
+async function fetchFinishedMatchesApiFootball(
+  apiKey: string,
+  date: string
+): Promise<AFFixture[] | null> {
+  const res = await fetch(`${APIFOOTBALL_BASE}/fixtures?date=${date}&status=FT`, {
+    headers: { "x-apisports-key": apiKey },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) return null;
+
+  const body = (await res.json()) as AFFixturesResponse;
+  // Free-plan date-window rejection comes back as HTTP 200 with a populated `errors`
+  // object (e.g. "Free plans do not have access to this date") rather than a non-2xx
+  // status — must check this explicitly, not just res.ok.
+  if (body.errors && Object.keys(body.errors).length) return null;
+  return body.response ?? [];
+}
+
+/** Adapts an API-Football fixture into the internal FDMatch shape so findMatch()/
+ *  resolveRecord() can stay source-agnostic. */
+function afToFdShape(f: AFFixture): FDMatch {
+  return {
+    id: 0,
+    utcDate: f.fixture.date,
+    status: f.fixture.status.short,
+    homeTeam: { name: f.teams.home.name },
+    awayTeam: { name: f.teams.away.name },
+    score: { fullTime: { home: f.goals.home, away: f.goals.away } },
+  };
+}
+
 // ── Closing odds fetch (Odds API v4, kickoff-proxy CLV) ───────────────────────
 
 async function fetchClosingOdds(
@@ -170,7 +209,7 @@ async function fetchClosingOdds(
     if (!res.ok) return null;
 
     const games = (await res.json()) as OddsH2HGame[];
-    const game = games.find((g) => teamsMatch(g.home_team, home) && teamsMatch(g.away_team, away));
+    const game = games.find((g) => namesMatch(g.home_team, home) && namesMatch(g.away_team, away));
     if (!game) return null;
 
     const bk = game.bookmakers.find((b) => b.key === "pinnacle") ?? game.bookmakers[0];
@@ -179,8 +218,8 @@ async function fetchClosingOdds(
     const h2h = bk.markets.find((m) => m.key === "h2h");
     if (!h2h) return null;
 
-    const homeOut = h2h.outcomes.find((o) => teamsMatch(o.name, home));
-    const awayOut = h2h.outcomes.find((o) => teamsMatch(o.name, away));
+    const homeOut = h2h.outcomes.find((o) => namesMatch(o.name, home));
+    const awayOut = h2h.outcomes.find((o) => namesMatch(o.name, away));
     const drawOut = h2h.outcomes.find((o) => o.name === "Draw");
     if (!homeOut || !awayOut || !drawOut) return null;
 
@@ -237,8 +276,8 @@ function findMatch(record: AnalysisRecord, matches: FDMatch[]): FDMatch | null {
     matches.find(
       (m) =>
         m.utcDate.startsWith(kickoffDate) &&
-        teamsMatch(record.home, m.homeTeam.name) &&
-        teamsMatch(record.away, m.awayTeam.name)
+        namesMatch(record.home, m.homeTeam.name) &&
+        namesMatch(record.away, m.awayTeam.name)
     ) ?? null
   );
 }
@@ -307,20 +346,33 @@ export interface ResolveResult {
 
 export async function resolveRecords(
   records: AnalysisRecord[],
-  footballDataApiKey: string,
-  oddsApiKey?: string
+  footballDataApiKey?: string,
+  oddsApiKey?: string,
+  apiFootballKey?: string
 ): Promise<ResolveResult> {
   if (!records.length) return { resolved: [], unmatched: [] };
 
   const runId = `resolve_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   // All records should be from the same date; use kickoff of first record
   const date = records[0]?.kickoff.slice(0, 10);
-  let matches: FDMatch[];
+  let matches: FDMatch[] = [];
 
-  try {
-    matches = await fetchFinishedMatches(footballDataApiKey, date);
-  } catch (_err) {
-    return { resolved: [], unmatched: records.map((r) => r.fixtureId) };
+  // Primary: API-Football — one request covers every league globally, but the free
+  // tier only accepts dates in a rolling window near "today" (returns null outside it).
+  if (apiFootballKey) {
+    const af = await fetchFinishedMatchesApiFootball(apiFootballKey, date);
+    if (af) matches = af.map(afToFdShape);
+  }
+
+  // Fallback: football-data.org — only ~10 major leagues + World Cup, but accepts
+  // any date. Used when API-Football found nothing (no key, error, or date outside
+  // its window) and a football-data.org key is available.
+  if (!matches.length && footballDataApiKey) {
+    try {
+      matches = await fetchFinishedMatches(footballDataApiKey, date);
+    } catch (_err) {
+      // both sources exhausted — fall through; every record reports unmatched below
+    }
   }
 
   const resolved: ResolutionRecord[] = [];

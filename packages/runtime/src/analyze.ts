@@ -300,13 +300,20 @@ export interface ResolveDayResult extends ResolveResult {
 
 /** Resolve all analysis records whose kickoff falls on `date` (YYYY-MM-DD).
  *  Reads records from storage, fetches results, writes ResolutionRecord[] back.
+ *  Tries API-Football first (broad league coverage, narrow date window), falls back
+ *  to football-data.org (narrow league coverage, any date) — see resolveFixtures.ts.
  *  When geminiApiKey is provided, runs B5 postmortem synthesis on losses (batched). */
 export async function resolveDay(
   storage: StoragePort,
-  keys: { footballDataApiKey?: string; oddsApiKey?: string; geminiApiKey?: string },
+  keys: {
+    footballDataApiKey?: string;
+    oddsApiKey?: string;
+    geminiApiKey?: string;
+    apiFootballKey?: string;
+  },
   date: string
 ): Promise<ResolveDayResult> {
-  if (!keys.footballDataApiKey) {
+  if (!keys.footballDataApiKey && !keys.apiFootballKey) {
     return { date, candidates: 0, resolved: [], unmatched: [] };
   }
 
@@ -320,7 +327,8 @@ export async function resolveDay(
   const { resolved, unmatched } = await resolveRecords(
     dayRecords,
     keys.footballDataApiKey,
-    keys.oddsApiKey
+    keys.oddsApiKey,
+    keys.apiFootballKey
   );
   if (resolved.length) {
     await storage.bulkWrite(STORAGE_KEYS.resolutionRecords, resolved);

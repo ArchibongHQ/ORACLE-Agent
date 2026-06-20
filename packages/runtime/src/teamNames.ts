@@ -5,10 +5,15 @@
  *  oddsProviders.ts import from here — do not reimplement matching elsewhere.
  */
 
-/** Normalise a team name for fuzzy matching: lowercase, strip common suffixes & punctuation. */
+/** Normalise a team name for fuzzy matching: lowercase, strip common suffixes & punctuation.
+ *  Diacritics are folded (é→e, ô→o, ü→u, …) before punctuation is stripped — otherwise
+ *  e.g. "Côte d'Ivoire" loses the "ô" entirely instead of folding to "o" and silently
+ *  fails to match both the plain-ASCII spelling and the alias table below. */
 export function normTeam(name: string): string {
   return (
     name
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "") // strip combining diacritical marks
       .toLowerCase()
       // Strip SportyBet SRL simulation-league suffix ("Sweden SRL" → "Sweden")
       .replace(/\s+srl\b/g, "")
@@ -19,16 +24,16 @@ export function normTeam(name: string): string {
   );
 }
 
-// Common international team name aliases (SportyBet / Wikipedia → Odds API / FIFA)
+// Common international team name aliases (SportyBet / Wikipedia → Odds API / FIFA).
+// Keys are normTeam() output (post diacritic-fold), so write them in plain ASCII —
+// an accented key here would never match since normTeam() always folds first.
 export const TEAM_ALIASES: Record<string, string> = {
   "ir iran": "iran",
   "ivory coast": "cote divoire",
   "cote d ivoire": "cote divoire",
-  "côte d'ivoire": "cote divoire",
   "korea republic": "south korea",
   "republic of korea": "south korea",
   turkiye: "turkey",
-  türkiye: "turkey",
   "czech republic": "czechia",
   "bosnia herzegovina": "bosnia and herzegovina",
   "bosnia-herzegovina": "bosnia and herzegovina",

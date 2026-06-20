@@ -468,8 +468,10 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
 // ── Resolve yesterday (14:00) ────────────────────────────────────────────────
 
 async function resolveYesterdayFixtures(): Promise<void> {
-  if (!config.footballDataApiKey) {
-    process.stderr.write("[resolve] skipped — FOOTBALL_DATA_API_KEY not set\n");
+  if (!config.footballDataApiKey && !config.apiFootballKey) {
+    process.stderr.write(
+      "[resolve] skipped — neither FOOTBALL_DATA_API_KEY nor API_FOOTBALL_KEY set\n"
+    );
     return;
   }
   const storage = new MemoryAdapter(STORE_PATH);
@@ -481,6 +483,7 @@ async function resolveYesterdayFixtures(): Promise<void> {
       footballDataApiKey: config.footballDataApiKey,
       oddsApiKey: config.oddsApiKey,
       geminiApiKey: config.geminiApiKey,
+      apiFootballKey: config.apiFootballKey,
     },
     yesterday
   );

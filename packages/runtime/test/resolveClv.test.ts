@@ -248,3 +248,176 @@ describe("resolveRecords CLV integration", () => {
     expect(resolved[0]?.realisedCLV).toBeNull();
   });
 });
+
+// ── API-Football primary source + football-data.org fallback ────────────────
+
+function baseRecord(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    fixtureId: "af-test",
+    home: "Mbeya City",
+    away: "Simba SC",
+    league: "Botola Pro",
+    kickoff: "2026-06-19T13:00:00Z",
+    lambdaH: 1.2,
+    lambdaA: 1.1,
+    probabilities: { home: 0.4, draw: 0.3, away: 0.3 },
+    regime: "STANDARD",
+    rankingMode: "CONFIDENCE_WEIGHTED" as const,
+    evMarkets: [],
+    llmPick: null,
+    deterministicTopPick: null,
+    frozenOddsAtAnalysis: null,
+    liquidityTag: "CALIBRATION_ONLY" as const,
+    analysedAt: "2026-06-19T09:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("resolveRecords API-Football primary source", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("resolves via API-Football without calling football-data.org", async () => {
+    const fdSpy = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("football-data.org")) {
+        fdSpy();
+        return new Response(JSON.stringify({ matches: [] }), { status: 200 });
+      }
+      if (url.includes("api-sports.io")) {
+        return new Response(
+          JSON.stringify({
+            response: [
+              {
+                fixture: { date: "2026-06-19T13:00:00+00:00", status: { short: "FT" } },
+                teams: { home: { name: "Mbeya City" }, away: { name: "Simba SC" } },
+                goals: { home: 1, away: 2 },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const { resolved, unmatched } = await resolveRecords(
+      [baseRecord()],
+      "fd-key",
+      undefined,
+      "af-key"
+    );
+    expect(unmatched).toEqual([]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]!.actualResult).toBe("away");
+    expect(resolved[0]!.homeGoals).toBe(1);
+    expect(resolved[0]!.awayGoals).toBe(2);
+    expect(fdSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to football-data.org when API-Football rejects the date (free-plan window)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("api-sports.io")) {
+        // Free-plan date-window rejection: HTTP 200 with a populated `errors` object.
+        return new Response(
+          JSON.stringify({
+            errors: { plan: "Free plans do not have access to this date" },
+            response: [],
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.includes("football-data.org")) {
+        return new Response(
+          JSON.stringify({
+            matches: [
+              {
+                id: 9,
+                utcDate: "2026-06-19T13:00:00Z",
+                status: "FINISHED",
+                homeTeam: { name: "Mbeya City" },
+                awayTeam: { name: "Simba SC" },
+                score: { fullTime: { home: 0, away: 0 } },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const { resolved, unmatched } = await resolveRecords(
+      [baseRecord()],
+      "fd-key",
+      undefined,
+      "af-key"
+    );
+    expect(unmatched).toEqual([]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]!.actualResult).toBe("draw");
+  });
+
+  it("resolves with apiFootballKey alone (no footballDataApiKey)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("api-sports.io")) {
+        return new Response(
+          JSON.stringify({
+            response: [
+              {
+                fixture: { date: "2026-06-19T13:00:00+00:00", status: { short: "FT" } },
+                teams: { home: { name: "Mbeya City" }, away: { name: "Simba SC" } },
+                goals: { home: 3, away: 0 },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const { resolved } = await resolveRecords([baseRecord()], undefined, undefined, "af-key");
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]!.actualResult).toBe("home");
+  });
+
+  it("matches a World-Cup fixture by international-team alias (Ivory Coast vs Côte d'Ivoire)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("api-sports.io")) {
+        return new Response(
+          JSON.stringify({
+            response: [
+              {
+                fixture: { date: "2026-06-19T17:00:00+00:00", status: { short: "FT" } },
+                // API-Football's canonical spelling differs from ORACLE's analysis-record spelling.
+                teams: { home: { name: "Côte d'Ivoire" }, away: { name: "Iran" } },
+                goals: { home: 2, away: 1 },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseRecord({
+      home: "Ivory Coast",
+      away: "IR Iran",
+      league: "FIFA World Cup",
+      kickoff: "2026-06-19T17:00:00Z",
+    });
+    const { resolved, unmatched } = await resolveRecords([record], undefined, undefined, "af-key");
+    expect(unmatched).toEqual([]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]!.actualResult).toBe("home");
+  });
+});

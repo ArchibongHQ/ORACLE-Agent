@@ -10,19 +10,54 @@ Scheduled: `14:00 daily` (worker cron, `resolveYesterdayFixtures()`).
 Manual: `node apps/worker/dist/index.js --run-now` (triggers batch then resolution).
 
 ## Required inputs
-- `FOOTBALL_DATA_API_KEY` in `.env` — for fetching match results
+- `API_FOOTBALL_KEY` in `.env` — primary result source, broad league coverage (see below)
+- `FOOTBALL_DATA_API_KEY` in `.env` — fallback result source, narrow league coverage but any date
+- At least one of the two above must be set; both is recommended
 - `ODDS_API_KEY` in `.env` (optional) — for realised CLV computation; omit for calibration-only
 - Analysis records in GBrain ledger with `kickoff` dates matching the target date
 
 ## Steps
 
 1. **Load analysis records** for target date (`kickoff.startsWith(YYYY-MM-DD)`) from `STORAGE_KEYS.analysisRecords`
-2. **Fetch match results** from football-data.org `/matches?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD`
-3. **Match fixtures** by fuzzy home/away team name to the fetched results
+2. **Fetch match results** — tries two sources in order (see "Result Source: API-Football
+   primary, football-data.org fallback" below for why both exist):
+   - **Primary:** API-Football `/fixtures?date=YYYY-MM-DD&status=FT` — one request, all leagues
+   - **Fallback:** football-data.org `/matches?dateFrom=YYYY-MM-DD&dateTo=YYYY-MM-DD&status=FINISHED`
+     (date padded ±1 day — the free tier unreliably returns 0 results for a same-day window
+     even when matches exist on that exact date; `findMatch` still filters back to the
+     exact kickoff date) — used only when API-Football found nothing for the date
+3. **Match fixtures** by fuzzy home/away team name (`namesMatch()` in `teamNames.ts` — the
+   shared, alias-aware matcher also used by `oddsProviders.ts`; do not reimplement locally)
 4. **Compute RPS** for each resolved fixture using stored `probabilities` vs actual outcome
 5. **Fetch closing odds** from the Odds API (if key present) for CLV-eligible leagues; tag as `KICKOFF_PROXY` (§8.3)
 6. **Compute realised CLV**: `(modelOdds / closingOdds) - 1`; set `clvSourceQuality` accordingly
 7. **Write** `ResolutionRecord` to `STORAGE_KEYS.resolutionRecords` via `upsertBulk` on `fixtureId`
+
+## Result Source: API-Football primary, football-data.org fallback
+
+football-data.org's free tier only covers ~10 major leagues + the World Cup
+(`_LEAGUE_TO_COMPETITION`/`LEAGUE_TO_SPORT` in `resolveFixtures.ts`) — ORACLE's actual
+fixture slate is dominated by minor leagues (Botola Pro, Veikkausliiga, USL tiers,
+Faroese/Icelandic divisions, etc.) that it can never resolve. API-Football (already
+wired for odds as tier-3 in `oddsProviders.ts`, same `API_FOOTBALL_KEY`) covers far more
+ground for free: a single `/fixtures?date=&status=FT` call returns every finished match
+globally in one request (confirmed live: 94 matches across 38 leagues for one day).
+
+The catch: API-Football's free tier only accepts dates in a rolling window near "today"
+(confirmed live: querying a date 2 days in the past from "today" was rejected with
+`"Free plans do not have access to this date"` — returned as HTTP 200 with a populated
+`errors` object, not a non-2xx status, so this must be checked explicitly). It can't
+backfill arbitrary old dates the way football-data.org can. Hence: API-Football first
+(broad coverage, narrow window), football-data.org as fallback (narrow coverage, any
+date) — `resolveRecords()` in `resolveFixtures.ts` tries them in that order and only
+moves to the fallback when the primary returns nothing for the date.
+
+SportyBet (ORACLE's primary fixture/odds sidecar) was evaluated as a results source and
+rejected: its sidecar (`tools/scrape_fixtures.py`) only calls `pcUpcomingEvents` (excludes
+started/finished matches) and Sportradar `gismo` stats endpoints for form/standings/H2H —
+never a live-score or finished-match endpoint. The public SportyBet results page is a
+client-rendered SPA with no API capture on file. Building a results scraper from scratch
+would be real, untested net-new work versus reusing an already-keyed, already-verified API.
 
 ## Output
 ```json
