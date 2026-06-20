@@ -992,8 +992,14 @@ export async function runBot(): Promise<void> {
 
   for (;;) {
     try {
-      const url = `${API(token, "getUpdates")}?timeout=50&offset=${offset}`;
-      const resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      // Short long-poll (5s) rather than 50s: some networks/ISPs RST a TLS
+      // connection held open for tens of seconds (Telegram long-poll throttling)
+      // even though short request-response calls succeed — observed live as a
+      // continuous "fetch failed" on every idle 50s poll. A 5s hold keeps each
+      // request short-lived (beats the connection killer) while still delivering
+      // updates within ~5s.
+      const url = `${API(token, "getUpdates")}?timeout=5&offset=${offset}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(15_000) });
       const data = (await resp.json()) as { ok: boolean; result?: TgUpdate[] };
       writeBotHeartbeat(); // reached and parsed a response from Telegram — the loop is alive
       if (!data.ok || !data.result) continue;
