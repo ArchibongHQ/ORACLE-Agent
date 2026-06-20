@@ -1038,6 +1038,17 @@ export async function runBot(): Promise<void> {
   console.log("[oracle-bot] started — listening for commands.");
   let offset = 0;
 
+  // While a command is being processed the poll loop is blocked (single-threaded),
+  // so the per-poll heartbeat above goes stale and the worker's 10-min freshness
+  // check fires a false "bot offline" alert. Stamp the heartbeat on a timer while
+  // (and only while) a command is in flight — the bot is alive, just busy. When
+  // idle, this does nothing, so a genuine "can't reach Telegram" gap still shows.
+  let busyProcessing = false;
+  const busyHeartbeat = setInterval(() => {
+    if (busyProcessing) writeBotHeartbeat();
+  }, 60_000);
+  busyHeartbeat.unref?.();
+
   for (;;) {
     try {
       // Pure short-polling (timeout=0 → Telegram returns immediately) over
@@ -1058,7 +1069,12 @@ export async function runBot(): Promise<void> {
           offset = upd.update_id + 1;
           const msg = upd.message;
           if (!msg?.text) continue;
-          await handleMessage(String(msg.chat.id), msg.text);
+          busyProcessing = true;
+          try {
+            await handleMessage(String(msg.chat.id), msg.text);
+          } finally {
+            busyProcessing = false;
+          }
         }
       }
       await new Promise((r) => setTimeout(r, 2_000));
