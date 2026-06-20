@@ -244,14 +244,18 @@ export async function loadedSlipToJobs(
       }
     }
 
-    // Enrich each resolved job with H2H, news intelligence, and confirmed lineups —
-    // the same chain fetchTodaysFixtures runs for the daily batch.
+    // Enrich each resolved job with H2H, news intelligence, and confirmed lineups.
+    // NOTE: geminiApiKey is deliberately NOT passed to enrichWithNewsIntel here.
+    // The Gemini path triggers a per-leg Google AI-Mode Playwright scrape (~28s
+    // each, browsers pile up) which made /punt take 15-30 min on a multi-leg
+    // code. A punt is an odds-driven counter-booking sourced from the SportyBet
+    // sidecar — it doesn't need per-leg news scraping. Perplexity (a fast API,
+    // when its key is set) still enriches; absent that key, newsIntel no-ops.
     if (job) {
       try {
         [job] = await enrichWithH2H([job], deps.footballDataApiKey);
         [job] = await enrichWithNewsIntel([job], {
           perplexityApiKey: deps.perplexityApiKey,
-          geminiApiKey: deps.geminiApiKey,
           storage: deps.storage,
         });
         [job] = await enrichWithLineups([job]);
