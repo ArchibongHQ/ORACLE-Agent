@@ -58,8 +58,23 @@ export interface SportyBetOdds {
 /** Stats block from Sportradar gismo (sidecar v2). All sub-fields optional. */
 export interface SportyBetStats {
   form?: {
-    home?: { name?: string; last5?: string; w?: number; d?: number; l?: number } | null;
-    away?: { name?: string; last5?: string; w?: number; d?: number; l?: number } | null;
+    home?: {
+      name?: string;
+      last5?: string;
+      w?: number;
+      d?: number;
+      l?: number;
+      /** Leading run of identical results, signed (+win streak / -loss streak / 0 on a draw). */
+      streak?: number;
+    } | null;
+    away?: {
+      name?: string;
+      last5?: string;
+      w?: number;
+      d?: number;
+      l?: number;
+      streak?: number;
+    } | null;
   } | null;
   standings?: {
     home?: { pos?: number; points?: number; played?: number; gf?: number; ga?: number } | null;
@@ -74,6 +89,16 @@ export interface SportyBetStats {
   xg?: {
     home?: { xgf?: number; xga?: number } | null;
     away?: { xgf?: number; xga?: number } | null;
+  } | null;
+  /** Season over-line hit rate per team (stats_season_overunder), both venues combined. */
+  overunder?: {
+    home?: { over15_pct?: number; over25_pct?: number; over35_pct?: number } | null;
+    away?: { over15_pct?: number; over25_pct?: number; over35_pct?: number } | null;
+  } | null;
+  /** Rest/fixture-load context derived from stats_season_fixtures, relative to this kickoff. */
+  congestion?: {
+    home?: { rest_days?: number; next_days?: number } | null;
+    away?: { rest_days?: number; next_days?: number } | null;
   } | null;
 }
 
@@ -196,6 +221,9 @@ export async function loadSportyBetIndex(
 
 const _CUP_RE = /cup|copa|coupe|pokal|trophy|shield|supercup|friendly|test\s*match/i;
 
+/** Minimum shared meetings before H2H history counts as real signal (1-2 is noise). */
+const MIN_H2H_SAMPLE = 3;
+
 /** Returns a 0–100 score reflecting how likely this fixture produces a
  *  low-variance, viable market.  Pure function — no I/O, no side effects.
  *  Falls back gracefully: NaN is never returned. */
@@ -219,8 +247,16 @@ export function predictabilityScore(
   const hasLeagueTable = cov?.leaguetable === true;
   const hasFormTable = cov?.formtable === true;
   const hasH2H = cov?.headtohead === true;
-  const hasAnyStats = !!(stats?.form || stats?.standings || stats?.goals);
-  if (!hasAnyStats && !hasLeagueTable && !hasFormTable) penalty += 20;
+  // H2H only counts toward "has data" once it clears the same sample gate used by
+  // the H2H component below — a single past meeting is not real signal.
+  const h2hSampleOk = (stats?.h2h?.total ?? 0) >= MIN_H2H_SAMPLE;
+  const hasAnyStats = !!(
+    stats?.form ||
+    stats?.standings ||
+    stats?.goals ||
+    (stats?.h2h && h2hSampleOk)
+  );
+  if (!hasAnyStats && !hasLeagueTable && !hasFormTable && !(hasH2H && h2hSampleOk)) penalty += 20;
 
   // ── Component 1: Favourite strength (0–30) ────────────────────────────────
   // Prefer xG prior; fall back to goals avg; skip when neither is available.
@@ -286,7 +322,31 @@ export function predictabilityScore(
     oneX2Score = Math.min(20, ((shortImplied - 0.7) / 0.3) * 20);
   }
 
-  const raw = favouriteScore + scoringScore + formScore + oneX2Score;
+  // ── Component 5: H2H dominance (0–10) ────────────────────────────────────
+  // One-sided head-to-head history adds predictability, but only once there's
+  // enough shared history to mean anything — 1-2 past meetings are noise.
+  let h2hScore = 0;
+  const h2h = stats?.h2h;
+  if (h2h && (h2h.total ?? 0) >= MIN_H2H_SAMPLE) {
+    const total = h2h.total!;
+    const dominance = Math.abs((h2h.home_wins ?? 0) - (h2h.away_wins ?? 0)) / total;
+    h2hScore = Math.min(10, dominance * 10);
+  }
+
+  // ── Component 6: Standings gap (0–10) ────────────────────────────────────
+  // Points-per-game gap (not raw position) so early-season/short tables don't
+  // understate the gap and long tables don't overstate it.
+  let standingsScore = 0;
+  const hStand = stats?.standings?.home;
+  const aStand = stats?.standings?.away;
+  if (hStand?.played && aStand?.played && hStand.played > 0 && aStand.played > 0) {
+    const hPpg = (hStand.points ?? 0) / hStand.played;
+    const aPpg = (aStand.points ?? 0) / aStand.played;
+    // ppg gap ≥ 1.5 → full 10 (e.g. title-chaser vs relegation-zone side)
+    standingsScore = Math.min(10, (Math.abs(hPpg - aPpg) / 1.5) * 10);
+  }
+
+  const raw = favouriteScore + scoringScore + formScore + oneX2Score + h2hScore + standingsScore;
   return Math.max(0, Math.min(100, Math.round(raw - penalty)));
 }
 

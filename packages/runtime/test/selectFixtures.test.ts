@@ -142,6 +142,73 @@ describe("predictabilityScore", () => {
     );
   });
 
+  it("one-sided H2H history with enough sample raises the score", () => {
+    const dominant = detail({ stats: { h2h: { total: 4, home_wins: 4, away_wins: 0, draws: 0 } } });
+    const even = detail({ stats: { h2h: { total: 4, home_wins: 2, away_wins: 2, draws: 0 } } });
+    expect(predictabilityScore(dominant, "Premier League")).toBeGreaterThan(
+      predictabilityScore(even, "Premier League")
+    );
+  });
+
+  it("H2H with fewer than 3 meetings does not contribute (sample too thin)", () => {
+    const thin = detail({ stats: { h2h: { total: 2, home_wins: 2, away_wins: 0, draws: 0 } } });
+    const none = detail({ stats: null });
+    expect(predictabilityScore(thin, "Premier League")).toBe(
+      predictabilityScore(none, "Premier League")
+    );
+  });
+
+  it("H2H with enough sample counts as 'has data' even with no other stats (no low-data penalty)", () => {
+    const h2hOnly = detail({
+      stats: { h2h: { total: 5, home_wins: 4, away_wins: 1, draws: 0 } },
+      statscoverage: { leaguetable: false, formtable: false, headtohead: true },
+    });
+    const trulyNoData = detail({
+      stats: null,
+      statscoverage: { leaguetable: false, formtable: false, headtohead: false },
+    });
+    expect(predictabilityScore(h2hOnly, "Premier League")).toBeGreaterThan(
+      predictabilityScore(trulyNoData, "Premier League")
+    );
+  });
+
+  it("a large standings points-per-game gap raises the score", () => {
+    const wideGap = detail({
+      stats: {
+        standings: {
+          home: { pos: 1, points: 50, played: 20, gf: 50, ga: 10 },
+          away: { pos: 19, points: 8, played: 20, gf: 10, ga: 50 },
+        },
+      },
+    });
+    const narrowGap = detail({
+      stats: {
+        standings: {
+          home: { pos: 9, points: 28, played: 20, gf: 25, ga: 24 },
+          away: { pos: 10, points: 27, played: 20, gf: 24, ga: 25 },
+        },
+      },
+    });
+    expect(predictabilityScore(wideGap, "Premier League")).toBeGreaterThan(
+      predictabilityScore(narrowGap, "Premier League")
+    );
+  });
+
+  it("standings component is zero when either team has no matches played", () => {
+    const noPlayed = detail({
+      stats: {
+        standings: {
+          home: { pos: 1, points: 0, played: 0 },
+          away: { pos: 2, points: 0, played: 0 },
+        },
+      },
+    });
+    const none = detail({ stats: null });
+    expect(predictabilityScore(noPlayed, "Premier League")).toBe(
+      predictabilityScore(none, "Premier League")
+    );
+  });
+
   it("result is always in the 0–100 range", () => {
     // Extreme values shouldn't escape the 0–100 clamp
     const extreme = detail({

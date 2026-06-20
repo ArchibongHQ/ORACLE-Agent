@@ -34,7 +34,7 @@ interface NewsCache extends NewsIntelResult {
 }
 
 interface SoftContextItem {
-  kind: "lineup" | "injury" | "news" | "motivation";
+  kind: "lineup" | "injury" | "news" | "motivation" | "stats";
   text: string;
   source: string;
   observedAt: string;
