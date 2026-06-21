@@ -337,9 +337,9 @@ function runKaggleTool(label: string, scriptName: string, args: string[] = []): 
 async function runWeeklyKaggleRefresh(): Promise<void> {
   const credPath =
     process.platform === "win32"
-      ? join(process.env["USERPROFILE"] ?? "", ".kaggle", "kaggle.json")
-      : join(process.env["HOME"] ?? "", ".kaggle", "kaggle.json");
-  const hasEnvAuth = Boolean(process.env["KAGGLE_USERNAME"]) && Boolean(process.env["KAGGLE_KEY"]);
+      ? join(process.env.USERPROFILE ?? "", ".kaggle", "kaggle.json")
+      : join(process.env.HOME ?? "", ".kaggle", "kaggle.json");
+  const hasEnvAuth = Boolean(process.env.KAGGLE_USERNAME) && Boolean(process.env.KAGGLE_KEY);
   if (!existsSync(credPath) && !hasEnvAuth) {
     process.stderr.write(
       `[kaggle-refresh] WARNING: no Kaggle credentials found (checked ${credPath} and KAGGLE_USERNAME/KAGGLE_KEY) — downloads will fail\n`

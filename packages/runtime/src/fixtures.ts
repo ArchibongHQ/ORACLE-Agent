@@ -38,13 +38,13 @@ const ODDS_CACHE_DIR = join(ROOT, ".tmp/odds");
 // ENOENT under Servy while working fine from a terminal. Resolve an absolute
 // path up front so behavior is identical in both contexts.
 export function resolvePythonBin(): string {
-  if (process.env["PYTHON_BIN"] && existsSync(process.env["PYTHON_BIN"])) {
-    return process.env["PYTHON_BIN"];
+  if (process.env.PYTHON_BIN && existsSync(process.env.PYTHON_BIN)) {
+    return process.env.PYTHON_BIN;
   }
   if (process.platform === "win32") {
     const candidates = [
-      join(process.env["LOCALAPPDATA"] ?? "", "Programs", "Python", "Python313", "python.exe"),
-      join(process.env["LOCALAPPDATA"] ?? "", "Python", "bin", "python.exe"),
+      join(process.env.LOCALAPPDATA ?? "", "Programs", "Python", "Python313", "python.exe"),
+      join(process.env.LOCALAPPDATA ?? "", "Python", "bin", "python.exe"),
     ];
     for (const c of candidates) if (existsSync(c)) return c;
     // Under a Windows service (LocalSystem) LOCALAPPDATA points at the systemprofile,
@@ -60,7 +60,7 @@ export function resolvePythonBin(): string {
 /** Walk C:\Users\<each>\AppData\Local\Programs\Python\Python3* for python.exe.
  *  Returns the highest-versioned match, or undefined if none exist. */
 function scanUserProfilesForPython(): string | undefined {
-  const usersDir = join(process.env["SystemDrive"] ?? "C:", "\\", "Users");
+  const usersDir = join(process.env.SystemDrive ?? "C:", "\\", "Users");
   let best: { version: number; path: string } | undefined;
   let users: string[];
   try {
@@ -462,9 +462,9 @@ async function applySelection(
     if (!detail?.odds?.["1x2"]) return job; // no sidecar odds at all
 
     const flat = flattenSidecarOdds(detail);
-    const h = flat["home"];
-    const d = flat["draw"] ?? 3.4;
-    const a = flat["away"];
+    const h = flat.home;
+    const d = flat.draw ?? 3.4;
+    const a = flat.away;
     if (!h || !a) return job; // can't build a valid 1x2 triple
 
     const hoursToKO = Math.max(0, (new Date(job.kickoff).getTime() - Date.now()) / 3_600_000);
@@ -692,7 +692,7 @@ async function fetchOddsViaPlaywright(
   away: string,
   league: string
 ): Promise<GapOdds | null> {
-  if (process.env["VITEST"] || process.env["ORACLE_NO_PLAYWRIGHT"] === "true") return null;
+  if (process.env.VITEST || process.env.ORACLE_NO_PLAYWRIGHT === "true") return null;
   const query = `${home} vs ${away} ${league} betting odds 1X2`;
   const scriptPath = join(ROOT, "tools/scrape_google_ai.py");
   // 28s outer / ~18s inner (scrape_google_ai.py's own goto+wait+networkidle
@@ -1170,7 +1170,7 @@ export async function fetchFixtureByName(
           sidecarIndex.detailByKey.get(`${home.toLowerCase()}|${away.toLowerCase()}`);
         if (detail?.odds?.["1x2"]) {
           const flat = flattenSidecarOdds(detail);
-          if (flat["home"] && flat["away"]) {
+          if (flat.home && flat.away) {
             const statsOverride = buildStatsOverride(detail);
             const statsContext = buildStatsSoftContext(detail);
             return {

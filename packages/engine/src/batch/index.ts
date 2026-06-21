@@ -18,7 +18,6 @@ import type {
   DecisionShadow,
   EVMarket,
   OracleConfig,
-  PickRef,
   RankingMode,
   RunResult,
   RunState,

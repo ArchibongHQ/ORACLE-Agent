@@ -64,7 +64,7 @@ async function _scrapeGoogleAiModeInner(
   query: string,
   browserRef: { current: Awaited<ReturnType<typeof chromium.launch>> | null }
 ): Promise<GoogleAiModeResult | null> {
-  const isLocalWindows = process.platform === "win32" && process.env["ORACLE_IS_VPS"] !== "true";
+  const isLocalWindows = process.platform === "win32" && process.env.ORACLE_IS_VPS !== "true";
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
   try {

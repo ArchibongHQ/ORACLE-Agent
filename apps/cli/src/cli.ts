@@ -7,13 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  *  Thin wrapper over @oracle/runtime; every command delegates to the shared analysis path.
  *  Arg parsing uses node:util parseArgs (built-in, zero-dep). */
 import { parseArgs } from "node:util";
-import type {
-  BatchJobResult,
-  BatchResult,
-  OracleConfig,
-  PickRef,
-  RankingMode,
-} from "@oracle/engine";
+import type { BatchJobResult, BatchResult, OracleConfig, RankingMode } from "@oracle/engine";
 import { parseFixtureList } from "@oracle/engine";
 import {
   buildConfig,
@@ -295,7 +289,7 @@ export async function dispatch(argv: string[]): Promise<DispatchResult> {
 
 async function main(): Promise<void> {
   const { code, output } = await dispatch(process.argv.slice(2));
-  if (output) (code === 0 ? process.stdout : process.stderr).write(output + "\n");
+  if (output) (code === 0 ? process.stdout : process.stderr).write(`${output}\n`);
   process.exit(code);
 }
 

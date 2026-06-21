@@ -8,7 +8,7 @@ import {
   gradeFromEV,
   validateSelection,
 } from "../src/decision/index.js";
-import type { DecisionOutput, EVMarket, PickRef } from "../src/types.js";
+import type { DecisionOutput, EVMarket } from "../src/types.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

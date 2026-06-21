@@ -2,7 +2,7 @@
  *  No external deps; all CSS inline. One card per fixture. */
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { BatchJobResult, BatchResult, PickRef } from "@oracle/engine";
+import type { BatchJobResult, BatchResult } from "@oracle/engine";
 
 function esc(s: unknown): string {
   return String(s ?? "")

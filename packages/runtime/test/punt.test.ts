@@ -1,5 +1,5 @@
 import type { BatchResult } from "@oracle/engine";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { RawLeg } from "../../../apps/booking/src/loadCode.js";
 import type { PuntLeg } from "../src/punt.js";
 import { counterSlip, loadedSlipToJobs, rawLegToMarketSide } from "../src/punt.js";
