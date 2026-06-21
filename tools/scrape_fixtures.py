@@ -957,12 +957,28 @@ def _parse_form(form_data: dict) -> Optional[dict]:
             if isinstance(f, dict) and (f.get("type") or "").upper() in ("W", "D", "L")
         ][:5]
         name = (team.get("team") or {}).get("name") or team.get("name")
+        # Current streak, derived from last5 (most-recent-first): length of the
+        # leading run of identical results. Signed: +N win streak, -N loss streak,
+        # 0 when the most recent match was a draw (no streak direction).
+        streak = 0
+        if letters:
+            if letters[0] == "D":
+                streak = 0
+            else:
+                run = 1
+                for ch in letters[1:]:
+                    if ch == letters[0]:
+                        run += 1
+                    else:
+                        break
+                streak = run if letters[0] == "W" else -run
         out[side] = {
             "name": name,
             "last5": "".join(letters),
             "w": letters.count("W"),
             "d": letters.count("D"),
             "l": letters.count("L"),
+            "streak": streak,
         }
     return out or None
 
@@ -1061,7 +1077,90 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
     return summary
 
 
-def _fetch_fixture_detail(event_id: str) -> dict:
+def _parse_overunder(ou_data: dict, home_uid: Optional[int], away_uid: Optional[int]) -> Optional[dict]:
+    """Extract season over-1.5/2.5/3.5 percentages per team from stats_season_overunder.
+
+    Live gismo shape: stats is keyed by the team's "uniqueteam" id (`team.uid`),
+    NOT the "team" doctype `_id` that match_info/stats_season_tables/stats_season_goals/
+    stats_season_fixtures all key by (verified live 2026-06-20 — Czechia: _id=9509,
+    uid=4714; both ids coexist on the same match_info team object, callers must pass
+    uid here). Each entry's `total.ft["<line>"]` holds {over, under} match counts
+    across the season (both venues combined). Percentage is over/(over+under);
+    a line with zero matches recorded is omitted rather than reported as 0%.
+    """
+    if not ou_data:
+        return None
+    stats = ou_data.get("stats", {})
+    if not isinstance(stats, dict):
+        return None
+    result: dict[str, Optional[dict]] = {}
+    for label, tid in (("home", home_uid), ("away", away_uid)):
+        entry = stats.get(str(tid)) if tid is not None else None
+        if not isinstance(entry, dict):
+            continue
+        lines = ((entry.get("total") or {}).get("ft")) or {}
+        pct: dict[str, float] = {}
+        for line_key, out_key in (("1.5", "over15_pct"), ("2.5", "over25_pct"), ("3.5", "over35_pct")):
+            rec = lines.get(line_key)
+            if not isinstance(rec, dict):
+                continue
+            over, under = rec.get("over"), rec.get("under")
+            if isinstance(over, (int, float)) and isinstance(under, (int, float)) and (over + under) > 0:
+                pct[out_key] = round(over / (over + under), 3)
+        if pct:
+            result[label] = pct
+    return result or None
+
+
+def _parse_rest_congestion(
+    fixtures_data: dict, home_id: Optional[int], away_id: Optional[int], kickoff_uts: Optional[int]
+) -> Optional[dict]:
+    """Derive rest days (since last match) and days-to-next-match per team from
+    stats_season_fixtures, relative to this fixture's own kickoff.
+
+    Live gismo shape: matches[] is a flat season schedule with teams.home/away._id
+    and time.uts (unix seconds). Postponed/canceled entries are excluded — they
+    didn't actually consume a match slot. `rest_days` feeds the engine's existing
+    (currently-dormant) restH/restA fatigue-decay input; `next_days` is ranker/LLM-
+    only congestion context with no engine consumption point.
+    """
+    if not fixtures_data or not kickoff_uts:
+        return None
+    matches = fixtures_data.get("matches") or []
+    if not isinstance(matches, list):
+        return None
+    result: dict[str, Optional[dict]] = {}
+    for label, tid in (("home", home_id), ("away", away_id)):
+        if tid is None:
+            continue
+        last_uts: Optional[int] = None
+        next_uts: Optional[int] = None
+        for m in matches:
+            if not isinstance(m, dict) or m.get("postponed") or m.get("canceled"):
+                continue
+            teams = m.get("teams") or {}
+            mh = (teams.get("home") or {}).get("_id")
+            ma = (teams.get("away") or {}).get("_id")
+            if tid != mh and tid != ma:
+                continue
+            uts = ((m.get("time") or {}).get("uts"))
+            if not isinstance(uts, (int, float)):
+                continue
+            if uts < kickoff_uts and (last_uts is None or uts > last_uts):
+                last_uts = uts
+            elif uts > kickoff_uts and (next_uts is None or uts < next_uts):
+                next_uts = uts
+        entry: dict[str, float] = {}
+        if last_uts is not None:
+            entry["rest_days"] = round((kickoff_uts - last_uts) / 86400, 2)
+        if next_uts is not None:
+            entry["next_days"] = round((next_uts - kickoff_uts) / 86400, 2)
+        if entry:
+            result[label] = entry
+    return result or None
+
+
+def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> dict:
     """
     Fetch markets + stats for one fixture via anonymous plain HTTP.
 
@@ -1091,6 +1190,12 @@ def _fetch_fixture_detail(event_id: str) -> dict:
 
     home_id: Optional[int] = None
     away_id: Optional[int] = None
+    # stats_season_overunder keys its `stats` dict by the team's "uniqueteam" id
+    # (`team.uid`), NOT the "team" doctype `_id` that match_info/stats_season_tables/
+    # stats_season_goals/stats_season_fixtures all key by — verified live 2026-06-20
+    # (Czechia: _id=9509, uid=4714; both ids coexist on the same team object).
+    home_uid: Optional[int] = None
+    away_uid: Optional[int] = None
     season_id: Optional[int] = None
     statscoverage: dict = {}
 
@@ -1100,9 +1205,13 @@ def _fetch_fixture_detail(event_id: str) -> dict:
         # Validate IDs are numeric before using in Gismo URL paths (path-traversal guard)
         _raw_home = teams.get("home", {}).get("_id")
         _raw_away = teams.get("away", {}).get("_id")
+        _raw_home_uid = teams.get("home", {}).get("uid")
+        _raw_away_uid = teams.get("away", {}).get("uid")
         _raw_season = match.get("_seasonid")
         home_id = int(_raw_home) if str(_raw_home).isdigit() else None
         away_id = int(_raw_away) if str(_raw_away).isdigit() else None
+        home_uid = int(_raw_home_uid) if str(_raw_home_uid).isdigit() else None
+        away_uid = int(_raw_away_uid) if str(_raw_away_uid).isdigit() else None
         season_id = int(_raw_season) if str(_raw_season).isdigit() else None
         statscoverage = mi_data.get("statscoverage") or {}
 
@@ -1127,6 +1236,25 @@ def _fetch_fixture_detail(event_id: str) -> dict:
         _time.sleep(_SB_PACE)
     h2h = _parse_h2h(h2h_data)
 
+    # 7. Season over/under % (stats_season_overunder) — keyed by uid, not _id (see above)
+    ou_data = _gismo_doc(f"stats_season_overunder/{season_id}") if season_id else None
+    _time.sleep(_SB_PACE)
+    overunder = _parse_overunder(ou_data, home_uid, away_uid)
+
+    # 8. Rest days + fixture congestion (stats_season_fixtures), relative to this
+    # fixture's own kickoff — reuses the season fixture list already fetched for
+    # standings context, no extra season-id resolution needed.
+    kickoff_uts: Optional[int] = None
+    if kickoff_utc:
+        try:
+            kickoff_uts = int(
+                datetime.fromisoformat(kickoff_utc.replace("Z", "+00:00")).timestamp()
+            )
+        except ValueError:
+            kickoff_uts = None
+    fixtures_data = _gismo_doc(f"stats_season_fixtures/{season_id}") if season_id else None
+    congestion = _parse_rest_congestion(fixtures_data, home_id, away_id, kickoff_uts)
+
     stats: dict = {}
     if form:
         stats["form"] = form
@@ -1136,6 +1264,10 @@ def _fetch_fixture_detail(event_id: str) -> dict:
         stats["goals"] = goals
     if h2h:
         stats["h2h"] = h2h
+    if overunder:
+        stats["overunder"] = overunder
+    if congestion:
+        stats["congestion"] = congestion
 
     return {
         "odds": odds,
@@ -1174,7 +1306,7 @@ def enrich_sportybet_events(events: list[dict], max_workers: int = 8) -> list[di
         if not eid:
             return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
         try:
-            detail = _fetch_fixture_detail(eid)
+            detail = _fetch_fixture_detail(eid, ev.get("kickoff_utc"))
             return {**ev, **detail, "xg": xg}
         except Exception:
             return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}

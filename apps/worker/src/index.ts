@@ -1,5 +1,6 @@
 /** ORACLE scheduled worker — thin cron shell.
- *  node-cron daily batch (09:00) + resolve-yesterday (14:00).
+ *  node-cron daily batch (06:00) -> goals batch (immediately after, sourced from
+ *  the daily batch's own top-39) -> resolve-yesterday (14:00).
  *  All analysis/fixture/report logic lives in @oracle/runtime; this file only schedules. */
 
 import { execFile } from "node:child_process";
@@ -7,12 +8,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sendPuntPrompt } from "@oracle/bot";
-import type { RunManifest } from "@oracle/engine";
+import type { BatchResult, RunManifest } from "@oracle/engine";
 import type { ActionablePick, BatchSummary } from "@oracle/notify";
 import { buildNotifiers, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
   buildConfig,
   fetchTodaysFixtures,
+  type GoalsSelectionResult,
   loadEnv,
   loadSportyBetIndex,
   markPrompted,
@@ -77,6 +79,7 @@ function flushStdio(): Promise<void> {
 // the web /health endpoint) so a silently-dead worker is detectable.
 
 const HEARTBEAT_FILE = join(ROOT, ".tmp", "worker_heartbeat.json");
+const BOT_HEARTBEAT_FILE = join(ROOT, ".tmp", "bot_heartbeat.json");
 
 function writeHeartbeat(event: string, detail: Record<string, unknown> = {}): void {
   try {
@@ -140,6 +143,50 @@ async function checkHeartbeatFreshness(): Promise<void> {
   await notifyAll(notifiers, alertSummary);
 }
 
+// Cross-service staleness: the worker is the one daemon guaranteed to be running
+// (it's the one with this check), so it also watches the Telegram bot's heartbeat
+// (apps/bot/src/index.ts writeBotHeartbeat() — written after each successful
+// getUpdates poll cycle, every ~50s normally). Sending the alert itself does NOT
+// depend on the bot's poll loop: Telegram's sendMessage works from any process
+// holding the token, so this can reach the owner even while the bot is down.
+const BOT_HEARTBEAT_STALE_MS = 10 * 60 * 1000; // 10 min — generous vs. the ~50s poll cadence
+let lastBotStaleAlertSentAt = 0;
+const BOT_STALE_ALERT_REPEAT_MS = 60 * 60 * 1000; // re-alert hourly while still down (more urgent than the daily batch)
+
+async function checkBotHeartbeatFreshness(): Promise<void> {
+  let lastPollAt: string | undefined;
+  let missing = false;
+  try {
+    const current = JSON.parse(readFileSync(BOT_HEARTBEAT_FILE, "utf8")) as { at?: string };
+    lastPollAt = current.at;
+    if (!lastPollAt) missing = true;
+  } catch {
+    missing = true; // never started, or the file was removed — also worth alerting on
+  }
+
+  const ageMs = missing ? Infinity : Date.now() - new Date(lastPollAt!).getTime();
+  if (!missing && ageMs < BOT_HEARTBEAT_STALE_MS) return; // healthy — nothing to do
+  if (Date.now() - lastBotStaleAlertSentAt < BOT_STALE_ALERT_REPEAT_MS) return;
+  lastBotStaleAlertSentAt = Date.now();
+
+  const detail = missing
+    ? "no heartbeat recorded (bot never started, or .tmp/bot_heartbeat.json is missing)"
+    : `last successful poll was ${(ageMs / 60_000).toFixed(0)}m ago (${lastPollAt})`;
+  process.stderr.write(`[worker] BOT STALE — ${detail}\n`);
+
+  const notifiers = buildNotifiers(env);
+  if (!notifiers.length) return;
+  const alertSummary: BatchSummary = {
+    date: new Date().toISOString().slice(0, 10),
+    analysed: 0,
+    actionableCount: 0,
+    errors: 0,
+    actionable: [],
+    alertText: `Telegram bot appears offline — ${detail}. Incoming commands (/run, /punt, /confirm, etc.) won't work until it's restarted.`,
+  };
+  await notifyAll(notifiers, alertSummary);
+}
+
 function logJob(name: string, fn: () => Promise<unknown>): void {
   const started = Date.now();
   process.stdout.write(`[worker] ${new Date().toISOString()} ${name}: start\n`);
@@ -157,10 +204,31 @@ function logJob(name: string, fn: () => Promise<unknown>): void {
     });
 }
 
+// ── Python interpreter resolution ────────────────────────────────────────────
+// A bare "python"/"python3" relies on PATH resolution, which a Windows service
+// host does not inherit the same way an interactive shell does (the install is
+// only on this user's PATH, not the machine PATH) — causing a silent spawn
+// ENOENT under Servy while working fine from a terminal. Resolve an absolute
+// path up front so the scrapers/tools run identically in both contexts.
+const PYTHON_BIN = resolvePythonBin();
+
+function resolvePythonBin(): string {
+  if (process.env.PYTHON_BIN && existsSync(process.env.PYTHON_BIN)) return process.env.PYTHON_BIN;
+  if (process.platform === "win32") {
+    const candidates = [
+      join(process.env.LOCALAPPDATA ?? "", "Programs", "Python", "Python313", "python.exe"),
+      join(process.env.LOCALAPPDATA ?? "", "Python", "bin", "python.exe"),
+    ];
+    for (const c of candidates) if (existsSync(c)) return c;
+    return "python"; // fall back to PATH resolution (works in an interactive shell)
+  }
+  return "python3";
+}
+
 // ── Fixture scraper ───────────────────────────────────────────────────────────
 
 function scrapeFixtures(): Promise<number> {
-  const python = process.platform === "win32" ? "python" : "python3";
+  const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "scrape_fixtures.py");
   return new Promise((resolve) => {
     execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
@@ -180,7 +248,7 @@ function scrapeFixtures(): Promise<number> {
 
 function fetchLineups(): Promise<void> {
   if (!config.apiFootballKey) return Promise.resolve();
-  const python = process.platform === "win32" ? "python" : "python3";
+  const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "fetch_lineups.py");
   return new Promise((resolve) => {
     execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
@@ -245,7 +313,7 @@ function checkSportyBetStreak(sportyBetCount: number): void {
 // ── Weekly Kaggle dataset refresh (Saturday 03:00 UTC) ────────────────────────
 
 function runKaggleTool(label: string, scriptName: string, args: string[] = []): Promise<void> {
-  const python = process.platform === "win32" ? "python" : "python3";
+  const python = PYTHON_BIN;
   const script = join(ROOT, "tools", scriptName);
   const start = Date.now();
   process.stdout.write(`[kaggle-refresh] ${label}: starting\n`);
@@ -299,9 +367,13 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
   process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s ===\n`);
 }
 
-// ── Daily batch (09:00) ───────────────────────────────────────────────────────
+// ── Daily batch (06:00) ───────────────────────────────────────────────────────
 
-async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Promise<void> {
+/** Returns the analyzed batch (for runDailyThenGoals to source goals picks from)
+ *  or null when there were no fixtures to analyze. */
+async function runDailyBatch(
+  trigger: RunManifest["trigger"] = "scheduled"
+): Promise<BatchResult | null> {
   const sportyBetCount = await scrapeFixtures();
   checkSportyBetStreak(sportyBetCount);
   await fetchLineups();
@@ -328,7 +400,7 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
   );
 
   if (!jobs.length) {
-    return;
+    return null;
   }
 
   const { batch, records, reportPath } = await runAnalysis(
@@ -385,21 +457,126 @@ async function runDailyBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     records: records.length,
     halted: batch.cost.halted,
   });
+
+  return batch;
 }
 
-// ── Goals-only accumulator (08:30 UTC = 09:30 WAT) ────────────────────────────
-// Independent pipeline: reuses the engine output but selects ONLY Over 1.5 /
-// Over 2.5 / Team Over 0.5 legs whose data heavily supports goals, ranks them by
-// model confidence, caps at goalsTargetLegs (a ceiling, never a fill target),
-// books one SportyBet code, and pushes a goals-tagged Telegram message. Shares no
-// state with runDailyBatch.
+// ── Goals-only accumulator ─────────────────────────────────────────────────────
+// As of 2026-06-20: runs immediately after a successful daily batch (see
+// runDailyThenGoals below), sourcing its candidate pool EXCLUSIVELY from the
+// daily batch's own top-39 (llmEligible) picks — no second fetch/analysis pass.
+// selectGoalsAccumulator then narrows those down further to whichever Over 1.5 /
+// Over 2.5 / Team Over 0.5 legs pass the data gate + confidence bars, ranks by
+// model confidence, caps at goalsTargetLegs (a ceiling, never a fill target).
 
 const GOALS_TAG = "GOALS ACCA (Over 1.5/2.5/Team 0.5)";
 
-async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Promise<void> {
+/** Shared tail: turn a goals selection into a notify/booking/heartbeat cycle.
+ *  Used by both runGoalsFromBatch (legs sourced from the daily batch that just
+ *  ran) and the standalone runGoalsBatch (manual --run-goals-now debug path). */
+async function finalizeGoalsSelection(
+  selection: GoalsSelectionResult,
+  date: string,
+  errorCount: number,
+  reportPath: string | null,
+  trigger: RunManifest["trigger"]
+): Promise<void> {
+  process.stdout.write(
+    `[goals] selected ${selection.legs.length}/${selection.target} ` +
+      `(over15=${selection.counts.over15} over25=${selection.counts.over25} ` +
+      `teamover05=${selection.counts.teamOver05}; qualified=${selection.qualified} of ${selection.analysed})\n`
+  );
+
+  const actionable: ActionablePick[] = selection.legs.map((l) => ({
+    home: l.home,
+    away: l.away,
+    league: l.league,
+    kickoff: l.kickoff,
+    market: l.market,
+    side: l.side,
+    odds: l.odds,
+    stakePct: 0, // accumulator leg — no per-leg Kelly stake
+    confidence: l.mp,
+  }));
+
+  const summary: BatchSummary = {
+    date: `${date} — ${GOALS_TAG}`,
+    analysed: selection.analysed,
+    actionableCount: actionable.length,
+    errors: errorCount,
+    actionable,
+    ...(reportPath ? { reportUrl: reportPath } : {}),
+  };
+
+  // ── SportyBet booking (off by default; never blocks delivery) ──────────────
+  if (env.ENABLE_SPORTYBET_BOOKING === "true" && actionable.length > 0) {
+    try {
+      const { bookAccumulator } = await import("@oracle/booking");
+      const booking = await bookAccumulator(actionable);
+      if (booking.code) {
+        summary.bookingCode = booking.code;
+        summary.bookingLoadUrl = booking.loadUrl ?? undefined;
+        summary.bookingUnmatched = booking.unmatched;
+        if (booking.loadUrl)
+          process.stdout.write(`[goals-booking] ${booking.code}: ${booking.loadUrl}\n`);
+        if (booking.unmatched.length)
+          process.stderr.write(
+            `[goals-booking] ${booking.unmatched.length} leg(s) unmatched on SportyBet\n`
+          );
+      } else {
+        summary.bookingError = booking.error ?? "no code returned";
+      }
+    } catch (err) {
+      summary.bookingError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  // Notify — even with 0 legs (sends a "no goals slip today" note; never books empty).
+  const notifiers = buildNotifiers(env);
+  if (notifiers.length) {
+    await notifyAll(notifiers, summary);
+  }
+
+  writeHeartbeat("lastGoalsBatch", {
+    trigger,
+    analysed: selection.analysed,
+    legs: selection.legs.length,
+    target: selection.target,
+    booked: Boolean(summary.bookingCode),
+  });
+}
+
+/** Primary path (2026-06-20): runs right after a successful daily batch, reusing
+ *  its already-analyzed jobs. Restricts the candidate pool to the daily batch's
+ *  top-39 (llmEligible) fixtures only — per owner instruction, goals picks come
+ *  exclusively from the daily batch's best 39, never the wider deterministic-only
+ *  slate. No second fetch/scrape/analysis pass. */
+async function runGoalsFromBatch(
+  batch: BatchResult,
+  trigger: RunManifest["trigger"] = "scheduled"
+): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
-  // Reuse a fresh sidecar; scrape only when stale (date !== today) to avoid a
-  // redundant Playwright run when the 06:00/09:00 scrape already ran.
+  // Pure file read — the sidecar is already fresh from runDailyBatch's own
+  // scrapeFixtures() call moments earlier; no staleness fallback needed here.
+  const index = await loadSportyBetIndex(today);
+
+  const eligibleJobs = batch.jobs.filter((j) => j.llmEligible);
+  const selection = selectGoalsAccumulator(eligibleJobs, {
+    minConfidence: config.goalsMinConfidence,
+    minImplied: config.goalsMinImplied,
+    target: config.goalsTargetLegs,
+    detailByKey: index?.detailByKey,
+  });
+
+  await finalizeGoalsSelection(selection, batch.date, batch.errorCount, null, trigger);
+}
+
+/** Standalone manual debug path (--run-goals-now): independent fetch + analysis
+ *  pass, not gated to any daily batch's top-39. Kept for ad-hoc testing of the
+ *  goals selection logic without re-running the full daily pipeline. */
+async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  // Reuse a fresh sidecar; scrape only when stale (date !== today).
   let index = await loadSportyBetIndex(today);
   if (!index) {
     const sportyBetCount = await scrapeFixtures();
@@ -451,69 +628,21 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "scheduled"): Pro
     detailByKey: index?.detailByKey,
   });
 
-  process.stdout.write(
-    `[goals] selected ${selection.legs.length}/${selection.target} ` +
-      `(over15=${selection.counts.over15} over25=${selection.counts.over25} ` +
-      `teamover05=${selection.counts.teamOver05}; qualified=${selection.qualified} of ${selection.analysed})\n`
-  );
+  await finalizeGoalsSelection(selection, batch.date, batch.errorCount, reportPath, trigger);
+}
 
-  const actionable: ActionablePick[] = selection.legs.map((l) => ({
-    home: l.home,
-    away: l.away,
-    league: l.league,
-    kickoff: l.kickoff,
-    market: l.market,
-    side: l.side,
-    odds: l.odds,
-    stakePct: 0, // accumulator leg — no per-leg Kelly stake
-    confidence: l.mp,
-  }));
-
-  const summary: BatchSummary = {
-    date: `${batch.date} — ${GOALS_TAG}`,
-    analysed: selection.analysed,
-    actionableCount: actionable.length,
-    errors: batch.errorCount,
-    actionable,
-    ...(reportPath ? { reportUrl: reportPath } : {}),
-  };
-
-  // ── SportyBet booking (off by default; never blocks delivery) ──────────────
-  if (env.ENABLE_SPORTYBET_BOOKING === "true" && actionable.length > 0) {
-    try {
-      const { bookAccumulator } = await import("@oracle/booking");
-      const booking = await bookAccumulator(actionable);
-      if (booking.code) {
-        summary.bookingCode = booking.code;
-        summary.bookingLoadUrl = booking.loadUrl ?? undefined;
-        summary.bookingUnmatched = booking.unmatched;
-        if (booking.loadUrl)
-          process.stdout.write(`[goals-booking] ${booking.code}: ${booking.loadUrl}\n`);
-        if (booking.unmatched.length)
-          process.stderr.write(
-            `[goals-booking] ${booking.unmatched.length} leg(s) unmatched on SportyBet\n`
-          );
-      } else {
-        summary.bookingError = booking.error ?? "no code returned";
-      }
-    } catch (err) {
-      summary.bookingError = err instanceof Error ? err.message : String(err);
-    }
+/** Combined scheduled flow (06:00): daily batch, then goals immediately on
+ *  success, sourced exclusively from its top-39 (runGoalsFromBatch). If the
+ *  daily batch finds no fixtures, goals is skipped — nothing to derive picks
+ *  from. */
+async function runDailyThenGoals(trigger: RunManifest["trigger"] = "scheduled"): Promise<void> {
+  const batch = await runDailyBatch(trigger);
+  if (!batch) {
+    process.stdout.write("[worker] daily-batch produced no fixtures — skipping goals-batch\n");
+    return;
   }
-
-  // Notify — even with 0 legs (sends a "no goals slip today" note; never books empty).
-  const notifiers = buildNotifiers(env);
-  if (notifiers.length) {
-    await notifyAll(notifiers, summary);
-  }
-
-  writeHeartbeat("lastGoalsBatch", {
-    trigger,
-    analysed: selection.analysed,
-    legs: selection.legs.length,
-    target: selection.target,
-    booked: Boolean(summary.bookingCode),
-  });
+  process.stdout.write("[worker] daily-batch complete — starting goals-batch from its top picks\n");
+  await runGoalsFromBatch(batch, trigger);
 }
 
 // ── Resolve yesterday (14:00) ────────────────────────────────────────────────
@@ -569,16 +698,24 @@ if (!IS_ONE_SHOT) {
   void checkHeartbeatFreshness();
   cron.schedule("0 * * * *", () => void checkHeartbeatFreshness());
 
-  // Fixture scrape — standalone runs (12am, 6am, 11:45am)
+  // Bot heartbeat — checked far more often than the daily-batch check (every
+  // 10 min vs hourly) since its own staleness threshold is 10 min, not 36h.
+  void checkBotHeartbeatFreshness();
+  cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness());
+
+  // Fixture scrape — standalone runs (12am, 11:45am). The 06:00 slot is covered
+  // by the daily batch's own scrapeFixtures() first step below — a standalone
+  // 06:00 scrape would race it (two Python processes writing sportybet_today.json
+  // at once) now that the daily batch moved to that exact time.
   cron.schedule("0 0 * * *", () => logJob("scrape-fixtures@00:00", scrapeFixtures));
-  cron.schedule("0 6 * * *", () => logJob("scrape-fixtures@06:00", scrapeFixtures));
   cron.schedule("45 11 * * *", () => logJob("scrape-fixtures@11:45", scrapeFixtures));
 
-  // Goals-only accumulator (08:30 UTC = 09:30 WAT) — reuses fresh sidecar, scrapes if stale
-  cron.schedule("30 8 * * *", () => logJob("goals-batch", () => runGoalsBatch("scheduled")));
-
-  // Daily batch (09:00) — scrapeFixtures() runs as its first step
-  cron.schedule("0 9 * * *", () => logJob("daily-batch", () => runDailyBatch("scheduled")));
+  // Daily batch (06:00) -> goals batch immediately on success, sourced from the
+  // daily batch's own top-39 (see runDailyThenGoals). scrapeFixtures() runs as
+  // the daily batch's first step.
+  cron.schedule("0 6 * * *", () =>
+    logJob("daily-then-goals-batch", () => runDailyThenGoals("scheduled"))
+  );
 
   cron.schedule("0 14 * * *", () => logJob("resolve-yesterday", resolveYesterdayFixtures));
 
@@ -602,7 +739,7 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
 
 if (process.argv.includes("--run-now")) {
   void runOnce("--run-now", async () => {
-    await runDailyBatch("manual");
+    await runDailyThenGoals("manual");
     await resolveYesterdayFixtures();
   });
 }

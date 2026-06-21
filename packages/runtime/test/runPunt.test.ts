@@ -67,7 +67,9 @@ describe("refreshSidecarIfStale", () => {
 
     expect(spawn).toHaveBeenCalledOnce();
     const [cmd, args] = vi.mocked(spawn).mock.calls[0]!;
-    expect(cmd).toBe("python");
+    // resolvePythonBin falls back to a bare interpreter when no install is found
+    // (existsSync is mocked false here): "python" on Windows, "python3" elsewhere.
+    expect(cmd).toBe(process.platform === "win32" ? "python" : "python3");
     expect((args as string[]).some((a) => a.includes("scrape_fixtures.py"))).toBe(true);
   });
 

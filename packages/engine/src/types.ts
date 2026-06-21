@@ -26,7 +26,7 @@ export type ClvSourceQuality = "TICK_LEVEL" | "KICKOFF_PROXY" | "UNKNOWN";
 
 /** Soft-context evidence item supplied to the LLM decision layer (PRD §6 v1.2). */
 export interface SoftContextItem {
-  kind: "lineup" | "injury" | "news" | "motivation";
+  kind: "lineup" | "injury" | "news" | "motivation" | "stats";
   text: string;
   source: string;
   observedAt: string; // ISO-8601; must be < kickoff (anti-leakage)

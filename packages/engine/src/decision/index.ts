@@ -127,12 +127,13 @@ Portfolio Correlation: ${portfolioCorrelation !== null ? portfolioCorrelation.to
 
 === ELIGIBLE BETS (ranked by model score) ===
 ${betLines || "NONE"}
-${softLines ? `\n=== SOFT CONTEXT (Gemini acquisition) ===\n${softLines}` : ""}
+${softLines ? `\n=== SOFT CONTEXT ===\n${softLines}` : ""}
 === DECISION RULES ===
 Accept (STRONG) when: convergence STRONG or MODERATE, mlAllowed=true, ev>4%, hoursToKO>4
 Grade LEAN when: betTrigger=RED without strong independent evidence, mlAllowed=false, portfolioCorrelation>0.6, or ev<5%
 Grade NO_EDGE when: ev<=0 — still return the best-ranked market in primaryPick
 MoneyLine picks forbidden when drawRisk=VERY_HIGH
+Treat [STATS] soft-context lines (SportyBet form/standings/H2H/season goals/over-under/fixture-load) as real evidence, not background colour: when they reinforce the model-favoured side, that supports grading toward STRONG; when they contradict it (e.g. one-sided H2H or standings gap against the model's pick, heavy fixture congestion for the favourite), lower confidence accordingly or prefer altPick — you may only choose among the ELIGIBLE BETS above, never invent a market.
 
 === REQUIRED OUTPUT (JSON only, no other text) ===
 {"primaryPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"altPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"confidence":0.0,"grade":"STRONG","rationale":"...","rejectedAndWhy":[]}

@@ -2,7 +2,7 @@
 
 ## Objective
 
-Populate `.tmp/fixtures/today.txt` with today's fixture schedule from multiple sources, deduplicated and normalised to UTC ISO-8601. Runs automatically via the worker cron so `today.txt` is always fresh before the 9:00am batch reads it.
+Populate `.tmp/fixtures/today.txt` with today's fixture schedule from multiple sources, deduplicated and normalised to UTC ISO-8601. Runs automatically via the worker cron so `today.txt` is always fresh before the 6:00am batch reads it.
 
 ## Required Inputs
 
@@ -16,11 +16,12 @@ Populate `.tmp/fixtures/today.txt` with today's fixture schedule from multiple s
 | Time (local) | Trigger | Purpose |
 | --- | --- | --- |
 | 00:00 | Standalone scrape | Overnight fixture additions |
-| 06:00 | Standalone scrape | Morning refresh |
-| 09:00 | Pre-step inside `runDailyBatch()` | Ensures today.txt is fresh before batch analysis |
+| 06:00 | Pre-step inside `runDailyBatch()` | Ensures today.txt is fresh before batch analysis |
 | 11:45 | Standalone scrape | Mid-day refresh for CLI users |
 
-The 9am scrape fires as the first step of `runDailyBatch()` in `apps/worker/src/index.ts`, not as a separate cron entry.
+The 6am scrape fires as the first step of `runDailyBatch()` in `apps/worker/src/index.ts`, not as
+a separate cron entry — a standalone 06:00 scrape was removed when the daily batch moved to that
+exact time, since both running at once raced the same `sportybet_today.json` write.
 
 ## Manual Run
 

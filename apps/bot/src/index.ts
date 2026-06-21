@@ -31,10 +31,11 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import https from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildNotifiers, formatSummaryText, notifyAll, summarizeBatch } from "@oracle/notify";
 import type { BatchSummary } from "@oracle/notify";
+import { buildNotifiers, formatSummaryText, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
   buildConfig,
   CLV_ELIGIBLE_LEAGUES,
@@ -46,6 +47,7 @@ import {
   markPrompted,
   ORACLE_PRIORITY_LEAGUES,
   resolveDay,
+  resolvePythonBin,
   runAnalysis,
   runPuntAnalysis,
   validateConfig,
@@ -80,12 +82,61 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
 const DB_PATH = join(ROOT, ".tmp/gbrain");
 const HEARTBEAT_FILE = join(ROOT, ".tmp", "worker_heartbeat.json");
+const BOT_HEARTBEAT_FILE = join(ROOT, ".tmp", "bot_heartbeat.json");
 const REPORTS_DIR = join(ROOT, ".tmp/reports");
 const ENV_PATH = join(ROOT, ".env");
 
 let env = loadEnv(ENV_PATH);
 
 const API = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
+
+// Node's global fetch (undici) pools TLS connections and ignores a `Connection:
+// close` request header (it's a forbidden header). On some networks a pooled
+// socket is silently RST between requests, so every reused call fails with
+// "fetch failed" — observed live as the bot's getUpdates poll dying on every
+// request after the first. Routing Telegram calls through node:https with a
+// keepAlive:false agent forces a genuinely fresh connection per request, which
+// is the one shape that works here.
+const NO_KEEPALIVE_AGENT = new https.Agent({ keepAlive: false });
+
+/** Telegram API call on a fresh (non-pooled) HTTPS connection. Returns parsed JSON. */
+function tgRequest(
+  url: string,
+  opts: { method?: string; body?: string; timeoutMs?: number } = {}
+): Promise<unknown> {
+  const { method = "GET", body, timeoutMs = 15_000 } = opts;
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      new URL(url),
+      {
+        method,
+        agent: NO_KEEPALIVE_AGENT,
+        timeout: timeoutMs,
+        headers: body
+          ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) }
+          : {},
+      },
+      (res) => {
+        let data = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => {
+          data += c;
+        });
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error(String(err)));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.on("timeout", () => req.destroy(new Error("request timeout")));
+    if (body) req.write(body);
+    req.end();
+  });
+}
 
 // ── ACL ───────────────────────────────────────────────────────────────────────
 
@@ -119,11 +170,10 @@ async function sendTo(chatId: string, text: string): Promise<void> {
   const token = TOKEN();
   if (!token) return;
   try {
-    await fetch(API(token, "sendMessage"), {
+    await tgRequest(API(token, "sendMessage"), {
       method: "POST",
-      headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" }),
-      signal: AbortSignal.timeout(10_000),
+      timeoutMs: 10_000,
     });
   } catch {
     /* best-effort */
@@ -513,7 +563,7 @@ async function handleRun(chatId: string): Promise<void> {
 
 async function handleScrape(chatId: string): Promise<void> {
   await sendTo(chatId, "🔍 Scraping SportyBet fixtures…");
-  const python = process.platform === "win32" ? "python" : "python3";
+  const python = resolvePythonBin();
   const script = join(ROOT, "tools", "scrape_fixtures.py");
 
   execFile(python, [script], { cwd: ROOT }, async (err, stdout, stderr) => {
@@ -603,7 +653,7 @@ async function handleKaggle(chatId: string): Promise<void> {
     chatId,
     "📦 Triggering Kaggle refresh… (runs in background, may take several minutes)"
   );
-  const python = process.platform === "win32" ? "python" : "python3";
+  const python = resolvePythonBin();
   const scripts = [
     [
       "fetch_odds_timeseries.py",
@@ -966,6 +1016,19 @@ interface TgUpdate {
   message?: { chat: { id: number }; text?: string };
 }
 
+/** Liveness signal for external monitoring (the worker's checkBotHeartbeatFreshness
+ *  reads this). Written after each successfully-completed poll cycle — not on every
+ *  loop tick, so a real "can't reach Telegram" gap stays visible rather than masked
+ *  by a process that's merely still running. Best-effort; a write failure must
+ *  never interrupt the poll loop itself. */
+function writeBotHeartbeat(): void {
+  try {
+    writeFileSync(BOT_HEARTBEAT_FILE, JSON.stringify({ at: new Date().toISOString() }), "utf8");
+  } catch {
+    /* best-effort */
+  }
+}
+
 export async function runBot(): Promise<void> {
   const token = TOKEN();
   const adminId = CHAT_ID();
@@ -976,19 +1039,46 @@ export async function runBot(): Promise<void> {
   console.log("[oracle-bot] started — listening for commands.");
   let offset = 0;
 
+  // While a command is being processed the poll loop is blocked (single-threaded),
+  // so the per-poll heartbeat above goes stale and the worker's 10-min freshness
+  // check fires a false "bot offline" alert. Stamp the heartbeat on a timer while
+  // (and only while) a command is in flight — the bot is alive, just busy. When
+  // idle, this does nothing, so a genuine "can't reach Telegram" gap still shows.
+  let busyProcessing = false;
+  const busyHeartbeat = setInterval(() => {
+    if (busyProcessing) writeBotHeartbeat();
+  }, 60_000);
+  busyHeartbeat.unref?.();
+
   for (;;) {
     try {
-      const url = `${API(token, "getUpdates")}?timeout=50&offset=${offset}`;
-      const resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-      const data = (await resp.json()) as { ok: boolean; result?: TgUpdate[] };
-      if (!data.ok || !data.result) continue;
-
-      for (const upd of data.result) {
-        offset = upd.update_id + 1;
-        const msg = upd.message;
-        if (!msg?.text) continue;
-        await handleMessage(String(msg.chat.id), msg.text);
+      // Pure short-polling (timeout=0 → Telegram returns immediately) over
+      // tgRequest, which uses a fresh non-pooled HTTPS connection per call. On
+      // this network a held long-poll AND a reused keep-alive socket both get
+      // silently RST — observed live as the first poll after start succeeding
+      // while every reused poll failed with "fetch failed". An instant return
+      // on a fresh connection is the one shape that works here; the 2s pace
+      // below keeps update latency low without hammering the API.
+      const url = `${API(token, "getUpdates")}?timeout=0&offset=${offset}`;
+      const data = (await tgRequest(url, { timeoutMs: 15_000 })) as {
+        ok: boolean;
+        result?: TgUpdate[];
+      };
+      writeBotHeartbeat(); // reached and parsed a response from Telegram — the loop is alive
+      if (data.ok && data.result) {
+        for (const upd of data.result) {
+          offset = upd.update_id + 1;
+          const msg = upd.message;
+          if (!msg?.text) continue;
+          busyProcessing = true;
+          try {
+            await handleMessage(String(msg.chat.id), msg.text);
+          } finally {
+            busyProcessing = false;
+          }
+        }
       }
+      await new Promise((r) => setTimeout(r, 2_000));
     } catch (err) {
       console.warn(
         `[oracle-bot] poll error (retrying): ${err instanceof Error ? err.message : String(err)}`

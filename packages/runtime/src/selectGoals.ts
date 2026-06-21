@@ -217,7 +217,7 @@ function leagueCorrelationHaircut(legs: GoalsLeg[]): number {
     if (count >= 2) {
       // Apply haircut once per same-league pair above the first
       const pairs = (count * (count - 1)) / 2;
-      penalty *= Math.pow(1 / (1 + RHO_SAME_LEAGUE), pairs);
+      penalty *= (1 / (1 + RHO_SAME_LEAGUE)) ** pairs;
     }
   }
   return Math.max(0.01, penalty);

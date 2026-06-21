@@ -4,11 +4,12 @@
  *  Gap-fill: fixtures scraped but not covered by the Odds API get odds via Gemini Search.
  *  Every path is gated through selectFixtures (SportyBet-today membership +
  *  composite score + MAX_FIXTURES_PER_RUN cap) before any per-fixture paid call. */
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import type { FixtureJob, RunState } from "@oracle/engine";
+import type { FixtureJob, RunState, SoftContextItem } from "@oracle/engine";
 import { parseFixtureList, runPool } from "@oracle/engine";
 import type { LLMCallContext } from "@oracle/llm";
 import { fetchOddsViaGemini } from "@oracle/llm";
@@ -24,12 +25,70 @@ import {
   selectFixtures,
 } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
+import { buildStatsOverride, buildStatsSoftContext } from "./sportyBetStats.js";
 import { namesMatch } from "./teamNames.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
 const CACHE_PATH = join(ROOT, ".tmp/fixtures/today.txt");
 const ODDS_CACHE_DIR = join(ROOT, ".tmp/odds");
+
+// A bare "python" relies on PATH resolution, which a Windows service host does
+// not inherit the same way an interactive shell does — causing a silent spawn
+// ENOENT under Servy while working fine from a terminal. Resolve an absolute
+// path up front so behavior is identical in both contexts.
+export function resolvePythonBin(): string {
+  if (process.env["PYTHON_BIN"] && existsSync(process.env["PYTHON_BIN"])) {
+    return process.env["PYTHON_BIN"];
+  }
+  if (process.platform === "win32") {
+    const candidates = [
+      join(process.env["LOCALAPPDATA"] ?? "", "Programs", "Python", "Python313", "python.exe"),
+      join(process.env["LOCALAPPDATA"] ?? "", "Python", "bin", "python.exe"),
+    ];
+    for (const c of candidates) if (existsSync(c)) return c;
+    // Under a Windows service (LocalSystem) LOCALAPPDATA points at the systemprofile,
+    // not the human user whose per-user Python install actually exists — so the
+    // candidates above miss. Scan every real user profile's per-user install location
+    // (no hardcoded username) and pick the highest Python3* version found.
+    const userPython = scanUserProfilesForPython();
+    if (userPython) return userPython;
+    return "python";
+  }
+  return "python3";
+}
+/** Walk C:\Users\<each>\AppData\Local\Programs\Python\Python3* for python.exe.
+ *  Returns the highest-versioned match, or undefined if none exist. */
+function scanUserProfilesForPython(): string | undefined {
+  const usersDir = join(process.env["SystemDrive"] ?? "C:", "\\", "Users");
+  let best: { version: number; path: string } | undefined;
+  let users: string[];
+  try {
+    users = readdirSync(usersDir);
+  } catch {
+    return undefined;
+  }
+  for (const user of users) {
+    const pyRoot = join(usersDir, user, "AppData", "Local", "Programs", "Python");
+    let entries: string[];
+    try {
+      entries = readdirSync(pyRoot);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const m = /^Python(\d+)$/i.exec(entry);
+      if (!m) continue;
+      const exe = join(pyRoot, entry, "python.exe");
+      if (!existsSync(exe)) continue;
+      const version = Number(m[1]);
+      if (!best || version > best.version) best = { version, path: exe };
+    }
+  }
+  return best?.path;
+}
+
+const PYTHON_BIN = resolvePythonBin();
 
 // ── Odds API sport → ORACLE league name ──────────────────────────────────────
 
@@ -349,13 +408,18 @@ async function applySelection(
   );
   // For fixtures selected without bulk odds, inject sidecar odds (all markets)
   // into fetched.odds so the engine reaches the EV-market scan. Also merges
-  // sportyBetStats/Odds/StatsCoverage for every fixture so the safety filter
-  // and LLM prompt have H2H, form, xG, and standings regardless of path.
+  // sportyBetStats/Odds/StatsCoverage for every fixture, and — via
+  // buildStatsOverride/buildStatsSoftContext below — actually wires that data
+  // into the engine's xH/xA/oppGA/restH/restA telemetry and the LLM soft
+  // context, regardless of path (audited 2026-06-20: this comment used to
+  // claim the engine/LLM already consumed H2H/form/xG/standings; they didn't).
   const injectSidecarOdds = (c: SelectionCandidate): FixtureJob => {
     const job = c.job;
     const detail = c.sportyBetDetail;
     const existingOdds = job.state?.pipeline?.fetched?.odds as Record<string, unknown> | undefined;
     const existingFetched = (job.state?.pipeline?.fetched ?? {}) as Record<string, unknown>;
+    const existingTel = job.state?.telemetry ?? {};
+    const existingSoft = (existingTel.softContext as SoftContextItem[] | undefined) ?? [];
 
     // Merge full sidecar stats into every fixture (both bulk-odds and sidecar-only paths)
     const statsEnrich =
@@ -367,13 +431,26 @@ async function applySelection(
           }
         : {};
 
+    // Data-quality-gated hard override of the engine's xH/xA (Alpha-model input)
+    // plus the SoS/fatigue inputs the engine already has slots for but the
+    // runtime never populated — and the full stats block as LLM soft context
+    // (kind: "stats"). Both derive purely from `detail`, so safe to (re)compute
+    // even when statsEnrich above was skipped as already-merged — idempotent.
+    const statsOverride = buildStatsOverride(detail);
+    const statsContext = buildStatsSoftContext(detail);
+    const softMerge = statsContext.length
+      ? { softContext: [...existingSoft, ...statsContext] }
+      : {};
+    const hasOverrideOrContext = statsOverride !== null || statsContext.length > 0;
+
     if (c.hasBulkOdds) {
-      // Already has live odds — only add stats if missing
-      if (Object.keys(statsEnrich).length === 0) return job;
+      // Already has live odds — only touch the job if there's stats/override/context to add
+      if (Object.keys(statsEnrich).length === 0 && !hasOverrideOrContext) return job;
       return {
         ...job,
         state: {
           ...job.state,
+          telemetry: { ...existingTel, ...statsOverride, ...softMerge },
           pipeline: {
             ...job.state?.pipeline,
             fetched: { ...existingFetched, ...statsEnrich },
@@ -396,13 +473,15 @@ async function applySelection(
       state: {
         ...job.state,
         telemetry: {
-          ...(job.state?.telemetry ?? {}),
+          ...existingTel,
           hOdds: h,
           dOdds: d,
           aOdds: a,
           ohO: h,
           oaO: a,
           hoursToKO,
+          ...statsOverride,
+          ...softMerge,
         },
         pipeline: {
           ...job.state?.pipeline,
@@ -622,10 +701,14 @@ async function fetchOddsViaPlaywright(
   // hard taskkill /T /F on a mid-flight Python process can leave
   // chrome-headless-shell.exe orphaned on Windows (job-object quirk), and
   // those orphans compound across runs until they starve GAP_FILL_CONCURRENCY.
-  const result = await _spawnAsync("python", [scriptPath, "--query", query, "--wait-ms", "4000"], {
-    timeoutMs: 28_000,
-    env: { ...process.env, PYTHONIOENCODING: "utf-8" },
-  });
+  const result = await _spawnAsync(
+    PYTHON_BIN,
+    [scriptPath, "--query", query, "--wait-ms", "4000"],
+    {
+      timeoutMs: 28_000,
+      env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+    }
+  );
   if (result.status !== 0 || !result.stdout) return null;
   let payload: { ok?: boolean; result?: { text?: string } };
   try {
@@ -791,7 +874,7 @@ async function fetchWebSearchOdds(
     const cliArgs = [join(ROOT, "tools/scrape_live_odds.py"), "--fixtures", tmpPath, "--quiet"];
     if (minConsensus != null) cliArgs.push("--min-consensus", String(minConsensus));
     if (varianceThreshold != null) cliArgs.push("--variance-threshold", String(varianceThreshold));
-    const result = spawnSync("python", cliArgs, {
+    const result = spawnSync(PYTHON_BIN, cliArgs, {
       encoding: "utf8",
       timeout: 120_000, // 2 min per fixture
     });
@@ -1088,12 +1171,18 @@ export async function fetchFixtureByName(
         if (detail?.odds?.["1x2"]) {
           const flat = flattenSidecarOdds(detail);
           if (flat["home"] && flat["away"]) {
+            const statsOverride = buildStatsOverride(detail);
+            const statsContext = buildStatsSoftContext(detail);
             return {
               home,
               away,
               league: sidecarLeague ?? "Unknown",
               kickoff: sidecarKickoff ?? new Date().toISOString(),
               state: {
+                telemetry: {
+                  ...statsOverride,
+                  ...(statsContext.length ? { softContext: statsContext } : {}),
+                },
                 pipeline: {
                   fetched: {
                     odds: flat,
