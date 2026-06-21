@@ -4,7 +4,7 @@
  *  Gap-fill: fixtures scraped but not covered by the Odds API get odds via Gemini Search.
  *  Every path is gated through selectFixtures (SportyBet-today membership +
  *  composite score + MAX_FIXTURES_PER_RUN cap) before any per-fixture paid call. */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -37,7 +37,7 @@ const ODDS_CACHE_DIR = join(ROOT, ".tmp/odds");
 // not inherit the same way an interactive shell does — causing a silent spawn
 // ENOENT under Servy while working fine from a terminal. Resolve an absolute
 // path up front so behavior is identical in both contexts.
-function resolvePythonBin(): string {
+export function resolvePythonBin(): string {
   if (process.env["PYTHON_BIN"] && existsSync(process.env["PYTHON_BIN"])) {
     return process.env["PYTHON_BIN"];
   }
@@ -47,10 +47,47 @@ function resolvePythonBin(): string {
       join(process.env["LOCALAPPDATA"] ?? "", "Python", "bin", "python.exe"),
     ];
     for (const c of candidates) if (existsSync(c)) return c;
+    // Under a Windows service (LocalSystem) LOCALAPPDATA points at the systemprofile,
+    // not the human user whose per-user Python install actually exists — so the
+    // candidates above miss. Scan every real user profile's per-user install location
+    // (no hardcoded username) and pick the highest Python3* version found.
+    const userPython = scanUserProfilesForPython();
+    if (userPython) return userPython;
     return "python";
   }
   return "python3";
 }
+/** Walk C:\Users\<each>\AppData\Local\Programs\Python\Python3* for python.exe.
+ *  Returns the highest-versioned match, or undefined if none exist. */
+function scanUserProfilesForPython(): string | undefined {
+  const usersDir = join(process.env["SystemDrive"] ?? "C:", "\\", "Users");
+  let best: { version: number; path: string } | undefined;
+  let users: string[];
+  try {
+    users = readdirSync(usersDir);
+  } catch {
+    return undefined;
+  }
+  for (const user of users) {
+    const pyRoot = join(usersDir, user, "AppData", "Local", "Programs", "Python");
+    let entries: string[];
+    try {
+      entries = readdirSync(pyRoot);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const m = /^Python(\d+)$/i.exec(entry);
+      if (!m) continue;
+      const exe = join(pyRoot, entry, "python.exe");
+      if (!existsSync(exe)) continue;
+      const version = Number(m[1]);
+      if (!best || version > best.version) best = { version, path: exe };
+    }
+  }
+  return best?.path;
+}
+
 const PYTHON_BIN = resolvePythonBin();
 
 // ── Odds API sport → ORACLE league name ──────────────────────────────────────

@@ -10,6 +10,7 @@ export {
   fetchFixtureByName,
   fetchTodaysFixtures,
   gameToFixtureJob,
+  resolvePythonBin,
   SPORT_TO_LEAGUE,
 } from "./fixtures.js";
 export { enrichWithH2H } from "./h2h.js";

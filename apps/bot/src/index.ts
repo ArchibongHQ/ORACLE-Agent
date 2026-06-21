@@ -47,6 +47,7 @@ import {
   markPrompted,
   ORACLE_PRIORITY_LEAGUES,
   resolveDay,
+  resolvePythonBin,
   runAnalysis,
   runPuntAnalysis,
   validateConfig,
@@ -562,7 +563,7 @@ async function handleRun(chatId: string): Promise<void> {
 
 async function handleScrape(chatId: string): Promise<void> {
   await sendTo(chatId, "🔍 Scraping SportyBet fixtures…");
-  const python = process.platform === "win32" ? "python" : "python3";
+  const python = resolvePythonBin();
   const script = join(ROOT, "tools", "scrape_fixtures.py");
 
   execFile(python, [script], { cwd: ROOT }, async (err, stdout, stderr) => {
@@ -652,7 +653,7 @@ async function handleKaggle(chatId: string): Promise<void> {
     chatId,
     "📦 Triggering Kaggle refresh… (runs in background, may take several minutes)"
   );
-  const python = process.platform === "win32" ? "python" : "python3";
+  const python = resolvePythonBin();
   const scripts = [
     [
       "fetch_odds_timeseries.py",
