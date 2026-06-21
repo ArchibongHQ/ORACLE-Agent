@@ -34,8 +34,8 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import https from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildNotifiers, formatSummaryText, notifyAll, summarizeBatch } from "@oracle/notify";
 import type { BatchSummary } from "@oracle/notify";
+import { buildNotifiers, formatSummaryText, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
   buildConfig,
   CLV_ELIGIBLE_LEAGUES,

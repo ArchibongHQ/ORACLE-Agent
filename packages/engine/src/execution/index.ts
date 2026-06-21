@@ -3,6 +3,7 @@
  *  LEAGUE_PARAMS, POPULAR_TEAMS, MarketMakerEngine all inlined.
  *  SensitivityEngine refactored as private method (recursive via this._run). */
 import type { StoragePort } from "@oracle/storage";
+import { isotonicCalibrateFp } from "../calibration/index.js";
 import type {
   AhPivotResult,
   MarketBook,
@@ -47,7 +48,6 @@ import {
   skellamAHCover,
   skellamProbs,
 } from "../math/index.js";
-import { isotonicCalibrateFp } from "../calibration/index.js";
 import { RAGSystem } from "../rag/index.js";
 import { AntiSycophancyCircuit, ConvergenceScorer, MLSafetyFilter } from "../safety/index.js";
 import type {
