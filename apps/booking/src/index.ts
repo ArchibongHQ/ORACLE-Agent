@@ -39,7 +39,7 @@ export async function bookAccumulator(picks: ActionablePick[]): Promise<BookingR
 
   if (!picks.length) return { ...empty, unmatched: [], error: "no actionable picks to book" };
 
-  const isLocalWindows = process.platform === "win32" && process.env["ORACLE_IS_VPS"] !== "true";
+  const isLocalWindows = process.platform === "win32" && process.env.ORACLE_IS_VPS !== "true";
   const browser = await chromium.launch({
     headless: true,
     args: [

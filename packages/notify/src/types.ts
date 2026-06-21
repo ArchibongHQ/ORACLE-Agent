@@ -1,5 +1,5 @@
 /** Notifier contract + the BatchSummary every channel renders. */
-import type { BatchJobResult, BatchResult, PickRef } from "@oracle/engine";
+import type { BatchJobResult, BatchResult } from "@oracle/engine";
 
 export interface ActionablePick {
   home: string;

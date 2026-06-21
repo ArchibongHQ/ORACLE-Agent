@@ -150,7 +150,7 @@ export async function fetchNewsViaGoogleAiMode(
   const query = `${home} vs ${away} ${league} ${date} confirmed team news injuries suspensions lineup`;
 
   const scraped = await scrapeGoogleAiMode(query);
-  if (!scraped || !scraped.text) return null;
+  if (!scraped?.text) return null;
 
   const reshapePrompt = `${buildPrompt(home, away, league, kickoff)}
 

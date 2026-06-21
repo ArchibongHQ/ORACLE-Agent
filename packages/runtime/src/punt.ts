@@ -141,7 +141,7 @@ function jobFromSidecar(
   league: string
 ): FixtureJob {
   const flat = flattenSidecarOdds(detail);
-  const hasOdds = flat["home"] !== undefined && flat["away"] !== undefined;
+  const hasOdds = flat.home !== undefined && flat.away !== undefined;
 
   return {
     home: raw.home,

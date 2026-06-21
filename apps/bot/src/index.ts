@@ -44,7 +44,6 @@ import {
   formatPuntResult,
   loadEnv,
   markFulfilled,
-  markPrompted,
   ORACLE_PRIORITY_LEAGUES,
   resolveDay,
   resolvePythonBin,
@@ -141,11 +140,11 @@ function tgRequest(
 // ── ACL ───────────────────────────────────────────────────────────────────────
 
 function getAdminId(): string {
-  return env["TELEGRAM_CHAT_ID"] ?? "";
+  return env.TELEGRAM_CHAT_ID ?? "";
 }
 
 function getUserIds(): Set<string> {
-  const raw = env["TELEGRAM_USER_IDS"] ?? "";
+  const raw = env.TELEGRAM_USER_IDS ?? "";
   const ids = raw
     .split(",")
     .map((s) => s.trim())
@@ -163,7 +162,7 @@ function isAllowed(chatId: string): boolean {
 
 // ── Telegram primitives ───────────────────────────────────────────────────────
 
-const TOKEN = () => env["TELEGRAM_BOT_TOKEN"] ?? "";
+const TOKEN = () => env.TELEGRAM_BOT_TOKEN ?? "";
 const CHAT_ID = () => getAdminId();
 
 async function sendTo(chatId: string, text: string): Promise<void> {
@@ -306,8 +305,8 @@ async function handleHelp(chatId: string): Promise<void> {
 
 async function handleStatus(chatId: string): Promise<void> {
   const hb = readHeartbeat();
-  const batch = hb["lastBatch"];
-  const resolve = hb["lastResolve"];
+  const batch = hb.lastBatch;
+  const resolve = hb.lastResolve;
   const lines: string[] = ["*ORACLE Status*\n"];
 
   if (batch) {
@@ -339,7 +338,7 @@ async function handleStatus(chatId: string): Promise<void> {
 async function handleToday(chatId: string): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const hb = readHeartbeat();
-  const batch = hb["lastBatch"];
+  const batch = hb.lastBatch;
   const batchDate = batch?.at?.slice(0, 10);
 
   if (batchDate !== today) {
@@ -366,7 +365,7 @@ async function handleToday(chatId: string): Promise<void> {
 
 async function handleYesterday(chatId: string): Promise<void> {
   const hb = readHeartbeat();
-  const resolve = hb["lastResolve"];
+  const resolve = hb.lastResolve;
 
   if (!resolve) {
     await sendTo(chatId, "ℹ️ No resolution data yet. Fixtures are resolved at 14:00 daily.");
@@ -386,7 +385,7 @@ async function handleYesterday(chatId: string): Promise<void> {
 async function handlePicks(chatId: string): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const hb = readHeartbeat();
-  const batch = hb["lastBatch"];
+  const batch = hb.lastBatch;
   const batchDate = batch?.at?.slice(0, 10);
 
   if (batchDate !== today) {
@@ -764,7 +763,7 @@ async function handleConfigSet(chatId: string, key: string, value: string): Prom
     if (lineRegex.test(contents)) {
       contents = contents.replace(lineRegex, `${k}=${value}`);
     } else {
-      contents = contents.trimEnd() + `\n${k}=${value}\n`;
+      contents = `${contents.trimEnd()}\n${k}=${value}\n`;
     }
     writeFileSync(ENV_PATH, contents, "utf8");
     // Hot-reload
@@ -785,12 +784,12 @@ async function handleErrors(chatId: string): Promise<void> {
     return;
   }
 
-  const errors = manifest["errors"] as
+  const errors = manifest.errors as
     | Array<{ code: string; message: string; fixtureId?: string }>
     | undefined;
 
   if (!errors?.length) {
-    await sendTo(chatId, `✅ *No errors* in last batch (${String(manifest["runId"] ?? "?")}).`);
+    await sendTo(chatId, `✅ *No errors* in last batch (${String(manifest.runId ?? "?")}).`);
     return;
   }
 
@@ -810,15 +809,15 @@ async function handleCost(chatId: string): Promise<void> {
     return;
   }
 
-  const cost = manifest["cost"] as
+  const cost = manifest.cost as
     | { estimatedUsd: number | null; ceilingUsd: number | null; halted: boolean }
     | undefined;
-  const totals = manifest["totals"] as
+  const totals = manifest.totals as
     | { analysed: number; actionable: number; errors: number }
     | undefined;
 
   const lines = [
-    `💰 *Cost — ${String(manifest["runId"] ?? "last batch")}*`,
+    `💰 *Cost — ${String(manifest.runId ?? "last batch")}*`,
     `Estimated: ${cost?.estimatedUsd != null ? `$${cost.estimatedUsd.toFixed(4)}` : "unknown"}`,
     `Ceiling: ${cost?.ceilingUsd != null ? `$${cost.ceilingUsd}` : "none set"}`,
     `Halted by cap: ${cost?.halted ? "⚠️ Yes" : "No"}`,
@@ -1033,10 +1032,8 @@ export async function runBot(): Promise<void> {
   const token = TOKEN();
   const adminId = CHAT_ID();
   if (!token || !adminId) {
-    console.error("[oracle-bot] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — bot disabled.");
     return;
   }
-  console.log("[oracle-bot] started — listening for commands.");
   let offset = 0;
 
   // While a command is being processed the poll loop is blocked (single-threaded),
@@ -1079,10 +1076,7 @@ export async function runBot(): Promise<void> {
         }
       }
       await new Promise((r) => setTimeout(r, 2_000));
-    } catch (err) {
-      console.warn(
-        `[oracle-bot] poll error (retrying): ${err instanceof Error ? err.message : String(err)}`
-      );
+    } catch (_err) {
       await new Promise((r) => setTimeout(r, 3_000));
     }
   }
@@ -1090,8 +1084,7 @@ export async function runBot(): Promise<void> {
 
 const isMain = process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
-  runBot().catch((e) => {
-    console.error(e);
+  runBot().catch((_e) => {
     process.exit(1);
   });
 }

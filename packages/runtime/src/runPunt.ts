@@ -46,7 +46,7 @@ export async function refreshSidecarIfStale(): Promise<void> {
       const timer = setTimeout(() => {
         // On local Windows, child.kill() leaves chrome.exe orphaned (separate process tree).
         // Use taskkill /F /T to kill the whole tree. On VPS/Linux, SIGTERM cascades normally.
-        if (process.platform === "win32" && process.env["ORACLE_IS_VPS"] !== "true" && child.pid) {
+        if (process.platform === "win32" && process.env.ORACLE_IS_VPS !== "true" && child.pid) {
           import("node:child_process")
             .then(({ execFileSync }) => {
               try {
