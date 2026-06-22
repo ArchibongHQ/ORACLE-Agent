@@ -1,10 +1,12 @@
 /** B1 — Briefing layer.
  *  Spec: ORACLE_v2026_8_0.jsx lines 5140–5210.
- *  Primary: Claude Opus (temperature=0). Fallback: Gemini temperature ensemble (T=[0.4,0.8,1.2]).
+ *  Tier 0: local Claude Code CLI (advisory — tried first whenever isLocalRuntime()).
+ *  Tier 1: Claude Opus (temperature=0). Fallback: Gemini temperature ensemble (T=[0.4,0.8,1.2]).
  *  Emits DIVERGENT_TEMPERATURE_ENSEMBLE when no majority market in ensemble.
  *  Emits FRAMING_BIAS_DETECTED when neutral-persona Kelly diverges >15%. */
 import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI } from "@google/genai";
+import { callClaudeCode, isLocalRuntime } from "./callClaudeCode.js";
 import { callOpenRouterJson } from "./callOpenRouter.js";
 import { MODELS, OPENROUTER_MODELS } from "./cascade.js";
 import type { LLMCallContext } from "./types.js";
@@ -113,6 +115,18 @@ async function checkFramingBias(
 export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise<BriefingResult> {
   const flags: string[] = [];
 
+  // Tier 0: local Claude Code CLI — advisory, tried whenever the binary is
+  // available. Never throws; null falls through to Claude Opus unchanged.
+  // Skips the framing-bias check: that check re-runs the SAME model with a
+  // neutral persona to compare Kelly fractions, which is meaningless across
+  // two different models (local CLI vs the Claude API).
+  if (isLocalRuntime()) {
+    const localText = await callClaudeCode(prompt);
+    if (localText) {
+      return { text: localText, model: "claude-code-local", flags };
+    }
+  }
+
   // Primary: Claude Opus
   if (ctx.config.claudeApiKey) {
     try {
@@ -146,25 +160,23 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
     }
   }
 
-  // Tier 2/3: OpenRouter — Qwen3 235B Thinking then DeepSeek R1
+  // Tier 2/3: OpenRouter, GLM-first — GLM-5.2 → GLM-5.1 → Qwen3 235B Thinking → GPT-oss-120B
   if (ctx.config.openrouterApiKey) {
-    const t2 = await callOpenRouterJson(
-      BRIEFING_OR_SYSTEM,
-      prompt,
+    for (const model of [
+      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.GLM_5_1,
       OPENROUTER_MODELS.QWEN3_235B_THINKING,
-      ctx.config.openrouterApiKey,
-      0
-    );
-    if (t2) return { text: t2, model: OPENROUTER_MODELS.QWEN3_235B_THINKING, flags };
-
-    const t3 = await callOpenRouterJson(
-      BRIEFING_OR_SYSTEM,
-      prompt,
       OPENROUTER_MODELS.GPT_OSS_120B,
-      ctx.config.openrouterApiKey,
-      0
-    );
-    if (t3) return { text: t3, model: OPENROUTER_MODELS.GPT_OSS_120B, flags };
+    ]) {
+      const text = await callOpenRouterJson(
+        BRIEFING_OR_SYSTEM,
+        prompt,
+        model,
+        ctx.config.openrouterApiKey,
+        0
+      );
+      if (text) return { text, model, flags };
+    }
   }
 
   throw new Error("callBriefing: no LLM available");

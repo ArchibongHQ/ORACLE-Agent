@@ -1,6 +1,6 @@
 /** Phase 4 decision layer tests.
  *  LLM path: mocked via vi.mock('@oracle/llm'). Fallback path: real deterministic logic. */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionContext } from "../src/decision/index.js";
 import {
   buildEligibleBets,
@@ -370,14 +370,8 @@ describe("decide — GLM-5.2 shadow run", () => {
       rationale: "GLM-5.2 tier-3 pick.",
       rejectedAndWhy: [],
     };
-    const callOpenRouterJson = vi
-      .fn()
-      .mockResolvedValueOnce(null) // GPT_OSS_120B
-      .mockResolvedValueOnce(null) // NEMOTRON_SUPER_120B
-      .mockResolvedValueOnce(null) // QWEN3_NEXT_80B
-      .mockResolvedValueOnce(null) // GPT_OSS_20B
-      .mockResolvedValueOnce(null) // LLAMA_3_3_70B
-      .mockResolvedValueOnce(JSON.stringify(glmResponse)); // GLM_5_2 — real decision
+    // GLM-first cascade: GLM-5.2 is tried first and succeeds immediately.
+    const callOpenRouterJson = vi.fn().mockResolvedValueOnce(JSON.stringify(glmResponse));
     vi.doMock("@oracle/llm", () => ({
       callOpenRouterJson,
       OPENROUTER_MODELS: {
@@ -396,8 +390,142 @@ describe("decide — GLM-5.2 shadow run", () => {
     });
     expect(decision.rationale).toBe("GLM-5.2 tier-3 pick.");
     expect(shadow).toBeUndefined();
-    // Only the 6 cascade calls (5 free + GLM-5.2 itself) — no extra shadow call.
-    expect(callOpenRouterJson).toHaveBeenCalledTimes(6);
+    // GLM-5.2 is tried first and succeeds — no other cascade model is called.
+    expect(callOpenRouterJson).toHaveBeenCalledTimes(1);
+    vi.doUnmock("@oracle/llm");
+  });
+});
+
+// ── _tryOpenRouter cascade order (via decide, no Claude/Gemini keys) ──────────
+
+describe("decide — OpenRouter cascade, GLM-first", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("tries GLM-5.2 → GLM-5.1 → free models in order", async () => {
+    const finalResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.6,
+      rationale: "GPT-oss pick.",
+      rejectedAndWhy: [],
+    };
+    const OPENROUTER_MODELS = {
+      GLM_5_2: "z-ai/glm-5.2",
+      GLM_5_1: "z-ai/glm-5.1",
+      GPT_OSS_120B: "openai/gpt-oss-120b:free",
+      NEMOTRON_SUPER_120B: "nvidia/nemotron-3-super-120b-a12b:free",
+      QWEN3_NEXT_80B: "qwen/qwen3-next-80b-a3b-instruct:free",
+      GPT_OSS_20B: "openai/gpt-oss-20b:free",
+      LLAMA_3_3_70B: "meta-llama/llama-3.3-70b-instruct:free",
+    };
+    const callOpenRouterJson = vi
+      .fn()
+      .mockResolvedValueOnce(null) // GLM_5_2
+      .mockResolvedValueOnce(null) // GLM_5_1
+      .mockResolvedValueOnce(JSON.stringify(finalResponse)); // GPT_OSS_120B
+    vi.doMock("@oracle/llm", () => ({ callOpenRouterJson, OPENROUTER_MODELS }));
+
+    const { decision } = await decide([makeMarket()], BASE_CTX, { openrouterApiKey: "or-key" });
+    expect(decision.rationale).toBe("GPT-oss pick.");
+    // Real decision came from GPT_OSS_120B (not GLM-5.2), so decide()'s wrapper
+    // fires one more GLM-5.2 shadow call after the cascade — assert the cascade
+    // order itself via the first 3 calls, independent of that shadow call.
+    const calledModels = callOpenRouterJson.mock.calls.map((c) => c[2]);
+    expect(calledModels.slice(0, 3)).toEqual([
+      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.GLM_5_1,
+      OPENROUTER_MODELS.GPT_OSS_120B,
+    ]);
+    vi.doUnmock("@oracle/llm");
+  });
+});
+
+// ── decideInner — Tier 0 local Claude Code (opt-in only) ──────────────────────
+
+describe("decide — Tier 0 local Claude Code (opt-in)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ORACLE_LOCAL_DECISION;
+  });
+
+  afterEach(() => {
+    delete process.env.ORACLE_LOCAL_DECISION;
+  });
+
+  it("uses the local CLI result when opted in and isLocalRuntime() is true", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const localResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.66,
+      rationale: "local CLI pick.",
+      rejectedAndWhy: [],
+    };
+    const callClaude = vi.fn().mockRejectedValue(new Error("should not be called"));
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(localResponse)),
+      callClaude,
+    }));
+
+    const { decision, replay } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
+    expect(decision.rationale).toBe("local CLI pick.");
+    expect(replay?.model).toBe("claude-code-local");
+    expect(replay?.temperature).toBe("default");
+    expect(callClaude).not.toHaveBeenCalled();
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("does not attempt the local CLI when not opted in (default)", async () => {
+    const callClaudeCode = vi.fn();
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      callClaude: vi.fn().mockRejectedValue(new Error("claude down")),
+    }));
+    const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "" });
+    expect(callClaudeCode).not.toHaveBeenCalled();
+    expect(decision.rationale).toMatch(/deterministic fallback|Deterministic/i);
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("falls through to Claude Opus when opted in but isLocalRuntime() is false", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const claudeResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.7,
+      rationale: "Claude pick.",
+      rejectedAndWhy: [],
+    };
+    const callClaudeCode = vi.fn();
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => false,
+      callClaudeCode,
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(claudeResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
+    expect(callClaudeCode).not.toHaveBeenCalled();
+    expect(decision.rationale).toBe("Claude pick.");
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("falls through to Claude Opus when opted in and the local CLI returns null", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const claudeResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.7,
+      rationale: "Claude pick after local null.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(null),
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(claudeResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
+    expect(decision.rationale).toBe("Claude pick after local null.");
     vi.doUnmock("@oracle/llm");
   });
 });

@@ -1,14 +1,25 @@
-/** callBriefing (B1) — Claude Opus primary → Gemini temperature ensemble → OpenRouter
- *  Tier 2/3. Pins flag emission (FRAMING_BIAS_DETECTED, DIVERGENT_TEMPERATURE_ENSEMBLE)
- *  and the terminal throw when no LLM is available. */
+/** callBriefing (B1) — Tier 0 local Claude Code → Claude Opus primary → Gemini
+ *  temperature ensemble → OpenRouter Tier 2/3 (GLM-first). Pins flag emission
+ *  (FRAMING_BIAS_DETECTED, DIVERGENT_TEMPERATURE_ENSEMBLE) and the terminal throw
+ *  when no LLM is available. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { callBriefing } from "../src/callBriefing.js";
+import { _resetClaudeCodeCaches } from "../src/callClaudeCode.js";
 import { MODELS, OPENROUTER_MODELS } from "../src/cascade.js";
-import { chatResponse, makeCtx, postedModels } from "./helpers.js";
+import {
+  chatResponse,
+  claudeCodeEnvelope,
+  FakeChild,
+  flushMicrotasks,
+  makeCtx,
+  postedModels,
+} from "./helpers.js";
 
-const { messagesCreateMock, generateContentMock } = vi.hoisted(() => ({
+const { messagesCreateMock, generateContentMock, spawn, execFile } = vi.hoisted(() => ({
   messagesCreateMock: vi.fn(),
   generateContentMock: vi.fn(),
+  spawn: vi.fn(),
+  execFile: vi.fn((_cmd: string, _args: string[], cb?: () => void) => cb?.()),
 }));
 
 vi.mock("@anthropic-ai/sdk", () => ({
@@ -23,6 +34,8 @@ vi.mock("@google/genai", () => ({
   },
 }));
 
+vi.mock("node:child_process", () => ({ spawn, execFile }));
+
 const fetchMock = vi.fn();
 
 function claudeText(text: string) {
@@ -33,11 +46,16 @@ beforeEach(() => {
   messagesCreateMock.mockReset();
   generateContentMock.mockReset();
   fetchMock.mockReset();
+  spawn.mockReset();
+  execFile.mockClear();
+  _resetClaudeCodeCaches();
+  delete process.env.ORACLE_RUNTIME;
   vi.stubGlobal("fetch", fetchMock);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete process.env.ORACLE_RUNTIME;
 });
 
 describe("callBriefing — Claude Opus primary", () => {
@@ -100,23 +118,27 @@ describe("callBriefing — Gemini temperature ensemble fallback", () => {
   });
 });
 
-describe("callBriefing — OpenRouter Tier 2/3", () => {
+describe("callBriefing — OpenRouter Tier 2/3, GLM-first", () => {
   const ctx = makeCtx({ openrouterApiKey: "or-key" });
 
-  it("uses Qwen3 235B Thinking (Tier 2) when no Claude/Gemini keys", async () => {
+  it("uses GLM-5.2 first when no Claude/Gemini keys", async () => {
     fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
     const res = await callBriefing("p", ctx);
-    expect(res.model).toBe(OPENROUTER_MODELS.QWEN3_235B_THINKING);
+    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2);
     expect(res.text).toBe('{"primaryPick":"Over 2.5"}');
   });
 
-  it("falls to GPT-OSS-120B (Tier 3) when Tier 2 fails", async () => {
+  it("falls GLM-5.2 → GLM-5.1 → Qwen3 235B Thinking → GPT-oss-120B in order", async () => {
     fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(chatResponse('{"primaryPick":"X"}'));
     const res = await callBriefing("p", ctx);
     expect(res.model).toBe(OPENROUTER_MODELS.GPT_OSS_120B);
     expect(postedModels(fetchMock)).toEqual([
+      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.GLM_5_1,
       OPENROUTER_MODELS.QWEN3_235B_THINKING,
       OPENROUTER_MODELS.GPT_OSS_120B,
     ]);
@@ -126,7 +148,47 @@ describe("callBriefing — OpenRouter Tier 2/3", () => {
     generateContentMock.mockRejectedValue(new Error("gemini down"));
     fetchMock.mockResolvedValue(chatResponse("or-briefing"));
     const res = await callBriefing("p", makeCtx({ geminiApiKey: "gk", openrouterApiKey: "ok" }));
-    expect(res.model).toBe(OPENROUTER_MODELS.QWEN3_235B_THINKING);
+    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2);
+  });
+});
+
+describe("callBriefing — Tier 0 local Claude Code", () => {
+  it("uses the local CLI result and skips Claude/Gemini/OpenRouter when isLocalRuntime()", async () => {
+    process.env.ORACLE_RUNTIME = "local";
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callBriefing(
+      "p",
+      makeCtx({ claudeApiKey: "ck", geminiApiKey: "gk", openrouterApiKey: "ok" })
+    );
+    await flushMicrotasks();
+    child.stdout.emit(
+      "data",
+      claudeCodeEnvelope({ type: "result", is_error: false, result: '{"primaryPick":"Over 2.5"}' })
+    );
+    child.emit("close", 0);
+    const res = await promise;
+    expect(res.text).toBe('{"primaryPick":"Over 2.5"}');
+    expect(res.model).toBe("claude-code-local");
+    expect(messagesCreateMock).not.toHaveBeenCalled();
+    expect(generateContentMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls through to Claude Opus when the local CLI returns null", async () => {
+    process.env.ORACLE_RUNTIME = "local";
+    spawn.mockImplementation(() => {
+      throw new Error("spawn ENOENT");
+    });
+    messagesCreateMock.mockResolvedValueOnce(claudeText('{"primaryPick":"Over 2.5"}'));
+    const res = await callBriefing("p", makeCtx({ claudeApiKey: "ck" }));
+    expect(res.model).toBe(MODELS.CLAUDE_OPUS);
+  });
+
+  it("does not attempt the local CLI when isLocalRuntime() is false (default under Vitest)", async () => {
+    messagesCreateMock.mockResolvedValueOnce(claudeText('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck" }));
+    expect(spawn).not.toHaveBeenCalled();
   });
 });
 

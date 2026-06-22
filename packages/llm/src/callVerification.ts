@@ -3,6 +3,7 @@
  *  Adversarial review of chosen pick using Claude Sonnet.
  *  Returns { status, stamp, override? } — skipped when no Claude key. */
 import Anthropic from "@anthropic-ai/sdk";
+import { callClaudeCode, isLocalRuntime } from "./callClaudeCode.js";
 import { callOpenRouterJson } from "./callOpenRouter.js";
 import { MODELS, OPENROUTER_MODELS } from "./cascade.js";
 import type { LLMCallContext } from "./types.js";
@@ -29,11 +30,16 @@ VETO: clear flaw (wrong market side, odds discrepancy, negative EV).
 OVERRIDE: pick is sound but a clearly superior alternative exists (state it in override field).
 APPROVED: pick is sound with no better alternative.`;
 
+/** Returns null on any parse failure — callers must treat null as "could not
+ *  verify this response" and fall through to the next tier, NOT default to a
+ *  confident APPROVED. A confident-looking default here would let malformed
+ *  output from the unreliable tier-0 local CLI silently bypass the entire
+ *  adversarial-verification safety layer. */
 function parseCvlResponse(text: string): {
   status: CvlStatus;
   rationale: string;
   override?: string;
-} {
+} | null {
   try {
     const cleaned = text
       .replace(/```(?:json)?\s*/gi, "")
@@ -41,19 +47,16 @@ function parseCvlResponse(text: string): {
       .trim();
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
-    if (start === -1 || end === -1)
-      return { status: "APPROVED", rationale: "parse error — defaulting APPROVED" };
+    if (start === -1 || end === -1) return null;
     const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
-    const status = ["APPROVED", "OVERRIDE", "VETO"].includes(String(obj.status))
-      ? (String(obj.status) as CvlStatus)
-      : "APPROVED";
+    if (!["APPROVED", "OVERRIDE", "VETO"].includes(String(obj.status))) return null;
     return {
-      status,
+      status: obj.status as CvlStatus,
       rationale: String(obj.rationale ?? ""),
       override: obj.override ? String(obj.override) : undefined,
     };
   } catch {
-    return { status: "APPROVED", rationale: "parse error — defaulting APPROVED" };
+    return null;
   }
 }
 
@@ -66,12 +69,24 @@ async function callVerificationViaOpenRouter(
   const raw = await callOpenRouterJson(CVL_SYSTEM, prompt, model, apiKey, 0);
   if (!raw) return null;
   const parsed = parseCvlResponse(raw);
+  if (!parsed) return null;
   return { ...parsed, stamp: new Date().toISOString(), model };
 }
 
 /** callVerification — adversarial Claude Sonnet review of a proposed pick.
- *  Fallback: GLM-5.1 → GPT-oss-120B via OpenRouter before returning SKIPPED. */
+ *  Tier 0: local Claude Code CLI (advisory, tried first whenever isLocalRuntime()).
+ *  Fallback: GLM-5.2 → GLM-5.1 → GPT-oss-120B via OpenRouter before returning SKIPPED. */
 export async function callVerification(prompt: string, ctx: LLMCallContext): Promise<CvlResult> {
+  // Tier 0: local Claude Code CLI — never throws; null (incl. unparseable
+  // output) falls through unchanged to Tier 1, never defaults to APPROVED.
+  if (isLocalRuntime()) {
+    const raw = await callClaudeCode(`${CVL_SYSTEM}\n\n${prompt}`);
+    const parsed = raw ? parseCvlResponse(raw) : null;
+    if (parsed) {
+      return { ...parsed, stamp: new Date().toISOString(), model: "claude-code-local" };
+    }
+  }
+
   // Tier 1: Claude Sonnet (when key present)
   if (ctx.config.claudeApiKey) {
     try {
@@ -88,27 +103,30 @@ export async function callVerification(prompt: string, ctx: LLMCallContext): Pro
       );
       const text = resp.content[0]?.type === "text" ? resp.content[0].text : "";
       const parsed = parseCvlResponse(text);
-      return { ...parsed, stamp: new Date().toISOString(), model: MODELS.CLAUDE_SONNET };
+      if (parsed) {
+        return { ...parsed, stamp: new Date().toISOString(), model: MODELS.CLAUDE_SONNET };
+      }
+      // Unparseable Sonnet output — fall through to OpenRouter tiers rather
+      // than returning a spread of null.
     } catch {
       // Fall through to OpenRouter tiers
     }
   }
 
-  // Tier 2/3: OpenRouter — GLM-5.1 then GPT-oss-120B
+  // Tier 2/3: OpenRouter, GLM-first — GLM-5.2 → GLM-5.1 → GPT-oss-120B
   if (ctx.config.openrouterApiKey) {
-    const t2 = await callVerificationViaOpenRouter(
-      prompt,
+    for (const model of [
+      OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GLM_5_1,
-      ctx.config.openrouterApiKey
-    );
-    if (t2) return t2;
-
-    const t3 = await callVerificationViaOpenRouter(
-      prompt,
       OPENROUTER_MODELS.GPT_OSS_120B,
-      ctx.config.openrouterApiKey
-    );
-    if (t3) return t3;
+    ]) {
+      const result = await callVerificationViaOpenRouter(
+        prompt,
+        model,
+        ctx.config.openrouterApiKey
+      );
+      if (result) return result;
+    }
   }
 
   return {

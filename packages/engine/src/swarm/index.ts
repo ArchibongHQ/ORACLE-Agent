@@ -117,24 +117,37 @@ export async function runSwarm(
   }
 
   const prompt = buildWorkerPrompt(fixture, eligible, softContext);
+  // Worker 0's existing (Kimi/OpenRouter) assignment, computed once so the
+  // tier-0 local-CLI attempt below can fall back to it on a null.
+  const voteFor = (i: number): Promise<SwarmVote | null> => {
+    // Spread temperature across workers for genuine diversity of opinion.
+    const temp = 0.2 + (i / Math.max(1, n)) * 0.6;
+    // Tier 1: Kimi (Moonshot) when present.
+    if (config.kimiApiKey) {
+      return llm.callKimiVote(prompt, config.kimiApiKey, { temperature: temp });
+    }
+    // Tier 2/3: OpenRouter — first half paid MiMo, rest alternate working free
+    // models (GPT-OSS-120B / Nemotron Super 120B). Kimi-K2.6:free was retired
+    // by OpenRouter (404), so swarm workers use the confirmed-working free pair.
+    const orKey = config.openrouterApiKey!;
+    const M = llm.OPENROUTER_MODELS;
+    if (i < Math.ceil(n / 2)) {
+      return llm.callOpenRouterVote(prompt, M.MIMO_V2_5_PRO, orKey, { temperature: temp });
+    }
+    const freeModel = i % 2 === 0 ? M.GPT_OSS_120B : M.NEMOTRON_SUPER_120B;
+    return llm.callOpenRouterVote(prompt, freeModel, orKey, { temperature: temp });
+  };
+
   const settled = await Promise.allSettled(
-    Array.from({ length: n }, (_, i) => {
-      // Spread temperature across workers for genuine diversity of opinion.
-      const temp = 0.2 + (i / Math.max(1, n)) * 0.6;
-      // Tier 1: Kimi (Moonshot) when present.
-      if (config.kimiApiKey) {
-        return llm.callKimiVote(prompt, config.kimiApiKey, { temperature: temp });
+    Array.from({ length: n }, async (_, i) => {
+      // Tier 0: one worker slot tries the local Claude Code CLI (advisory) —
+      // adds a model-diverse voice to the panel without collapsing the
+      // temperature spread the rest of the workers rely on for diversity.
+      if (i === 0 && llm.isLocalRuntime()) {
+        const local = await llm.callClaudeCodeVote(prompt);
+        if (local) return local;
       }
-      // Tier 2/3: OpenRouter — first half paid MiMo, rest alternate working free
-      // models (GPT-OSS-120B / Nemotron Super 120B). Kimi-K2.6:free was retired
-      // by OpenRouter (404), so swarm workers use the confirmed-working free pair.
-      const orKey = config.openrouterApiKey!;
-      const M = llm.OPENROUTER_MODELS;
-      if (i < Math.ceil(n / 2)) {
-        return llm.callOpenRouterVote(prompt, M.MIMO_V2_5_PRO, orKey, { temperature: temp });
-      }
-      const freeModel = i % 2 === 0 ? M.GPT_OSS_120B : M.NEMOTRON_SUPER_120B;
-      return llm.callOpenRouterVote(prompt, freeModel, orKey, { temperature: temp });
+      return voteFor(i);
     })
   );
 

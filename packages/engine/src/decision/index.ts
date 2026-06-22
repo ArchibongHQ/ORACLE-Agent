@@ -231,9 +231,12 @@ async function shadowDecideWithGlm52(
 /** Calls LLMs to select the best bet.
  *
  *  Fallback chain (multi-tier):
+ *   0. Local Claude Code — opt-in only (ORACLE_LOCAL_DECISION="true" + isLocalRuntime());
+ *      the CLI samples at its account default, not pinned to 0, so this gated decision
+ *      tier stays off it unless an operator explicitly opts in.
  *   1. Claude Opus    — when claudeApiKey present
  *   2. Gemini 3.5     — when geminiApiKey present (fires if Claude key absent OR Claude call fails)
- *   3. OpenRouter     — GLM-5.1 → GPT-oss-120B → DeepSeek R1 (when openrouterApiKey present)
+ *   3. OpenRouter     — GLM-5.2 → GLM-5.1 → free models (when openrouterApiKey present)
  *   4. Deterministic  — when all LLMs unavailable or parse fails
  *
  *  Always returns { decision, replay } — replay is null on the deterministic path.
@@ -281,6 +284,26 @@ async function decideInner(
   const requestedAt = new Date().toISOString();
   const geminiKey = config?.geminiApiKey ?? "";
   const openrouterKey = config?.openrouterApiKey ?? "";
+
+  // ── Tier 0: local Claude Code CLI — opt-in only ──────────────────────────
+  // This is the final gated decision, so it stays on the temperature-0 API
+  // path by default: the local CLI samples at the account default with no
+  // knob to pin to 0. ORACLE_LOCAL_DECISION="true" lets an operator who has
+  // judged that tradeoff acceptable opt in. Falls through to Tier 1 on any
+  // miss (no binary, non-local runtime, empty result, or parse failure).
+  if (process.env.ORACLE_LOCAL_DECISION === "true") {
+    const { callClaudeCode, isLocalRuntime } = await import("@oracle/llm");
+    if (isLocalRuntime()) {
+      const raw = await callClaudeCode(prompt);
+      const parsed = raw ? parseDecisionResponse(raw) : null;
+      if (raw && parsed) {
+        return {
+          decision: parsed,
+          replay: { prompt, rawResponse: raw, model: "claude-code-local", temperature: "default" },
+        };
+      }
+    }
+  }
 
   // ── Tier 1: Claude Opus ───────────────────────────────────────────────────
   if (config?.claudeApiKey) {
@@ -375,7 +398,7 @@ async function _tryGemini(
   }
 }
 
-/** ── Tier 3: OpenRouter cascade — GLM-5.1 → GPT-oss-120B → DeepSeek R1.
+/** ── Tier 3: OpenRouter cascade — GLM-5.2 → GLM-5.1 → free models.
  *  Each model is tried at temperature 0 with JSON mode; the first that parses wins.
  *  All fail (or no key) → deterministic fallback. callOpenRouterJson never throws. */
 async function _tryOpenRouter(
@@ -392,18 +415,19 @@ async function _tryOpenRouter(
   }
 
   const { callOpenRouterJson, OPENROUTER_MODELS } = await import("@oracle/llm");
-  // Working-free models first (verified live on the project account, no credits
-  // needed), then paid GLMs as a last resort for when the account is funded.
-  // Cycling through several free models means a transient 429 on one just rolls
-  // to the next instead of dropping straight to the deterministic fallback.
+  // GLM-first: GLM-5.2 is the primary decision model (cascade.ts), tried before the
+  // free-tier models. Tier-0 local Claude Code already absorbs most traffic before
+  // this cascade is reached, bounding the GLM cost here. Cycling through the free
+  // models after GLM means a transient 429 on one just rolls to the next instead
+  // of dropping straight to the deterministic fallback.
   for (const model of [
+    OPENROUTER_MODELS.GLM_5_2,
+    OPENROUTER_MODELS.GLM_5_1,
     OPENROUTER_MODELS.GPT_OSS_120B,
     OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
     OPENROUTER_MODELS.QWEN3_NEXT_80B,
     OPENROUTER_MODELS.GPT_OSS_20B,
     OPENROUTER_MODELS.LLAMA_3_3_70B,
-    OPENROUTER_MODELS.GLM_5_2,
-    OPENROUTER_MODELS.GLM_5_1,
   ]) {
     const raw = await callOpenRouterJson(
       "You are ORACLE's gated betting decision engine. Return ONLY valid JSON.",

@@ -2,10 +2,12 @@ export type { BriefingResult } from "./callBriefing.js";
 // B1
 export { callBriefing } from "./callBriefing.js";
 export { callClaude } from "./callClaude.js";
+// Tier-0 local transport — shells out to the `claude` CLI instead of an HTTP SDK
+export { _resetClaudeCodeCaches, callClaudeCode, isLocalRuntime } from "./callClaudeCode.js";
 export { callGeminiDecision, fetchGeminiWithCascade } from "./callGemini.js";
 export type { KimiVote } from "./callKimi.js";
-// Swarm worker (Kimi K2.6 + OpenRouter fallbacks)
-export { callKimiVote, callOpenRouterVote } from "./callKimi.js";
+// Swarm worker (Kimi K2.6 + OpenRouter fallbacks + tier-0 local Claude Code)
+export { callClaudeCodeVote, callKimiVote, callOpenRouterVote } from "./callKimi.js";
 export type { NewsIntelResult } from "./callNewsIntel.js";
 // T0 — news / team intelligence (Perplexity Sonar + Google AI-Mode ensemble)
 export {

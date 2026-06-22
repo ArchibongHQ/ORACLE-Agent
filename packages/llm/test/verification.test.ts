@@ -1,17 +1,32 @@
-/** callVerification (B2/CVL) — Claude Sonnet primary → OpenRouter GLM-5.1 → GPT-oss-120B.
+/** callVerification (B2/CVL) — Tier 0 local Claude Code → Claude Sonnet →
+ *  OpenRouter GLM-5.2 → GLM-5.1 → GPT-oss-120B.
  *  Pins: malformed JSON defaults to APPROVED, terminal behavior is SKIPPED (never throws). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { _resetClaudeCodeCaches } from "../src/callClaudeCode.js";
 import { callVerification } from "../src/callVerification.js";
 import { MODELS, OPENROUTER_MODELS } from "../src/cascade.js";
-import { chatResponse, makeCtx, postedModels } from "./helpers.js";
+import {
+  chatResponse,
+  claudeCodeEnvelope,
+  FakeChild,
+  flushMicrotasks,
+  makeCtx,
+  postedModels,
+} from "./helpers.js";
 
-const { messagesCreateMock } = vi.hoisted(() => ({ messagesCreateMock: vi.fn() }));
+const { messagesCreateMock, spawn, execFile } = vi.hoisted(() => ({
+  messagesCreateMock: vi.fn(),
+  spawn: vi.fn(),
+  execFile: vi.fn((_cmd: string, _args: string[], cb?: () => void) => cb?.()),
+}));
 
 vi.mock("@anthropic-ai/sdk", () => ({
   default: class {
     messages = { create: messagesCreateMock };
   },
 }));
+
+vi.mock("node:child_process", () => ({ spawn, execFile }));
 
 const fetchMock = vi.fn();
 const ctxClaude = makeCtx({ claudeApiKey: "ck" });
@@ -23,11 +38,16 @@ function claudeText(text: string) {
 beforeEach(() => {
   messagesCreateMock.mockReset();
   fetchMock.mockReset();
+  spawn.mockReset();
+  execFile.mockClear();
+  _resetClaudeCodeCaches();
+  delete process.env.ORACLE_RUNTIME;
   vi.stubGlobal("fetch", fetchMock);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete process.env.ORACLE_RUNTIME;
 });
 
 describe("callVerification — Claude Sonnet tier", () => {
@@ -64,28 +84,71 @@ describe("callVerification — Claude Sonnet tier", () => {
   });
 });
 
-describe("callVerification — OpenRouter fallback tiers", () => {
-  it("uses GLM-5.1 when Claude throws", async () => {
+describe("callVerification — OpenRouter fallback tiers, GLM-first", () => {
+  it("uses GLM-5.2 when Claude throws", async () => {
     messagesCreateMock.mockRejectedValue(new Error("claude down"));
     fetchMock.mockResolvedValue(chatResponse('{"status":"APPROVED","rationale":"sound"}'));
     const ctx = makeCtx({ claudeApiKey: "ck", openrouterApiKey: "or" });
     const res = await callVerification("p", ctx);
     expect(res.status).toBe("APPROVED");
-    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_1);
-    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GLM_5_1]);
+    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2);
+    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GLM_5_2]);
   });
 
-  it("falls from GLM-5.1 to GPT-oss-120B in order", async () => {
+  it("falls GLM-5.2 → GLM-5.1 → GPT-oss-120B in order", async () => {
     fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(chatResponse('{"status":"VETO","rationale":"flaw"}'));
     const res = await callVerification("p", makeCtx({ openrouterApiKey: "or" }));
     expect(res.status).toBe("VETO");
     expect(res.model).toBe(OPENROUTER_MODELS.GPT_OSS_120B);
     expect(postedModels(fetchMock)).toEqual([
+      OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GLM_5_1,
       OPENROUTER_MODELS.GPT_OSS_120B,
     ]);
+  });
+});
+
+describe("callVerification — Tier 0 local Claude Code", () => {
+  it("uses the local CLI result and skips Claude/OpenRouter when isLocalRuntime()", async () => {
+    process.env.ORACLE_RUNTIME = "local";
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callVerification("p", makeCtx({ claudeApiKey: "ck", openrouterApiKey: "or" }));
+    await flushMicrotasks();
+    child.stdout.emit(
+      "data",
+      claudeCodeEnvelope({
+        type: "result",
+        is_error: false,
+        result: '{"status":"VETO","rationale":"local flaw"}',
+      })
+    );
+    child.emit("close", 0);
+    const res = await promise;
+    expect(res.status).toBe("VETO");
+    expect(res.model).toBe("claude-code-local");
+    expect(messagesCreateMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls through to Claude Sonnet when the local CLI returns null", async () => {
+    process.env.ORACLE_RUNTIME = "local";
+    spawn.mockImplementation(() => {
+      throw new Error("spawn ENOENT");
+    });
+    messagesCreateMock.mockResolvedValue(claudeText('{"status":"APPROVED","rationale":"sound"}'));
+    const res = await callVerification("p", ctxClaude);
+    expect(res.status).toBe("APPROVED");
+    expect(res.model).toBe(MODELS.CLAUDE_SONNET);
+  });
+
+  it("does not attempt the local CLI when isLocalRuntime() is false (default under Vitest)", async () => {
+    messagesCreateMock.mockResolvedValue(claudeText('{"status":"APPROVED","rationale":"sound"}'));
+    await callVerification("p", ctxClaude);
+    expect(spawn).not.toHaveBeenCalled();
   });
 });
 

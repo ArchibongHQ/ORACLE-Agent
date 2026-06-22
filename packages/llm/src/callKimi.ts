@@ -6,6 +6,7 @@
  *  OpenAI-compatible chat/completions; $0.60/$2.50 per 1M tokens; best HLE-Full tool-use (54.0).
  *  Never throws — returns null on any failure so the swarm degrades gracefully. */
 
+import { callClaudeCode } from "./callClaudeCode.js";
 import { callOpenRouter } from "./callOpenRouter.js";
 import { MODELS } from "./cascade.js";
 
@@ -111,4 +112,14 @@ export async function callOpenRouterVote(
     { temperature: opts.temperature ?? 0.4, maxTokens: 512 }
   );
   return parseVote(text, model);
+}
+
+/** callClaudeCodeVote — single swarm-worker pick via the local Claude Code CLI
+ *  (tier-0). Same vote parsing as callKimiVote/callOpenRouterVote, recorded as
+ *  model "claude-code-local". No temperature control — the CLI samples at its
+ *  account default — so callers should use this for at most one worker slot,
+ *  not the whole panel, to keep the swarm's cross-worker diversity intact. */
+export async function callClaudeCodeVote(prompt: string): Promise<KimiVote | null> {
+  const text = await callClaudeCode(`${VOTE_SYSTEM}\n\n${prompt}`);
+  return parseVote(text, "claude-code-local");
 }

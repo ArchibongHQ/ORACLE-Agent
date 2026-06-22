@@ -78,6 +78,7 @@ describe("runSwarm — guards", () => {
 describe("runSwarm — aggregation", () => {
   it("confidence-weighted consensus + low divergence when workers agree", async () => {
     vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => false,
       callKimiVote: vi.fn().mockResolvedValue({
         pick: "Over 2.5",
         confidence: 0.8,
@@ -101,6 +102,7 @@ describe("runSwarm — aggregation", () => {
   it("flags high divergence when workers split", async () => {
     let call = 0;
     vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => false,
       callKimiVote: vi.fn().mockImplementation(async () => {
         call++;
         return call % 2 === 0
@@ -121,7 +123,10 @@ describe("runSwarm — aggregation", () => {
   });
 
   it("returns null when all workers fail", async () => {
-    vi.doMock("@oracle/llm", () => ({ callKimiVote: vi.fn().mockResolvedValue(null) }));
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => false,
+      callKimiVote: vi.fn().mockResolvedValue(null),
+    }));
     const { runSwarm: rs } = await import("../src/swarm/index.js");
     const r = await rs(5, fixture, [mkMarket("Over 2.5")], {
       ...baseConfig,
@@ -129,6 +134,62 @@ describe("runSwarm — aggregation", () => {
       kimiApiKey: "k",
     });
     expect(r).toBeNull();
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("worker 0 uses the local Claude Code CLI when isLocalRuntime(), others stay on Kimi", async () => {
+    const callKimiVote = vi.fn().mockResolvedValue({
+      pick: "Over 2.5",
+      confidence: 0.8,
+      rationale: "x",
+      model: "kimi-k2.6",
+    });
+    const callClaudeCodeVote = vi.fn().mockResolvedValue({
+      pick: "Over 2.5",
+      confidence: 0.9,
+      rationale: "local",
+      model: "claude-code-local",
+    });
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCodeVote,
+      callKimiVote,
+    }));
+    const { runSwarm: rs } = await import("../src/swarm/index.js");
+    const r = await rs(3, fixture, [mkMarket("Over 2.5")], {
+      ...baseConfig,
+      enableSwarm: true,
+      kimiApiKey: "k",
+    });
+    expect(r).not.toBeNull();
+    expect(callClaudeCodeVote).toHaveBeenCalledTimes(1);
+    expect(r?.votes.some((v) => v.model === "claude-code-local")).toBe(true);
+    expect(callKimiVote).toHaveBeenCalledTimes(2); // workers 1 and 2 only
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("falls back to the worker's normal assignment when the local CLI returns null", async () => {
+    const callKimiVote = vi.fn().mockResolvedValue({
+      pick: "Over 2.5",
+      confidence: 0.8,
+      rationale: "x",
+      model: "kimi-k2.6",
+    });
+    const callClaudeCodeVote = vi.fn().mockResolvedValue(null);
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCodeVote,
+      callKimiVote,
+    }));
+    const { runSwarm: rs } = await import("../src/swarm/index.js");
+    const r = await rs(3, fixture, [mkMarket("Over 2.5")], {
+      ...baseConfig,
+      enableSwarm: true,
+      kimiApiKey: "k",
+    });
+    expect(r).not.toBeNull();
+    expect(callClaudeCodeVote).toHaveBeenCalledTimes(1);
+    expect(callKimiVote).toHaveBeenCalledTimes(3); // worker 0 falls through too
     vi.doUnmock("@oracle/llm");
   });
 });
