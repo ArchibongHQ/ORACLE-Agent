@@ -35,9 +35,9 @@ describe("callClaude", () => {
 
   it("honours an explicit model override", async () => {
     messagesCreateMock.mockResolvedValue({ content: [{ type: "text", text: "x" }] });
-    await callClaude("p", ctx, { model: MODELS.CLAUDE_SONNET });
+    await callClaude("p", ctx, { model: MODELS.CLAUDE_FABLE });
     expect((messagesCreateMock.mock.calls[0]?.[0] as { model: string }).model).toBe(
-      MODELS.CLAUDE_SONNET
+      MODELS.CLAUDE_FABLE
     );
   });
 

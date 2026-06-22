@@ -1,8 +1,8 @@
-/** Tier-0 local transport: shells out to the `claude` CLI in headless mode
- *  instead of an HTTP SDK. Mirrors callOpenRouter.ts's contract — never
- *  throws, returns null on any failure (binary missing, timeout, non-zero
- *  exit, an `is_error` envelope, unparseable JSON) — so every call site falls
- *  through to the existing GLM-first API cascade unchanged on null.
+/** Local transport: shells out to the `claude` CLI in headless mode instead of
+ *  an HTTP SDK. Mirrors callOpenRouter.ts's contract — never throws, returns
+ *  null on any failure (binary missing, timeout, non-zero exit, an `is_error`
+ *  envelope, unparseable JSON) — so every call site falls through to the
+ *  existing GLM-first API cascade unchanged on null.
  *
  *  Envelope shape live-verified 2026-06-22 via `claude -p --output-format
  *  json` (success and a forced model-404 error case): top-level
@@ -10,10 +10,18 @@
  *  is_error=true, `result` is a human-readable error description, not
  *  decision JSON — treated as a failure, not handed downstream.
  *
- *  Auditability: the CLI samples at its account default — there is no
- *  temperature knob to pin, so callers must not claim temperature=0 for this
- *  tier (unlike callClaude.ts's API path). Record model as "claude-code-local"
- *  and keep the raw envelope for DecisionReplay at the call site. */
+ *  Model: pinned to DEFAULT_MODEL ("opus") via --model on every invocation —
+ *  never left to the CLI's account default, which could silently resolve to
+ *  Sonnet on some accounts. Operator instruction: every Claude call doing
+ *  analysis/decision-making in this pipeline must target Opus or Fable-5-or-
+ *  newer, never Sonnet or older. Callers may override via opts.model (e.g.
+ *  "fable") but must not pass a Sonnet/Haiku alias.
+ *
+ *  Auditability: the CLI still samples at the pinned model's own default
+ *  temperature — there is no temperature knob to pin to 0, so callers must not
+ *  claim temperature=0 for this tier (unlike callClaude.ts's API path). Record
+ *  model as "claude-code-local" (or "claude-code-arbiter" at the decision-layer
+ *  call site) and keep the raw envelope for DecisionReplay at the call site. */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -160,6 +168,12 @@ interface ClaudeCodeEnvelope {
   result?: string;
 }
 
+/** Default model for every local Claude Code invocation in this pipeline. Operator
+ *  instruction: analysis/decision-making calls must target Opus or Fable-5-or-newer,
+ *  never Sonnet or older — so this is pinned explicitly via --model rather than left
+ *  to the CLI's account default, which could silently be Sonnet on some accounts. */
+const DEFAULT_MODEL = "opus";
+
 /** Call the local Claude Code CLI headlessly. Returns the cleaned response
  *  text (fence-stripped, same convention as callOpenRouter.ts) or null on any
  *  failure — including an is_error envelope, which carries a human-readable
@@ -168,12 +182,12 @@ interface ClaudeCodeEnvelope {
  *  API cascade already uses. */
 export async function callClaudeCode(
   prompt: string,
-  opts: { timeoutMs?: number } = {}
+  opts: { timeoutMs?: number; model?: string } = {}
 ): Promise<string | null> {
   const bin = resolveClaudeBin();
   const { status, stdout } = await _spawnWithStdin(
     bin,
-    ["-p", "--output-format", "json", "--max-turns", "1"],
+    ["-p", "--output-format", "json", "--max-turns", "1", "--model", opts.model ?? DEFAULT_MODEL],
     prompt,
     opts.timeoutMs ?? REQUEST_TIMEOUT_MS
   );

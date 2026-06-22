@@ -4,8 +4,8 @@ export const MODELS = {
   GEMINI_FLASH: "gemini-3.5-flash", // GA at Google I/O 2026 — faster + better agentic than 3.1 Pro
   GEMINI_FLASH_LITE: "gemini-3.1-flash-lite", // cheapest tier — 3.5 Flash-Lite not yet GA
   GEMINI_PRO: "gemini-3.5-flash", // 3.5 Flash outperforms 3.1 Pro on agentic at 4x speed
-  CLAUDE_OPUS: "claude-opus-4-8", // #1 SWE-bench (88.6%) — Briefing + framing-bias check
-  CLAUDE_SONNET: "claude-sonnet-4-6", // adversarial CVL pass
+  CLAUDE_OPUS: "claude-opus-4-8", // #1 SWE-bench (88.6%) — Briefing + framing-bias check + CVL pass
+  CLAUDE_FABLE: "claude-fable-5", // newest Claude family — local-CLI arbiter targets this or Opus, never Sonnet/older
   KIMI_SWARM: "kimi-k2.6", // Kimi K2.6 via platform.moonshot.ai (OpenAI-compatible) — swarm workers
 } as const;
 

@@ -41,7 +41,7 @@ export function summarizeBatch(batch: BatchResult, reportUrl?: string): BatchSum
   const actionable: ActionablePick[] = [];
   for (const j of batch.jobs as BatchJobResult[]) {
     if (j.status !== "ok") continue;
-    if (j.decision.grade === "NO_EDGE") continue;
+    if (j.decision.grade === "NO_EDGE" || j.decision.grade === "MISSING_DATA") continue;
     const p = j.decision.primaryPick;
     actionable.push({
       home: j.home,

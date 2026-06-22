@@ -33,8 +33,10 @@ export interface SoftContextItem {
 }
 
 /** Edge confidence grade — replaces "NO_BET" literal across all output surfaces.
- *  STRONG: EV ≥ 0.05; LEAN: 0 < EV < 0.05; NO_EDGE: EV ≤ 0 (honest no-edge verdict). */
-export type ConfidenceGrade = "STRONG" | "LEAN" | "NO_EDGE";
+ *  STRONG: EV ≥ 0.05; LEAN: 0 < EV < 0.05; NO_EDGE: EV ≤ 0 (honest no-edge verdict);
+ *  MISSING_DATA: the final arbiter judged the evidence insufficient to decide either
+ *  way — distinct from NO_EDGE (which means "evidence is sufficient and says no edge"). */
+export type ConfidenceGrade = "STRONG" | "LEAN" | "NO_EDGE" | "MISSING_DATA";
 
 /** The structured JSON the LLM decision layer must return (PRD §6, Appendix B). */
 export interface DecisionOutput {
@@ -44,6 +46,11 @@ export interface DecisionOutput {
   grade: ConfidenceGrade; // human-facing label derived from EV
   rationale: string;
   rejectedAndWhy: string[];
+  /** Set when ORACLE_LOCAL_DECISION="true": whether the local-Claude final arbiter
+   *  actually reviewed this pick. "unverified" means the arbiter call failed (binary
+   *  missing, timeout, bad parse) and the pre-arbiter cascade pick was used as-is —
+   *  callers/UI should label the output accordingly. Absent when the arbiter is off. */
+  arbiterStatus?: "verified" | "unverified";
 }
 
 /** Exact LLM call bundle for audit replay (PRD §6 determinism, Appendix B).

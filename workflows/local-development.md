@@ -87,6 +87,53 @@ This leaves ~3 GB headroom — enough to avoid a crash.
 
 ---
 
+## Never Force-Kill a Node Process Touching `.tmp/gbrain`
+
+`GBrainAdapter` (`packages/storage/src/GBrainAdapter.ts`) is backed by PGlite —
+Postgres compiled to WASM, running in-process with no separate server. It has
+no crash-recovery story: if the process is killed while a write is in flight
+(`taskkill /F`, PowerShell `Stop-Process -Force`, a hung-process cleanup, a
+host OOM-killer), the WASM heap's page files on disk can corrupt such that
+even a bare `SELECT 1` aborts on the *next* connection attempt — before any
+application query runs, during Postgres's own WAL-replay startup. There is no
+repair path: PGlite doesn't expose `pg_resetwal`/single-user recovery mode, so
+once this happens the store is a write-off, not a fix-it.
+
+This has happened three times (2026-06-15 ×2, 2026-06-22) from killing
+runaway/orphaned `node` CLI or worker processes mid-run instead of letting
+them exit.
+
+**Rule:** never `taskkill /F`, `Stop-Process -Force`, or otherwise hard-kill a
+node process that might be mid-write to `.tmp/gbrain` (any `oracle punt`,
+`oracle analyze`, worker batch run, or anything instantiating
+`GBrainAdapter`). If a run needs to be stopped:
+
+1. Prefer `Ctrl+C` (SIGINT) in the owning terminal — Node's normal shutdown
+   lets in-flight PGlite operations finish or fail cleanly.
+2. If it must be killed from outside that terminal (e.g. an orphaned
+   background task), send a plain `Stop-Process` (no `-Force`) first and give
+   it a few seconds.
+3. Only use `-Force`/`/F` as a last resort, and only when you're prepared for
+   `.tmp/gbrain` to need rebuilding afterward.
+
+**If corruption happens anyway** (any `GBrainAdapter` call throws
+`Aborted(). Build with -sASSERTIONS for more info.`):
+
+1. Confirm it's the on-disk store, not a regression — a fresh in-memory
+   instance (`new GBrainAdapter()`, no path) should still work fine.
+2. There is no recovery — `mv .tmp/gbrain .tmp/gbrain.corrupted-<date>` (don't
+   delete immediately; keep one copy in case offline forensic recovery of
+   `oracle_v2026_ledger`/`oracle_v2026_bankroll` is ever worth attempting),
+   then let the next run create a fresh store.
+3. Run `pnpm --filter @oracle/storage test` to confirm the fresh store
+   round-trips correctly before resuming normal use.
+4. Calibration ledger, bankroll state, and Elo/Pi ratings accumulated since
+   the last successful read are lost — there is currently no periodic backup
+   of `.tmp/gbrain`. Treat this as the cost of the force-kill, not a tooling
+   bug to chase further right now.
+
+---
+
 ## Cloud (Railway) — No Change Needed
 
 Railway services each run in isolated containers with dedicated RAM. The heap caps in `package.json` apply there too (worker gets 512 MB, others 256 MB) but Railway allocates per-service so there's no contention. Set `BATCH_CONCURRENCY=8` in Railway environment variables to restore cloud-scale throughput.

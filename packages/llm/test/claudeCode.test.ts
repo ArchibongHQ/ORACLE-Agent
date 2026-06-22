@@ -144,7 +144,7 @@ describe("callClaudeCode", () => {
     }
   });
 
-  it("writes the prompt to stdin and requests JSON output via -p", async () => {
+  it("writes the prompt to stdin and requests JSON output via -p, pinned to opus by default", async () => {
     const child = new FakeChild();
     spawn.mockReturnValue(child);
     const promise = callClaudeCode("analyze this fixture");
@@ -158,9 +158,30 @@ describe("callClaudeCode", () => {
       "json",
       "--max-turns",
       "1",
+      "--model",
+      "opus",
     ]);
     expect(child.stdin.write).toHaveBeenCalledWith("analyze this fixture");
     expect(child.stdin.end).toHaveBeenCalled();
+  });
+
+  it("honours an explicit opts.model override (e.g. fable)", async () => {
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("analyze this fixture", { model: "fable" });
+    await flushMicrotasks();
+    child.stdout.emit("data", envelope({ type: "result", is_error: false, result: "OK" }));
+    child.emit("close", 0);
+    await promise;
+    expect(spawn).toHaveBeenCalledWith(expect.any(String), [
+      "-p",
+      "--output-format",
+      "json",
+      "--max-turns",
+      "1",
+      "--model",
+      "fable",
+    ]);
   });
 });
 

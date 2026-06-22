@@ -56,7 +56,8 @@ h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 16px; color: #f1f5f9; }
 
 function cardClass(job: BatchJobResult): string {
   if (job.status === "error") return "card card-error";
-  if (job.decision.grade === "NO_EDGE") return "card card-no-bet";
+  if (job.decision.grade === "NO_EDGE" || job.decision.grade === "MISSING_DATA")
+    return "card card-no-bet";
   return "card card-actionable";
 }
 
@@ -107,14 +108,12 @@ function renderCard(job: BatchJobResult): string {
   const grade = d.grade;
   const gradeColor = grade === "STRONG" ? "#4ade80" : grade === "LEAN" ? "#fbbf24" : "#64748b";
   const gradeStr = `<span style="color:${gradeColor};font-weight:700">${grade}</span>`;
-  const pickStr =
-    grade === "NO_EDGE"
-      ? `${gradeStr} — ${esc(pick.market)}${pick.side ? ` (${esc(pick.side)})` : ""} <span style="color:#64748b">@ ${pick.odds}</span>`
-      : `${gradeStr} — ${esc(pick.market)}${pick.side ? ` — ${esc(pick.side)}` : ""} <span style="color:#fbbf24">@ ${pick.odds}</span>`;
+  const isNoBet = grade === "NO_EDGE" || grade === "MISSING_DATA";
+  const pickStr = isNoBet
+    ? `${gradeStr} — ${esc(pick.market)}${pick.side ? ` (${esc(pick.side)})` : ""} <span style="color:#64748b">@ ${pick.odds}</span>`
+    : `${gradeStr} — ${esc(pick.market)}${pick.side ? ` — ${esc(pick.side)}` : ""} <span style="color:#fbbf24">@ ${pick.odds}</span>`;
   const stakeStr =
-    pick.stake && grade !== "NO_EDGE"
-      ? `<span class="pick-stake">${pct(pick.stake)} Kelly</span>`
-      : "";
+    pick.stake && !isNoBet ? `<span class="pick-stake">${pct(pick.stake)} Kelly</span>` : "";
   const altPick = d.altPick;
   const altStr = altPick ? `${esc(altPick.market)} @ ${altPick.odds}` : "—";
 

@@ -441,9 +441,9 @@ describe("decide — OpenRouter cascade, GLM-first", () => {
   });
 });
 
-// ── decideInner — Tier 0 local Claude Code (opt-in only) ──────────────────────
+// ── decide — final arbiter (local Claude Code, opt-in only) ───────────────────
 
-describe("decide — Tier 0 local Claude Code (opt-in)", () => {
+describe("decide — final arbiter (opt-in)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     delete process.env.ORACLE_LOCAL_DECISION;
@@ -453,30 +453,7 @@ describe("decide — Tier 0 local Claude Code (opt-in)", () => {
     delete process.env.ORACLE_LOCAL_DECISION;
   });
 
-  it("uses the local CLI result when opted in and isLocalRuntime() is true", async () => {
-    process.env.ORACLE_LOCAL_DECISION = "true";
-    const localResponse: DecisionOutput = {
-      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
-      confidence: 0.66,
-      rationale: "local CLI pick.",
-      rejectedAndWhy: [],
-    };
-    const callClaude = vi.fn().mockRejectedValue(new Error("should not be called"));
-    vi.doMock("@oracle/llm", () => ({
-      isLocalRuntime: () => true,
-      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(localResponse)),
-      callClaude,
-    }));
-
-    const { decision, replay } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
-    expect(decision.rationale).toBe("local CLI pick.");
-    expect(replay?.model).toBe("claude-code-local");
-    expect(replay?.temperature).toBe("default");
-    expect(callClaude).not.toHaveBeenCalled();
-    vi.doUnmock("@oracle/llm");
-  });
-
-  it("does not attempt the local CLI when not opted in (default)", async () => {
+  it("does not attempt the arbiter when not opted in (default)", async () => {
     const callClaudeCode = vi.fn();
     vi.doMock("@oracle/llm", () => ({
       isLocalRuntime: () => true,
@@ -486,47 +463,152 @@ describe("decide — Tier 0 local Claude Code (opt-in)", () => {
     const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "" });
     expect(callClaudeCode).not.toHaveBeenCalled();
     expect(decision.rationale).toMatch(/deterministic fallback|Deterministic/i);
+    expect(decision.arbiterStatus).toBeUndefined();
     vi.doUnmock("@oracle/llm");
   });
 
-  it("falls through to Claude Opus when opted in but isLocalRuntime() is false", async () => {
+  it("ratifies the upstream cascade's draft pick when the arbiter agrees", async () => {
     process.env.ORACLE_LOCAL_DECISION = "true";
-    const claudeResponse: DecisionOutput = {
+    const draftResponse: DecisionOutput = {
       primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
       confidence: 0.7,
-      rationale: "Claude pick.",
+      rationale: "Claude Opus draft.",
       rejectedAndWhy: [],
     };
-    const callClaudeCode = vi.fn();
+    const arbiterResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.72,
+      grade: "STRONG",
+      rationale: "(a) RATIFY — stats and math both support the draft pick.",
+      rejectedAndWhy: [],
+    };
     vi.doMock("@oracle/llm", () => ({
-      isLocalRuntime: () => false,
-      callClaudeCode,
-      callClaude: vi.fn().mockResolvedValue(JSON.stringify(claudeResponse)),
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(arbiterResponse)),
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
       MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
     }));
-    const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
-    expect(callClaudeCode).not.toHaveBeenCalled();
-    expect(decision.rationale).toBe("Claude pick.");
+
+    const { decision, replay } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
+    expect(decision.rationale).toMatch(/RATIFY/);
+    expect(decision.arbiterStatus).toBe("verified");
+    expect(replay?.model).toBe("claude-code-arbiter");
+    expect(replay?.temperature).toBe("default");
     vi.doUnmock("@oracle/llm");
   });
 
-  it("falls through to Claude Opus when opted in and the local CLI returns null", async () => {
+  it("lets the arbiter override the draft with a different eligible market", async () => {
     process.env.ORACLE_LOCAL_DECISION = "true";
-    const claudeResponse: DecisionOutput = {
+    const ouMarket = makeMarket({ cat: "Goals O/U", market: "Goals O/U", label: "Over 2.5" });
+    const mlMarket = makeMarket({
+      cat: "1x2",
+      market: "1x2",
+      side: "Home Win",
+      label: "Home Win",
+      odds: 1.8,
+      ev: 0.06,
+    });
+    const draftResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.6,
+      rationale: "Claude Opus draft picked the totals market.",
+      rejectedAndWhy: [],
+    };
+    const arbiterResponse: DecisionOutput = {
+      primaryPick: { market: "1x2", side: "Home Win", odds: 1.8, stake: 0.05 },
+      confidence: 0.74,
+      grade: "STRONG",
+      rationale: "(b) OVERRIDE — news intel on an away-side injury wasn't reflected in the draft.",
+      rejectedAndWhy: ["Goals O/U: draft under-weighted injury news"],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(arbiterResponse)),
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+
+    const { decision } = await decide([ouMarket, mlMarket], BASE_CTX, { claudeApiKey: "ck" });
+    expect(decision.primaryPick.market).toBe("1x2");
+    expect(decision.rationale).toMatch(/OVERRIDE/);
+    expect(decision.arbiterStatus).toBe("verified");
+
+    // validateSelection still enforces Gate 1 on the arbiter's own choice — must be
+    // a real eligible market, which "1x2" is here, so it passes through unchanged.
+    const validated = validateSelection(decision, [ouMarket, mlMarket]);
+    expect(validated.primaryPick.market).toBe("1x2");
+  });
+
+  it("flags MISSING_DATA without being forced back onto a market by validateSelection", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const draftResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.55,
+      rationale: "Claude Opus draft.",
+      rejectedAndWhy: [],
+    };
+    const arbiterResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0 },
+      confidence: 0,
+      grade: "MISSING_DATA",
+      rationale: "(c) FLAG — no news-intel or stats soft-context was supplied for this fixture.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(arbiterResponse)),
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+
+    const market = makeMarket();
+    const { decision } = await decide([market], BASE_CTX, { claudeApiKey: "ck" });
+    expect(decision.grade).toBe("MISSING_DATA");
+
+    // Even with an empty eligible set, Gate 1 must not overwrite a MISSING_DATA verdict.
+    const validated = validateSelection(decision, []);
+    expect(validated.grade).toBe("MISSING_DATA");
+    expect(validated.rationale).toMatch(/FLAG/);
+  });
+
+  it("falls back to the draft pick labelled unverified when the arbiter binary is unreachable", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const draftResponse: DecisionOutput = {
       primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
       confidence: 0.7,
-      rationale: "Claude pick after local null.",
+      rationale: "Claude Opus draft, arbiter unreachable.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => false,
+      callClaudeCode: vi.fn(),
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+
+    const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
+    expect(decision.rationale).toBe("Claude Opus draft, arbiter unreachable.");
+    expect(decision.arbiterStatus).toBe("unverified");
+  });
+
+  it("falls back to the draft pick labelled unverified when the arbiter call returns null", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const draftResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.7,
+      rationale: "Claude Opus draft, arbiter timed out.",
       rejectedAndWhy: [],
     };
     vi.doMock("@oracle/llm", () => ({
       isLocalRuntime: () => true,
       callClaudeCode: vi.fn().mockResolvedValue(null),
-      callClaude: vi.fn().mockResolvedValue(JSON.stringify(claudeResponse)),
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
       MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
     }));
+
     const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
-    expect(decision.rationale).toBe("Claude pick after local null.");
-    vi.doUnmock("@oracle/llm");
+    expect(decision.rationale).toBe("Claude Opus draft, arbiter timed out.");
+    expect(decision.arbiterStatus).toBe("unverified");
   });
 });
 

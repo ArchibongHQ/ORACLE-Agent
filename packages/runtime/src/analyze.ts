@@ -220,7 +220,7 @@ export async function runAnalysis(
       confidence: j.decision.confidence,
       errorCode: null,
       errorMessage: null,
-      stakePct: grade !== "NO_EDGE" ? (pick.stake ?? 0) * 100 : null,
+      stakePct: grade !== "NO_EDGE" && grade !== "MISSING_DATA" ? (pick.stake ?? 0) * 100 : null,
     } satisfies FixtureOutcome;
   });
 

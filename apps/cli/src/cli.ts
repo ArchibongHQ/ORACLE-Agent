@@ -71,8 +71,8 @@ function summarize(batch: BatchResult): string {
     }
     const p = j.decision.primaryPick;
     const grade = j.decision.grade;
-    if (grade === "NO_EDGE") {
-      lines.push(`  · ${j.home} vs ${j.away} — NO_EDGE (${p.market})`);
+    if (grade === "NO_EDGE" || grade === "MISSING_DATA") {
+      lines.push(`  · ${j.home} vs ${j.away} — ${grade} (${p.market})`);
     } else {
       const stake = p.stake != null ? ` ${(p.stake * 100).toFixed(1)}% Kelly` : "";
       const icon = grade === "STRONG" ? "✓✓" : "✓";
