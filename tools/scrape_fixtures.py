@@ -1160,6 +1160,21 @@ def _parse_rest_congestion(
     return result or None
 
 
+def _parse_funfacts(funfacts_data: dict) -> Optional[list[str]]:
+    """Extract pre-match textual facts from match_funfacts — the closest verified
+    gismo equivalent to a "commentary" subtab (live-probed 2026-06-21: no
+    `probability`/`commentary`-named gismo endpoint exists under any plausible
+    query string; SportyBet's implied "probability" is just de-vigged odds, which
+    the engine already derives via Shin power-method de-vig from the captured
+    `odds` block — no extra fetch needed for that).
+    """
+    if not funfacts_data:
+        return None
+    facts = funfacts_data.get("funfacts") or []
+    out = [str(f) for f in facts if f]
+    return out or None
+
+
 def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> dict:
     """
     Fetch markets + stats for one fixture via anonymous plain HTTP.
@@ -1255,6 +1270,11 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
     fixtures_data = _gismo_doc(f"stats_season_fixtures/{season_id}") if season_id else None
     congestion = _parse_rest_congestion(fixtures_data, home_id, away_id, kickoff_uts)
 
+    # 9. Pre-match facts (match_funfacts) — additive, best-effort "commentary" subtab.
+    _time.sleep(_SB_PACE)
+    funfacts_data = _gismo_doc(f"match_funfacts/{mid}")
+    commentary = _parse_funfacts(funfacts_data)
+
     stats: dict = {}
     if form:
         stats["form"] = form
@@ -1268,6 +1288,8 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
         stats["overunder"] = overunder
     if congestion:
         stats["congestion"] = congestion
+    if commentary:
+        stats["commentary"] = commentary
 
     return {
         "odds": odds,
@@ -1654,24 +1676,27 @@ def merge_and_dedup(existing: list[str], new_fixtures: list[Fixture]) -> tuple[l
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Scrape today's football fixtures")
-    parser.add_argument("--date", default=None, help="YYYY-MM-DD (default: UTC today)")
-    parser.add_argument("--dry-run", action="store_true", help="Print without writing")
-    parser.add_argument("--quiet", action="store_true", help="Suppress output")
-    parser.add_argument("--no-playwright", action="store_true",
-                        help="Skip all Playwright scrapers (faster, ESPN+Sky+BBC only)")
-    args = parser.parse_args()
+def run_acquisition(
+    date_str: str,
+    quiet: bool = False,
+    no_playwright: bool = False,
+    dry_run: bool = False,
+) -> tuple[list[str], list[dict]]:
+    """Run the full fixture-list + SportyBet sidecar acquisition for one date.
 
-    date_str = args.date or _utc_today()
-
+    Extracted from main() (no behavior change) so tools/acquire_daily.py can
+    import and call this directly instead of forking a second `scrape_fixtures.py`
+    process — cache/sidecar writes stay byte-identical to the original CLI path.
+    Returns (merged_cache_lines, enriched_sportybet_events); the events list is
+    empty when no_playwright is set or Playwright isn't installed.
+    """
     t_other_start = time.perf_counter()
     espn_fixtures      = ESPNScraper().fetch_all(date_str)
     sky_fixtures       = SkySportsScraper().fetch(date_str)
     livescore_fixtures = LiveScoreScraper().fetch(date_str)
     t_other = time.perf_counter() - t_other_start
 
-    if args.no_playwright:
+    if no_playwright:
         pw_fixtures, sportybet_events = [], []
         pw_ran = False
         t_playwright = 0.0
@@ -1685,7 +1710,7 @@ def main() -> None:
     existing = read_cache()
     merged, added = merge_and_dedup(existing, all_new)
 
-    if not args.quiet:
+    if not quiet:
         print(
             f"[scrape] {len(merged)} fixtures ({added} new) — "
             f"espn:{len(espn_fixtures)} sky:{len(sky_fixtures)} "
@@ -1697,10 +1722,10 @@ def main() -> None:
             flush=True,
         )
 
-    if args.dry_run:
+    if dry_run:
         for line in merged:
             sys.stdout.buffer.write((line + "\n").encode("utf-8"))
-        return
+        return merged, sportybet_events
 
     write_cache(merged)
     if pw_ran:
@@ -1711,6 +1736,20 @@ def main() -> None:
             t_enrich = time.perf_counter() - t_enrich_start
             print(f"[timing] enrichment={t_enrich:.1f}s ({len(sportybet_events)} fixtures)", flush=True)
         write_sportybet_sidecar(date_str, sportybet_events)
+    return merged, sportybet_events
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Scrape today's football fixtures")
+    parser.add_argument("--date", default=None, help="YYYY-MM-DD (default: UTC today)")
+    parser.add_argument("--dry-run", action="store_true", help="Print without writing")
+    parser.add_argument("--quiet", action="store_true", help="Suppress output")
+    parser.add_argument("--no-playwright", action="store_true",
+                        help="Skip all Playwright scrapers (faster, ESPN+Sky+BBC only)")
+    args = parser.parse_args()
+
+    date_str = args.date or _utc_today()
+    run_acquisition(date_str, quiet=args.quiet, no_playwright=args.no_playwright, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

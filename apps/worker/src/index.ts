@@ -14,6 +14,7 @@ import { buildNotifiers, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
   buildConfig,
   fetchTodaysFixtures,
+  fixturesPartitionExists,
   type GoalsSelectionResult,
   loadEnv,
   loadSportyBetIndex,
@@ -42,6 +43,7 @@ const ONE_SHOT_FLAGS = [
   "--run-goals-now",
   "--refresh-kaggle",
   "--run-resolve",
+  "--run-acquire-now",
 ] as const;
 const IS_ONE_SHOT = process.argv.some((a) => ONE_SHOT_FLAGS.includes(a as never));
 
@@ -109,6 +111,39 @@ const HEARTBEAT_STALE_MS = 36 * 60 * 60 * 1000; // 36h — daily batch + some sl
 let lastStaleAlertSentAt = 0;
 const STALE_ALERT_REPEAT_MS = 12 * 60 * 60 * 1000; // don't re-alert more than every 12h
 
+// Lake-staleness back-online trigger: unlike the alert above, this actively
+// re-runs acquisition rather than just notifying — so a daemon that was down
+// across 00:00 catches up as soon as it restarts, instead of waiting for
+// tomorrow's cron slot.
+const LAKE_STALE_MS = 20 * 60 * 60 * 1000; // ~20h — same-day acquisition is always fresher than this
+let lastLakeTriggerAt = 0;
+const LAKE_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a failing acquisition more than every 6h
+
+function readLastAcquire(): { at?: string; date?: string } | undefined {
+  try {
+    const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
+      string,
+      { at?: string; date?: string } | undefined
+    >;
+    return current.lastAcquire;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when today's Parquet-lake partition was written by a successful
+ *  acquireDailyJob run within the last LAKE_STALE_MS — gates both the 06:00
+ *  batch's gap-fill scrape and the back-online trigger below. */
+function isLakeFreshForToday(): boolean {
+  const lastAcquire = readLastAcquire();
+  if (!lastAcquire?.date || !lastAcquire.at) return false;
+  if (lastAcquire.date !== new Date().toISOString().slice(0, 10)) return false;
+  if (Date.now() - new Date(lastAcquire.at).getTime() >= LAKE_STALE_MS) return false;
+  // Heartbeat alone can lie if the lake directory was deleted/moved after a
+  // successful acquisition stamped it — confirm the partition is still on disk.
+  return fixturesPartitionExists(lastAcquire.date);
+}
+
 async function checkHeartbeatFreshness(): Promise<void> {
   let lastBatchAt: string | undefined;
   try {
@@ -120,6 +155,17 @@ async function checkHeartbeatFreshness(): Promise<void> {
   } catch {
     return; // no heartbeat file yet — nothing to compare against
   }
+
+  // Checked before any lastBatch-related early return below, so a healthy
+  // lastBatch never short-circuits this independent trigger.
+  if (!isLakeFreshForToday() && Date.now() - lastLakeTriggerAt >= LAKE_TRIGGER_REPEAT_MS) {
+    lastLakeTriggerAt = Date.now();
+    process.stdout.write(
+      "[worker] daily lake stale/missing — triggering back-online acquisition\n"
+    );
+    logJob("acquire-daily@back-online", acquireDailyJob);
+  }
+
   if (!lastBatchAt) return;
 
   const ageMs = Date.now() - new Date(lastBatchAt).getTime();
@@ -260,6 +306,72 @@ function fetchLineups(): Promise<void> {
   });
 }
 
+// ── Daily acquisition (Parquet lake) ─────────────────────────────────────────
+// tools/acquire_daily.py wraps the same SportyBet/Gismo scrape as scrapeFixtures()
+// above, additionally writing the date-partitioned Parquet lake
+// (.tmp/oracle-daily/) that packages/runtime/src/dailyStore.ts reads — the
+// latency seam: a fresh lake lets fetchTodaysFixtures skip the live odds chain.
+// It still writes the legacy JSON sidecar, so deleting the lake degrades back
+// to today's exact existing behavior.
+
+// Shared in-flight guard: acquireDailyJob (00:00 cron + back-online trigger)
+// and runDailyBatch's gap-fill call both invoke acquireDaily() independently,
+// gated by the same isLakeFreshForToday() check — if the 00:00 run is still
+// in progress (or just failed) when the hourly/06:00 triggers fire, they'd
+// otherwise spawn a second acquire_daily.py concurrently, the exact
+// concurrent-write corruption mode (sportybet_today.json / Parquet
+// partitions) this lake was built to avoid. A second caller awaits the
+// in-flight run's result instead of starting its own.
+let _acquireDailyInFlight: Promise<number> | null = null;
+
+function acquireDaily(): Promise<number> {
+  if (_acquireDailyInFlight) return _acquireDailyInFlight;
+  const python = PYTHON_BIN;
+  const script = join(ROOT, "tools", "acquire_daily.py");
+  const run = new Promise<number>((resolve) => {
+    execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
+      if (stdout) process.stdout.write(stdout);
+      if (stderr) process.stderr.write(stderr);
+      if (err) process.stderr.write(`acquire_daily error: ${err.message}\n`);
+      const m = stdout.match(/acquired:(\d+)/);
+      resolve(m ? parseInt(m[1], 10) : 0);
+    });
+  }).finally(() => {
+    _acquireDailyInFlight = null;
+  });
+  _acquireDailyInFlight = run;
+  return run;
+}
+
+// News enrichment runs as the second acquisition step (after fixtures land) —
+// best-effort, never blocks: a failed/slow Perplexity or Google AI pass just
+// means newsIntel.ts's own live fallback covers it later at analysis time.
+function runNewsEnrichment(): Promise<void> {
+  if (!config.enableNewsIntel) return Promise.resolve();
+  const python = PYTHON_BIN;
+  const script = join(ROOT, "tools", "enrich_news.py");
+  return new Promise((resolve) => {
+    execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
+      if (stdout) process.stdout.write(stdout);
+      if (stderr) process.stderr.write(stderr);
+      if (err) process.stderr.write(`enrich_news error: ${err.message}\n`);
+      resolve();
+    });
+  });
+}
+
+/** Full 00:00 acquisition job: scrape -> lake write -> news enrichment ->
+ *  heartbeat. Only stamps lastAcquire when fixtures were actually acquired, so
+ *  a failed run leaves the lake-staleness check above free to keep retrying
+ *  rather than masking the failure with a fresh timestamp. */
+async function acquireDailyJob(): Promise<void> {
+  const count = await acquireDaily();
+  await runNewsEnrichment();
+  if (count > 0) {
+    writeHeartbeat("lastAcquire", { date: new Date().toISOString().slice(0, 10), fixtures: count });
+  }
+}
+
 // ── SportyBet streak tracker ──────────────────────────────────────────────────
 
 const STREAK_FILE = join(ROOT, ".tmp", "sportybet_streak.json");
@@ -374,8 +486,12 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
 async function runDailyBatch(
   trigger: RunManifest["trigger"] = "scheduled"
 ): Promise<BatchResult | null> {
-  const sportyBetCount = await scrapeFixtures();
-  checkSportyBetStreak(sportyBetCount);
+  if (isLakeFreshForToday()) {
+    process.stdout.write("[batch] daily lake fresh — skipping gap-fill scrape\n");
+  } else {
+    process.stdout.write("[batch] daily lake missing/stale — running gap-fill acquisition\n");
+    await acquireDaily();
+  }
   await fetchLineups();
   const storage = new MemoryAdapter(STORE_PATH);
 
@@ -556,8 +672,9 @@ async function runGoalsFromBatch(
   trigger: RunManifest["trigger"] = "scheduled"
 ): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
-  // Pure file read — the sidecar is already fresh from runDailyBatch's own
-  // scrapeFixtures() call moments earlier; no staleness fallback needed here.
+  // Pure file read — the sidecar is already fresh, either from the 00:00
+  // acquireDailyJob or runDailyBatch's own gap-fill moments earlier; no
+  // staleness fallback needed here.
   const index = await loadSportyBetIndex(today);
 
   const eligibleJobs = batch.jobs.filter((j) => j.llmEligible);
@@ -648,12 +765,9 @@ async function runDailyThenGoals(trigger: RunManifest["trigger"] = "scheduled"):
 // ── Resolve yesterday (14:00) ────────────────────────────────────────────────
 
 async function resolveYesterdayFixtures(): Promise<void> {
-  if (!config.footballDataApiKey && !config.apiFootballKey) {
-    process.stderr.write(
-      "[resolve] skipped — neither FOOTBALL_DATA_API_KEY nor API_FOOTBALL_KEY set\n"
-    );
-    return;
-  }
+  // No early-exit on missing keys — CLAUDE.md §6 no-data-blocker: resolveDay's
+  // web-search consensus fallback (tools/scrape_match_results.py) always runs on
+  // whatever the API chain can't resolve, including when both keys are absent.
   const storage = new MemoryAdapter(STORE_PATH);
   const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
@@ -665,7 +779,11 @@ async function resolveYesterdayFixtures(): Promise<void> {
       geminiApiKey: config.geminiApiKey,
       apiFootballKey: config.apiFootballKey,
     },
-    yesterday
+    yesterday,
+    {
+      enabled: config.enableWebSearchResultsFallback,
+      minConsensus: config.webResultsMinConsensus,
+    }
   );
 
   if (!candidates) {
@@ -703,16 +821,19 @@ if (!IS_ONE_SHOT) {
   void checkBotHeartbeatFreshness();
   cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness());
 
-  // Fixture scrape — standalone runs (12am, 11:45am). The 06:00 slot is covered
-  // by the daily batch's own scrapeFixtures() first step below — a standalone
-  // 06:00 scrape would race it (two Python processes writing sportybet_today.json
-  // at once) now that the daily batch moved to that exact time.
-  cron.schedule("0 0 * * *", () => logJob("scrape-fixtures@00:00", scrapeFixtures));
+  // Daily acquisition (00:00) — Parquet lake + JSON sidecar via acquire_daily.py,
+  // then news enrichment. The 06:00 batch below reads this lake first and only
+  // falls back to its own gap-fill scrape when it's missing/stale.
+  cron.schedule("0 0 * * *", () => logJob("acquire-daily@00:00", acquireDailyJob));
+
+  // Standalone fixture scrape — 11:45am only now; the 00:00 slot moved to the
+  // fuller acquireDailyJob above (lake + sidecar + news).
   cron.schedule("45 11 * * *", () => logJob("scrape-fixtures@11:45", scrapeFixtures));
 
   // Daily batch (06:00) -> goals batch immediately on success, sourced from the
-  // daily batch's own top-39 (see runDailyThenGoals). scrapeFixtures() runs as
-  // the daily batch's first step.
+  // daily batch's own top-39 (see runDailyThenGoals). Its internal scrape is
+  // gap-fill-only — runDailyBatch only re-acquires when the 00:00 lake is
+  // missing/stale (see isLakeFreshForToday).
   cron.schedule("0 6 * * *", () =>
     logJob("daily-then-goals-batch", () => runDailyThenGoals("scheduled"))
   );
@@ -735,6 +856,10 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
     for (const task of cron.getTasks().values()) task.stop();
     process.exit(0);
   });
+}
+
+if (process.argv.includes("--run-acquire-now")) {
+  void runOnce("--run-acquire-now", () => acquireDailyJob());
 }
 
 if (process.argv.includes("--run-now")) {

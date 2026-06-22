@@ -111,9 +111,10 @@ describe("runOddsChain", () => {
 // ── buildOddsProviders registry ───────────────────────────────────────────────
 
 describe("buildOddsProviders", () => {
-  it("registers all six providers in tier order", () => {
+  it("registers all seven providers in tier order", () => {
     const providers = buildOddsProviders({});
     expect(providers.map((p) => p.name)).toEqual([
+      "daily-lake-odds",
       "sharpapi-io",
       "api-football",
       "odds-api-io",
@@ -123,7 +124,7 @@ describe("buildOddsProviders", () => {
     ]);
     // odds-api-io and oddspapi share tier 4 (both sharp); the sort is
     // length-stable but their relative order isn't behaviour-meaningful.
-    expect(providers.map((p) => p.tier)).toEqual([2, 3, 4, 4, 5, 6]);
+    expect(providers.map((p) => p.tier)).toEqual([0, 2, 3, 4, 4, 5, 6]);
   });
 
   it("marks SharpAPI.io, Odds-API.io, OddsPapi and SportsGameOdds as sharp", () => {
@@ -134,12 +135,15 @@ describe("buildOddsProviders", () => {
   });
 
   it("reports no quota for API-key providers when no keys are supplied", () => {
-    // The sidecar is file-based and always reports quota — exclude it from this check.
-    const providers = buildOddsProviders({}).filter((p) => p.name !== "sportybet-sidecar");
+    // The sidecar and the daily-lake provider are both file/local-read-based
+    // and always report quota — exclude them from this check.
+    const providers = buildOddsProviders({}).filter(
+      (p) => p.name !== "sportybet-sidecar" && p.name !== "daily-lake-odds"
+    );
     expect(providers.every((p) => !p.hasQuota())).toBe(true);
   });
 
-  it("reports quota for wired providers once their key is present, plus sidecar always", () => {
+  it("reports quota for wired providers once their key is present, plus sidecar/lake always", () => {
     const providers = buildOddsProviders({
       sharpApiIoKey: "k",
       apiFootballKey: "k2",
@@ -149,6 +153,7 @@ describe("buildOddsProviders", () => {
     });
     const withQuota = providers.filter((p) => p.hasQuota()).map((p) => p.name);
     expect(withQuota).toEqual([
+      "daily-lake-odds",
       "sharpapi-io",
       "api-football",
       "odds-api-io",
@@ -209,7 +214,9 @@ describe("SharpAPI.io provider fetch", () => {
       )
     );
 
-    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    const sharpapi = buildOddsProviders({ sharpApiIoKey: "k" }).find(
+      (p) => p.name === "sharpapi-io"
+    );
     const res = await sharpapi!.fetch(...FX);
     expect(res).not.toBeNull();
     expect(res!.isSharp).toBe(true);
@@ -241,7 +248,9 @@ describe("SharpAPI.io provider fetch", () => {
         { status: 200 }
       )
     );
-    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    const sharpapi = buildOddsProviders({ sharpApiIoKey: "k" }).find(
+      (p) => p.name === "sharpapi-io"
+    );
     const res = await sharpapi!.fetch(...FX);
     expect(res).not.toBeNull();
     expect(res!.isSharp).toBe(false);
@@ -263,7 +272,9 @@ describe("SharpAPI.io provider fetch", () => {
         { status: 200 }
       )
     );
-    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    const sharpapi = buildOddsProviders({ sharpApiIoKey: "k" }).find(
+      (p) => p.name === "sharpapi-io"
+    );
     expect(await sharpapi!.fetch(...FX)).toBeNull();
   });
 
@@ -271,13 +282,17 @@ describe("SharpAPI.io provider fetch", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ data: [] }), { status: 200 })
     );
-    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    const sharpapi = buildOddsProviders({ sharpApiIoKey: "k" }).find(
+      (p) => p.name === "sharpapi-io"
+    );
     expect(await sharpapi!.fetch(...FX)).toBeNull();
   });
 
   it("throws quota-exhausted on 429 so the chain marks it spent", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("rate limited", { status: 429 }));
-    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    const sharpapi = buildOddsProviders({ sharpApiIoKey: "k" }).find(
+      (p) => p.name === "sharpapi-io"
+    );
     await expect(sharpapi!.fetch(...FX)).rejects.toThrow("quota exhausted");
   });
 
@@ -285,7 +300,9 @@ describe("SharpAPI.io provider fetch", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("Internal Server Error", { status: 500 })
     );
-    const [sharpapi] = buildOddsProviders({ sharpApiIoKey: "k" });
+    const sharpapi = buildOddsProviders({ sharpApiIoKey: "k" }).find(
+      (p) => p.name === "sharpapi-io"
+    );
     expect(await sharpapi!.fetch(...FX)).toBeNull();
   });
 });

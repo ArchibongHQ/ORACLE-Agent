@@ -6,6 +6,8 @@
  *  layer — not the engine — so file caching stays out of the fs-free engine.
  *
  *  Flow per fixture:
+ *    0. Daily Parquet lake (tools/enrich_news.py's 00:00 acquisition, per-team
+ *       news) — free, no key required; a hit skips steps 1-3 entirely.
  *    1. Check .tmp/news_intel/<slug>.json file cache (TTL 2h — fast same-day reuse)
  *    2. Check GBrain (news:<slug>) — durable cross-day memory; rehydrate file cache on hit
  *    3. fetchNewsEnsemble — Perplexity Sonar + Google AI-Mode in parallel, merged
@@ -95,6 +97,70 @@ export interface NewsIntelOpts {
   storage?: StoragePort;
 }
 
+/** Map one per-team lake news row into SoftContextItems. "perplexity" rows
+ *  carry the same structured shape callNewsIntel.ts produces (parsed from
+ *  raw_json, written by tools/enrich_news.py's fetch_perplexity); "google_ai"
+ *  rows are unstructured scraped prose (Phase A scope — no LLM reshape step in
+ *  Python) and become one raw "news" item, which softContext already supports
+ *  as free text. A malformed/unparseable row degrades to []. */
+function lakeRowToSoftContext(row: {
+  source: string;
+  summary: string;
+  rawJson: string;
+  scrapedAt: string;
+}): SoftContextItem[] {
+  if (row.source === "perplexity") {
+    try {
+      const obj = JSON.parse(row.rawJson) as {
+        injuries?: string[];
+        suspensions?: string[];
+        lineupHints?: string[];
+        motivationFlags?: string[];
+        travelFlags?: string[];
+        model?: string;
+      };
+      const model = obj.model ?? "perplexity-lake";
+      const items: SoftContextItem[] = [];
+      const push = (kind: SoftContextItem["kind"], texts: string[] | undefined) => {
+        for (const text of texts ?? [])
+          items.push({ kind, text, source: model, observedAt: row.scrapedAt });
+      };
+      push("injury", obj.injuries);
+      push("injury", obj.suspensions);
+      push("lineup", obj.lineupHints);
+      push("motivation", obj.motivationFlags);
+      push("news", obj.travelFlags);
+      return items;
+    } catch {
+      return [];
+    }
+  }
+  if (row.source === "google_ai" && row.summary) {
+    return [
+      { kind: "news", text: row.summary, source: "google-ai-mode-lake", observedAt: row.scrapedAt },
+    ];
+  }
+  return [];
+}
+
+/** Store-first read: today's per-team news from the Parquet lake, for both
+ *  sides of the fixture. Dynamic import + broad catch, mirroring
+ *  selectFixtures.ts's loadSportyBetIndex — a missing/broken dailyStore module
+ *  degrades to [] so the caller falls through to file-cache/GBrain/live-
+ *  ensemble unchanged. Never throws. */
+async function loadLakeNews(today: string, home: string, away: string): Promise<SoftContextItem[]> {
+  try {
+    const { loadDailyNews, teamSlug } = await import("./dailyStore.js");
+    const [homeRows, awayRows] = await Promise.all([
+      loadDailyNews(today, teamSlug(home)),
+      loadDailyNews(today, teamSlug(away)),
+    ]);
+    return [...(homeRows ?? []), ...(awayRows ?? [])].flatMap(lakeRowToSoftContext);
+  } catch {
+    return [];
+  }
+}
+
 const gbrainKey = (home: string, away: string): string => `news:${slug(home, away)}`;
 
 /** GBrain durable lookup, honoring the same 2h recency window as the file cache. */
@@ -113,62 +179,70 @@ async function readGbrain(
   return null;
 }
 
-/** Enrich up to MAX_JOBS fixtures with ensemble news intelligence.
- *  Lookup order per fixture: file cache -> GBrain -> ensemble acquisition.
- *  Persists acquisitions to BOTH file cache and GBrain. Never throws. */
+/** Enrich up to MAX_JOBS fixtures with news intelligence.
+ *  Lookup order per fixture: daily Parquet lake (free, no key) -> file cache
+ *  -> GBrain -> live ensemble acquisition (requires a key). Persists live
+ *  acquisitions to BOTH file cache and GBrain. Never throws. */
 export async function enrichWithNewsIntel(
   jobs: FixtureJob[],
   opts: NewsIntelOpts
 ): Promise<FixtureJob[]> {
   const { perplexityApiKey, geminiApiKey, storage } = opts;
-  if (!perplexityApiKey && !geminiApiKey) return jobs;
+  const hasLiveKeys = !!perplexityApiKey || !!geminiApiKey;
 
   const eligible = jobs.map((job, idx) => ({ job, idx })).slice(0, MAX_JOBS);
   if (eligible.length === 0) return jobs;
 
+  const today = new Date().toISOString().slice(0, 10);
   const enriched = [...jobs];
   let apiCalls = 0;
   let filled = 0;
+  let lakeHits = 0;
 
   for (const { job, idx } of eligible) {
     try {
-      // 1. file cache (fast same-day reuse)
-      let cached = await readCache(job.home, job.away);
+      // 0. daily Parquet lake — store-first, free, no key needed.
+      let items = await loadLakeNews(today, job.home, job.away);
+      if (items.length > 0) lakeHits++;
 
-      // 2. GBrain durable memory — rehydrate file cache on hit so next run is local
-      if (!cached) {
-        const fromGbrain = await readGbrain(storage, job.home, job.away);
-        if (fromGbrain) {
-          cached = fromGbrain;
-          await writeCache(job.home, job.away, cached);
+      if (items.length === 0 && hasLiveKeys) {
+        // 1. file cache (fast same-day reuse)
+        let cached = await readCache(job.home, job.away);
+
+        // 2. GBrain durable memory — rehydrate file cache on hit so next run is local
+        if (!cached) {
+          const fromGbrain = await readGbrain(storage, job.home, job.away);
+          if (fromGbrain) {
+            cached = fromGbrain;
+            await writeCache(job.home, job.away, cached);
+          }
         }
-      }
 
-      // 3. acquire via ensemble (Perplexity + Google AI-Mode in parallel)
-      if (!cached) {
-        if (apiCalls > 0) await new Promise((r) => setTimeout(r, REQ_DELAY_MS));
-        const intel = await fetchNewsEnsemble(job.home, job.away, job.league, job.kickoff, {
-          perplexityKey: perplexityApiKey,
-          geminiKey: geminiApiKey,
-        });
-        apiCalls++;
-        if (intel) {
-          cached = { ...intel, fetchedAt: new Date().toISOString() };
-          // 4. persist to BOTH file cache and GBrain
-          await writeCache(job.home, job.away, cached);
-          if (storage) {
-            try {
-              await storage.set(gbrainKey(job.home, job.away), cached);
-            } catch {
-              /* GBrain persist is best-effort */
+        // 3. acquire via ensemble (Perplexity + Google AI-Mode in parallel)
+        if (!cached) {
+          if (apiCalls > 0) await new Promise((r) => setTimeout(r, REQ_DELAY_MS));
+          const intel = await fetchNewsEnsemble(job.home, job.away, job.league, job.kickoff, {
+            perplexityKey: perplexityApiKey,
+            geminiKey: geminiApiKey,
+          });
+          apiCalls++;
+          if (intel) {
+            cached = { ...intel, fetchedAt: new Date().toISOString() };
+            // 4. persist to BOTH file cache and GBrain
+            await writeCache(job.home, job.away, cached);
+            if (storage) {
+              try {
+                await storage.set(gbrainKey(job.home, job.away), cached);
+              } catch {
+                /* GBrain persist is best-effort */
+              }
             }
           }
         }
+
+        if (cached) items = toSoftContext(cached);
       }
 
-      if (!cached) continue;
-
-      const items = toSoftContext(cached);
       if (!items.length) continue;
 
       const existingState = enriched[idx]?.state ?? {};
@@ -192,7 +266,7 @@ export async function enrichWithNewsIntel(
     }
   }
 
-  process.stderr.write(`[newsIntel] filled=${filled}/${eligible.length}\n`);
+  process.stderr.write(`[newsIntel] filled=${filled}/${eligible.length} (lake=${lakeHits})\n`);
 
   return enriched;
 }

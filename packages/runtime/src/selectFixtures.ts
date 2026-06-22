@@ -100,6 +100,10 @@ export interface SportyBetStats {
     home?: { rest_days?: number; next_days?: number } | null;
     away?: { rest_days?: number; next_days?: number } | null;
   } | null;
+  /** Pre-match textual facts (Sportradar match_funfacts) — closest verified gismo
+   *  equivalent to a "commentary" tab. Advisory/LLM context only — no engine
+   *  consumption point yet. */
+  commentary?: string[] | null;
 }
 
 export interface SportyBetEventDetail {
@@ -154,14 +158,28 @@ export function findSidecarDetail(
   return undefined;
 }
 
-/** Load .tmp/fixtures/sportybet_today.json. Returns null when the file is
- *  missing, corrupt, or stale (`date` !== today) — callers fail open.
- *  The sidecar is scraped web content: each event is shape-validated so one
- *  malformed record degrades to a skip, not a fail-open of the whole index. */
+/** Load today's SportyBet-shaped index, lake-first. Tries the Parquet daily
+ *  lake (dailyStore.ts) before falling back to the legacy
+ *  .tmp/fixtures/sportybet_today.json — a fresh lake skips the JSON parse
+ *  entirely (the actual latency win; see the Phase A overhaul plan). Dynamic
+ *  import avoids a static circular dependency (dailyStore.ts imports this
+ *  file's types/sidecarKey) and means a missing/broken dailyStore module
+ *  degrades to the JSON path exactly like any other failure here.
+ *  Returns null when neither source has today's data — callers fail open.
+ *  The JSON sidecar is scraped web content: each event is shape-validated so
+ *  one malformed record degrades to a skip, not a fail-open of the whole
+ *  index. */
 export async function loadSportyBetIndex(
   today: string,
   path: string = SPORTYBET_SIDECAR_PATH
 ): Promise<SportyBetIndex | null> {
+  try {
+    const { loadDailyFixtures } = await import("./dailyStore.js");
+    const fromLake = await loadDailyFixtures(today);
+    if (fromLake) return fromLake;
+  } catch {
+    // dailyStore unavailable (native DuckDB load failure, etc.) — fall through to JSON.
+  }
   try {
     const raw = JSON.parse(await readFile(path, "utf8")) as {
       date?: string;

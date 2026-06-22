@@ -4,6 +4,7 @@
 
 export type { AnalyzeOptions, AnalyzeResult, ResolveDayResult } from "./analyze.js";
 export { CLV_ELIGIBLE_LEAGUES, resolveDay, runAnalysis } from "./analyze.js";
+export { fixturesPartitionExists } from "./dailyStore.js";
 export { buildConfig, loadEnv, validateConfig } from "./env.js";
 export type { FetchResult } from "./fixtures.js";
 export {

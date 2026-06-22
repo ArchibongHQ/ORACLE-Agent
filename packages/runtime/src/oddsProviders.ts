@@ -9,6 +9,7 @@
  *  the moment a provider with isSharp=true returns a result; soft-book providers
  *  only fire when every sharp source above is empty or over quota.
  *
+ *    0  daily-lake-odds   soft   — Parquet lake (00:00 acquisition)  [WIRED]
  *    1  the-odds-api      (handled upstream in fixtures.ts — not in this chain)
  *    2  SharpAPI.io       sharp  — Pinnacle/SBOBet et al.        [WIRED]
  *    3  API-Football      net    — permanent free tier           [WIRED]
@@ -21,10 +22,20 @@
  *  price after a soft hit, so these tiers fire often — Odds-API.io's ~72k req/mo
  *  equivalent quota absorbs that traffic before SportsGameOdds' scarce 1,000/mo.
  *
+ *  Tier 0 is a defense-in-depth safety net, not the primary latency win — the
+ *  actual win happens earlier: selectFixtures.ts's loadSportyBetIndex() is
+ *  itself lake-first now, so a lake hit already lands a fixture in
+ *  applySelection's sel.withOdds (fixtures.ts), which never reaches this chain
+ *  at all. Tier 0 only fires for the rarer case where a fixture still reaches
+ *  geminiOddsGapFill despite a lake hit (e.g. a name-matching divergence
+ *  between the two lookups) — same role tier 6 already plays for the JSON
+ *  sidecar, just for the lake.
+ *
  *  Providers whose key is absent are skipped silently (config.ts pattern).
  */
 import { readFile } from "node:fs/promises";
 import { SPORTYBET_SIDECAR_PATH } from "./selectFixtures.js";
+import { flattenSidecarOdds } from "./sidecarOdds.js";
 import { namesMatch } from "./teamNames.js";
 
 /** 1X2 consensus result. Field-compatible with @oracle/llm OddsAcquisitionResult
@@ -793,6 +804,53 @@ export function makeSportyBetSidecarProvider(sidecarPath: string): OddsProvider 
   };
 }
 
+/** Daily Parquet lake (tier 0, soft) — same SportyBet data as tier 6, sourced
+ *  from the 00:00 acquisition snapshot via DuckDB instead of a JSON re-parse.
+ *  Dynamic import avoids a hard runtime dependency on dailyStore.ts/DuckDB for
+ *  every odds-provider caller and means a native-load failure degrades to
+ *  null exactly like any other miss here — never throws, falls through to
+ *  tier 2+. See the file header for why this is a safety net, not the primary
+ *  latency win (that's loadSportyBetIndex's own lake-first preference). */
+export function makeDailyLakeOddsProvider(): OddsProvider {
+  return {
+    name: "daily-lake-odds",
+    tier: 0,
+    isSharp: false,
+    hasQuota: () => true, // always available — local Parquet read, no API key needed
+    async fetch(home, away, _league, kickoff) {
+      const today = kickoff.slice(0, 10);
+      let odds: Awaited<ReturnType<typeof import("./dailyStore.js")["loadDailyOdds"]>>;
+      try {
+        const { loadDailyOdds } = await import("./dailyStore.js");
+        odds = await loadDailyOdds(today, home, away);
+      } catch {
+        return null;
+      }
+      if (!odds?.["1x2"]) return null;
+
+      const flat = flattenSidecarOdds({ eventId: "", odds, stats: null, statscoverage: null });
+      const h = flat.home;
+      const d = flat.draw;
+      const a = flat.away;
+      if (!h || !d || !a) return null;
+
+      const valid = validateSbTriple(h, d, a);
+      if (!valid) return null;
+
+      return {
+        home: h,
+        draw: d,
+        away: a,
+        confidence: 0.62,
+        sources: ["daily-lake-odds"],
+        overround: valid.overround,
+        provider: "daily-lake-odds",
+        isSharp: false,
+      };
+    },
+  };
+}
+
 export interface OddsProviderKeys {
   sharpApiIoKey?: string;
   apiFootballKey?: string;
@@ -806,6 +864,7 @@ export interface OddsProviderKeys {
 /** Build the full provider registry in tier order. */
 export function buildOddsProviders(keys: OddsProviderKeys): OddsProvider[] {
   return [
+    makeDailyLakeOddsProvider(),
     makeSharpApiIoProvider(keys.sharpApiIoKey),
     makeApiFootballProvider(keys.apiFootballKey),
     makeOddsApiIoProvider(keys.oddsApiIoKey),

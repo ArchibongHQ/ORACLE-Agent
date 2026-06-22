@@ -23,6 +23,7 @@
     "vitest": "^2.0.0"
   },
   "dependencies": {
+    "@duckdb/node-api": "1.5.4-r.1",
     "@electric-sql/pglite": "^0.4.6"
   }
 }

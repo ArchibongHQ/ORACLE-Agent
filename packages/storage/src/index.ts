@@ -1,3 +1,5 @@
+export { DuckDbAdapter } from "./DuckDbAdapter.js";
+export { escapeSqlLiteral, queryParquetRows } from "./duckdb.js";
 export { GBrainAdapter } from "./GBrainAdapter.js";
 export { _resetKeyLocks, withKeyLock } from "./keyLock.js";
 export type { StorageKey } from "./keys.js";
