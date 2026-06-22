@@ -51,3 +51,58 @@ describe("mapMarket — match goals total still works", () => {
     });
   });
 });
+
+describe("mapMarket — Asian 2 Goals", () => {
+  // Regression: cat "Asian 2 Goals" contains "asian" and previously fell
+  // through to the Asian Handicap branch, which only recognises home/away
+  // sides — "Asian Over/Under 2 Goals" has neither, so it always returned
+  // null and silently dropped every leg in this category.
+  it("routes Asian Over 2 Goals to its own market, not Asian Handicap", () => {
+    const m = mapMarket("Asian 2 Goals", "Asian Over 2 Goals");
+    expect(m).toEqual({ sportyMarket: "Asian Total Goals", sportySelection: "Over 2" });
+    expect(m?.sportyMarket).not.toBe("Asian Handicap");
+  });
+
+  it("routes Asian Under 2 Goals", () => {
+    expect(mapMarket("Asian 2 Goals", "Asian Under 2 Goals")).toEqual({
+      sportyMarket: "Asian Total Goals",
+      sportySelection: "Under 2",
+    });
+  });
+});
+
+describe("mapMarket — Win Either Half", () => {
+  // Regression: no branch matched "win either half" at all, so every pick
+  // in this category returned null before reaching fixture/team matching.
+  it("routes Win Either Half (H) to Home", () => {
+    expect(mapMarket("Win Either Half", "Win Either Half (H)")).toEqual({
+      sportyMarket: "Win Either Half",
+      sportySelection: "Home",
+    });
+  });
+
+  it("routes Win Either Half (A) to Away", () => {
+    expect(mapMarket("Win Either Half", "Win Either Half (A)")).toEqual({
+      sportyMarket: "Win Either Half",
+      sportySelection: "Away",
+    });
+  });
+});
+
+describe("mapMarket — First Half", () => {
+  // Regression: no branch matched "first half" at all, so every pick in
+  // this category returned null before reaching fixture/team matching.
+  it("routes FH Under 1.5 Goals to 1st Half Goals", () => {
+    expect(mapMarket("First Half", "FH Under 1.5 Goals")).toEqual({
+      sportyMarket: "1st Half Goals",
+      sportySelection: "Under 1.5",
+    });
+  });
+
+  it("routes FH Draw to 1st Half Result", () => {
+    expect(mapMarket("First Half", "FH Draw")).toEqual({
+      sportyMarket: "1st Half Result",
+      sportySelection: "X",
+    });
+  });
+});

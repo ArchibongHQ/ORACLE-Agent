@@ -55,6 +55,22 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
     }
   }
 
+  // ── Asian 2 Goals (e.g. "Asian Over 2 Goals" / "Asian Under 2 Goals") ────
+  // Must precede both the generic Goals Over/Under branch below (cat "Asian 2
+  // Goals" contains "goal" and would otherwise be misrouted to the match-total
+  // market) and the Asian Handicap branch (which only recognises home/away
+  // sides and would silently drop this market).
+  // NOTE: sportyMarket/sportySelection labels are best-effort, unverified live
+  // against sportybet.com — confirm against the actual market tab text before
+  // relying on this in production (see apps/booking/test/marketMap.test.ts).
+  if (c.includes("asian") && c.includes("goal")) {
+    const line = lineFrom(side);
+    if (line && s.includes("over"))
+      return { sportyMarket: "Asian Total Goals", sportySelection: `Over ${line}` };
+    if (line && s.includes("under"))
+      return { sportyMarket: "Asian Total Goals", sportySelection: `Under ${line}` };
+  }
+
   // ── Goals Over/Under ─────────────────────────────────────────────────────
   if (c.includes("goal") || c.includes("o/u") || c.includes("over under") || c.includes("total")) {
     const line = lineFrom(side);
@@ -98,6 +114,27 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
   if (c.includes("draw no bet") || c.includes("dnb")) {
     if (s.includes("home")) return { sportyMarket: "Draw No Bet", sportySelection: "Home" };
     if (s.includes("away")) return { sportyMarket: "Draw No Bet", sportySelection: "Away" };
+  }
+
+  // ── Win Either Half (e.g. "Win Either Half (H)" / "Win Either Half (A)") ──
+  // NOTE: label unverified live — see Asian 2 Goals note above.
+  if (c.includes("win either half")) {
+    // normalise() strips parens, so "Win Either Half (H)" → "win either half h"
+    if (s.endsWith(" h") || s.includes("home"))
+      return { sportyMarket: "Win Either Half", sportySelection: "Home" };
+    if (s.endsWith(" a") || s.includes("away"))
+      return { sportyMarket: "Win Either Half", sportySelection: "Away" };
+  }
+
+  // ── First Half (e.g. "FH Under 1.5 Goals" / "FH Draw") ───────────────────
+  // NOTE: label unverified live — see Asian 2 Goals note above.
+  if (c.includes("first half")) {
+    if (s.includes("draw")) return { sportyMarket: "1st Half Result", sportySelection: "X" };
+    const line = lineFrom(side);
+    if (line && (s.includes("over") || s.includes("under"))) {
+      const dir = s.includes("under") ? "Under" : "Over";
+      return { sportyMarket: "1st Half Goals", sportySelection: `${dir} ${line}` };
+    }
   }
 
   return null;
