@@ -34,10 +34,32 @@ export function escapeSqlLiteral(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+/** Bounds a query's wall-clock time, same convention as every other I/O
+ *  provider in this codebase (AbortSignal.timeout). The native DuckDB call
+ *  itself isn't cancellable mid-flight, but racing it against a timeout still
+ *  lets a hung read fail open instead of blocking the caller indefinitely. */
+const QUERY_TIMEOUT_MS = 5_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("duckdb query timeout")), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
 /** Run a read-only SQL query and return rows as plain JS objects.
- *  Returns null on ANY failure (native load, connect, parse, missing file) —
- *  callers must treat null as "lake unavailable" and fail open. An empty
- *  array is a real, successful empty result, distinct from null. */
+ *  Returns null on ANY failure (native load, connect, parse, missing file,
+ *  timeout) — callers must treat null as "lake unavailable" and fail open. An
+ *  empty array is a real, successful empty result, distinct from null. */
 export async function queryParquetRows<T = Record<string, unknown>>(
   sql: string
 ): Promise<T[] | null> {
@@ -46,7 +68,7 @@ export async function queryParquetRows<T = Record<string, unknown>>(
     if (!instance) return null;
     const conn = await instance.connect();
     try {
-      const reader = await conn.runAndReadAll(sql);
+      const reader = await withTimeout(conn.runAndReadAll(sql), QUERY_TIMEOUT_MS);
       return reader.getRowObjectsJS() as T[];
     } finally {
       conn.closeSync();

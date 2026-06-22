@@ -1,6 +1,9 @@
 /** callVerification (B2/CVL) — Tier 0 local Claude Code → Claude Sonnet →
  *  OpenRouter GLM-5.2 → GLM-5.1 → GPT-oss-120B.
- *  Pins: malformed JSON defaults to APPROVED, terminal behavior is SKIPPED (never throws). */
+ *  Pins: malformed/unparseable JSON falls through to the next tier (never
+ *  defaults to a confident APPROVED — that would silently bypass the
+ *  adversarial-verification safety layer); terminal behavior is SKIPPED
+ *  (never throws). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetClaudeCodeCaches } from "../src/callClaudeCode.js";
 import { callVerification } from "../src/callVerification.js";
@@ -71,16 +74,15 @@ describe("callVerification — Claude Sonnet tier", () => {
     expect(res.override).toBe("AH Home -0.5");
   });
 
-  it("defaults to APPROVED on malformed JSON — does not throw", async () => {
+  it("falls through to SKIPPED on malformed JSON — never defaults to APPROVED", async () => {
     messagesCreateMock.mockResolvedValue(claudeText("I cannot verify this pick."));
     const res = await callVerification("p", ctxClaude);
-    expect(res.status).toBe("APPROVED");
-    expect(res.rationale).toMatch(/parse error — defaulting APPROVED/);
+    expect(res.status).toBe("SKIPPED");
   });
 
-  it("coerces an unknown status string to APPROVED", async () => {
+  it("falls through to SKIPPED on an unknown status string — never defaults to APPROVED", async () => {
     messagesCreateMock.mockResolvedValue(claudeText('{"status":"MAYBE","rationale":"hmm"}'));
-    expect((await callVerification("p", ctxClaude)).status).toBe("APPROVED");
+    expect((await callVerification("p", ctxClaude)).status).toBe("SKIPPED");
   });
 });
 
