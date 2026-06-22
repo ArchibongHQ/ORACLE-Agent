@@ -161,6 +161,10 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     enableWebSearchOddsFallback: env.ENABLE_WEB_SEARCH_FALLBACK?.toLowerCase() !== "false",
     webOddsMinConsensus: Number(env.WEB_ODDS_MIN_CONSENSUS ?? 3),
     webOddsVarianceThreshold: Number(env.WEB_ODDS_VARIANCE_THRESHOLD ?? 0.025),
+    // Web search fallback for match results when API-Football + football-data.org both miss
+    enableWebSearchResultsFallback:
+      env.ENABLE_WEB_SEARCH_RESULTS_FALLBACK?.toLowerCase() !== "false",
+    webResultsMinConsensus: Number(env.WEB_RESULTS_MIN_CONSENSUS ?? 2),
     // T0 news intel + swarm — opt-in; on when the flag is set AND any provider key
     // is present. Gemini-only enables the Google AI-Mode fallback (no Perplexity needed).
     enableNewsIntel:

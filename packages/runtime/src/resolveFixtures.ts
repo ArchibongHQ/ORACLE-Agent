@@ -9,9 +9,21 @@
  *  2. football-data.org — only ~10 major leagues + World Cup, but accepts any date.
  *  Falls back to (2) when (1) is unavailable (no key, error, or date outside its
  *  free-tier window) so older dates and major-league-only setups still resolve. */
+import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AnalysisRecord, ClvSourceQuality, ResolutionRecord } from "@oracle/engine";
 import { RESOLUTION_SCHEMA_VERSION } from "@oracle/engine";
+import { resolvePythonBin } from "./fixtures.js";
 import { namesMatch } from "./teamNames.js";
+
+const __dir = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dir, "../../..");
+const PYTHON_BIN = resolvePythonBin();
+const RESULTS_CACHE_DIR = join(REPO_ROOT, ".tmp", "results");
+const UNMATCHED_FIXTURES_FILE = join(REPO_ROOT, ".tmp", "unmatched_fixtures.txt");
 
 const BASE_URL = "https://api.football-data.org/v4";
 const APIFOOTBALL_BASE = "https://v3.football.api-sports.io";
@@ -75,7 +87,7 @@ interface OddsH2HGame {
 
 // ── RPS ───────────────────────────────────────────────────────────────────────
 
-function rpsScore(
+export function rpsScore(
   probs: { home: number; draw: number; away: number },
   actual: "home" | "draw" | "away"
 ): number {
@@ -378,6 +390,120 @@ export async function resolveRecords(
           ? ` CLV=${rec.realisedCLV >= 0 ? "+" : ""}${(rec.realisedCLV * 100).toFixed(2)}pp`
           : "";
     } else {
+      unmatched.push(record.fixtureId);
+    }
+  }
+
+  return { resolved, unmatched };
+}
+
+// ── Web-search consensus fallback (CLAUDE.md §6 no-data-blocker) ───────────────
+// Fixtures that neither API-Football nor football-data.org resolved (e.g. minor
+// leagues outside both free tiers' coverage) fall through here: tools/scrape_match_results.py
+// scrapes ESPN, Flashscore, BetExplorer, SofaScore, and Google AI Mode in parallel
+// and only returns a result when >= minConsensus sources agree on the exact same
+// scoreline. Degraded relative to a structured results API (no fixture-ID match,
+// fuzzy team-name search per source) but strictly better than leaving the fixture
+// unresolved forever — same rationale as fetchWebSearchOdds's role in the odds chain.
+
+interface WebSearchResultPayload {
+  home: string;
+  away: string;
+  league: string;
+  date: string;
+  home_goals: number;
+  away_goals: number;
+  actual_result: "home" | "draw" | "away";
+  confidence: number;
+  agreeing_sources: number;
+  total_sources: number;
+}
+
+function _slugForResultCache(home: string, away: string, league: string, date: string): string {
+  return `${home}_${away}_${league}_${date}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+/** Resolve fixtures that resolveRecords() couldn't match via API, by scraping a
+ *  multi-source consensus of live-score sites. Only fixtures where >= minConsensus
+ *  independent sources agree on the exact scoreline are accepted — everything else
+ *  stays unmatched (logged, not silently dropped, per resolve.md's edge cases). */
+export async function resolveUnmatchedViaWebSearch(
+  records: AnalysisRecord[],
+  unmatchedIds: string[],
+  runId: string,
+  minConsensus = 2
+): Promise<ResolveResult> {
+  const targets = records.filter((r) => unmatchedIds.includes(r.fixtureId));
+  if (targets.length === 0) return { resolved: [], unmatched: [] };
+
+  await mkdir(RESULTS_CACHE_DIR, { recursive: true });
+
+  const fixtureLines = targets.map((r) => `${r.home} vs ${r.away}, ${r.league}, ${r.kickoff}`);
+  await writeFile(UNMATCHED_FIXTURES_FILE, fixtureLines.join("\n"), "utf8");
+
+  const scriptPath = join(REPO_ROOT, "tools", "scrape_match_results.py");
+  await new Promise<void>((resolvePromise) => {
+    void import("node:child_process").then(({ spawn }) => {
+      const child = spawn(
+        PYTHON_BIN,
+        [
+          scriptPath,
+          "--fixtures",
+          UNMATCHED_FIXTURES_FILE,
+          "--quiet",
+          "--min-consensus",
+          String(minConsensus),
+        ],
+        { env: { ...process.env, PYTHONIOENCODING: "utf-8" } }
+      );
+      const timer = setTimeout(() => {
+        child.kill();
+        resolvePromise();
+      }, 35_000 * targets.length); // ~35s budget per fixture (5 sources in parallel, Playwright tier dominates)
+      child.on("close", () => {
+        clearTimeout(timer);
+        resolvePromise();
+      });
+      child.on("error", () => {
+        clearTimeout(timer);
+        resolvePromise();
+      });
+    });
+  });
+
+  const resolved: ResolutionRecord[] = [];
+  const unmatched: string[] = [];
+
+  for (const record of targets) {
+    const cachePath = join(
+      RESULTS_CACHE_DIR,
+      `${_slugForResultCache(record.home, record.away, record.league, record.kickoff.slice(0, 10))}.json`
+    );
+    if (!existsSync(cachePath)) {
+      unmatched.push(record.fixtureId);
+      continue;
+    }
+    try {
+      const payload = JSON.parse(await readFile(cachePath, "utf8")) as WebSearchResultPayload;
+      const rps = rpsScore(record.probabilities, payload.actual_result);
+      resolved.push({
+        fixtureId: record.fixtureId,
+        runId,
+        schemaVersion: RESOLUTION_SCHEMA_VERSION,
+        actualResult: payload.actual_result,
+        homeGoals: payload.home_goals,
+        awayGoals: payload.away_goals,
+        realisedCLV: null, // web-search results carry no closing-odds proxy
+        clvSourceQuality: "UNKNOWN",
+        rpsContribution: parseFloat(rps.toFixed(6)),
+        drawCalibrationPoint: {
+          league: record.league,
+          predicted: record.probabilities.draw,
+          realised: payload.actual_result === "draw" ? 1 : 0,
+        },
+        resolvedAt: new Date().toISOString(),
+      });
+    } catch {
       unmatched.push(record.fixtureId);
     }
   }

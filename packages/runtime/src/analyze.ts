@@ -20,7 +20,7 @@ import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS } from "@oracle/storage";
 import { renderReport, writeReport } from "./report.js";
 import type { ResolveResult } from "./resolveFixtures.js";
-import { resolveRecords } from "./resolveFixtures.js";
+import { resolveRecords, resolveUnmatchedViaWebSearch } from "./resolveFixtures.js";
 
 /** Cap the persisted run-manifest history. The local PGlite store rewrites this
  *  whole array on every run; without a cap it grows unbounded and eventually
@@ -311,12 +311,9 @@ export async function resolveDay(
     geminiApiKey?: string;
     apiFootballKey?: string;
   },
-  date: string
+  date: string,
+  webSearchFallback: { enabled?: boolean; minConsensus?: number } = {}
 ): Promise<ResolveDayResult> {
-  if (!keys.footballDataApiKey && !keys.apiFootballKey) {
-    return { date, candidates: 0, resolved: [], unmatched: [] };
-  }
-
   const allRecords = (await storage.get<AnalysisRecord[]>(STORAGE_KEYS.analysisRecords)) ?? [];
   const dayRecords = allRecords.filter((r) => r.kickoff.startsWith(date));
 
@@ -324,12 +321,38 @@ export async function resolveDay(
     return { date, candidates: 0, resolved: [], unmatched: [] };
   }
 
-  const { resolved, unmatched } = await resolveRecords(
-    dayRecords,
-    keys.footballDataApiKey,
-    keys.oddsApiKey,
-    keys.apiFootballKey
-  );
+  // API sources first (structured, fixture-ID-exact). No early-exit when both keys
+  // are absent — CLAUDE.md §6 no-data-blocker: the web-search consensus fallback
+  // below always runs on whatever resolveRecords couldn't (or, with no keys, didn't
+  // even try to) resolve.
+  const apiResult =
+    keys.footballDataApiKey || keys.apiFootballKey
+      ? await resolveRecords(
+          dayRecords,
+          keys.footballDataApiKey,
+          keys.oddsApiKey,
+          keys.apiFootballKey
+        )
+      : { resolved: [], unmatched: dayRecords.map((r) => r.fixtureId) };
+
+  let resolved = apiResult.resolved;
+  let unmatched = apiResult.unmatched;
+
+  // Web-search consensus fallback for whatever the API chain couldn't match —
+  // minor leagues outside both free tiers' coverage, API outages, etc.
+  if (webSearchFallback.enabled !== false && unmatched.length > 0) {
+    const runId =
+      resolved[0]?.runId ?? `resolve_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const webResult = await resolveUnmatchedViaWebSearch(
+      dayRecords,
+      unmatched,
+      runId,
+      webSearchFallback.minConsensus ?? 2
+    );
+    resolved = [...resolved, ...webResult.resolved];
+    unmatched = webResult.unmatched;
+  }
+
   if (resolved.length) {
     await storage.bulkWrite(STORAGE_KEYS.resolutionRecords, resolved);
   }

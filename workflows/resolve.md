@@ -59,6 +59,42 @@ never a live-score or finished-match endpoint. The public SportyBet results page
 client-rendered SPA with no API capture on file. Building a results scraper from scratch
 would be real, untested net-new work versus reusing an already-keyed, already-verified API.
 
+## Web-Search Consensus Fallback for Results (CLAUDE.md §6 no-data-blocker)
+
+Whatever `resolveRecords()` leaves in `unmatched` (minor leagues outside both API tiers'
+coverage, an API outage, or — as of this fix — simply no `FOOTBALL_DATA_API_KEY`/
+`API_FOOTBALL_KEY` configured at all) now falls through to
+`resolveUnmatchedViaWebSearch()` in `resolveFixtures.ts`, which spawns
+`tools/scrape_match_results.py --fixtures <unmatched list>`.
+
+That script scrapes 5 independent sources in parallel per fixture and only accepts a
+result when **≥2 sources agree on the exact same scoreline** (goals are integers — exact
+match, not within-variance like the odds consensus):
+
+| Source | Method |
+| --- | --- |
+| ESPN | `site.api.espn.com` scoreboard JSON, `status=post`, no Playwright |
+| Flashscore | Playwright, client-side JS state |
+| BetExplorer | `requests` + BeautifulSoup, results table |
+| SofaScore | Public REST API (`search/events` → score) |
+| Google AI Mode | `scrape_google_ai.py`, regex-parses "X-Y" scoreline from the AI answer prose |
+
+Resolved fixtures from this tier get `realisedCLV: null` / `clvSourceQuality: "UNKNOWN"`
+(no closing-odds proxy available for a fuzzy-matched web result) but a full
+`rpsContribution` and `drawCalibrationPoint` — they count fully toward the SkillOpt
+sample-size gate (`workflows/skillopt.md`).
+
+Config flags (`packages/engine/src/types.ts` `OracleConfig`, read in `env.ts`):
+
+- `ENABLE_WEB_SEARCH_RESULTS_FALLBACK=true` (default) — gates the whole tier;
+  `config.enableWebSearchResultsFallback` → `resolveDay()`'s 4th argument
+- `WEB_RESULTS_MIN_CONSENSUS=2` (default) — passed as `--min-consensus`
+
+`apps/worker/src/index.ts`'s `resolveYesterdayFixtures()` no longer early-exits when
+both API keys are absent — the web fallback alone is enough to attempt resolution.
+Output is cached per-fixture at `.tmp/results/<home>_<away>_<league>_<date>.json` for
+inspection (mirrors `.tmp/odds/*.json` for the odds chain).
+
 ## Output
 ```json
 {

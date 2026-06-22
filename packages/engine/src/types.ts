@@ -46,12 +46,15 @@ export interface DecisionOutput {
   rejectedAndWhy: string[];
 }
 
-/** Exact LLM call bundle for audit replay (PRD §6 determinism, Appendix B). */
+/** Exact LLM call bundle for audit replay (PRD §6 determinism, Appendix B).
+ *  temperature is "default" only for the opt-in local-Claude-Code tier, which
+ *  samples at the CLI's account default and has no knob to pin to 0 — every
+ *  API tier still pins 0. Never write "default" without it being literally true. */
 export interface DecisionReplay {
   prompt: string;
   rawResponse: string;
   model: string;
-  temperature: 0;
+  temperature: 0 | "default";
 }
 
 /** Shadow comparison: GLM-5.2 evaluated in parallel with the real decision tier,
@@ -124,6 +127,9 @@ export interface OracleConfig {
   enableWebSearchOddsFallback?: boolean; // default true
   webOddsMinConsensus?: number; // default 3
   webOddsVarianceThreshold?: number; // default 0.025 (±2.5%)
+  // Web search fallback for match results (when API-Football + football-data.org both miss)
+  enableWebSearchResultsFallback?: boolean; // default true
+  webResultsMinConsensus?: number; // default 2 (goals are exact integers, not within-variance)
   // B-layer feature flags (all default false)
   enableBriefing?: boolean; // B1: Claude Opus + Gemini temp ensemble briefing
   enableCVL?: boolean; // B2: Claude Sonnet adversarial verification
@@ -226,7 +232,7 @@ export interface AnalysisRecord {
   // ── Decision layer ──────────────────────────────────────────────────────────
   llmPick: DecisionOutput | null;
   deterministicTopPick: EVMarket | null;
-  decisionReplay: DecisionReplay | null; // prompt + rawResponse + model + temperature=0
+  decisionReplay: DecisionReplay | null; // prompt + rawResponse + model + temperature (0, or "default" for local-Claude-Code)
   // ── Provenance ──────────────────────────────────────────────────────────────
   frozenOddsAtAnalysis: Record<string, unknown> | null;
   analysedAt: string; // ISO-8601

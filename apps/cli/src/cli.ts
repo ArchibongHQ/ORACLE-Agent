@@ -259,8 +259,7 @@ export async function dispatch(argv: string[]): Promise<DispatchResult> {
           date
         );
         if (json) return { code: 0, output: JSON.stringify(r, null, 2) };
-        if (!config.footballDataApiKey)
-          return { code: 1, output: "No FOOTBALL_DATA_API_KEY in .env — cannot resolve." };
+        if (!r.candidates) return { code: 1, output: `No candidate records for ${date}.` };
         return {
           code: 0,
           output: `Resolved ${r.resolved.length}/${r.candidates} fixtures for ${date} (${r.unmatched.length} unmatched).`,
