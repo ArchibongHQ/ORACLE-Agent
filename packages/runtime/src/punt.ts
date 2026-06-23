@@ -363,15 +363,22 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
         verdict: "CONFIRMED",
         pick: { ...pickFromRaw(raw, oracle.confidence) },
         oracleConfidence: oracle.confidence,
-        note: oracle.grade === "NO_EDGE" ? "ORACLE best pick matches (no positive EV)" : undefined,
+        note:
+          oracle.grade === "NO_EDGE"
+            ? "ORACLE best pick matches (no positive EV)"
+            : oracle.grade === "MISSING_DATA"
+              ? "ORACLE best pick matches (arbiter flagged missing data)"
+              : undefined,
       };
     }
 
     // ORACLE disagrees: replace if its confidence clears the punter's implied edge by the margin,
-    // AND the grade is not NO_EDGE (we never force-swap onto a negative-EV ORACLE pick).
+    // AND the grade is not NO_EDGE/MISSING_DATA (we never force-swap onto a negative-EV or
+    // unverified ORACLE pick).
     const hisImplied = impliedConfidence(raw.odds);
     if (
       oracle.grade !== "NO_EDGE" &&
+      oracle.grade !== "MISSING_DATA" &&
       oracle.confidence - hisImplied >= ADJUST_MIN_CONFIDENCE_DELTA
     ) {
       const adjusted: ActionablePick = {
@@ -403,7 +410,9 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
       note:
         oracle.grade === "NO_EDGE"
           ? `ORACLE grade NO_EDGE on this fixture — punter's pick kept`
-          : `ORACLE edge ${(oracle.confidence - hisImplied).toFixed(3)} below ${ADJUST_MIN_CONFIDENCE_DELTA} threshold`,
+          : oracle.grade === "MISSING_DATA"
+            ? `ORACLE arbiter flagged MISSING_DATA on this fixture — punter's pick kept`
+            : `ORACLE edge ${(oracle.confidence - hisImplied).toFixed(3)} below ${ADJUST_MIN_CONFIDENCE_DELTA} threshold`,
     };
   });
 }

@@ -10,7 +10,9 @@
  *
  *  Pure functions, unit-testable, no I/O beyond reading already-loaded data.
  */
+
 import type { BatchJobResult, EVMarket } from "@oracle/engine";
+import { copulaJointProbability, type PortfolioLeg } from "@oracle/engine";
 import type { SportyBetEventDetail } from "./selectFixtures.js";
 import { findSidecarDetail } from "./selectFixtures.js";
 
@@ -75,7 +77,8 @@ export interface GoalsSelectionResult {
   /** Fixtures with ≥1 qualifying leg before the target cap was applied. */
   qualified: number;
   counts: { over15: number; over25: number; teamOver05: number };
-  /** Correlation-adjusted joint probability for the full slip (product × league haircut). */
+  /** Correlation-adjusted joint probability for the full slip (Gaussian-copula
+   *  cross-fixture correlation — see @oracle/engine's copulaJointProbability). */
   combinedProb: number;
   /** Combined decimal odds for the full slip (product of leg odds). */
   combinedOdds: number;
@@ -202,32 +205,23 @@ export function pickSafestGoalsLeg(
   };
 }
 
-/** Intra-league correlation haircut for cross-fixture legs.
- *  Legs from the same league share environmental factors (referee pool, weather patterns,
- *  tactical meta). Conservative rho=0.25 matches typical observed cross-match correlation
- *  in European football (Boshnakov et al. 2017). Penalty = 1/(1+rho). */
-function leagueCorrelationHaircut(legs: GoalsLeg[]): number {
-  const RHO_SAME_LEAGUE = 0.25;
-  if (legs.length === 0) return 1;
-  // Count same-league pairs
-  const leagueCounts: Record<string, number> = {};
-  for (const l of legs) leagueCounts[l.league] = (leagueCounts[l.league] ?? 0) + 1;
-  let penalty = 1;
-  for (const count of Object.values(leagueCounts)) {
-    if (count >= 2) {
-      // Apply haircut once per same-league pair above the first
-      const pairs = (count * (count - 1)) / 2;
-      penalty *= (1 / (1 + RHO_SAME_LEAGUE)) ** pairs;
-    }
-  }
-  return Math.max(0.01, penalty);
+/** Maps a GoalsLeg to the engine's cross-fixture-correlation input shape. */
+function toPortfolioLeg(leg: GoalsLeg): PortfolioLeg {
+  return {
+    home: leg.home,
+    away: leg.away,
+    league: leg.league,
+    market: leg.side,
+    mp: leg.mp,
+    kickoff: leg.kickoff,
+  };
 }
 
-/** Joint probability with correlation haircut: product(mp_i) × leagueHaircut. */
+/** Joint probability via the Gaussian-copula cross-fixture correlation model
+ *  (@oracle/engine's copulaJointProbability — same-league + same-kickoff-window
+ *  legs get a positive correlation bump over the naive independence product). */
 function jointProb(legs: GoalsLeg[]): number {
-  if (legs.length === 0) return 0;
-  const raw = legs.reduce((acc, l) => acc * l.mp, 1);
-  return raw * leagueCorrelationHaircut(legs);
+  return copulaJointProbability(legs.map(toPortfolioLeg));
 }
 
 /** Select the goals accumulator: one safest leg per qualifying fixture, ranked

@@ -128,23 +128,35 @@ describe("callClaudeCode", () => {
 
   it("tree-kills and resolves null when the process exceeds the timeout", async () => {
     vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
     try {
       const child = new FakeChild();
       spawn.mockReturnValue(child);
       const promise = callClaudeCode("hello", { timeoutMs: 300 });
       await vi.advanceTimersByTimeAsync(300);
       expect(await promise).toBeNull();
-      expect(execFile).toHaveBeenCalledWith(
-        "taskkill",
-        ["/pid", "4242", "/T", "/F"],
-        expect.any(Function)
-      );
+      // _killTree branches on process.platform: Windows shells out to taskkill
+      // (execFile), everywhere else signals the process group directly via
+      // process.kill — assert whichever branch this runner actually takes
+      // instead of hardcoding the Windows-only path (the latter passes on a
+      // Windows dev box but fails CI's Ubuntu runner, which never calls
+      // execFile at all).
+      if (process.platform === "win32") {
+        expect(execFile).toHaveBeenCalledWith(
+          "taskkill",
+          ["/pid", "4242", "/T", "/F"],
+          expect.any(Function)
+        );
+      } else {
+        expect(killSpy).toHaveBeenCalledWith(-4242, "SIGKILL");
+      }
     } finally {
+      killSpy.mockRestore();
       vi.useRealTimers();
     }
   });
 
-  it("writes the prompt to stdin and requests JSON output via -p", async () => {
+  it("writes the prompt to stdin and requests JSON output via -p, pinned to opus by default", async () => {
     const child = new FakeChild();
     spawn.mockReturnValue(child);
     const promise = callClaudeCode("analyze this fixture");
@@ -158,9 +170,30 @@ describe("callClaudeCode", () => {
       "json",
       "--max-turns",
       "1",
+      "--model",
+      "opus",
     ]);
     expect(child.stdin.write).toHaveBeenCalledWith("analyze this fixture");
     expect(child.stdin.end).toHaveBeenCalled();
+  });
+
+  it("honours an explicit opts.model override (e.g. fable)", async () => {
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("analyze this fixture", { model: "fable" });
+    await flushMicrotasks();
+    child.stdout.emit("data", envelope({ type: "result", is_error: false, result: "OK" }));
+    child.emit("close", 0);
+    await promise;
+    expect(spawn).toHaveBeenCalledWith(expect.any(String), [
+      "-p",
+      "--output-format",
+      "json",
+      "--max-turns",
+      "1",
+      "--model",
+      "fable",
+    ]);
   });
 });
 

@@ -1,6 +1,7 @@
 /** B2 — Claude Verification Layer (CVL).
  *  Spec: ORACLE_v2026_8_0.jsx lines 5239–5294.
- *  Adversarial review of chosen pick using Claude Sonnet.
+ *  Adversarial review of chosen pick using Claude Opus — every Claude call in this
+ *  pipeline targets Opus/Fable-5-or-newer, never Sonnet or older (operator instruction).
  *  Returns { status, stamp, override? } — skipped when no Claude key. */
 import Anthropic from "@anthropic-ai/sdk";
 import { callClaudeCode, isLocalRuntime } from "./callClaudeCode.js";
@@ -73,9 +74,10 @@ async function callVerificationViaOpenRouter(
   return { ...parsed, stamp: new Date().toISOString(), model };
 }
 
-/** callVerification — adversarial Claude Sonnet review of a proposed pick.
- *  Tier 0: local Claude Code CLI (advisory, tried first whenever isLocalRuntime()).
- *  Fallback: GLM-5.2 → GLM-5.1 → GPT-oss-120B via OpenRouter before returning SKIPPED. */
+/** callVerification — adversarial Claude Opus review of a proposed pick.
+ *  Tier 0: local Claude Code CLI, pinned to Opus (advisory, tried first whenever
+ *  isLocalRuntime()). Fallback: GLM-5.2 → GLM-5.1 → GPT-oss-120B via OpenRouter
+ *  before returning SKIPPED. */
 export async function callVerification(prompt: string, ctx: LLMCallContext): Promise<CvlResult> {
   // Tier 0: local Claude Code CLI — never throws; null (incl. unparseable
   // output) falls through unchanged to Tier 1, never defaults to APPROVED.
@@ -93,7 +95,7 @@ export async function callVerification(prompt: string, ctx: LLMCallContext): Pro
       const client = new Anthropic({ apiKey: ctx.config.claudeApiKey });
       const resp = await client.messages.create(
         {
-          model: MODELS.CLAUDE_SONNET,
+          model: MODELS.CLAUDE_OPUS,
           max_tokens: 1024,
           temperature: 0,
           system: CVL_SYSTEM,
@@ -104,9 +106,9 @@ export async function callVerification(prompt: string, ctx: LLMCallContext): Pro
       const text = resp.content[0]?.type === "text" ? resp.content[0].text : "";
       const parsed = parseCvlResponse(text);
       if (parsed) {
-        return { ...parsed, stamp: new Date().toISOString(), model: MODELS.CLAUDE_SONNET };
+        return { ...parsed, stamp: new Date().toISOString(), model: MODELS.CLAUDE_OPUS };
       }
-      // Unparseable Sonnet output — fall through to OpenRouter tiers rather
+      // Unparseable Opus output — fall through to OpenRouter tiers rather
       // than returning a spread of null.
     } catch {
       // Fall through to OpenRouter tiers
@@ -133,6 +135,6 @@ export async function callVerification(prompt: string, ctx: LLMCallContext): Pro
     status: "SKIPPED",
     stamp: new Date().toISOString(),
     rationale: ctx.config.claudeApiKey ? "CVL error — all tiers failed" : "no Claude key",
-    model: ctx.config.claudeApiKey ? MODELS.CLAUDE_SONNET : "none",
+    model: ctx.config.claudeApiKey ? MODELS.CLAUDE_OPUS : "none",
   };
 }

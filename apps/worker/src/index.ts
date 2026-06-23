@@ -622,6 +622,9 @@ async function finalizeGoalsSelection(
     errors: errorCount,
     actionable,
     ...(reportPath ? { reportUrl: reportPath } : {}),
+    ...(actionable.length > 0
+      ? { combinedProb: selection.combinedProb, combinedOdds: selection.combinedOdds }
+      : {}),
   };
 
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────

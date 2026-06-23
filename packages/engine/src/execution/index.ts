@@ -4,6 +4,7 @@
  *  SensitivityEngine refactored as private method (recursive via this._run). */
 import type { StoragePort } from "@oracle/storage";
 import { isotonicCalibrateFp } from "../calibration/index.js";
+import { type GbmModel, loadGbmModel, predictGbm } from "../gbm/index.js";
 import type {
   AhPivotResult,
   MarketBook,
@@ -59,6 +60,25 @@ import type {
   SoftContextItem,
 } from "../types.js";
 import { applyRankingMode } from "./ranking.js";
+
+// ── GBM residual model — lazy-load once per path, fail-open ──────────────────
+// Cached at module scope (not per-run) since the model file never changes mid-process.
+// `null` means "tried and failed/disabled" — never re-attempted, never throws from
+// the call site. A missing/malformed model degrades to "feature off", same as
+// enableGbmResidual being unset.
+const gbmModelCache = new Map<string, GbmModel | null>();
+
+function getGbmModel(path: string): GbmModel | null {
+  if (gbmModelCache.has(path)) return gbmModelCache.get(path) ?? null;
+  let model: GbmModel | null = null;
+  try {
+    model = loadGbmModel(path);
+  } catch {
+    model = null; // missing file, malformed JSON, etc. — fail-open
+  }
+  gbmModelCache.set(path, model);
+  return model;
+}
 
 // ── League parameters (verbatim from JSX lines 240-260) ──────────────────────
 
@@ -1279,6 +1299,37 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
 
     // §8.4 Isotonic calibration — post-hoc PAVA fit on resolved bets (no-op if < 30 resolved)
     fp = isotonicCalibrateFp(fp, (ledger?.bets ?? []) as Parameters<typeof isotonicCalibrateFp>[1]);
+
+    // GBM residual model blend — gated off by default (see OracleConfig.enableGbmResidual
+    // docstring: the currently-saved model fails its own walk-forward significance gate).
+    // Same shape as the §8.2b Skellam blend above: low-weight nudge into fp, not a
+    // replacement. Fail-open — any load/predict error leaves fp untouched.
+    if (cfg.enableGbmResidual) {
+      const gbmModel = getGbmModel(cfg.gbmModelPath ?? ".tmp/models/gbm_residual.json");
+      if (gbmModel) {
+        try {
+          const x = new Array(gbmModel.numFeature).fill(0);
+          x[0] = fairImp.home;
+          x[1] = fairImp.draw;
+          x[2] = fairImp.away;
+          // eloHome/eloAway/eloDiff at their GBM_FEAT_COLS indices (75/76/77) —
+          // pi-ratings stand in for the Python trainer's ClubElo feature (same role:
+          // a single attack/defense-agnostic team-strength scalar, different source).
+          x[75] = piH;
+          x[76] = piA;
+          x[77] = piH - piA;
+          const gbmProbs = predictGbm(gbmModel, x) as [number, number, number];
+          const w = cfg.gbmBlendWeight ?? 0.15;
+          const bH = (1 - w) * fp.home + w * gbmProbs[0];
+          const bD = (1 - w) * fp.draw + w * gbmProbs[1];
+          const bA = (1 - w) * fp.away + w * gbmProbs[2];
+          const bt = bH + bD + bA;
+          fp = { home: bH / bt, draw: bD / bt, away: bA / bt };
+        } catch {
+          // fail-open — leave fp untouched on any inference error
+        }
+      }
+    }
 
     const councilPenalty =
       (fetched.oracle_council as { penalty_active?: boolean } | undefined)?.penalty_active ===

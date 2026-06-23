@@ -151,6 +151,20 @@ export function buildStatsSoftContext(
     lines.push(`Fixture load — Home: ${side(congestion.home)} | Away: ${side(congestion.away)}`);
   }
 
+  const pv = stats.possessionValue;
+  if (pv?.home || pv?.away) {
+    const side = (s: typeof pv.home) =>
+      s
+        ? `${s.shots_on_target_avg ?? "?"} SoT / ${s.shots_off_target_avg ?? "?"} off-target / ${s.corners_avg ?? "?"} corners / ${s.possession_pct_avg ?? "?"}% poss per game`
+        : "n/a";
+    lines.push(`Season shot volume — Home: ${side(pv.home)} | Away: ${side(pv.away)}`);
+  }
+
+  const rc = stats.recentCorners;
+  if (typeof rc?.home === "number" || typeof rc?.away === "number") {
+    lines.push(`Recent corners (last 5) — Home: ${rc?.home ?? "?"} | Away: ${rc?.away ?? "?"}`);
+  }
+
   if (!lines.length) return [];
   return [
     {

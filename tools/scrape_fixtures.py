@@ -826,6 +826,41 @@ def _gismo_doc(query: str) -> Optional[dict]:
     return doc.get("data")
 
 
+def _parse_all_markets(markets_data: dict) -> list[dict]:
+    """Generic capture of EVERY market SportyBet returns for a fixture (a live
+    fixture carries 900+ markets — machine-verified 2026-06-23 against
+    sr:match:66457034, Portugal vs Uzbekistan: 951 markets, including named
+    exotics like "Home To Win Either Half" (id 50), "Both Halves Under X.5"
+    (id 59), "1st Half - Over/Under" (id 68), "2nd Half - Total" (id 90)).
+
+    Hand-picking market-by-market (the old _parse_odds approach) cannot keep
+    up with SportyBet's catalogue or its own additions over time, so this
+    captures the full markets[] array in a stable generic shape instead. Each
+    outcome's `desc` field is already a human-readable label (e.g. "Over 1.5",
+    "Yes", "Under 1") straight from the API — no separate id→label table needed.
+    Cheap: ~900 small dicts is a few hundred KB of JSON per fixture, written
+    once per scrape.
+    """
+    out: list[dict] = []
+    for market in markets_data.get("markets") or []:
+        outcomes = [
+            {"id": str(o.get("id", "")), "desc": o.get("desc"), "odds": o.get("odds")}
+            for o in market.get("outcomes") or []
+            if o.get("odds")
+        ]
+        if not outcomes:
+            continue
+        out.append({
+            "id": str(market.get("id", "")),
+            "name": market.get("name"),
+            "desc": market.get("desc"),
+            "group": market.get("group"),
+            "specifier": market.get("specifier"),
+            "outcomes": outcomes,
+        })
+    return out
+
+
 def _parse_odds(markets_data: dict) -> dict:
     """Extract 1X2, OU1.5/2.5/3.5, team-totals, BTTS, DC, DNB, AH odds from
     factsCenter/event markets.
@@ -836,7 +871,8 @@ def _parse_odds(markets_data: dict) -> dict:
     The goals line lives in market["specifier"] as "total=1.5"/"2.5"/"3.5" — NOT in
     the outcome's handicap/line/name. Over/Under outcomes: id 12 = Over (desc
     "Over <line>"), id 13 = Under. Half-time / 1st-/2nd-half variants carry distinct
-    ids (68/69/70/…) and are excluded by the exact-id match below.
+    ids and are handled by the typed accessors below (_parse_half_markets), plus
+    captured unconditionally (with everything else) by _parse_all_markets.
     """
     result: dict[str, Optional[dict]] = {
         "1x2": None, "ou15": None, "ou25": None, "ou35": None,
@@ -933,6 +969,78 @@ def _parse_odds(markets_data: dict) -> dict:
             result["btts"] = {"yes": outcomes.get("74"), "no": outcomes.get("76")}
         elif mid == "11" or "draw no bet" in name:
             result["dnb"] = {"home": outcomes.get("5"), "away": outcomes.get("6")}
+
+    return result
+
+
+def _parse_half_markets(markets_data: dict) -> dict:
+    """Typed accessors for the named half-related exotics on top of the generic
+    _parse_all_markets capture — these are the markets users actually mention by
+    name (Win Either Half, half-time/2nd-half O/U, Both Halves Over/Under) and
+    that the booking layer (apps/booking/src/marketMap.ts) already recognises
+    by label, so the sidecar should carry their odds too instead of only the
+    market name. IDs verified live 2026-06-23 against sr:match:66457034:
+      50=Home To Win Either Half, 51=Away To Win Either Half (outcomes 74=Yes/76=No)
+      58=Both Halves Over X.5, 59=Both Halves Under X.5 (outcomes 74=Yes/76=No, line in specifier)
+      68=1st Half O/U, 90=2nd Half - Total (outcomes 12=Over/13=Under, line in specifier)
+      69=1st Half Home O/U, 70=1st Half Away O/U, 91=2nd Half Home Total, 92=2nd Half Away Total
+    """
+    result: dict[str, Optional[dict]] = {
+        "win_either_half": None, "both_halves_ou": None,
+        "ht_ou": {}, "h2_ou": {},
+        "ht_team_ou": {}, "h2_team_ou": {},
+    }
+
+    def _yes_no(outcomes: dict) -> dict:
+        return {"yes": outcomes.get("74"), "no": outcomes.get("76")}
+
+    def _over_under(outcomes: dict) -> dict:
+        return {"over": outcomes.get("12"), "under": outcomes.get("13")}
+
+    def _line_key(spec: Optional[str]) -> Optional[str]:
+        if not spec or "total=" not in spec:
+            return None
+        return spec.split("total=", 1)[-1].strip()
+
+    win_either_half: dict[str, Optional[dict]] = {}
+    for market in markets_data.get("markets") or []:
+        mid = str(market.get("id", ""))
+        spec = market.get("specifier")
+        outcomes = {str(o.get("id", "")): o.get("odds") for o in market.get("outcomes") or [] if o.get("odds")}
+        if not outcomes:
+            continue
+
+        if mid == "50":
+            win_either_half["home"] = _yes_no(outcomes)
+        elif mid == "51":
+            win_either_half["away"] = _yes_no(outcomes)
+        elif mid in ("58", "59"):
+            line = _line_key(spec)
+            if line:
+                result["both_halves_ou"] = result["both_halves_ou"] or {}
+                result["both_halves_ou"][line] = result["both_halves_ou"].get(line) or {}  # type: ignore[union-attr]
+                result["both_halves_ou"][line]["over" if mid == "58" else "under"] = _yes_no(outcomes).get("yes")  # type: ignore[index]
+        elif mid == "68":
+            line = _line_key(spec)
+            if line:
+                result["ht_ou"][line] = _over_under(outcomes)  # type: ignore[index]
+        elif mid == "90":
+            line = _line_key(spec)
+            if line:
+                result["h2_ou"][line] = _over_under(outcomes)  # type: ignore[index]
+        elif mid in ("69", "70"):
+            line = _line_key(spec)
+            if line:
+                side = "home" if mid == "69" else "away"
+                result["ht_team_ou"].setdefault(side, {})[line] = _over_under(outcomes)  # type: ignore[index]
+        elif mid in ("91", "92"):
+            line = _line_key(spec)
+            if line:
+                side = "home" if mid == "91" else "away"
+                result["h2_team_ou"].setdefault(side, {})[line] = _over_under(outcomes)  # type: ignore[index]
+
+    if win_either_half:
+        result["win_either_half"] = win_either_half
 
     return result
 
@@ -1160,6 +1268,85 @@ def _parse_rest_congestion(
     return result or None
 
 
+def _parse_possession_value(
+    uniqueteamstats_data: dict, home_id: Optional[int], away_id: Optional[int]
+) -> Optional[dict]:
+    """Extract season-aggregate shots/corners/possession per team from
+    stats_season_uniqueteamstats — the possession-value proxy feeding the engine's
+    feature store (no raw xG field exists anywhere in SportyBet/Sportradar's gismo
+    API, confirmed live-probed 2026-06-23; shots_on_goal + shots_off_goal is the
+    closest available shot-volume proxy).
+
+    Live gismo shape: stats.uniqueteams is keyed by the "uniqueteam" doctype id,
+    which equals the team's match_info `_id` (NOT the `uid` that stats_season_overunder
+    uses — verified live 2026-06-23 against sr:match:66457034). Each stat is
+    {average, total, matches} over the season; `average` is what feeds the model.
+    """
+    if not uniqueteamstats_data:
+        return None
+    teams = (uniqueteamstats_data.get("stats") or {}).get("uniqueteams")
+    if not isinstance(teams, dict):
+        return None
+    result: dict[str, dict] = {}
+    for label, tid in (("home", home_id), ("away", away_id)):
+        entry = teams.get(str(tid)) if tid is not None else None
+        if not isinstance(entry, dict):
+            continue
+        out: dict[str, float] = {}
+        for key, out_key in (
+            ("shots_on_goal", "shots_on_target_avg"),
+            ("shots_off_goal", "shots_off_target_avg"),
+            ("shots_blocked", "shots_blocked_avg"),
+            ("corner_kicks", "corners_avg"),
+            ("ball_possession", "possession_pct_avg"),
+        ):
+            avg = (entry.get(key) or {}).get("average")
+            if isinstance(avg, (int, float)):
+                out[out_key] = round(float(avg), 2)
+        if out:
+            result[label] = out
+    return result or None
+
+
+def _parse_recent_form_corners(
+    lastx_data: dict, side: str, n: int = 5
+) -> Optional[float]:
+    """Average corners won (for the queried team) across its last N matches from
+    stats_team_lastxextended — recency-weighted complement to the season-aggregate
+    corners_avg above.
+
+    Live gismo shape: matches[] is ordered most-recent-first; each match's
+    `corners` is {home, away} keyed by venue, not by which side is the queried
+    team — must match against `teams.home/away._id` per match to pick the right
+    side (verified live 2026-06-23 against sr:match:66457034, team uid 4704/4723).
+    """
+    if not lastx_data:
+        return None
+    team_id = (lastx_data.get("team") or {}).get("_id")
+    matches = lastx_data.get("matches")
+    if not isinstance(matches, list) or team_id is None:
+        return None
+    vals: list[float] = []
+    for m in matches[:n]:
+        if not isinstance(m, dict):
+            continue
+        corners = m.get("corners")
+        teams = m.get("teams") or {}
+        if not isinstance(corners, dict):
+            continue
+        if (teams.get("home") or {}).get("_id") == team_id:
+            v = corners.get("home")
+        elif (teams.get("away") or {}).get("_id") == team_id:
+            v = corners.get("away")
+        else:
+            continue
+        if isinstance(v, (int, float)):
+            vals.append(float(v))
+    if not vals:
+        return None
+    return round(sum(vals) / len(vals), 2)
+
+
 def _parse_funfacts(funfacts_data: dict) -> Optional[list[str]]:
     """Extract pre-match textual facts from match_funfacts — the closest verified
     gismo equivalent to a "commentary" subtab (live-probed 2026-06-21: no
@@ -1198,6 +1385,8 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
     if event_data:
         markets_payload = event_data.get("data", event_data)
         odds = _parse_odds(markets_payload)
+        odds["half"] = _parse_half_markets(markets_payload)
+        odds["allMarkets"] = _parse_all_markets(markets_payload)
 
     # 2. match_info → team IDs, seasonId, statscoverage
     mi_data = _gismo_doc(f"match_info/{mid}")
@@ -1275,6 +1464,25 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
     funfacts_data = _gismo_doc(f"match_funfacts/{mid}")
     commentary = _parse_funfacts(funfacts_data)
 
+    # 10. Possession-value proxy: season-aggregate shots/corners/possession
+    # (stats_season_uniqueteamstats, keyed by team _id — not uid, see docstring).
+    _time.sleep(_SB_PACE)
+    uts_data = _gismo_doc(f"stats_season_uniqueteamstats/{season_id}") if season_id else None
+    possession_value = _parse_possession_value(uts_data, home_id, away_id)
+
+    # 11. Recent-form corners (last 5 matches per team), recency complement to #10.
+    _time.sleep(_SB_PACE)
+    home_lastx = _gismo_doc(f"stats_team_lastxextended/{home_id}") if home_id else None
+    _time.sleep(_SB_PACE)
+    away_lastx = _gismo_doc(f"stats_team_lastxextended/{away_id}") if away_id else None
+    recent_corners: dict[str, float] = {}
+    h_corners = _parse_recent_form_corners(home_lastx, "home")
+    a_corners = _parse_recent_form_corners(away_lastx, "away")
+    if h_corners is not None:
+        recent_corners["home"] = h_corners
+    if a_corners is not None:
+        recent_corners["away"] = a_corners
+
     stats: dict = {}
     if form:
         stats["form"] = form
@@ -1290,6 +1498,10 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
         stats["congestion"] = congestion
     if commentary:
         stats["commentary"] = commentary
+    if possession_value:
+        stats["possessionValue"] = possession_value
+    if recent_corners:
+        stats["recentCorners"] = recent_corners
 
     return {
         "odds": odds,
@@ -1298,21 +1510,32 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
     }
 
 
-def enrich_sportybet_events(events: list[dict], max_workers: int = 8) -> list[dict]:
+def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = None) -> list[dict]:
     """
     Add per-fixture odds/stats to the sidecar event list (sidecar v2).
 
-    Uses ThreadPoolExecutor(max_workers=8) — each fixture makes ~6 serial anonymous
-    HTTP GETs (factsCenter + gismo), so this is network-bound, not CPU-bound. 8-way
-    fan-out (was 4) roughly halves wall time (measured: 115 fixtures 187s → ~95s)
-    while staying gentle enough on stats.fn.sportradar.com to avoid 429s.
+    Each fixture makes ~6 serial anonymous HTTP GETs (factsCenter + gismo), so
+    this is network-bound, not CPU-bound — a natural swarm shard, one worker per
+    fixture. max_workers defaults to swarm_dispatch.swarm_max_workers(len(events)):
+    capped at 8 on local Windows (measured: 115 fixtures 187s → ~95s at 8-way,
+    gentle enough on stats.fn.sportradar.com to avoid 429s) but one worker per
+    fixture (effectively unbounded) on a VPS deployment, per owner instruction
+    2026-06-23 to scale acquisition fan-out OS-bound locally / unbounded on VPS.
     Each event record gains: odds, stats, statscoverage keys.
     A fetch failure degrades that record's fields to None; the event is not dropped.
     """
     import time as _time
 
+    try:
+        from swarm_dispatch import swarm_max_workers
+    except ImportError:  # repo root on sys.path instead of tools/
+        from tools.swarm_dispatch import swarm_max_workers
+
     if not events:
         return events
+
+    if max_workers is None:
+        max_workers = swarm_max_workers(len(events))
 
     xg_table = _load_xg_table()
 

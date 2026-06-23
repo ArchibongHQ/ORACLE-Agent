@@ -1,4 +1,4 @@
-/** callVerification (B2/CVL) — Tier 0 local Claude Code → Claude Sonnet →
+/** callVerification (B2/CVL) — Tier 0 local Claude Code → Claude Opus →
  *  OpenRouter GLM-5.2 → GLM-5.1 → GPT-oss-120B.
  *  Pins: malformed/unparseable JSON falls through to the next tier (never
  *  defaults to a confident APPROVED — that would silently bypass the
@@ -53,7 +53,7 @@ afterEach(() => {
   delete process.env.ORACLE_RUNTIME;
 });
 
-describe("callVerification — Claude Sonnet tier", () => {
+describe("callVerification — Claude Opus tier", () => {
   it("parses a VETO verdict", async () => {
     messagesCreateMock.mockResolvedValue(
       claudeText('{"status":"VETO","rationale":"odds discrepancy"}')
@@ -61,7 +61,7 @@ describe("callVerification — Claude Sonnet tier", () => {
     const res = await callVerification("p", ctxClaude);
     expect(res.status).toBe("VETO");
     expect(res.rationale).toBe("odds discrepancy");
-    expect(res.model).toBe(MODELS.CLAUDE_SONNET);
+    expect(res.model).toBe(MODELS.CLAUDE_OPUS);
     expect(Number.isNaN(Date.parse(res.stamp))).toBe(false);
   });
 
@@ -136,7 +136,7 @@ describe("callVerification — Tier 0 local Claude Code", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("falls through to Claude Sonnet when the local CLI returns null", async () => {
+  it("falls through to Claude Opus when the local CLI returns null", async () => {
     process.env.ORACLE_RUNTIME = "local";
     spawn.mockImplementation(() => {
       throw new Error("spawn ENOENT");
@@ -144,7 +144,7 @@ describe("callVerification — Tier 0 local Claude Code", () => {
     messagesCreateMock.mockResolvedValue(claudeText('{"status":"APPROVED","rationale":"sound"}'));
     const res = await callVerification("p", ctxClaude);
     expect(res.status).toBe("APPROVED");
-    expect(res.model).toBe(MODELS.CLAUDE_SONNET);
+    expect(res.model).toBe(MODELS.CLAUDE_OPUS);
   });
 
   it("does not attempt the local CLI when isLocalRuntime() is false (default under Vitest)", async () => {
@@ -162,7 +162,7 @@ describe("callVerification — terminal SKIPPED behavior", () => {
     const res = await callVerification("p", ctx);
     expect(res.status).toBe("SKIPPED");
     expect(res.rationale).toBe("CVL error — all tiers failed");
-    expect(res.model).toBe(MODELS.CLAUDE_SONNET);
+    expect(res.model).toBe(MODELS.CLAUDE_OPUS);
   });
 
   it("returns SKIPPED 'no Claude key' with model none when no keys configured", async () => {

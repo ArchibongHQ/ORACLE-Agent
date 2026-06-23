@@ -33,8 +33,10 @@ export interface SoftContextItem {
 }
 
 /** Edge confidence grade — replaces "NO_BET" literal across all output surfaces.
- *  STRONG: EV ≥ 0.05; LEAN: 0 < EV < 0.05; NO_EDGE: EV ≤ 0 (honest no-edge verdict). */
-export type ConfidenceGrade = "STRONG" | "LEAN" | "NO_EDGE";
+ *  STRONG: EV ≥ 0.05; LEAN: 0 < EV < 0.05; NO_EDGE: EV ≤ 0 (honest no-edge verdict);
+ *  MISSING_DATA: the final arbiter judged the evidence insufficient to decide either
+ *  way — distinct from NO_EDGE (which means "evidence is sufficient and says no edge"). */
+export type ConfidenceGrade = "STRONG" | "LEAN" | "NO_EDGE" | "MISSING_DATA";
 
 /** The structured JSON the LLM decision layer must return (PRD §6, Appendix B). */
 export interface DecisionOutput {
@@ -44,6 +46,11 @@ export interface DecisionOutput {
   grade: ConfidenceGrade; // human-facing label derived from EV
   rationale: string;
   rejectedAndWhy: string[];
+  /** Set when ORACLE_LOCAL_DECISION="true": whether the local-Claude final arbiter
+   *  actually reviewed this pick. "unverified" means the arbiter call failed (binary
+   *  missing, timeout, bad parse) and the pre-arbiter cascade pick was used as-is —
+   *  callers/UI should label the output accordingly. Absent when the arbiter is off. */
+  arbiterStatus?: "verified" | "unverified";
 }
 
 /** Exact LLM call bundle for audit replay (PRD §6 determinism, Appendix B).
@@ -142,6 +149,14 @@ export interface OracleConfig {
   goalsMinConfidence?: number; // model `mp` floor per goals leg (default 0.75)
   goalsMinImplied?: number; // implied-prob floor per goals leg (default 0.70)
   goalsTargetLegs?: number; // max legs in the goals accumulator (default 39)
+  // GBM residual model (tools/gbm_residual.py) — TS inference shim in ./gbm/index.ts.
+  // Default OFF: the currently-saved model fails its own walk-forward significance
+  // gate (gate_passed=false in .tmp/models/gbm_residual_meta.json — RPS improvement
+  // -0.0012 vs the +0.002 threshold). Wiring is built and tested; only flip this on
+  // once a retrained model actually clears the gate.
+  enableGbmResidual?: boolean;
+  gbmModelPath?: string; // default ".tmp/models/gbm_residual.json"
+  gbmBlendWeight?: number; // default 0.15 — low-weight nudge, same shape as the Skellam blend
   // Hardware capabilities (populated at runtime boundary, never inside @oracle/engine)
   isVps?: boolean; // ORACLE_IS_VPS=true or systemd-detect-virt detects VM
   hasNvidiaGpu?: boolean; // nvidia-smi available and returned a GPU name

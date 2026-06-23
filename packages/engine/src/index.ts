@@ -28,6 +28,14 @@ export {
 } from "./decision/index.js";
 export type { ExecutionResult } from "./execution/index.js";
 export { applyRankingMode, ExecutionEngine } from "./execution/index.js";
+export type { GbmLiveInputs, GbmModel } from "./gbm/index.js";
+export {
+  blendGbmIntoFp,
+  buildGbmFeatureVector,
+  GBM_FEAT_COLS,
+  loadGbmModel,
+  predictGbm,
+} from "./gbm/index.js";
 export * from "./math/index.js";
 export type { PostmortemEntry, RAGEntry, RootCause } from "./rag/index.js";
 export { PostmortemRegistry, postmortemRegistry, RAGSystem, ROOT_CAUSES } from "./rag/index.js";

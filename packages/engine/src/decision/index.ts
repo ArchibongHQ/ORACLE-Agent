@@ -36,7 +36,7 @@ export function gradeFromEV(ev: number): ConfidenceGrade {
   return "NO_EDGE";
 }
 
-const VALID_GRADES = new Set<string>(["STRONG", "LEAN", "NO_EDGE"]);
+const VALID_GRADES = new Set<string>(["STRONG", "LEAN", "NO_EDGE", "MISSING_DATA"]);
 
 function coerceGrade(raw: unknown, ev: number): ConfidenceGrade {
   if (typeof raw === "string" && VALID_GRADES.has(raw)) return raw as ConfidenceGrade;
@@ -141,6 +141,130 @@ Treat [STATS] soft-context lines (SportyBet form/standings/H2H/season goals/over
 "altPick" is optional.`;
 }
 
+// ── Final arbiter prompt (local Claude Code) ─────────────────────────────────
+
+const ARBITER_TIMEOUT_MS = 45_000;
+
+/** Prompt for the mandatory final-arbiter pass — ORACLE_LOCAL_DECISION="true".
+ *  Unlike buildPrompt() (which asks an LLM to pick from eligible markets cold),
+ *  this hands the arbiter everything already assembled — the engine math, the
+ *  soft-context evidence, and the upstream cascade's own draft pick + rationale
+ *  — and asks it to audit that reasoning before ratifying or overriding it.
+ *  Authored as a explicit walk-through (stats → news intel → rationale → math →
+ *  verdict) per operator instruction, rather than a bare "return JSON" ask, so
+ *  the model's chain of reasoning is forced to touch every evidence category
+ *  instead of pattern-matching straight to an answer. */
+function buildArbiterPrompt(
+  eligibleBets: EVMarket[],
+  ctx: DecisionContext,
+  draft: DecisionOutput,
+  draftModel: string
+): string {
+  const { fixture, fp, lambdaH, lambdaA, expectedScoreline, regime, softContext } = ctx;
+
+  const statsLines = (softContext ?? [])
+    .filter((s) => s.kind === "stats")
+    .map((s) => `- ${s.text}`)
+    .join("\n");
+  const newsLines = (softContext ?? [])
+    .filter((s) => s.kind !== "stats")
+    .map((s) => `- [${s.kind.toUpperCase()}] ${s.text}`)
+    .join("\n");
+
+  const betLines = eligibleBets
+    .map(
+      (m, i) =>
+        `${i + 1}. [${m.cat}] ${m.label}  modelProb=${(m.mp * 100).toFixed(1)}%  odds=${m.odds}  ev=+${(m.ev * 100).toFixed(1)}%  stake=${(m.stake * 100).toFixed(1)}% Kelly`
+    )
+    .join("\n");
+
+  return `You are ORACLE's final betting-decision arbiter. You review everything the
+deterministic engine and upstream models produced and issue the FINAL pick — you are
+the last checkpoint before this goes to the user, not a draft generator. Return ONLY
+valid JSON — no markdown, no preamble, no commentary outside the JSON object.
+
+Work through these four steps in order before you decide. Do not skip a step even if
+you think you already know the answer — each step exists to catch a different failure
+mode (stale stats, ignored injury news, a plausible-sounding rationale built on a math
+error, an engine number that doesn't match the market).
+
+STEP 1 — STATS (does the hard data support a side?)
+${statsLines || "(none supplied)"}
+
+STEP 2 — NEWS INTEL (does anything here change or override the stats read — injuries,
+lineup news, motivation, travel, weather?)
+${newsLines || "(none supplied)"}
+
+STEP 3 — UPSTREAM RATIONALE (the draft pick already produced by ${draftModel} — audit
+its reasoning, don't just rubber-stamp it)
+Draft pick: ${JSON.stringify(draft.primaryPick)}
+Draft grade: ${draft.grade}  |  Draft confidence: ${draft.confidence}
+Draft rationale: ${draft.rationale}
+Draft rejectedAndWhy: ${JSON.stringify(draft.rejectedAndWhy)}
+
+STEP 4 — DECISION-ENGINE MATH (does the draft pick actually follow from these numbers?)
+Fixture: ${fixture.home} vs ${fixture.away}  |  ${fixture.league}  |  ${fixture.kickoff}
+Model probabilities: Home=${(fp.home * 100).toFixed(1)}%  Draw=${(fp.draw * 100).toFixed(1)}%  Away=${(fp.away * 100).toFixed(1)}%
+Poisson: λH=${lambdaH.toFixed(2)}  λA=${lambdaA.toFixed(2)}  xScore=${expectedScoreline}  Regime=${regime}
+Eligible markets (ranked):
+${betLines || "NONE — no positive-EV market exists for this fixture"}
+
+=== YOUR VERDICT ===
+Choose exactly one of:
+(a) RATIFY the draft pick as-is if steps 1-4 hold up under your own review.
+(b) OVERRIDE with a different market from the eligible list above if your review of
+    steps 1-3 contradicts the draft (e.g. news intel the draft under-weighted, a stats
+    signal pointing the other way, or a math/rationale mismatch you caught in step 4).
+    You may only choose a market that appears in the eligible list — never invent one.
+(c) FLAG missing data: if the stats and news-intel sections are too thin to support a
+    confident verdict either way (e.g. both are "(none supplied)" or near-empty, or a
+    key data point like lineups/injuries is conspicuously absent for a fixture close to
+    kickoff), set grade to "MISSING_DATA" and explain what's missing in rationale. This
+    is the honest answer when you don't have enough to decide — do not force a pick.
+
+=== REQUIRED OUTPUT (JSON only) ===
+{"primaryPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"altPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"confidence":0.0,"grade":"STRONG","rationale":"...","rejectedAndWhy":[]}
+"grade" must be one of: "STRONG", "LEAN", "NO_EDGE", "MISSING_DATA". Your rationale must
+state which of (a)/(b)/(c) you chose and why, referencing the specific step that drove it.
+"altPick" is optional. Omit primaryPick.stake/odds details you're unsure of rather than
+guessing — 0 is the honest default, not a fabricated number.`;
+}
+
+/** Runs the mandatory final-arbiter pass over an already-produced draft decision.
+ *  Called once per fixture, after the existing cascade (Tier 1-4) has produced
+ *  `draft` — never instead of it. On success, the arbiter's verdict IS the
+ *  decision returned to the rest of the pipeline (validateSelection's hard gates
+ *  still apply downstream, unchanged). On any failure (binary missing, timeout,
+ *  bad parse), falls back to `draft` labelled arbiterStatus="unverified" so
+ *  callers/UI can tell the difference — the pipeline never blocks on this. */
+async function arbitrate(
+  eligibleBets: EVMarket[],
+  ctx: DecisionContext,
+  draft: DecisionResult
+): Promise<DecisionResult> {
+  if (process.env.ORACLE_LOCAL_DECISION !== "true") return draft;
+
+  const { callClaudeCode, isLocalRuntime } = await import("@oracle/llm");
+  if (!isLocalRuntime()) {
+    return { ...draft, decision: { ...draft.decision, arbiterStatus: "unverified" } };
+  }
+
+  const draftModel = draft.replay?.model ?? "deterministic";
+  const prompt = buildArbiterPrompt(eligibleBets, ctx, draft.decision, draftModel);
+  const raw = await callClaudeCode(prompt, { timeoutMs: ARBITER_TIMEOUT_MS });
+  const parsed = raw ? parseDecisionResponse(raw) : null;
+
+  if (!raw || !parsed) {
+    return { ...draft, decision: { ...draft.decision, arbiterStatus: "unverified" } };
+  }
+
+  return {
+    ...draft,
+    decision: { ...parsed, arbiterStatus: "verified" },
+    replay: { prompt, rawResponse: raw, model: "claude-code-arbiter", temperature: "default" },
+  };
+}
+
 // ── JSON parser with fence stripping ─────────────────────────────────────────
 
 function parseDecisionResponse(text: string): DecisionOutput | null {
@@ -228,36 +352,51 @@ async function shadowDecideWithGlm52(
 // dynamic imports each tier already performs — no static @oracle/llm coupling, so the
 // deterministic path still runs when the LLM module is absent.
 
-/** Calls LLMs to select the best bet.
+/** Calls LLMs to select the best bet, then runs the mandatory final-arbiter pass.
  *
- *  Fallback chain (multi-tier):
- *   0. Local Claude Code — opt-in only (ORACLE_LOCAL_DECISION="true" + isLocalRuntime());
- *      the CLI samples at its account default, not pinned to 0, so this gated decision
- *      tier stays off it unless an operator explicitly opts in.
+ *  Draft cascade (multi-tier — produces the candidate the arbiter will review):
  *   1. Claude Opus    — when claudeApiKey present
  *   2. Gemini 3.5     — when geminiApiKey present (fires if Claude key absent OR Claude call fails)
  *   3. OpenRouter     — GLM-5.2 → GLM-5.1 → free models (when openrouterApiKey present)
  *   4. Deterministic  — when all LLMs unavailable or parse fails
  *
- *  Always returns { decision, replay } — replay is null on the deterministic path.
- *  When the real decision came from an LLM tier and an OpenRouter key is present,
- *  also runs a non-blocking GLM-5.2 shadow comparison (see `shadow` on the result). */
+ *  Final arbiter — ORACLE_LOCAL_DECISION="true" (global, applies to every fixture
+ *  through every analysis pipeline — daily batch, punt, CLI fixture lookup, since
+ *  they all route through this one function):
+ *  local Claude Code reviews the draft's stats, news intel, rationale, and engine
+ *  math, then RATIFIES it, OVERRIDES it with a different eligible market, or FLAGS
+ *  MISSING_DATA. The arbiter's verdict becomes the returned decision. On any
+ *  arbiter failure (binary missing, non-local runtime, timeout, bad parse), the
+ *  draft is returned as-is with arbiterStatus="unverified" so callers/UI can tell
+ *  the difference — never blocks the pipeline. When the flag is unset, behaves
+ *  exactly as before (draft cascade only, no arbiterStatus).
+ *
+ *  Always returns { decision, replay } — replay is null on the deterministic path
+ *  with the arbiter off. When the draft came from an LLM tier and an OpenRouter key
+ *  is present, also runs a non-blocking GLM-5.2 shadow comparison against the DRAFT
+ *  (see `shadow` on the result) — independent of, and unaffected by, the arbiter. */
 export async function decide(
   eligibleBets: EVMarket[],
   ctx?: DecisionContext,
   config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey" | "openrouterApiKey">,
   forceDeterministic = false
 ): Promise<DecisionResult> {
-  const result = await decideInner(eligibleBets, ctx, config, forceDeterministic);
-  if (!ctx || result.replay === null || !config?.openrouterApiKey) return result;
+  const draft = await decideInner(eligibleBets, ctx, config, forceDeterministic);
 
-  // Skip when GLM-5.2 itself already produced the real decision (Tier 3 last
-  // resort) — shadowing it against itself is a wasted call with a trivial result.
+  let result = draft;
+  if (ctx && eligibleBets.length) {
+    result = await arbitrate(eligibleBets, ctx, draft);
+  }
+
+  if (!ctx || draft.replay === null || !config?.openrouterApiKey) return result;
+
+  // Skip when GLM-5.2 itself already produced the draft (Tier 3 last resort) —
+  // shadowing it against itself is a wasted call with a trivial result.
   const { OPENROUTER_MODELS } = await import("@oracle/llm");
-  if (result.replay.model === OPENROUTER_MODELS.GLM_5_2) return result;
+  if (draft.replay.model === OPENROUTER_MODELS.GLM_5_2) return result;
 
   const prompt = buildPrompt(eligibleBets, ctx);
-  const shadow = await shadowDecideWithGlm52(prompt, config.openrouterApiKey, result.decision);
+  const shadow = await shadowDecideWithGlm52(prompt, config.openrouterApiKey, draft.decision);
   return shadow ? { ...result, shadow } : result;
 }
 
@@ -284,26 +423,6 @@ async function decideInner(
   const requestedAt = new Date().toISOString();
   const geminiKey = config?.geminiApiKey ?? "";
   const openrouterKey = config?.openrouterApiKey ?? "";
-
-  // ── Tier 0: local Claude Code CLI — opt-in only ──────────────────────────
-  // This is the final gated decision, so it stays on the temperature-0 API
-  // path by default: the local CLI samples at the account default with no
-  // knob to pin to 0. ORACLE_LOCAL_DECISION="true" lets an operator who has
-  // judged that tradeoff acceptable opt in. Falls through to Tier 1 on any
-  // miss (no binary, non-local runtime, empty result, or parse failure).
-  if (process.env.ORACLE_LOCAL_DECISION === "true") {
-    const { callClaudeCode, isLocalRuntime } = await import("@oracle/llm");
-    if (isLocalRuntime()) {
-      const raw = await callClaudeCode(prompt);
-      const parsed = raw ? parseDecisionResponse(raw) : null;
-      if (raw && parsed) {
-        return {
-          decision: parsed,
-          replay: { prompt, rawResponse: raw, model: "claude-code-local", temperature: "default" },
-        };
-      }
-    }
-  }
 
   // ── Tier 1: Claude Opus ───────────────────────────────────────────────────
   if (config?.claudeApiKey) {
@@ -464,9 +583,12 @@ export function validateSelection(
 ): DecisionOutput {
   const ref = pick.primaryPick;
 
-  // Gate 1: pick must be in eligible set
+  // Gate 1: pick must be in eligible set. MISSING_DATA is exempt — the arbiter is
+  // explicitly allowed to decline to commit to a market (e.g. when eligibleBets is
+  // empty), and forcing a deterministic placeholder here would silently erase that
+  // honest "not enough evidence" verdict and replace it with a fabricated pick.
   const found = eligibleBets.find((m) => m.market === ref.market);
-  if (!found) {
+  if (!found && pick.grade !== "MISSING_DATA") {
     return deterministicDecide(
       eligibleBets,
       `Rejected: ${ref.market} not in eligible set — deterministic fallback`
@@ -485,7 +607,11 @@ export function validateSelection(
   }
 
   // Gate 3: MoneyLine forbidden when draw risk is VERY_HIGH
-  if ((found.cat === "1x2" || found.market === "1x2") && mlFilter?.drawRisk === "VERY_HIGH") {
+  if (
+    found &&
+    (found.cat === "1x2" || found.market === "1x2") &&
+    mlFilter?.drawRisk === "VERY_HIGH"
+  ) {
     const nonMl = eligibleBets.filter((m) => m.cat !== "1x2" && m.market !== "1x2");
     return deterministicDecide(nonMl, "MoneyLine rejected: VERY_HIGH draw risk").decision;
   }
