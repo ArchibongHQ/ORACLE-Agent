@@ -4,6 +4,7 @@ import type { BatchSummary } from "../src/index.js";
 import {
   buildNotifiers,
   EmailNotifier,
+  formatSummaryHtml,
   formatSummaryText,
   notifyAll,
   OpenClawNotifier,
@@ -94,6 +95,25 @@ describe("formatSummaryText", () => {
   });
   it("handles empty actionable list", () => {
     expect(formatSummaryText({ ...sampleSummary, actionable: [] })).toMatch(/No actionable picks/);
+  });
+  it("renders the combined slip line when combinedProb/combinedOdds are present", () => {
+    const txt = formatSummaryText({ ...sampleSummary, combinedProb: 0.1234, combinedOdds: 56.7 });
+    expect(txt).toMatch(/Combined: 12\.3% win prob/);
+    expect(txt).toMatch(/@56\.70 odds/);
+  });
+  it("omits the combined slip line when combinedProb/combinedOdds are absent", () => {
+    expect(formatSummaryText(sampleSummary)).not.toMatch(/Combined:/);
+  });
+});
+
+describe("formatSummaryHtml", () => {
+  it("renders the combined slip line when combinedProb/combinedOdds are present", () => {
+    const html = formatSummaryHtml({ ...sampleSummary, combinedProb: 0.1234, combinedOdds: 56.7 });
+    expect(html).toMatch(/Combined: 12\.3% win prob/);
+    expect(html).toMatch(/@56\.70 odds/);
+  });
+  it("omits the combined slip line when combinedProb/combinedOdds are absent", () => {
+    expect(formatSummaryHtml(sampleSummary)).not.toMatch(/Combined:/);
   });
 });
 

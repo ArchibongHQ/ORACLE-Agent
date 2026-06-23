@@ -149,6 +149,14 @@ export interface OracleConfig {
   goalsMinConfidence?: number; // model `mp` floor per goals leg (default 0.75)
   goalsMinImplied?: number; // implied-prob floor per goals leg (default 0.70)
   goalsTargetLegs?: number; // max legs in the goals accumulator (default 39)
+  // GBM residual model (tools/gbm_residual.py) — TS inference shim in ./gbm/index.ts.
+  // Default OFF: the currently-saved model fails its own walk-forward significance
+  // gate (gate_passed=false in .tmp/models/gbm_residual_meta.json — RPS improvement
+  // -0.0012 vs the +0.002 threshold). Wiring is built and tested; only flip this on
+  // once a retrained model actually clears the gate.
+  enableGbmResidual?: boolean;
+  gbmModelPath?: string; // default ".tmp/models/gbm_residual.json"
+  gbmBlendWeight?: number; // default 0.15 — low-weight nudge, same shape as the Skellam blend
   // Hardware capabilities (populated at runtime boundary, never inside @oracle/engine)
   isVps?: boolean; // ORACLE_IS_VPS=true or systemd-detect-virt detects VM
   hasNvidiaGpu?: boolean; // nvidia-smi available and returned a GPU name

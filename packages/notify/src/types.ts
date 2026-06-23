@@ -28,6 +28,11 @@ export interface BatchSummary {
    *  as a leading banner line ahead of the usual pick summary when present. Used for
    *  out-of-band warnings that aren't tied to a specific batch run. */
   alertText?: string;
+  /** Correlation-adjusted joint win probability for the full accumulator slip
+   *  (Gaussian-copula cross-fixture correlation — goals-batch summaries only). */
+  combinedProb?: number;
+  /** Combined decimal odds for the full accumulator slip (product of leg odds). */
+  combinedOdds?: number;
 }
 
 /** A delivery channel. Implementations are constructed only when their env is configured. */
@@ -81,6 +86,11 @@ export function formatSummaryText(s: BatchSummary): string {
       );
     }
   }
+  if (s.combinedProb !== undefined && s.combinedOdds !== undefined) {
+    lines.push(
+      `\nCombined: ${(s.combinedProb * 100).toFixed(1)}% win prob · @${s.combinedOdds.toFixed(2)} odds`
+    );
+  }
   if (s.bookingCode) {
     lines.push(`\n🎟 SportyBet Booking Code: *${s.bookingCode}*`);
     const loadUrl =
@@ -115,6 +125,11 @@ export function formatSummaryHtml(s: BatchSummary): string {
 <tr><th>Fixture</th><th>Market</th><th>Odds</th><th>Stake</th><th>Conf</th></tr>
 ${rows}
 </table>
+${
+  s.combinedProb !== undefined && s.combinedOdds !== undefined
+    ? `<p><strong>Combined: ${(s.combinedProb * 100).toFixed(1)}% win prob · @${s.combinedOdds.toFixed(2)} odds</strong></p>`
+    : ""
+}
 ${
   s.bookingCode
     ? `<p><strong>🎟 SportyBet Booking Code: <code>${s.bookingCode}</code></strong><br>

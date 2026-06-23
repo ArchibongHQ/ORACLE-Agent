@@ -1487,3 +1487,216 @@ export function skellamAHCover(lH: number, lA: number, line: number): number {
   }
   return Math.min(1, pCover);
 }
+
+// ── Cross-fixture Gaussian-copula correlation (Goals ACCA v2) ────────────────────
+//
+// Same-league, same-kickoff-window legs in a multi-fixture accumulator are not
+// independent: shared referee pools, weather, and tactical metas correlate
+// outcomes across matches (Boshnakov et al. 2017). A full multivariate-normal
+// CDF over N legs is expensive and unnecessary for an accumulator-sized
+// portfolio (≤39 legs, mostly cross-league/independent) — this module instead
+// uses a pairwise Gaussian-copula approximation: map each leg's marginal
+// probability to a standard-normal z via the inverse CDF, apply a pairwise
+// correlation rho per leg-pair (driven by shared league/kickoff-window), then
+// compose a joint-probability correction across all pairs.
+
+export interface PortfolioLeg {
+  home: string;
+  away: string;
+  league: string;
+  market: string;
+  /** Model probability the leg wins (marginal probability for the copula). */
+  mp: number;
+  /** Kickoff ISO timestamp — legs within the same ~3h window share more risk
+   *  (same matchday weather/officiating cohort) than legs hours apart. Optional:
+   *  pairs without kickoff data fall back to league-only correlation. */
+  kickoff?: string;
+}
+
+/** Standard-normal inverse CDF (quantile function), Acklam's rational
+ *  approximation — ~1.15e-9 max relative error, more than sufficient for a
+ *  correlation haircut (Wichura's AS241 algorithm is exact but unnecessary here). */
+function normInv(p: number): number {
+  const pc = clamp(p, 1e-10, 1 - 1e-10);
+  const a = [
+    -3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2, 1.38357751867269e2,
+    -3.066479806614716e1, 2.506628277459239,
+  ];
+  const b = [
+    -5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2, 6.680131188771972e1,
+    -1.328068155288572e1,
+  ];
+  const c = [
+    -7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838, -2.549732539343734,
+    4.374664141464968, 2.938163982698783,
+  ];
+  const d = [7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996, 3.754408661907416];
+  const pLow = 0.02425;
+  if (pc < pLow) {
+    const q = Math.sqrt(-2 * Math.log(pc));
+    return (
+      (((((c[0]! * q + c[1]!) * q + c[2]!) * q + c[3]!) * q + c[4]!) * q + c[5]!) /
+      ((((d[0]! * q + d[1]!) * q + d[2]!) * q + d[3]!) * q + 1)
+    );
+  }
+  if (pc > 1 - pLow) {
+    const q = Math.sqrt(-2 * Math.log(1 - pc));
+    return (
+      -(((((c[0]! * q + c[1]!) * q + c[2]!) * q + c[3]!) * q + c[4]!) * q + c[5]!) /
+      ((((d[0]! * q + d[1]!) * q + d[2]!) * q + d[3]!) * q + 1)
+    );
+  }
+  const q = pc - 0.5;
+  const r = q * q;
+  return (
+    ((((((a[0]! * r + a[1]!) * r + a[2]!) * r + a[3]!) * r + a[4]!) * r + a[5]!) * q) /
+    (((((b[0]! * r + b[1]!) * r + b[2]!) * r + b[3]!) * r + b[4]!) * r + 1)
+  );
+}
+
+/** Standard-normal CDF via the Abramowitz & Stegun 7.1.26 approximation
+ *  (max error 1.5e-7). */
+function normCdf(z: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly =
+    t *
+    (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const phi = (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * z * z);
+  const cdf = 1 - phi * poly;
+  return z >= 0 ? cdf : 1 - cdf;
+}
+
+const SAME_LEAGUE_RHO = 0.25; // Boshnakov et al. 2017 — typical cross-match same-league correlation
+const SAME_WINDOW_BONUS = 0.1; // extra correlation when kickoffs fall within 3h of each other
+const KICKOFF_WINDOW_MS = 3 * 60 * 60 * 1000;
+
+/** Pairwise copula correlation between two legs — league-driven base rho, with a
+ *  same-kickoff-window bonus. Legs from different leagues with no shared window
+ *  default to 0 (independent), matching the pre-existing flat-rho haircut's
+ *  implicit assumption that cross-league legs are uncorrelated. */
+export function pairwiseCrossFixtureCorrelation(a: PortfolioLeg, b: PortfolioLeg): number {
+  if (a.home === b.home && a.away === b.away) return 0; // same fixture handled by caller, not here
+  let rho = a.league === b.league ? SAME_LEAGUE_RHO : 0;
+  if (a.kickoff && b.kickoff) {
+    const dt = Math.abs(new Date(a.kickoff).getTime() - new Date(b.kickoff).getTime());
+    if (Number.isFinite(dt) && dt <= KICKOFF_WINDOW_MS) rho += SAME_WINDOW_BONUS;
+  }
+  return clamp(rho, 0, 0.9);
+}
+
+/** Maximum pairwise correlation across all leg-pairs in a portfolio — the single
+ *  scalar surfaced to callers wanting a worst-case correlation signal (analogous
+ *  to DecisionContext.portfolioCorrelation, which carries the INTRA-fixture max;
+ *  this is the cross-fixture equivalent for the goals-accumulator slip). */
+export function maxCrossFixtureCorrelation(legs: PortfolioLeg[]): number {
+  let max = 0;
+  for (let i = 0; i < legs.length; i++) {
+    for (let j = i + 1; j < legs.length; j++) {
+      const rho = pairwiseCrossFixtureCorrelation(legs[i]!, legs[j]!);
+      if (rho > max) max = rho;
+    }
+  }
+  return max;
+}
+
+/** Bivariate-normal joint exceedance probability P(Z1 > z1, Z2 > z2 | rho) via a
+ *  first-order Gaussian-copula correction on the independence baseline —
+ *  sufficiently accurate for the rho range this module ever produces (≤0.35:
+ *  SAME_LEAGUE_RHO + SAME_WINDOW_BONUS, then clamped to 0.9 as a hard ceiling). */
+function bivariateExceedance(z1: number, z2: number, rho: number): number {
+  const independent = (1 - normCdf(z1)) * (1 - normCdf(z2));
+  if (rho === 0) return independent;
+  const phi2 = (1 / (2 * Math.PI)) * Math.exp(-0.5 * (z1 * z1 + z2 * z2));
+  const correction = rho * phi2;
+  return clamp(independent + correction, 1e-9, 1 - 1e-9);
+}
+
+/** Joint win probability for a multi-leg slip under the pairwise Gaussian-copula
+ *  approximation: starts from the independence product, then re-weights by the
+ *  geometric mean of each correlated pair's exceedance-probability ratio vs its
+ *  independent baseline — applied once to the whole product, avoiding the
+ *  double-counting that per-pair multiplicative correction would introduce.
+ *  Falls back to the plain product when ≤1 leg or all pairs are uncorrelated. */
+export function copulaJointProbability(legs: PortfolioLeg[]): number {
+  if (legs.length === 0) return 0;
+  if (legs.length === 1) return clamp(legs[0]!.mp, 0, 1);
+  const independentProduct = legs.reduce((acc, l) => acc * clamp(l.mp, 1e-9, 1 - 1e-9), 1);
+  const zs = legs.map((l) => normInv(clamp(l.mp, 1e-9, 1 - 1e-9)));
+  let correctionFactor = 1;
+  let pairCount = 0;
+  for (let i = 0; i < legs.length; i++) {
+    for (let j = i + 1; j < legs.length; j++) {
+      const rho = pairwiseCrossFixtureCorrelation(legs[i]!, legs[j]!);
+      if (rho === 0) continue;
+      const indepPair = (1 - normCdf(zs[i]!)) * (1 - normCdf(zs[j]!));
+      const corrPair = bivariateExceedance(zs[i]!, zs[j]!, rho);
+      if (indepPair > 1e-9) {
+        correctionFactor *= corrPair / indepPair;
+        pairCount += 1;
+      }
+    }
+  }
+  const avgCorrection = pairCount > 0 ? correctionFactor ** (1 / pairCount) : 1;
+  return clamp(independentProduct * avgCorrection, 1e-9, 1);
+}
+
+/** Combinatorial EV-maximizing portfolio search over a shortlist of candidate
+ *  legs: for slip sizes from `minLegs` to `maxLegs`, evaluates every combination's
+ *  correlation-adjusted joint probability × combined odds, and returns the
+ *  single highest-EV combo found. Shortlist is expected to be small (≤15
+ *  pre-filtered candidates) — combinations explode past that, so callers should
+ *  pre-rank and slice the candidate pool before calling this. */
+export function selectPortfolioCombos(
+  shortlist: PortfolioLeg[],
+  oddsByLeg: number[],
+  minLegs: number,
+  maxLegs: number
+): {
+  combo: PortfolioLeg[];
+  comboOdds: number[];
+  jointProb: number;
+  combinedOdds: number;
+  ev: number;
+} | null {
+  if (shortlist.length !== oddsByLeg.length) {
+    throw new Error("selectPortfolioCombos: shortlist and oddsByLeg length mismatch");
+  }
+  const n = shortlist.length;
+  let best: {
+    combo: PortfolioLeg[];
+    comboOdds: number[];
+    jointProb: number;
+    combinedOdds: number;
+    ev: number;
+  } | null = null;
+
+  function* combinations(size: number): Generator<number[]> {
+    const idxs: number[] = [];
+    function* rec(start: number): Generator<number[]> {
+      if (idxs.length === size) {
+        yield [...idxs];
+        return;
+      }
+      for (let i = start; i < n; i++) {
+        idxs.push(i);
+        yield* rec(i + 1);
+        idxs.pop();
+      }
+    }
+    yield* rec(0);
+  }
+
+  for (let size = Math.max(1, minLegs); size <= Math.min(maxLegs, n); size++) {
+    for (const idxs of combinations(size)) {
+      const combo = idxs.map((i) => shortlist[i]!);
+      const comboOdds = idxs.map((i) => oddsByLeg[i]!);
+      const jp = copulaJointProbability(combo);
+      const combinedOdds = comboOdds.reduce((acc, o) => acc * o, 1);
+      const ev = jp * combinedOdds - 1;
+      if (!best || ev > best.ev) {
+        best = { combo, comboOdds, jointProb: jp, combinedOdds, ev };
+      }
+    }
+  }
+  return best;
+}

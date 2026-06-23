@@ -18,6 +18,7 @@ import {
   checkLambdaInconsistency,
   clamp,
   clvProjection,
+  copulaJointProbability,
   DEFAULT_BIVARIATE_LAMBDA3,
   detectLowScoringRegime,
   drawCalibrationFactor,
@@ -30,14 +31,18 @@ import {
   isSteamChaser,
   lstmMarketDecoderProxy,
   MAX_GOALS,
+  maxCrossFixtureCorrelation,
   monteCarlo,
   optimizedKelly,
+  pairwiseCrossFixtureCorrelation,
   poissonPMF,
+  type PortfolioLeg,
   powerMethodVigRemoval,
   rankedProbabilityScore,
   rerunWithOverride,
   safeNum,
   secondDigitFreq,
+  selectPortfolioCombos,
 } from "@oracle/engine";
 import { describe, expect, it } from "vitest";
 
@@ -675,5 +680,126 @@ describe("§8.1 buildBivariateMatrix", () => {
     const bivar = buildBivariateMatrix(1.5, 1.2, 0);
     const indep = buildMatrix(1.5, 1.2, 0);
     expect(bivar[0]?.[0]).toBeCloseTo(indep[0]?.[0]!, 3);
+  });
+});
+
+// ── Cross-fixture Gaussian-copula correlation (Goals ACCA v2) ────────────────────
+
+function leg(
+  home: string,
+  away: string,
+  league: string,
+  mp: number,
+  kickoff?: string
+): PortfolioLeg {
+  return { home, away, league, market: "Over 1.5", mp, ...(kickoff ? { kickoff } : {}) };
+}
+
+describe("pairwiseCrossFixtureCorrelation / maxCrossFixtureCorrelation", () => {
+  it("CF-1: cross-league legs with no shared kickoff window are uncorrelated", () => {
+    const a = leg("Arsenal", "Chelsea", "EPL", 0.8);
+    const b = leg("Bayern", "Dortmund", "Bundesliga", 0.75);
+    expect(pairwiseCrossFixtureCorrelation(a, b)).toBe(0);
+  });
+
+  it("CF-2: same-league legs carry the base SAME_LEAGUE_RHO", () => {
+    const a = leg("Arsenal", "Chelsea", "EPL", 0.8);
+    const b = leg("Liverpool", "Everton", "EPL", 0.75);
+    expect(pairwiseCrossFixtureCorrelation(a, b)).toBeCloseTo(0.25, 5);
+  });
+
+  it("CF-3: same-league + same-kickoff-window legs carry an additional bonus", () => {
+    const a = leg("Arsenal", "Chelsea", "EPL", 0.8, "2026-06-22T15:00:00Z");
+    const b = leg("Liverpool", "Everton", "EPL", 0.75, "2026-06-22T15:30:00Z");
+    expect(pairwiseCrossFixtureCorrelation(a, b)).toBeCloseTo(0.35, 5);
+  });
+
+  it("CF-4: same-league legs hours apart do not get the window bonus", () => {
+    const a = leg("Arsenal", "Chelsea", "EPL", 0.8, "2026-06-22T12:00:00Z");
+    const b = leg("Liverpool", "Everton", "EPL", 0.75, "2026-06-22T20:00:00Z");
+    expect(pairwiseCrossFixtureCorrelation(a, b)).toBeCloseTo(0.25, 5);
+  });
+
+  it("CF-5: maxCrossFixtureCorrelation returns the single highest pairwise rho in the slip", () => {
+    const legs = [
+      leg("A", "B", "EPL", 0.8, "2026-06-22T15:00:00Z"),
+      leg("C", "D", "EPL", 0.75, "2026-06-22T15:15:00Z"),
+      leg("E", "F", "LaLiga", 0.7),
+    ];
+    expect(maxCrossFixtureCorrelation(legs)).toBeCloseTo(0.35, 5);
+  });
+
+  it("CF-6: a single-leg or empty portfolio has zero max correlation", () => {
+    expect(maxCrossFixtureCorrelation([])).toBe(0);
+    expect(maxCrossFixtureCorrelation([leg("A", "B", "EPL", 0.8)])).toBe(0);
+  });
+});
+
+describe("copulaJointProbability", () => {
+  it("CJ-1: a single leg returns its own marginal probability", () => {
+    expect(copulaJointProbability([leg("A", "B", "EPL", 0.8)])).toBeCloseTo(0.8, 5);
+  });
+
+  it("CJ-2: an empty slip has zero joint probability", () => {
+    expect(copulaJointProbability([])).toBe(0);
+  });
+
+  it("CJ-3: fully independent (cross-league) legs reduce to the plain product", () => {
+    const legs = [leg("A", "B", "EPL", 0.8), leg("C", "D", "LaLiga", 0.7)];
+    expect(copulaJointProbability(legs)).toBeCloseTo(0.8 * 0.7, 4);
+  });
+
+  it("CJ-4: positively-correlated (same-league) legs yield a HIGHER joint probability than the independent product — ignoring same-league correlation understates true accumulator risk-adjusted win odds", () => {
+    const legs = [leg("A", "B", "EPL", 0.8), leg("C", "D", "EPL", 0.75)];
+    const independentProduct = 0.8 * 0.75;
+    expect(copulaJointProbability(legs)).toBeGreaterThan(independentProduct);
+  });
+
+  it("CJ-5: result is always a valid probability in (0, 1]", () => {
+    const legs = [
+      leg("A", "B", "EPL", 0.95),
+      leg("C", "D", "EPL", 0.92),
+      leg("E", "F", "EPL", 0.9),
+      leg("G", "H", "LaLiga", 0.88),
+    ];
+    const jp = copulaJointProbability(legs);
+    expect(jp).toBeGreaterThan(0);
+    expect(jp).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("selectPortfolioCombos", () => {
+  it("SPC-1: returns the highest-EV combination across all evaluated sizes", () => {
+    const shortlist: PortfolioLeg[] = [
+      leg("A", "B", "EPL", 0.85),
+      leg("C", "D", "LaLiga", 0.8),
+      leg("E", "F", "SerieA", 0.6), // low mp, low odds — should not be favoured if it drags EV down
+    ];
+    const odds = [1.15, 1.2, 1.6];
+    const result = selectPortfolioCombos(shortlist, odds, 1, 3);
+    expect(result).not.toBeNull();
+    expect(result!.ev).toBeGreaterThanOrEqual(-1);
+    // EV should match a direct recomputation for the returned combo.
+    const recomputedJp = copulaJointProbability(result!.combo);
+    const recomputedOdds = result!.comboOdds.reduce((acc, o) => acc * o, 1);
+    expect(result!.jointProb).toBeCloseTo(recomputedJp, 6);
+    expect(result!.ev).toBeCloseTo(recomputedJp * recomputedOdds - 1, 6);
+  });
+
+  it("SPC-2: throws when shortlist and oddsByLeg lengths mismatch", () => {
+    const shortlist = [leg("A", "B", "EPL", 0.8)];
+    expect(() => selectPortfolioCombos(shortlist, [1.1, 1.2], 1, 1)).toThrow();
+  });
+
+  it("SPC-3: respects minLegs/maxLegs bounds (never returns a combo outside the range)", () => {
+    const shortlist: PortfolioLeg[] = [
+      leg("A", "B", "EPL", 0.8),
+      leg("C", "D", "LaLiga", 0.75),
+      leg("E", "F", "SerieA", 0.7),
+    ];
+    const odds = [1.2, 1.25, 1.3];
+    const result = selectPortfolioCombos(shortlist, odds, 2, 2);
+    expect(result).not.toBeNull();
+    expect(result!.combo).toHaveLength(2);
   });
 });
