@@ -102,7 +102,13 @@ export interface NewsIntelOpts {
  *  raw_json, written by tools/enrich_news.py's fetch_perplexity); "google_ai"
  *  rows are unstructured scraped prose (Phase A scope — no LLM reshape step in
  *  Python) and become one raw "news" item, which softContext already supports
- *  as free text. A malformed/unparseable row degrades to []. */
+ *  as free text. "rss_news"/"transfermarkt"/"fotmob"/"sofascore" rows (added
+ *  2026-06-23 — see tools/enrich_news.py) are summary-only: each source's
+ *  Python writer already condenses its raw_json into a one-line `summary`
+ *  (see tools/enrich_news.py's _summary_from_* helpers), so this just emits
+ *  that string under "stats" — the LLM-decision soft-context kind already
+ *  used by sportyBetStats.ts's buildStatsSoftContext for the same purpose. A
+ *  malformed/unparseable row degrades to []. */
 function lakeRowToSoftContext(row: {
   source: string;
   summary: string;
@@ -138,6 +144,17 @@ function lakeRowToSoftContext(row: {
   if (row.source === "google_ai" && row.summary) {
     return [
       { kind: "news", text: row.summary, source: "google-ai-mode-lake", observedAt: row.scrapedAt },
+    ];
+  }
+  if (row.source === "rss_news" && row.summary) {
+    return [{ kind: "news", text: row.summary, source: "rss-lake", observedAt: row.scrapedAt }];
+  }
+  if (
+    (row.source === "transfermarkt" || row.source === "fotmob" || row.source === "sofascore") &&
+    row.summary
+  ) {
+    return [
+      { kind: "stats", text: row.summary, source: `${row.source}-lake`, observedAt: row.scrapedAt },
     ];
   }
   return [];

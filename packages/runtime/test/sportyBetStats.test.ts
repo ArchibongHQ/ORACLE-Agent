@@ -147,4 +147,33 @@ describe("buildStatsSoftContext", () => {
     const items = buildStatsSoftContext(d);
     expect(items).toEqual([]);
   });
+
+  it("renders possessionValue and recentCorners blocks when present", () => {
+    const d = detail({
+      possessionValue: {
+        home: {
+          shots_on_target_avg: 6,
+          shots_off_target_avg: 3,
+          shots_blocked_avg: 2,
+          corners_avg: 5,
+          possession_pct_avg: 53,
+        },
+        away: {
+          shots_on_target_avg: 4,
+          shots_off_target_avg: 2,
+          shots_blocked_avg: 1,
+          corners_avg: 3,
+          possession_pct_avg: 47,
+        },
+      },
+      recentCorners: { home: 5.4, away: 3.2 },
+    });
+    const items = buildStatsSoftContext(d);
+    expect(items).toHaveLength(1);
+    const text = items[0]!.text;
+    expect(text).toContain("Season shot volume");
+    expect(text).toContain("6 SoT");
+    expect(text).toContain("53% poss");
+    expect(text).toContain("Recent corners (last 5) — Home: 5.4 | Away: 3.2");
+  });
 });

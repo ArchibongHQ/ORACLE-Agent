@@ -36,3 +36,6 @@ Thumbs.db
 
 # Generated/vendor files
 ORACLE_v*.jsx
+
+# gstack local session/security-report state (machine-local, never shared)
+.gstack/

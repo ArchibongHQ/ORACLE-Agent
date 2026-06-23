@@ -53,6 +53,43 @@ export interface SportyBetOdds {
   dc?: { "1x"?: number | null; "12"?: number | null; x2?: number | null } | null;
   dnb?: { home?: number | null; away?: number | null } | null;
   ah?: { home?: number | null; away?: number | null; line?: number | null } | null;
+  /** Typed accessors for named half-related exotics (market IDs verified live
+   *  2026-06-23 — see tools/scrape_fixtures.py _parse_half_markets docstring). */
+  half?: {
+    win_either_half?: {
+      home?: { yes?: number | null; no?: number | null } | null;
+      away?: { yes?: number | null; no?: number | null } | null;
+    } | null;
+    /** Both Halves Over/Under X.5 — keyed by line (e.g. "1.5"), value is {yes/no}
+     *  reframed as {over, under} (yes=over, no=under). */
+    both_halves_ou?: Record<string, { over?: number | null; under?: number | null }> | null;
+    /** 1st-half match-total Over/Under, keyed by line. */
+    ht_ou?: Record<string, { over?: number | null; under?: number | null }> | null;
+    /** 2nd-half match-total Over/Under, keyed by line. */
+    h2_ou?: Record<string, { over?: number | null; under?: number | null }> | null;
+    /** 1st-half team-total Over/Under, keyed by side then line. */
+    ht_team_ou?: Record<
+      string,
+      Record<string, { over?: number | null; under?: number | null }>
+    > | null;
+    /** 2nd-half team-total Over/Under, keyed by side then line. */
+    h2_team_ou?: Record<
+      string,
+      Record<string, { over?: number | null; under?: number | null }>
+    > | null;
+  } | null;
+  /** Generic capture of EVERY SportyBet market for this fixture (900+ entries
+   *  on a typical live fixture) — see tools/scrape_fixtures.py _parse_all_markets.
+   *  Use this for any market not covered by the typed fields above; outcome
+   *  `desc` is already a human-readable label straight from the API. */
+  allMarkets?: Array<{
+    id: string;
+    name?: string | null;
+    desc?: string | null;
+    group?: string | null;
+    specifier?: string | null;
+    outcomes: Array<{ id: string; desc?: string | null; odds?: string | null }>;
+  }> | null;
 }
 
 /** Stats block from Sportradar gismo (sidecar v2). All sub-fields optional. */
@@ -104,6 +141,29 @@ export interface SportyBetStats {
    *  equivalent to a "commentary" tab. Advisory/LLM context only — no engine
    *  consumption point yet. */
   commentary?: string[] | null;
+  /** Season-aggregate shot volume/corners/possession per team (stats_season_uniqueteamstats).
+   *  Possession-value proxy for the feature store — no raw xG field exists anywhere in
+   *  SportyBet/Sportradar's gismo API (confirmed live-probed 2026-06-23); shots_on_target_avg
+   *  + shots_off_target_avg is the closest available shot-volume proxy for xG. */
+  possessionValue?: {
+    home?: {
+      shots_on_target_avg?: number;
+      shots_off_target_avg?: number;
+      shots_blocked_avg?: number;
+      corners_avg?: number;
+      possession_pct_avg?: number;
+    } | null;
+    away?: {
+      shots_on_target_avg?: number;
+      shots_off_target_avg?: number;
+      shots_blocked_avg?: number;
+      corners_avg?: number;
+      possession_pct_avg?: number;
+    } | null;
+  } | null;
+  /** Recency-weighted complement to possessionValue.corners_avg: average corners
+   *  won across each team's last 5 matches (stats_team_lastxextended). */
+  recentCorners?: { home?: number; away?: number } | null;
 }
 
 export interface SportyBetEventDetail {

@@ -10,8 +10,9 @@
  *
  *  Pure functions, unit-testable, no I/O beyond reading already-loaded data.
  */
-import { copulaJointProbability, type PortfolioLeg } from "@oracle/engine";
+
 import type { BatchJobResult, EVMarket } from "@oracle/engine";
+import { copulaJointProbability, type PortfolioLeg } from "@oracle/engine";
 import type { SportyBetEventDetail } from "./selectFixtures.js";
 import { findSidecarDetail } from "./selectFixtures.js";
 
