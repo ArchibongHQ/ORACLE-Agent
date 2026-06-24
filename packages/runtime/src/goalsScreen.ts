@@ -135,14 +135,14 @@ async function screenBatch(
   }
 }
 
-/** Screens the full pre-filtered candidate pool in batches, run concurrently —
- *  each batch is an independent API call with no data dependency on any other
- *  batch, so running them in parallel bounds wall-clock latency to roughly the
- *  slowest single batch instead of the sum of all batches. Each batch's local
- *  indices are remapped back to indices into `candidates`. On a batch failure,
- *  that batch's fixtures are returned unscreened (screened=false), in their
- *  existing pre-filter order — the merged output is always the same length as
- *  the input, just with some entries marked unscreened rather than dropped. */
+/** Screens the full pre-filtered candidate pool in batches, run sequentially —
+ *  each batch is an independent API call. Running them one-at-a-time avoids
+ *  concurrent memory spikes on memory-constrained hosts (Windows OOM guard).
+ *  Each batch's local indices are remapped back to indices into `candidates`.
+ *  On a batch failure, that batch's fixtures are returned unscreened
+ *  (screened=false), in their existing pre-filter order — the merged output is
+ *  always the same length as the input, just with some entries marked unscreened
+ *  rather than dropped. */
 export async function screenGoalsCandidates(
   candidates: GoalsPreFilterResult[],
   ctx: LLMCallContext,
@@ -151,13 +151,16 @@ export async function screenGoalsCandidates(
   const batchStarts: number[] = [];
   for (let start = 0; start < candidates.length; start += batchSize) batchStarts.push(start);
 
-  const batchResults = await Promise.all(
-    batchStarts.map(async (start) => {
-      const batch = candidates.slice(start, start + batchSize);
-      const screened = await screenBatch(batch, ctx);
-      return { start, batch, screened };
-    })
-  );
+  const batchResults: Array<{
+    start: number;
+    batch: GoalsPreFilterResult[];
+    screened: GoalsScreenResult[] | null;
+  }> = [];
+  for (const start of batchStarts) {
+    const batch = candidates.slice(start, start + batchSize);
+    const screened = await screenBatch(batch, ctx);
+    batchResults.push({ start, batch, screened });
+  }
 
   const results: GoalsScreenResult[] = [];
   for (const { start, batch, screened } of batchResults) {
