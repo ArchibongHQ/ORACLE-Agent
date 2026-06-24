@@ -666,7 +666,7 @@ export class ExecutionEngine {
     }
 
     // BLOCK 4: Asian Handicap
-    if (markets.ah) {
+    if (markets.ah && !cfg.enableGoalsOnlyMode) {
       const ahLines = [
         { key: "hp05", label: "AH Home +0.5" },
         { key: "ap05", label: "AH Away +0.5" },
@@ -706,7 +706,7 @@ export class ExecutionEngine {
     }
 
     // BLOCK 5: Win Either Half
-    if ((oddsData.win_either_half_h ?? 0) > 1) {
+    if ((oddsData.win_either_half_h ?? 0) > 1 && !cfg.enableGoalsOnlyMode) {
       const wEHH_mp = markets.teamH
         ? Math.min(0.97, (markets.teamH["over_0.5"] ?? 0) * 0.88 + markets.hw * 0.12)
         : markets.hw;
@@ -718,14 +718,14 @@ export class ExecutionEngine {
     }
 
     // BLOCK 6: First Half
-    if ((oddsData.fh_under_1_5 ?? 0) > 1) {
+    if ((oddsData.fh_under_1_5 ?? 0) > 1 && !cfg.enableGoalsOnlyMode) {
       const fhLH = (markets.teamH ? (markets.teamH["over_0.5"] ?? 0) : 0.7) * 0.5;
       const fhLA = (markets.teamA ? (markets.teamA["over_0.5"] ?? 0) : 0.6) * 0.5;
       const fhGoals0 = Math.exp(-(fhLH + fhLA));
       const fhU15_mp = fhGoals0 + fhGoals0 * (fhLH + fhLA);
       check("First Half", "FH Under 1.5 Goals", Math.min(0.95, fhU15_mp), oddsData.fh_under_1_5);
     }
-    if ((oddsData.fh_draw ?? 0) > 1) {
+    if ((oddsData.fh_draw ?? 0) > 1 && !cfg.enableGoalsOnlyMode) {
       check("First Half", "FH Draw", Math.min(0.55, markets.dr * 1.35), oddsData.fh_draw);
     }
 
@@ -734,12 +734,16 @@ export class ExecutionEngine {
     check("BTTS", "BTTS No", markets.noBtts, oddsData.btts_no);
 
     // BLOCK 8: Draw No Bet
-    check("Draw No Bet", "DNB Home", markets.dnb_h, oddsData.dnb_h);
-    check("Draw No Bet", "DNB Away", markets.dnb_a, oddsData.dnb_a);
+    if (!cfg.enableGoalsOnlyMode) {
+      check("Draw No Bet", "DNB Home", markets.dnb_h, oddsData.dnb_h);
+      check("Draw No Bet", "DNB Away", markets.dnb_a, oddsData.dnb_a);
+    }
 
     // BLOCK 9: Double Chance
-    check("Double Chance", "1X", markets.dc_1x, oddsData.dc_1x);
-    check("Double Chance", "X2", markets.dc_x2, oddsData.dc_x2);
+    if (!cfg.enableGoalsOnlyMode) {
+      check("Double Chance", "1X", markets.dc_1x, oddsData.dc_1x);
+      check("Double Chance", "X2", markets.dc_x2, oddsData.dc_x2);
+    }
 
     return evs.sort((a, b) => b.rankingScore - a.rankingScore);
   }

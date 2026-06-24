@@ -18,3 +18,11 @@ describe("buildConfig maxFixturesPerRun", () => {
     expect(buildConfig({ MAX_FIXTURES_PER_RUN: raw }).maxFixturesPerRun).toBe(expected);
   });
 });
+
+describe("buildConfig enableGoalsOnlyMode", () => {
+  it("is always false, regardless of ORACLE_GOALS_ONLY_MODE — the shared config object feeds every analysis call site (main batch, ad-hoc /analyze, CLI, web, punt), and this flag is an exception scoped to the independent goals pipeline alone, which opts in explicitly per-call", () => {
+    expect(buildConfig({}).enableGoalsOnlyMode).toBe(false);
+    expect(buildConfig({ ORACLE_GOALS_ONLY_MODE: "true" }).enableGoalsOnlyMode).toBe(false);
+    expect(buildConfig({ ORACLE_GOALS_ONLY_MODE: "false" }).enableGoalsOnlyMode).toBe(false);
+  });
+});

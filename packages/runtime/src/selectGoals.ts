@@ -12,7 +12,12 @@
  */
 
 import type { BatchJobResult, EVMarket } from "@oracle/engine";
-import { copulaJointProbability, type PortfolioLeg } from "@oracle/engine";
+import {
+  copulaJointProbability,
+  type PortfolioLeg,
+  pairwiseCrossFixtureCorrelation,
+  selectPortfolioCombos,
+} from "@oracle/engine";
 import type { SportyBetEventDetail } from "./selectFixtures.js";
 import { findSidecarDetail } from "./selectFixtures.js";
 
@@ -29,6 +34,17 @@ export const GOALS_MARKETS: ReadonlySet<string> = new Set([
  *  rotation risk; derbies are tactically tight and goals-suppressed. */
 const _EXCLUDE_RE =
   /cup|copa|coupe|pokal|trophy|shield|supercup|friendly|test\s*match|derby|derbi|clasico|clásico/i;
+
+/** International tournaments — checked BEFORE _EXCLUDE_RE. The bare "cup"
+ *  substring in _EXCLUDE_RE was written for domestic knockout cups (rotation
+ *  risk) but also matches "World Cup"/"Asian Cup"/etc, which carry no such
+ *  rotation risk (full-strength squads, star players, high goal expectancy).
+ *  The "euro" alternative requires either "european championship" or a year
+ *  (e.g. "UEFA Euro 2026") — a bare /euro/i would also match a hypothetical
+ *  domestic "Euro Friendly Cup"/"EuroLeague Youth Friendly" and incorrectly
+ *  exempt it from the real rotation-risk exclusion below. */
+const _INTL_TOURNAMENT_RE =
+  /world\s*cup|euro(?:pean\s*championship)|uefa\s*euro\s*20\d{2}|euro\s*20\d{2}|copa\s*am[ée]rica|nations\s*league|africa(?:n)?\s*cup\s*of\s*nations|afcon|asian\s*cup|gold\s*cup|concacaf/i;
 
 /** Default per-leg thresholds — the single source of truth, also consumed by
  *  buildConfig() in env.ts so an .env-less run and a coded default never drift. */
@@ -69,8 +85,11 @@ export interface GoalsLeg {
 }
 
 export interface GoalsSelectionResult {
+  /** Long ("lottery") slip — greedy correlation-aware selection, capped at `target`. */
   legs: GoalsLeg[];
-  /** Short-slip selection: top 4–8 legs by mp (honest win-probability slip). */
+  /** Short ("top picks") slip — EV-maximizing combinatorial search, normally
+   *  4–9 legs; flexes past 9 when ≥10 candidates beyond the ceiling clear the
+   *  high-confidence bar (see SHORT_SLIP_HIGH_CONFIDENCE_MP/SHORT_SLIP_FLEX_TRIGGER). */
   shortSlipLegs: GoalsLeg[];
   target: number;
   analysed: number;
@@ -82,7 +101,7 @@ export interface GoalsSelectionResult {
   combinedProb: number;
   /** Combined decimal odds for the full slip (product of leg odds). */
   combinedOdds: number;
-  /** Same for the short-slip (4–8 legs). */
+  /** Same for the short slip. */
   shortSlipCombinedProb: number;
   shortSlipCombinedOdds: number;
 }
@@ -152,7 +171,7 @@ export function goalsDataGate(
   market: string
 ): boolean {
   if (!GOALS_MARKETS.has(market)) return false;
-  if (_EXCLUDE_RE.test(league)) return false;
+  if (!_INTL_TOURNAMENT_RE.test(league) && _EXCLUDE_RE.test(league)) return false;
   if (market === "Over 2.5") return hasBothTeamsGoalsAndDefence(detail);
   // Over 1.5 / Home Total Over 0.5 / Away Total Over 0.5 — lenient tier.
   return hasAnyGoalsSignal(detail);
@@ -224,19 +243,105 @@ function jointProb(legs: GoalsLeg[]): number {
   return copulaJointProbability(legs.map(toPortfolioLeg));
 }
 
-/** Select the goals accumulator: one safest leg per qualifying fixture, ranked
- *  by model confidence descending, capped at `target` legs (a ceiling — fewer
- *  legs when fewer qualify; the threshold is never relaxed to force `target`).
+/** Cross-fixture correlation reject threshold for the long slip.
+ *  pairwiseCrossFixtureCorrelation only ever produces one of three values: 0
+ *  (different league, no shared kickoff window), SAME_LEAGUE_RHO=0.25 (same
+ *  league only), or 0.25+SAME_WINDOW_BONUS=0.35 (same league AND within a 3h
+ *  kickoff window — math/index.ts). Same-league coverage on a given matchday is
+ *  normal and expected for a goals slip (most leagues play their full round on
+ *  1-2 days) — rejecting at the 0.25 tier would gut ordinary slips. The bar sits
+ *  between the two tiers so only the tighter same-league+same-kickoff-window
+ *  stacking (0.35) gets capped — legs that share both a league AND a near-
+ *  simultaneous kickoff carry the most genuinely shared risk (same officiating
+ *  climate, same weather front, same matchday narrative). */
+export const CROSS_FIXTURE_CORRELATION_REJECT = 0.3;
+
+/** Greedily builds a correlation-aware leg list: walks the mp-ranked candidate
+ *  pool and admits each leg unless its correlation with every already-admitted
+ *  leg from a DIFFERENT fixture exceeds the reject threshold — never combines
+ *  legs from the same fixture (the data gate already enforces one leg per
+ *  fixture upstream) and never lets a slip silently overstack one correlated
+ *  cluster. A full combinatorial search (selectPortfolioCombos) is infeasible
+ *  at this scale (up to 39 legs from a 100+ candidate pool) — greedy admission
+ *  is the tractable approximation; the short slip below uses the exact search
+ *  instead, since its candidate pool is small enough to afford it. */
+function greedyCorrelationAwareSelect(ranked: GoalsLeg[], cap: number): GoalsLeg[] {
+  const admitted: GoalsLeg[] = [];
+  for (const candidate of ranked) {
+    if (admitted.length >= cap) break;
+    const candidatePortfolioLeg = toPortfolioLeg(candidate);
+    const tooCorrelated = admitted.some(
+      (a) =>
+        pairwiseCrossFixtureCorrelation(candidatePortfolioLeg, toPortfolioLeg(a)) >
+        CROSS_FIXTURE_CORRELATION_REJECT
+    );
+    if (!tooCorrelated) admitted.push(candidate);
+  }
+  return admitted;
+}
+
+/** Combinatorial-search shortlist size fed to selectPortfolioCombos — its own
+ *  docstring caps feasible input at ~15 candidates (combinations explode past
+ *  that). Pre-rank by mp and slice before calling it. */
+const SHORT_SLIP_SEARCH_POOL = 15;
+
+/** Builds the short slip. When `maxLegs` fits within the combinatorial search's
+ *  feasible ceiling (SHORT_SLIP_SEARCH_POOL — selectPortfolioCombos's own
+ *  docstring caps feasible input at ~15 candidates, since combinations explode
+ *  past that), runs the engine's EV-maximizing exact search over the top
+ *  candidates by mp. When flex-sizing (see selectGoalsAccumulator) pushes
+ *  maxLegs beyond that ceiling, the exact search is no longer tractable —
+ *  falls back to the same greedy correlation-aware admission the long slip
+ *  uses, over the (larger) flexed candidate pool. Per owner instruction:
+ *  "consideration can be made to add more if 10 or more other fixtures surface
+ *  data-backed, fact-checked, high confidence, undeniable goals opportunities" —
+ *  the flex path honors that even past the exact-search's feasible size.
+ *  Falls back to a plain top-N slice when the exact search finds no positive-EV
+ *  combo (e.g. pool too thin) — never returns fewer legs than the data honestly
+ *  supports. */
+function buildShortSlip(ranked: GoalsLeg[], maxLegs: number): GoalsLeg[] {
+  if (maxLegs > SHORT_SLIP_SEARCH_POOL) {
+    return greedyCorrelationAwareSelect(ranked, maxLegs);
+  }
+  const pool = ranked.slice(0, SHORT_SLIP_SEARCH_POOL);
+  if (pool.length === 0) return [];
+  const minLegs = Math.min(SHORT_SLIP_MIN, pool.length);
+  const shortlist = pool.map(toPortfolioLeg);
+  const oddsByLeg = pool.map((l) => l.odds);
+  const best = selectPortfolioCombos(shortlist, oddsByLeg, minLegs, Math.min(maxLegs, pool.length));
+  if (!best || best.ev <= 0) {
+    return pool.slice(0, Math.min(maxLegs, Math.max(SHORT_SLIP_MIN, pool.length)));
+  }
+  const comboKeys = new Set(best.combo.map((l) => `${l.home}|${l.away}`));
+  return pool.filter((l) => comboKeys.has(`${l.home}|${l.away}`));
+}
+
+const SHORT_SLIP_MIN = 4;
+const SHORT_SLIP_MAX = 9;
+/** A leg clearing this mp bar counts as "data-backed, fact-checked, high
+ *  confidence, undeniable" for short-slip flex-sizing purposes — comfortably
+ *  above the general DEFAULT_GOALS_MIN_CONFIDENCE floor (0.72) used for the
+ *  long slip, since the short slip is meant to be the higher-bar pick set. */
+const SHORT_SLIP_HIGH_CONFIDENCE_MP = 0.82;
+/** Minimum count of high-confidence candidates (beyond SHORT_SLIP_MAX) required
+ *  before the short slip is allowed to flex upward past its normal ceiling. */
+const SHORT_SLIP_FLEX_TRIGGER = 10;
+
+/** Select the goals accumulator: one safest leg per qualifying fixture, then
+ *  two correlation-aware slips are cut from the ranked pool —
  *
- *  Also surfaces a short-slip (4–8 legs) with honest joint probability so callers
- *  can see the true win probability before stacking 39 legs. */
+ *  - Long slip (`legs`): greedy correlation-aware admission, capped at `target`
+ *    (default 39, a ceiling never a fill target).
+ *  - Short slip (`shortSlipLegs`): EV-maximizing combinatorial search
+ *    (selectPortfolioCombos) over the top-ranked candidates, normally 4–9 legs.
+ *    Flexes past 9 when ≥10 candidates beyond the normal ceiling clear a high
+ *    confidence bar (SHORT_SLIP_HIGH_CONFIDENCE_MP) — per owner instruction,
+ *    this is still a separate, smaller, higher-bar slip from the 39-leg one. */
 export function selectGoalsAccumulator(
   jobs: BatchJobResult[],
   opts: GoalsSelectOptions = {}
 ): GoalsSelectionResult {
   const target = opts.target ?? DEFAULT_GOALS_TARGET_LEGS;
-  const SHORT_SLIP_MIN = 4;
-  const SHORT_SLIP_MAX = 8;
 
   const all: GoalsLeg[] = [];
   for (const job of jobs) {
@@ -245,11 +350,17 @@ export function selectGoalsAccumulator(
   }
   all.sort((a, b) => b.mp - a.mp);
 
-  const legs = all.slice(0, Math.max(0, target));
-  const shortSlipLegs = all.slice(
-    0,
-    Math.min(SHORT_SLIP_MAX, Math.max(SHORT_SLIP_MIN, all.length))
-  );
+  const legs = greedyCorrelationAwareSelect(all, Math.max(0, target));
+
+  const highConfidenceCount = all.filter((l) => l.mp >= SHORT_SLIP_HIGH_CONFIDENCE_MP).length;
+  // Flex cap is bounded by `target` (the long/lottery slip's own ceiling) —
+  // the short ("top picks") slip must never exceed the long slip's size, or
+  // the two slips' naming/relative-confidence framing inverts.
+  const shortSlipCap =
+    highConfidenceCount >= SHORT_SLIP_MAX + SHORT_SLIP_FLEX_TRIGGER
+      ? Math.min(highConfidenceCount, Math.max(0, target))
+      : SHORT_SLIP_MAX;
+  const shortSlipLegs = buildShortSlip(all, shortSlipCap);
 
   const counts = { over15: 0, over25: 0, teamOver05: 0 };
   for (const l of legs) {

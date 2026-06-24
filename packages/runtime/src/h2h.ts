@@ -6,9 +6,17 @@
  *    2. Search football-data /matches for the fixture to get a match ID
  *    3. Call /matches/{id}/head2head?limit=10
  *    4. Compute h2hHomeWin, h2hDraw, h2hAwayWin, h2hN, h2hGoalDiff (same as GBM features)
- *    5. Merge into fetched.stats — never throws, always returns jobs unchanged on failure
+ *    5. Merge aggregates into fetched.stats (numeric, existing safety/GBM consumers);
+ *       merge raw recentScorelines (if any) into telemetry.rawStatsBlock instead — the
+ *       Opus arbiter's STEP 0 passthrough — since fetched.stats stays purely numeric.
+ *       Never throws, always returns jobs unchanged on failure.
  *
  *  Rate limit: football-data free tier = 10 req/min. We batch with 7s inter-request delay.
+ *
+ *  Scoreline coverage caveat: the SportyBet/Sportradar gismo H2H path (sportyBetStats.ts)
+ *  has no match-level detail — only aggregate counts. This football-data.org path is the
+ *  ONLY scoreline source, and only for leagues in LEAGUE_TO_COMP with a found scheduled
+ *  match; coverage is partial, not universal.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -50,13 +58,21 @@ interface H2HCache {
   h2hAwayWin: number;
   h2hN: number;
   h2hGoalDiff: number;
+  /** Last up-to-10 H2H scorelines, most recent first, from the perspective of
+   *  the current fixture's home/away assignment (e.g. "2-1 (2025-03-02)") —
+   *  surfaced to the Opus arbiter's raw-stats block (STEP 0). The SportyBet
+   *  gismo H2H path has no match-level detail (only aggregate counts), so this
+   *  is the only available scoreline source; absent when football-data.org has
+   *  no scheduled/found match for this fixture. */
+  recentScorelines?: string[];
 }
 
-interface FDMatch {
+export interface FDMatch {
   id: number;
   homeTeam: { name: string };
   awayTeam: { name: string };
   score: { winner: string | null; fullTime: { home: number | null; away: number | null } };
+  utcDate?: string;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -83,6 +99,27 @@ function teamsMatch(a: string, b: string): boolean {
   const na = normTeam(a),
     nb = normTeam(b);
   return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+/** Last up-to-10 raw H2H scorelines, normalized to the current fixture's
+ *  home/away perspective (NOT whichever side happened to play at home in a
+ *  given historical meeting), most recent first — e.g. "2-1 (2025-03-02)".
+ *  Pure, exported for direct unit testing — the aggregate reduction in
+ *  fetchH2HStats discards this same `prior` list after computing
+ *  h2hHomeWin/draw/awayWin, so this is the only place it survives. */
+export function buildRecentScorelines(matches: FDMatch[], currentHome: string): string[] {
+  return matches
+    .slice()
+    .sort((a, b) => (b.utcDate ?? "").localeCompare(a.utcDate ?? ""))
+    .map((m) => {
+      const mHomeIsOurHome = teamsMatch(m.homeTeam.name, currentHome);
+      const ftHome = m.score.fullTime.home ?? 0;
+      const ftAway = m.score.fullTime.away ?? 0;
+      const ourHomeGoals = mHomeIsOurHome ? ftHome : ftAway;
+      const ourAwayGoals = mHomeIsOurHome ? ftAway : ftHome;
+      const date = m.utcDate ? ` (${m.utcDate.slice(0, 10)})` : "";
+      return `${ourHomeGoals}-${ourAwayGoals}${date}`;
+    });
 }
 
 async function fdGet<T>(path: string, apiKey: string): Promise<T> {
@@ -177,6 +214,8 @@ async function fetchH2HStats(
   const wPrior = 1 - wOwn;
   const prior1_3 = 1 / 3;
 
+  const recentScorelines = buildRecentScorelines(prior, home);
+
   return {
     fetchedAt: new Date().toISOString(),
     h2hHomeWin: wOwn * (homeWins / n) + wPrior * prior1_3,
@@ -184,6 +223,7 @@ async function fetchH2HStats(
     h2hAwayWin: wOwn * (awayWins / n) + wPrior * prior1_3,
     h2hN: n,
     h2hGoalDiff: n > 0 ? goalDiffSum / n : 0,
+    ...(recentScorelines.length ? { recentScorelines } : {}),
   };
 }
 
@@ -225,15 +265,32 @@ export async function enrichWithH2H(
 
       if (!stats) continue;
 
-      // Merge into job.state.pipeline.fetched.stats
+      // Merge aggregates into job.state.pipeline.fetched.stats (numeric — same
+      // consumers as before: safety/index.ts's MLSafetyFilter, gbm/index.ts).
       const existingState = enriched[idx]?.state ?? {};
       const existingFetched = (existingState.pipeline?.fetched ?? {}) as Record<string, unknown>;
       const existingStats = (existingFetched.stats ?? {}) as Record<string, number>;
+      // Raw scorelines go to telemetry.rawStatsBlock (the arbiter's STEP 0
+      // passthrough) instead — fetched.stats stays purely numeric for its
+      // existing consumers, never mixed with a string array.
+      const existingTel = existingState.telemetry ?? {};
+      const existingRawStats = (existingTel.rawStatsBlock ?? {}) as Record<string, unknown>;
 
       enriched[idx] = {
         ...enriched[idx]!,
         state: {
           ...existingState,
+          telemetry: {
+            ...existingTel,
+            ...(stats.recentScorelines?.length
+              ? {
+                  rawStatsBlock: {
+                    ...existingRawStats,
+                    h2hRecentScorelines: stats.recentScorelines,
+                  },
+                }
+              : {}),
+          },
           pipeline: {
             ...(existingState.pipeline ?? {}),
             fetched: {

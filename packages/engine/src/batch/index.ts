@@ -301,6 +301,7 @@ export async function runBatch(
             betTrigger: String(debateRes?.betTrigger ?? "YELLOW"),
             portfolioCorrelation: runResult.portfolioCorrelation,
             softContext: state.telemetry?.softContext as SoftContextItem[] | undefined,
+            rawStatsBlock: state.telemetry?.rawStatsBlock as Record<string, unknown> | undefined,
           };
 
           // Two-tier gate: only the top-N fixtures (by composite stats score,

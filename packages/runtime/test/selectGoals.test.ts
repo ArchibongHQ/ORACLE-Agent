@@ -34,7 +34,8 @@ function okJob(
   home: string,
   away: string,
   evMarkets: EVMarket[],
-  league = "Premier League"
+  league = "Premier League",
+  kickoff = "2026-06-15T15:00:00Z"
 ): BatchJobResult {
   return {
     status: "ok",
@@ -44,7 +45,7 @@ function okJob(
     home,
     away,
     league,
-    kickoff: "2026-06-15T15:00:00Z",
+    kickoff,
     result: { evMarkets } as unknown as RunResult,
     decision: {
       primaryPick: { market: "x", odds: 1 },
@@ -118,6 +119,26 @@ describe("goalsDataGate", () => {
     expect(goalsDataGate(richDetail(), "FA Cup", "Over 1.5")).toBe(false);
     expect(goalsDataGate(richDetail(), "Club Friendly", "Over 1.5")).toBe(false);
     expect(goalsDataGate(richDetail(), "Merseyside Derby", "Over 1.5")).toBe(false);
+    expect(goalsDataGate(richDetail(), "Copa del Rey", "Over 1.5")).toBe(false);
+    expect(goalsDataGate(richDetail(), "DFB Pokal", "Over 1.5")).toBe(false);
+  });
+
+  it("does not let a bare 'euro' substring exempt a real domestic cup/friendly from exclusion", () => {
+    // Regression test: an earlier version of _INTL_TOURNAMENT_RE's euro
+    // alternative had both qualifying groups optional, reducing to a bare
+    // /euro/i match that would incorrectly exempt any league merely
+    // containing "euro" — these must still be excluded.
+    expect(goalsDataGate(richDetail(), "Euro Friendly Cup", "Over 1.5")).toBe(false);
+    expect(goalsDataGate(richDetail(), "EuroLeague Youth Friendly", "Over 1.5")).toBe(false);
+  });
+
+  it("does NOT reject international tournaments — only the 'cup' substring false-positive", () => {
+    expect(goalsDataGate(richDetail(), "FIFA World Cup", "Over 1.5")).toBe(true);
+    expect(goalsDataGate(richDetail(), "World Cup Qualification", "Over 1.5")).toBe(true);
+    expect(goalsDataGate(richDetail(), "UEFA Euro 2026", "Over 1.5")).toBe(true);
+    expect(goalsDataGate(richDetail(), "Copa América", "Over 1.5")).toBe(true);
+    expect(goalsDataGate(richDetail(), "UEFA Nations League", "Over 1.5")).toBe(true);
+    expect(goalsDataGate(richDetail(), "Africa Cup of Nations", "Over 1.5")).toBe(true);
   });
 
   it("Over 2.5 (strict): requires both teams goals + a defensive figure", () => {
@@ -271,9 +292,12 @@ describe("selectGoalsAccumulator", () => {
       ["A", "B", richDetail()],
       ["C", "D", thinDetail()],
     ]);
+    // Staggered kickoffs (>3h apart) — different leagues already imply rho=0,
+    // but staggering here too keeps this test about ranking/counting, not
+    // correlation rejection (covered separately below).
     const jobs = [
-      okJob("A", "B", [evm("Over 2.5", 0.82, 0.78)]),
-      okJob("C", "D", [evm("Over 1.5", 0.9, 0.85)]),
+      okJob("A", "B", [evm("Over 2.5", 0.82, 0.78)], "Premier League", "2026-06-15T12:00:00Z"),
+      okJob("C", "D", [evm("Over 1.5", 0.9, 0.85)], "La Liga", "2026-06-15T19:00:00Z"),
     ];
     const res = selectGoalsAccumulator(jobs, { detailByKey });
     expect(res.legs.map((l) => l.side)).toEqual(["Over 1.5", "Over 2.5"]);
@@ -288,14 +312,35 @@ describe("selectGoalsAccumulator", () => {
       ["E", "F", richDetail()],
     ]);
     const jobs = [
-      okJob("A", "B", [evm("Over 1.5", 0.95, 0.9)]),
-      okJob("C", "D", [evm("Over 1.5", 0.9, 0.85)]),
-      okJob("E", "F", [evm("Over 1.5", 0.85, 0.8)]),
+      okJob("A", "B", [evm("Over 1.5", 0.95, 0.9)], "Premier League", "2026-06-15T12:00:00Z"),
+      okJob("C", "D", [evm("Over 1.5", 0.9, 0.85)], "La Liga", "2026-06-15T15:00:00Z"),
+      okJob("E", "F", [evm("Over 1.5", 0.85, 0.8)], "Bundesliga", "2026-06-15T19:00:00Z"),
     ];
     const res = selectGoalsAccumulator(jobs, { detailByKey, target: 2 });
     expect(res.legs).toHaveLength(2);
     expect(res.qualified).toBe(3); // all qualified, but only 2 fit the ceiling
     expect(res.legs.map((l) => l.mp)).toEqual([0.95, 0.9]); // top-2 by mp
+  });
+
+  it("rejects a third same-league, same-kickoff-window leg as overly correlated", () => {
+    const detailByKey = detailMap([
+      ["A", "B", richDetail()],
+      ["C", "D", richDetail()],
+      ["E", "F", richDetail()],
+    ]);
+    // All three same league, all within a 3h kickoff window — pairwise rho=0.35,
+    // above CROSS_FIXTURE_CORRELATION_REJECT (0.3). Greedy admission should
+    // still take the top-ranked leg, then reject same-cluster legs even though
+    // target has room for all three.
+    const jobs = [
+      okJob("A", "B", [evm("Over 1.5", 0.95, 0.9)], "Premier League", "2026-06-15T15:00:00Z"),
+      okJob("C", "D", [evm("Over 1.5", 0.9, 0.85)], "Premier League", "2026-06-15T15:30:00Z"),
+      okJob("E", "F", [evm("Over 1.5", 0.85, 0.8)], "Premier League", "2026-06-15T16:00:00Z"),
+    ];
+    const res = selectGoalsAccumulator(jobs, { detailByKey, target: 10 });
+    expect(res.qualified).toBe(3);
+    expect(res.legs.length).toBeLessThan(3);
+    expect(res.legs[0]?.home).toBe("A"); // highest mp always admitted first
   });
 
   it("returns fewer than target when fewer qualify (no dilution)", () => {
@@ -315,6 +360,74 @@ describe("selectGoalsAccumulator", () => {
     const res = selectGoalsAccumulator(jobs, { detailByKey, target: 0 });
     expect(res.legs).toHaveLength(0);
     expect(res.qualified).toBe(1);
+  });
+
+  describe("short slip sizing", () => {
+    // Distinct teams/leagues/kickoffs per fixture so cross-fixture correlation
+    // never interferes with these sizing-only assertions.
+    function manyFixtures(n: number, mpStart: number, mpStep: number) {
+      const leagues = ["Premier League", "La Liga", "Bundesliga", "Serie A", "Ligue 1"];
+      const detailEntries: Array<[string, string, SportyBetEventDetail]> = [];
+      const jobs: BatchJobResult[] = [];
+      for (let i = 0; i < n; i++) {
+        const home = `H${i}`;
+        const away = `A${i}`;
+        detailEntries.push([home, away, richDetail()]);
+        const mp = Math.max(0.1, mpStart - i * mpStep);
+        jobs.push(
+          okJob(
+            home,
+            away,
+            [evm("Over 1.5", mp, mp - 0.05)],
+            leagues[i % leagues.length],
+            new Date(Date.UTC(2026, 5, 15, i, 0, 0)).toISOString()
+          )
+        );
+      }
+      return { detailByKey: detailMap(detailEntries), jobs };
+    }
+
+    it("stays within the normal 4-9 ceiling when fewer than 10 extra high-confidence candidates exist", () => {
+      // 12 candidates, mp descending from 0.95 — only ~3 clear the 0.82 high-
+      // confidence bar beyond the 9th, well under the FLEX_TRIGGER of 10.
+      const { detailByKey, jobs } = manyFixtures(12, 0.95, 0.02);
+      const res = selectGoalsAccumulator(jobs, { detailByKey, target: 39 });
+      expect(res.shortSlipLegs.length).toBeLessThanOrEqual(9);
+      expect(res.shortSlipLegs.length).toBeGreaterThanOrEqual(4);
+    });
+
+    it("flexes the short slip past 9 when >=10 candidates beyond the ceiling clear the high-confidence bar", () => {
+      // 25 candidates, mp flat at 0.95 (all clear SHORT_SLIP_HIGH_CONFIDENCE_MP
+      // of 0.82) — comfortably >=10 beyond the normal 9-leg ceiling.
+      const { detailByKey, jobs } = manyFixtures(25, 0.95, 0.001);
+      const res = selectGoalsAccumulator(jobs, { detailByKey, target: 39 });
+      expect(res.shortSlipLegs.length).toBeGreaterThan(9);
+    });
+
+    it("flex path scales past the 15-candidate combinatorial-search ceiling via the greedy fallback", () => {
+      // 30 candidates all clearing the high-confidence bar — flexed cap (30)
+      // exceeds SHORT_SLIP_SEARCH_POOL (15), so buildShortSlip must use the
+      // greedy correlation-aware path, not silently truncate at 15.
+      const { detailByKey, jobs } = manyFixtures(30, 0.95, 0.001);
+      const res = selectGoalsAccumulator(jobs, { detailByKey, target: 39 });
+      expect(res.shortSlipLegs.length).toBeGreaterThan(15);
+    });
+
+    it("short slip never includes more legs than qualified", () => {
+      const { detailByKey, jobs } = manyFixtures(3, 0.9, 0.05);
+      const res = selectGoalsAccumulator(jobs, { detailByKey, target: 39 });
+      expect(res.shortSlipLegs.length).toBeLessThanOrEqual(res.qualified);
+    });
+
+    it("flex cap never exceeds `target` — the short ('top picks') slip must never outgrow the long ('lottery') slip", () => {
+      // 50 candidates all clearing the high-confidence bar would flex the short
+      // slip cap to 50 uncapped — but target=10 here, so the short slip must be
+      // bounded at 10, never larger than the long slip's own ceiling.
+      const { detailByKey, jobs } = manyFixtures(50, 0.95, 0.0005);
+      const res = selectGoalsAccumulator(jobs, { detailByKey, target: 10 });
+      expect(res.shortSlipLegs.length).toBeLessThanOrEqual(10);
+      expect(res.shortSlipLegs.length).toBeLessThanOrEqual(res.legs.length || 10);
+    });
   });
 });
 

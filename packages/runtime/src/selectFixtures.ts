@@ -173,7 +173,7 @@ export interface SportyBetEventDetail {
   statscoverage: Record<string, unknown> | null;
 }
 
-interface SportyBetEvent {
+export interface SportyBetEvent {
   home: string;
   away: string;
   marketCount: number;

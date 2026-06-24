@@ -4,7 +4,14 @@
 
 export type { AnalyzeOptions, AnalyzeResult, ResolveDayResult } from "./analyze.js";
 export { CLV_ELIGIBLE_LEAGUES, resolveDay, runAnalysis } from "./analyze.js";
-export { fixturesPartitionExists } from "./dailyStore.js";
+export type { DailyFixtureReportDeps } from "./dailyFixtureReport.js";
+export {
+  buildNewsByTeam,
+  renderDailyFixtureReport,
+  writeDailyFixtureReport,
+} from "./dailyFixtureReport.js";
+export type { DailyNewsRow } from "./dailyStore.js";
+export { fixturesPartitionExists, loadDailyNews, teamSlug } from "./dailyStore.js";
 export { buildConfig, loadEnv, validateConfig } from "./env.js";
 export type { FetchResult } from "./fixtures.js";
 export {
@@ -14,10 +21,26 @@ export {
   resolvePythonBin,
   SPORT_TO_LEAGUE,
 } from "./fixtures.js";
+export type { GoalsFunnelOptions, GoalsFunnelResult } from "./goalsFunnel.js";
+export { runGoalsFunnel, sportyEventToFixtureJob } from "./goalsFunnel.js";
+export type { GoalsPreFilterResult } from "./goalsPreFilter.js";
+export {
+  DEFAULT_PRE_FILTER_POOL_SIZE,
+  GOALS_RICH_LEAGUES,
+  preFilterGoalsCandidates,
+  scoreGoalsPotential,
+} from "./goalsPreFilter.js";
+export type { GoalsScreenResult } from "./goalsScreen.js";
+export {
+  DEFAULT_SCREEN_BATCH_SIZE,
+  mergeScreenedCandidates,
+  screenGoalsCandidates,
+} from "./goalsScreen.js";
 export { enrichWithH2H } from "./h2h.js";
 export type { HardwareCapabilities } from "./hardware.js";
 export { detectHardware, isGpuCapable } from "./hardware.js";
-export { enrichWithLineups } from "./lineups.js";
+export type { LineupSummary } from "./lineups.js";
+export { enrichWithLineups, findLineupSummary, loadLineupSummaries } from "./lineups.js";
 export { enrichWithNewsIntel } from "./newsIntel.js";
 export type { CounterLeg, LegVerdict, PuntLeg } from "./punt.js";
 export {

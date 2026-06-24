@@ -6,6 +6,7 @@ export { EmailNotifier } from "./email.js";
 export { OpenClawNotifier } from "./openclaw.js";
 export { SlackNotifier } from "./slack.js";
 export { TelegramNotifier } from "./telegram.js";
+export { sendTelegramDocument } from "./telegramDocument.js";
 export type { ActionablePick, BatchSummary, Notifier } from "./types.js";
 export { formatSummaryHtml, formatSummaryText, summarizeBatch } from "./types.js";
 

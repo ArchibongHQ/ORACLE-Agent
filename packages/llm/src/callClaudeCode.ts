@@ -21,7 +21,13 @@
  *  temperature — there is no temperature knob to pin to 0, so callers must not
  *  claim temperature=0 for this tier (unlike callClaude.ts's API path). Record
  *  model as "claude-code-local" (or "claude-code-arbiter" at the decision-layer
- *  call site) and keep the raw envelope for DecisionReplay at the call site. */
+ *  call site) and keep the raw envelope for DecisionReplay at the call site.
+ *
+ *  The no-Sonnet rule above applies to THIS local-CLI transport and every other
+ *  decision/analysis call in the pipeline. The one explicit, narrow exception is
+ *  MODELS.CLAUDE_SONNET (cascade.ts) used only by the goals-discovery screening
+ *  stage (packages/runtime/src/goalsScreen.ts), which calls callClaude.ts's API
+ *  transport directly, not this file — cost-conscious by owner instruction. */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";

@@ -20,6 +20,6 @@ export interface LLMProvider {
   callBriefing(prompt: string, ctx: LLMCallContext): Promise<string>;
   /** Data acquisition turn (Gemini cascade — T1/T2/T3). */
   callAcquisition(prompt: string, ctx: LLMCallContext): Promise<string>;
-  /** Adversarial verification (Claude Sonnet — AntiSycophancyCircuit). */
+  /** Adversarial verification (Claude Opus — AntiSycophancyCircuit). */
   callVerification(prompt: string, ctx: LLMCallContext): Promise<string>;
 }
