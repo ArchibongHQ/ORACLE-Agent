@@ -92,10 +92,26 @@ PERPLEXITY_PACE = 0.5  # seconds between calls — gentle, paid API
 
 # Keep in sync with ORACLE_PRIORITY_LEAGUES in packages/runtime/src/selectFixtures.ts
 PRIORITY_LEAGUES: frozenset[str] = frozenset({
+    # Europe top flights
     "Premier League", "Championship", "La Liga", "Bundesliga", "Serie A",
     "Ligue 1", "Eredivisie", "Primeira Liga", "Belgian Pro League",
-    "Scottish Premiership", "Champions League", "Europa League",
-    "Conference League", "J League", "MLS", "FIFA World Cup",
+    "Scottish Premiership", "Urvalsdeild", "Eliteserien", "Swiss Super League",
+    "Danish Superliga",
+    # Europe lower divisions
+    "2. Bundesliga", "Eerste Divisie", "OBOS-ligaen", "Swedish Division 1",
+    "Swedish Division 2", "Danish 1. Division",
+    "Regionalliga Bayern", "Regionalliga Nord", "Regionalliga Nordost",
+    "Regionalliga Südwest", "Regionalliga West",
+    # Asia / Oceania / Middle East
+    "NPL Queensland", "NPL New South Wales", "NPL Victoria",
+    "Singapore Premier League", "Malaysia Super League", "Qatar Stars League",
+    # Americas
+    "MLS", "USL League Two", "Bolivia Primera Division", "Liga MX",
+    # Cups
+    "Faroe Islands Cup", "Lithuanian Cup", "Estonian Cup",
+    # Continental / global
+    "Champions League", "Europa League", "Conference League",
+    "J League", "FIFA World Cup",
 })
 # Mirrors the marketCount saturation point in selectFixtures.ts scoreFixture()
 # (Math.min(marketCount, 40) / 40) — used here as the "high market depth" bar for

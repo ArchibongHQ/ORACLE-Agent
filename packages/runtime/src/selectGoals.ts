@@ -19,7 +19,7 @@ import {
   selectPortfolioCombos,
 } from "@oracle/engine";
 import type { SportyBetEventDetail } from "./selectFixtures.js";
-import { findSidecarDetail } from "./selectFixtures.js";
+import { findSidecarDetail, sidecarKey } from "./selectFixtures.js";
 
 /** The only market labels (EVMarket.label) allowed in the goals accumulator.
  *  "Team Over 0.5" in the spec maps to the two team-total labels the engine emits. */
@@ -66,6 +66,10 @@ export interface GoalsSelectOptions {
   target?: number;
   /** Sidecar detail lookup by sidecarKey(home, away) — supplies the data gate. */
   detailByKey?: Map<string, SportyBetEventDetail>;
+  /** SportyBet/Sportradar event ID keyed by sidecarKey(home, away). Injected by
+   *  the worker so the booking agent can navigate directly to the fixture detail
+   *  page without scanning the paginated listing DOM. */
+  eventIdByKey?: Map<string, string>;
 }
 
 export interface GoalsLeg {
@@ -82,6 +86,10 @@ export interface GoalsLeg {
   mp: number;
   /** Implied probability (1/odds). */
   ip: number;
+  /** SportyBet / Sportradar event ID (e.g. "sr:match:66456926") — used by the
+   *  booking agent to navigate directly to the fixture detail page, bypassing
+   *  the listing-page scroll that only shows fixtures visible in the DOM. */
+  eventId?: string;
 }
 
 export interface GoalsSelectionResult {
@@ -188,6 +196,7 @@ export function pickSafestGoalsLeg(
   const minConfidence = opts.minConfidence ?? DEFAULT_GOALS_MIN_CONFIDENCE;
   const minImplied = opts.minImplied ?? DEFAULT_GOALS_MIN_IMPLIED;
   const detail = findSidecarDetail(opts.detailByKey, job.home, job.away);
+  const eventId = opts.eventIdByKey?.get(sidecarKey(job.home, job.away));
 
   const all = job.result.evMarkets ?? [];
   const sGoals = all.filter((m: EVMarket) => GOALS_MARKETS.has(m.label));
@@ -221,6 +230,7 @@ export function pickSafestGoalsLeg(
     odds: best.odds,
     mp: best.mp,
     ip: best.ip,
+    ...(eventId ? { eventId } : {}),
   };
 }
 

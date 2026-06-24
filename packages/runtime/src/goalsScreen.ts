@@ -19,7 +19,7 @@
  *  in packages/engine/src/decision/index.ts (never blocks the funnel). */
 
 import type { LLMCallContext } from "@oracle/llm";
-import { callClaude, MODELS } from "@oracle/llm";
+import { callClaudeCode } from "@oracle/llm";
 import type { GoalsPreFilterResult } from "./goalsPreFilter.js";
 
 export const DEFAULT_SCREEN_BATCH_SIZE = 28;
@@ -107,19 +107,13 @@ function parseScreenResponse(
  *  pre-filter order for that batch, never blocks. */
 async function screenBatch(
   batch: GoalsPreFilterResult[],
-  ctx: LLMCallContext
+  _ctx: LLMCallContext
 ): Promise<GoalsScreenResult[] | null> {
-  if (!ctx.config.claudeApiKey) return null;
   const summaries = batch.map((c, i) => compactSummary(c, i)).join("\n");
   const prompt = `${SCREEN_SYSTEM}\n\nFixtures:\n${summaries}`;
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const raw = await Promise.race([
-      callClaude(prompt, ctx, { model: MODELS.CLAUDE_SONNET, maxTokens: 2048 }),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("goalsScreen timeout")), REQUEST_TIMEOUT_MS);
-      }),
-    ]);
+    const raw = await callClaudeCode(prompt, { timeoutMs: REQUEST_TIMEOUT_MS });
+    if (!raw) return null;
     const parsed = parseScreenResponse(raw, batch.length);
     if (!parsed) return null;
     return parsed.map((r, rank) => ({
@@ -130,8 +124,6 @@ async function screenBatch(
     }));
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

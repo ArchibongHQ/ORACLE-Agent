@@ -1076,8 +1076,13 @@ export async function runBot(): Promise<void> {
         }
       }
       await new Promise((r) => setTimeout(r, 2_000));
-    } catch (_err) {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[oracle-bot] poll error (retrying): ${msg}\n`);
       await new Promise((r) => setTimeout(r, 3_000));
+      // Write heartbeat after the backoff so a transient network blip doesn't
+      // stale the worker's 10-min freshness check and fire a false alert.
+      writeBotHeartbeat();
     }
   }
 }

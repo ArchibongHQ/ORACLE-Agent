@@ -17,7 +17,9 @@ export const SPORTYBET_SIDECAR_PATH = join(ROOT, ".tmp/fixtures/sportybet_today.
 export const DEFAULT_MAX_FIXTURES_PER_RUN = 50;
 
 // Keep in sync with ESPN_LEAGUE_MAP values in tools/scrape_fixtures.py.
+// Tier B: senior top-flights and data-rich competitions not already in GOALS_RICH_LEAGUES (Tier A).
 export const ORACLE_PRIORITY_LEAGUES: ReadonlySet<string> = new Set([
+  // ── Europe (top flights) ──────────────────────────────────────────────────
   "Premier League",
   "Championship",
   "La Liga",
@@ -28,11 +30,43 @@ export const ORACLE_PRIORITY_LEAGUES: ReadonlySet<string> = new Set([
   "Primeira Liga",
   "Belgian Pro League",
   "Scottish Premiership",
+  "Urvalsdeild",
+  "Eliteserien",
+  "Swiss Super League",
+  "Danish Superliga",
+  // ── Europe (lower divisions) ──────────────────────────────────────────────
+  "2. Bundesliga",
+  "Eerste Divisie",
+  "OBOS-ligaen",
+  "Swedish Division 1",
+  "Swedish Division 2",
+  "Danish 1. Division",
+  "Regionalliga Bayern",
+  "Regionalliga Nord",
+  "Regionalliga Nordost",
+  "Regionalliga Südwest",
+  "Regionalliga West",
+  // ── Asia / Oceania / Middle East ──────────────────────────────────────────
+  "NPL Queensland",
+  "NPL New South Wales",
+  "NPL Victoria",
+  "Singapore Premier League",
+  "Malaysia Super League",
+  "Qatar Stars League",
+  // ── The Americas ─────────────────────────────────────────────────────────
+  "MLS",
+  "USL League Two",
+  "Bolivia Primera Division",
+  "Liga MX",
+  // ── Cups (early rounds / mismatches) ─────────────────────────────────────
+  "Faroe Islands Cup",
+  "Lithuanian Cup",
+  "Estonian Cup",
+  // ── Continental / global ──────────────────────────────────────────────────
   "Champions League",
   "Europa League",
   "Conference League",
   "J League",
-  "MLS",
   "FIFA World Cup",
 ]);
 
@@ -180,6 +214,9 @@ export interface SportyBetEvent {
   league?: string;
   kickoff_utc?: string;
   detail?: SportyBetEventDetail;
+  /** Sportradar/SportyBet event ID (e.g. "sr:match:66456926") — present when the
+   *  sidecar scrape includes it. Used by the booking agent for direct URL navigation. */
+  eventId?: string;
 }
 
 export interface SportyBetIndex {
@@ -285,7 +322,16 @@ export async function loadSportyBetIndex(
       }
       const league = typeof ev.league === "string" ? ev.league : undefined;
       const kickoff_utc = typeof ev.kickoff_utc === "string" ? ev.kickoff_utc : undefined;
-      events.push({ home: ev.home, away: ev.away, marketCount: mc, league, kickoff_utc, detail });
+      const eventId = typeof ev.eventId === "string" && ev.eventId ? ev.eventId : undefined;
+      events.push({
+        home: ev.home,
+        away: ev.away,
+        marketCount: mc,
+        league,
+        kickoff_utc,
+        detail,
+        eventId,
+      });
       byKey.set(key, mc);
       if (detail) detailByKey.set(key, detail);
     }

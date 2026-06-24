@@ -64,6 +64,7 @@ FIXTURE_CACHE = ROOT / ".tmp" / "fixtures" / "today.txt"
 SPORTYBET_SIDECAR = ROOT / ".tmp" / "fixtures" / "sportybet_today.json"
 
 ESPN_LEAGUE_MAP: dict[str, str] = {
+    # ── Europe (top flights) ──────────────────────────────────────────────────
     "eng.1":            "Premier League",
     "eng.2":            "Championship",
     "esp.1":            "La Liga",
@@ -74,11 +75,33 @@ ESPN_LEAGUE_MAP: dict[str, str] = {
     "por.1":            "Primeira Liga",
     "bel.1":            "Belgian Pro League",
     "sco.1":            "Scottish Premiership",
+    "isl.1":            "Urvalsdeild",
+    "nor.1":            "Eliteserien",
+    "che.1":            "Swiss Super League",
+    "den.1":            "Danish Superliga",
+    # ── Europe (lower divisions) ──────────────────────────────────────────────
+    "ger.2":            "2. Bundesliga",
+    "ned.2":            "Eerste Divisie",
+    "nor.2":            "OBOS-ligaen",
+    "den.2":            "Danish 1. Division",
+    # ── Europe (cups) ─────────────────────────────────────────────────────────
+    "far.cup":          "Faroe Islands Cup",
+    "ltu.cup":          "Lithuanian Cup",
+    "est.cup":          "Estonian Cup",
+    # ── Asia / Oceania / Middle East ──────────────────────────────────────────
+    "sgp.1":            "Singapore Premier League",
+    "mys.1":            "Malaysia Super League",
+    "qat.1":            "Qatar Stars League",
+    # ── The Americas ─────────────────────────────────────────────────────────
+    "usa.1":            "MLS",
+    "usa.3":            "USL League Two",
+    "bol.1":            "Bolivia Primera Division",
+    "mex.1":            "Liga MX",
+    # ── Europe (continental / global) ────────────────────────────────────────
     "uefa.champions":   "Champions League",
     "uefa.europa":      "Europa League",
     "uefa.europa.conf": "Conference League",
     "jpn.1":            "J League",
-    "usa.1":            "MLS",
     "fifa.world":       "FIFA World Cup",
 }
 

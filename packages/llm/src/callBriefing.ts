@@ -127,7 +127,7 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
     }
   }
 
-  // Primary: Claude Opus
+  // Primary: Claude Opus via HTTP API (only when a key is configured — local CLI is preferred)
   if (ctx.config.claudeApiKey) {
     try {
       const client = new Anthropic({ apiKey: ctx.config.claudeApiKey });

@@ -466,18 +466,45 @@ async function decideInner(
   const geminiKey = config?.geminiApiKey ?? "";
   const openrouterKey = config?.openrouterApiKey ?? "";
 
-  // ── Tier 1: Claude Opus ───────────────────────────────────────────────────
-  if (config?.claudeApiKey) {
-    try {
-      const { callClaude, MODELS } = await import("@oracle/llm");
-      const raw = await callClaude(
-        prompt,
-        {
-          config: { claudeApiKey: config.claudeApiKey, geminiApiKey: geminiKey, bankroll: 0 },
-          requestedAt,
-        },
-        { model: MODELS.CLAUDE_OPUS, maxTokens: 1024 }
-      );
+  // ── Tier 1: local Claude Code CLI (no API key needed) ────────────────────
+  // isLocalRuntime() guards the spawn — must NOT be removed. Without it, a real
+  // `claude` binary on PATH is called during every Vitest run, causing 5–45s
+  // hangs and intermittent CI failures on dev boxes with the CLI installed.
+  try {
+    const { callClaudeCode, isLocalRuntime, MODELS } = await import("@oracle/llm");
+    if (isLocalRuntime()) {
+      const raw = await callClaudeCode(prompt, { timeoutMs: 45_000 });
+      if (raw) {
+        const replay: DecisionReplay = {
+          prompt,
+          rawResponse: raw,
+          model: MODELS.CLAUDE_OPUS,
+          temperature: 0,
+        };
+        const parsed = parseDecisionResponse(raw);
+        if (parsed) return { decision: parsed, replay };
+      }
+    }
+  } catch {
+    // Fall through to OpenRouter tiers
+  }
+
+  return await _tryOpenRouter(prompt, openrouterKey, eligibleBets, "Claude local unavailable");
+}
+
+async function _tryGemini(
+  prompt: string,
+  _geminiKey: string,
+  openrouterKey: string,
+  _requestedAt: string,
+  eligibleBets: EVMarket[],
+  claudeFailReason: string
+): Promise<DecisionResult> {
+  // ── Tier 2: local Claude Code CLI (Gemini key not needed) ─────────────────
+  try {
+    const { callClaudeCode, MODELS } = await import("@oracle/llm");
+    const raw = await callClaudeCode(prompt, { timeoutMs: 45_000 });
+    if (raw) {
       const replay: DecisionReplay = {
         prompt,
         rawResponse: raw,
@@ -485,78 +512,18 @@ async function decideInner(
         temperature: 0,
       };
       const parsed = parseDecisionResponse(raw);
-      if (!parsed) {
-        return await _tryGemini(
-          prompt,
-          geminiKey,
-          openrouterKey,
-          requestedAt,
-          eligibleBets,
-          "Claude parse failure"
-        );
-      }
-      return { decision: parsed, replay };
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      return await _tryGemini(prompt, geminiKey, openrouterKey, requestedAt, eligibleBets, reason);
+      if (parsed) return { decision: parsed, replay };
     }
+  } catch {
+    /* fall through */
   }
 
-  // ── Tier 1 skipped (no claudeApiKey) → go straight to Gemini ─────────────
-  return await _tryGemini(
+  return await _tryOpenRouter(
     prompt,
-    geminiKey,
     openrouterKey,
-    requestedAt,
     eligibleBets,
-    "No Claude key"
+    `${claudeFailReason} — local Claude unavailable`
   );
-}
-
-async function _tryGemini(
-  prompt: string,
-  geminiKey: string,
-  openrouterKey: string,
-  requestedAt: string,
-  eligibleBets: EVMarket[],
-  claudeFailReason: string
-): Promise<DecisionResult> {
-  if (!geminiKey) {
-    return await _tryOpenRouter(
-      prompt,
-      openrouterKey,
-      eligibleBets,
-      `${claudeFailReason} — no Gemini key`
-    );
-  }
-
-  // ── Tier 2: Gemini 3.5 ────────────────────────────────────────────────────
-  try {
-    const { callGeminiDecision, MODELS } = await import("@oracle/llm");
-    const raw = await callGeminiDecision(prompt, {
-      config: { claudeApiKey: "", geminiApiKey: geminiKey, bankroll: 0 },
-      requestedAt,
-    });
-    const replay: DecisionReplay = {
-      prompt,
-      rawResponse: raw,
-      model: MODELS.GEMINI_PRO,
-      temperature: 0,
-    };
-    const parsed = parseDecisionResponse(raw);
-    if (!parsed) {
-      return await _tryOpenRouter(prompt, openrouterKey, eligibleBets, "Gemini parse failure");
-    }
-    return { decision: parsed, replay };
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    return await _tryOpenRouter(
-      prompt,
-      openrouterKey,
-      eligibleBets,
-      `Gemini unavailable (${reason})`
-    );
-  }
 }
 
 /** ── Tier 3: OpenRouter cascade — GLM-5.2 → GLM-5.1 → free models.

@@ -860,7 +860,15 @@ export class ExecutionEngine {
     let fetchGemini: GeminiCallFn | null = null;
     try {
       const llm = await import("@oracle/llm");
-      fetchGemini = llm.fetchGeminiWithCascade;
+      // Route acquisition through local Claude Code CLI; fall back to
+      // fetchGeminiWithCascade only when a Gemini key is present.
+      if (this._config.geminiApiKey) {
+        fetchGemini = llm.fetchGeminiWithCascade;
+      } else {
+        const { callClaudeCode } = llm;
+        fetchGemini = (p: string, _ctx: GeminiCtx) =>
+          callClaudeCode(p, { timeoutMs: 30_000 }).then((r) => r ?? "");
+      }
     } catch {
       return;
     }

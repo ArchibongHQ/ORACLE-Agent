@@ -73,7 +73,11 @@ async function findAndClickOnDetailPage(
 }
 
 /** Navigate to SportyBet football, find a matching fixture, add the selection to betslip.
- *  Returns { selectionLabel, odds } on success, null if fixture/market can't be matched. */
+ *  Returns { selectionLabel, odds } on success, null if fixture/market can't be matched.
+ *
+ *  When `pick.eventId` is present (e.g. "sr:match:66456926"), navigates directly to
+ *  the fixture detail URL — bypassing the paginated listing page that only renders
+ *  fixtures currently in the DOM. Falls back to the listing-scan path when absent. */
 export async function addLegToBetslip(
   page: Page,
   pick: ActionablePick
@@ -82,10 +86,29 @@ export async function addLegToBetslip(
   if (!mapping) return null;
 
   try {
-    // Re-navigate to the listing page before every leg. Non-1X2 legs land on a
-    // fixture detail page (also under sportybet.com), so a same-origin check
-    // can't tell "still on listing" from "left on a detail page from the
-    // previous leg" — always re-navigate explicitly instead.
+    // ── Direct fixture URL path (preferred when eventId is available) ─────────
+    // The SportyBet listing is a virtualised SPA — only fixtures visible in the
+    // current viewport are in the DOM. With 100+ fixtures across many leagues,
+    // most picks won't be found by the listing scan. Navigate directly instead.
+    if (pick.eventId) {
+      const detailUrl = `${BASE_URL}/${pick.eventId}`;
+      await page.goto(detailUrl, { waitUntil: "networkidle", timeout: NAV_TIMEOUT });
+      await page.waitForTimeout(3_000);
+
+      // For 1X2 on the detail page we still use the detail-page market blocks,
+      // not the listing-row shortcut (which doesn't exist on the detail page).
+      const target = resolvePageTarget(mapping, pick);
+      if (!target) return null;
+
+      const found = await findAndClickOnDetailPage(page, target.headerMatches, target.labelMatches);
+      if (!found) return null;
+
+      await found.locator.click();
+      await page.waitForTimeout(CLICK_WAIT);
+      return { selectionLabel: mapping.sportySelection, odds: found.oddsText };
+    }
+
+    // ── Listing-scan fallback (no eventId — scans currently-visible rows) ─────
     await page.goto(BASE_URL, { waitUntil: "networkidle", timeout: NAV_TIMEOUT });
     await page.waitForTimeout(5_000);
 
