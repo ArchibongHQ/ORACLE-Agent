@@ -139,3 +139,143 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
 
   return null;
 }
+
+/** How to find a market's outcome on the SportyBet fixture detail page.
+ *  Bridges `MarketMapping` (ORACLE's internal convention, exercised by
+ *  marketMap.test.ts) to the page's real header text and selection labels —
+ *  several diverge from the internal sportyMarket/sportySelection strings
+ *  (e.g. "Both Teams to Score" → "GG/NG"), so the translation happens here,
+ *  at the page.ts boundary, rather than by changing mapMarket()'s output. */
+export interface PageTarget {
+  /** Returns true if a detail-page block's header text is this market. */
+  headerMatches: (headerText: string) => boolean;
+  /** Returns true if an outcome's first .m-table-cell-item label is the target selection. */
+  labelMatches: (labelText: string) => boolean;
+  /** Optional: when a market repeats across multiple same-header blocks (lines),
+   *  filter to the block containing this specific line. */
+  lineFilter?: (blockText: string) => boolean;
+}
+
+const exact = (want: string) => (text: string) => text.trim() === want;
+
+/** Resolve a MarketMapping + pick into real page header/selection predicates.
+ *  Returns null when the market has no confirmed live mapping (see Asian Total
+ *  Goals note below) — callers must treat that as "leg cannot be booked", not retry. */
+export function resolvePageTarget(
+  mapping: MarketMapping,
+  pick: { home: string; away: string }
+): PageTarget | null {
+  const { sportyMarket, sportySelection } = mapping;
+  const sel = sportySelection.toLowerCase();
+
+  switch (sportyMarket) {
+    case "1X2":
+      // Detail-page 1X2 block (decoys "1X2 - 1UP"/"1X2 - 2UP"/"1X2 - Never Down"
+      // share the prefix, so match the header exactly).
+      return { headerMatches: exact("1X2"), labelMatches: exact(sportySelection) };
+
+    case "Over/Under": {
+      // sportySelection is "Over {line}" / "Under {line}" — line carries the literal
+      // .5, so match the label exactly; the header "Over/Under" repeats per line,
+      // so the caller must scan all matching blocks for the one with this label.
+      return { headerMatches: exact("Over/Under"), labelMatches: exact(sportySelection) };
+    }
+
+    case "Both Teams to Score":
+      // Real header is "GG/NG", not "Both Teams to Score" (decoy: "GG/NG 2+").
+      return { headerMatches: exact("GG/NG"), labelMatches: exact(sportySelection) };
+
+    case "Asian Handicap": {
+      // sportySelection is "Home {signedLine}" / "Away {signedLine}". The header
+      // embeds the HOME-relative signed line (e.g. "Asian Handicap -0.5" pairs
+      // "Home (-0.5)" with "Away (+0.5)"); an Away-side pick's line is mirrored
+      // (negated) to find the matching header.
+      const m = sportySelection.match(/^(Home|Away)\s+([+-]?\d+(?:\.\d+)?)/i);
+      if (!m) return null;
+      const side = (m[1] ?? "").toLowerCase();
+      const lineNum = parseFloat(m[2] ?? "0");
+      const homeLine = side === "home" ? lineNum : -lineNum;
+      // Header line text has no redundant leading "+" (e.g. "Asian Handicap 0.5",
+      // not "Asian Handicap +0.5") but keeps "-" — `${homeLine}` already does this.
+      return {
+        headerMatches: exact(`Asian Handicap ${homeLine}`),
+        // Cell label is "Home (-0.5)" / "Away (+0.5)" — match by side + numeric line,
+        // tolerant of the page's fixed one-decimal formatting (e.g. "(-1.0)" vs "-1").
+        labelMatches: (labelText) => {
+          const lm = labelText.match(/^(Home|Away)\s*\(([+-]?\d+(?:\.\d+)?)\)/i);
+          if (!lm) return false;
+          const lSide = (lm[1] ?? "").toLowerCase();
+          const lLine = parseFloat(lm[2] ?? "0");
+          return lSide === side && Math.abs(lLine - lineNum) < 1e-6;
+        },
+      };
+    }
+
+    case "Home Team Total":
+    case "Away Team Total": {
+      // Real header is "{ActualTeamName} Over/Under" — built dynamically from the
+      // pick's own team name (fuzzy, since ORACLE's name may not byte-match
+      // SportyBet's), not the literal "Home Team Total"/"Away Team Total".
+      const teamName = sportyMarket === "Home Team Total" ? pick.home : pick.away;
+      const teamWords = normalise(teamName)
+        .split(" ")
+        .filter((w) => w.length > 2);
+      return {
+        headerMatches: (headerText) => {
+          if (!/ Over\/Under$/.test(headerText.trim())) return false;
+          const headerNorm = normalise(headerText.replace(/Over\/Under$/, ""));
+          return teamWords.length > 0 && teamWords.some((w) => headerNorm.includes(w));
+        },
+        labelMatches: exact(sportySelection),
+      };
+    }
+
+    case "Double Chance": {
+      // Real labels are NOT "1X"/"X2"/"12" — translate to the page's actual text.
+      const labelBySelection: Record<string, string> = {
+        "1x": "Home or Draw",
+        x2: "Draw or Away",
+        "12": "Home or Away",
+      };
+      const realLabel = labelBySelection[sel];
+      if (!realLabel) return null;
+      // Decoy "Double Chance - 1UP" shares the prefix — match header exactly.
+      return { headerMatches: exact("Double Chance"), labelMatches: exact(realLabel) };
+    }
+
+    case "Draw No Bet":
+      // Decoys "1st Half - Draw No Bet"/"2nd Half - Draw No Bet" are full separate
+      // strings, not substrings of "Draw No Bet" — exact match is safe.
+      return { headerMatches: exact("Draw No Bet"), labelMatches: exact(sportySelection) };
+
+    case "Win Either Half": {
+      // Two separate blocks (one per team), each with Yes/No — not one block with
+      // Home/Away outcomes as the internal mapping's "Home"/"Away" selection implies.
+      const header =
+        sel === "home" ? "Home Team to Win Either Half" : "Away Team to Win Either Half";
+      return { headerMatches: exact(header), labelMatches: exact("Yes") };
+    }
+
+    case "1st Half Result":
+      // Follows the confirmed "1st Half - {market}" prefix pattern; outcomes are
+      // presumably Home/Draw/Away like match 1X2 (not independently re-probed).
+      return { headerMatches: exact("1st Half - 1X2"), labelMatches: exact(sportySelection) };
+
+    case "1st Half Goals":
+      return {
+        headerMatches: exact("1st Half - Over/Under"),
+        labelMatches: exact(sportySelection),
+      };
+
+    case "Asian Total Goals":
+      // NOT FOUND live: probed Premier League (Arsenal v Coventry City) + two World
+      // Cup fixtures (Portugal v Uzbekistan, Switzerland v Canada) on 2026-06-23 —
+      // no "Asian Total Goals"/"Asian 2 Goals"-shaped header exists on any of them.
+      // Leaving unmapped rather than guessing a header string that might silently
+      // match the wrong market.
+      return null;
+
+    default:
+      return null;
+  }
+}

@@ -824,6 +824,7 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
       trigger,
       writeReportToDisk: false, // this pipeline's report-equivalent is the goals-ACCA notify itself
       batchOptions: {
+        concurrency: 2, // Windows OOM guard — full-parallel (default 8) SIGKILL's the process
         onProgress: ({ completed, total, current }) => {
           if (current) process.stdout.write(`[goals] ${completed}/${total}: ${current}\n`);
         },

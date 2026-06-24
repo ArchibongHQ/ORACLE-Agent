@@ -1,10 +1,10 @@
 /** Playwright DOM interactions for SportyBet Nigeria.
- *  Selectors verified live against https://www.sportybet.com/ng/ on 2026-06-04.
+ *  Selectors verified live against https://www.sportybet.com/ng/ on 2026-06-23.
  *  Update this file when SportyBet changes their UI — all selectors are isolated here. */
 
 import type { ActionablePick } from "@oracle/notify";
-import type { Page } from "playwright";
-import { fuzzyMatch, mapMarket, normalise } from "./marketMap.js";
+import type { Locator, Page } from "playwright";
+import { mapMarket, normalise, resolvePageTarget } from "./marketMap.js";
 
 const BASE_URL = "https://www.sportybet.com/ng/sport/football";
 const NAV_TIMEOUT = 45_000;
@@ -14,6 +14,62 @@ const BOOK_WAIT = 6_000;
 export interface AddLegResult {
   selectionLabel: string;
   odds: string;
+}
+
+/** Scan `.m-detail-wrapper > *` blocks on a fixture detail page for ones whose
+ *  `.m-table-header-title` text satisfies `headerMatches`. Many markets repeat
+ *  as multiple blocks sharing the same header (one per line) — callers that
+ *  need a specific line must filter further within the returned blocks. */
+async function findMarketBlocks(
+  page: Page,
+  headerMatches: (headerText: string) => boolean
+): Promise<Locator[]> {
+  const blocks = await page.locator(".m-detail-wrapper > *").all();
+  const matches: Locator[] = [];
+  for (const block of blocks) {
+    const headerEl = block.locator(".m-table-header-title").first();
+    if ((await headerEl.count()) === 0) continue;
+    const headerText = ((await headerEl.textContent()) ?? "").trim();
+    if (headerMatches(headerText)) matches.push(block);
+  }
+  return matches;
+}
+
+/** Within a market block, find the outcome cell whose first `.m-table-cell-item`
+ *  (the label) satisfies `matchesLabel`. The two cell-item spans (label, odds)
+ *  are read separately — textContent on the parent concatenates them with no
+ *  space, so a regex on the joined text would be unreliable. */
+async function findOutcomeInBlock(
+  block: Locator,
+  matchesLabel: (labelText: string) => boolean
+): Promise<{ locator: Locator; oddsText: string } | null> {
+  const cells = await block.locator(".m-table-cell").all();
+  for (const cell of cells) {
+    const items = cell.locator(".m-table-cell-item");
+    const itemCount = await items.count();
+    if (itemCount < 2) continue;
+    const labelText = ((await items.nth(0).textContent()) ?? "").trim();
+    if (!matchesLabel(labelText)) continue;
+    const oddsText = ((await items.nth(1).textContent()) ?? "").trim();
+    return { locator: cell, oddsText };
+  }
+  return null;
+}
+
+/** Find+click a market's outcome on the current fixture detail page.
+ *  Scans every block matching the header predicate (markets that repeat per
+ *  line have several), returning the first outcome whose label matches. */
+async function findAndClickOnDetailPage(
+  page: Page,
+  headerMatches: (headerText: string) => boolean,
+  labelMatches: (labelText: string) => boolean
+): Promise<{ locator: Locator; oddsText: string } | null> {
+  const blocks = await findMarketBlocks(page, headerMatches);
+  for (const block of blocks) {
+    const found = await findOutcomeInBlock(block, labelMatches);
+    if (found) return found;
+  }
+  return null;
 }
 
 /** Navigate to SportyBet football, find a matching fixture, add the selection to betslip.
@@ -26,86 +82,60 @@ export async function addLegToBetslip(
   if (!mapping) return null;
 
   try {
-    // Only navigate on first call; subsequent picks reuse the loaded page
-    if (!page.url().includes("sportybet.com")) {
-      await page.goto(BASE_URL, { waitUntil: "networkidle", timeout: NAV_TIMEOUT });
-      await page.waitForTimeout(5_000);
-    }
+    // Re-navigate to the listing page before every leg. Non-1X2 legs land on a
+    // fixture detail page (also under sportybet.com), so a same-origin check
+    // can't tell "still on listing" from "left on a detail page from the
+    // previous leg" — always re-navigate explicitly instead.
+    await page.goto(BASE_URL, { waitUntil: "networkidle", timeout: NAV_TIMEOUT });
+    await page.waitForTimeout(5_000);
 
     const homeNorm = normalise(pick.home);
     const awayNorm = normalise(pick.away);
+    const homeWords = homeNorm.split(" ").filter((w) => w.length > 2);
+    const awayWords = awayNorm.split(" ").filter((w) => w.length > 2);
 
     // Find match row containing both team names
     const matchRows = await page.locator(".m-table-row.match-row").all();
     for (const row of matchRows) {
       const rowText = ((await row.textContent()) ?? "").toLowerCase();
-      const homeWords = homeNorm.split(" ").filter((w) => w.length > 2);
-      const awayWords = awayNorm.split(" ").filter((w) => w.length > 2);
       const homeMatch = homeWords.some((w) => rowText.includes(w));
       const awayMatch = awayWords.some((w) => rowText.includes(w));
-
       if (!homeMatch || !awayMatch) continue;
 
-      // Determine which outcome to click: 1=home, X=draw, 2=away (for 1X2)
-      // For goals O/U: find the over/under market tab then the outcome
-      const outcomes = await row.locator(".m-outcome").all();
-      if (!outcomes.length) continue;
+      // 1X2 fast path: outcomes[0]=home, [1]=draw, [2]=away, directly on the
+      // listing row — confirmed live, unchanged since 2026-06-04.
+      if (mapping.sportyMarket === "1X2") {
+        const outcomes = await row.locator(".m-outcome").all();
+        if (outcomes.length < 3) continue;
+        const sel = mapping.sportySelection;
+        const targetOutcome =
+          sel === "1" ? outcomes[0] : sel === "X" ? outcomes[1] : sel === "2" ? outcomes[2] : null;
+        if (!targetOutcome) continue;
 
-      // For 1X2: outcomes[0]=home, [1]=draw, [2]=away
-      // For O/U (Goals): need to click the market tab on the fixture page
-      let targetOutcome: (typeof outcomes)[0] | null = null;
-
-      const sel = mapping.sportySelection.toLowerCase();
-      if (outcomes.length >= 3) {
-        if (sel === "1" || sel.includes("home win")) targetOutcome = outcomes[0] ?? null;
-        else if (sel === "x" || sel.includes("draw")) targetOutcome = outcomes[1] ?? null;
-        else if (sel === "2" || sel.includes("away win")) targetOutcome = outcomes[2] ?? null;
+        const oddsText = await targetOutcome.evaluate((el) => {
+          const oddsEl = el.querySelector(".m-outcome-odds") ?? el;
+          return (oddsEl.textContent ?? "").trim();
+        });
+        await targetOutcome.click();
+        await page.waitForTimeout(CLICK_WAIT);
+        return { selectionLabel: mapping.sportySelection, odds: oddsText };
       }
 
-      // For Over/Under — click the "+N" more markets button to open fixture
-      if (!targetOutcome && (sel.includes("over") || sel.includes("under"))) {
-        const moreBtn = row.locator('[class*="more"], [class*="plus"]').first();
-        if ((await moreBtn.count()) > 0) {
-          await moreBtn.evaluate((el) => (el as HTMLElement).click());
-          await page.waitForTimeout(2_000);
-          // Now look for O/U market on the fixture detail page
-          const marketTabs = await page.locator('[class*="market-name"], [class*="tab"]').all();
-          for (const tab of marketTabs) {
-            const tabText = ((await tab.textContent()) ?? "").toLowerCase();
-            if (tabText.includes("over") || tabText.includes("goal") || tabText.includes("total")) {
-              await tab.evaluate((el) => (el as HTMLElement).click());
-              await page.waitForTimeout(1_000);
-              break;
-            }
-          }
-          // Find over/under outcomes matching our line
-          const allOutcomes = await page.locator(".m-outcome").all();
-          for (const o of allOutcomes) {
-            const oText = ((await o.textContent()) ?? "").toLowerCase();
-            if (fuzzyMatch(mapping.sportySelection, oText)) {
-              targetOutcome = o;
-              break;
-            }
-          }
-          // Navigate back if needed
-          if (!targetOutcome) {
-            await page.goBack({ waitUntil: "networkidle", timeout: NAV_TIMEOUT });
-            await page.waitForTimeout(2_000);
-          }
-        }
-      }
+      // Every other market lives on the fixture detail page. Navigate there with
+      // a real click (dispatchEvent doesn't trigger the SPA router).
+      const target = resolvePageTarget(mapping, pick);
+      if (!target) return null; // no confirmed live mapping for this market (e.g. Asian Total Goals)
 
-      if (!targetOutcome) continue;
+      await row.locator(".teams, .home-team, .away-team").first().click();
+      await page.waitForLoadState("networkidle", { timeout: NAV_TIMEOUT }).catch(() => {});
+      await page.waitForTimeout(3_000);
 
-      // Scrape odds from the outcome element (the span inside)
-      const oddsText = await targetOutcome.evaluate((el) => {
-        const oddsEl = el.querySelector(".m-outcome-odds") ?? el;
-        return (oddsEl.textContent ?? "").trim();
-      });
-      await targetOutcome.evaluate((el) => (el as HTMLElement).click());
+      const found = await findAndClickOnDetailPage(page, target.headerMatches, target.labelMatches);
+      if (!found) return null;
+
+      await found.locator.click();
       await page.waitForTimeout(CLICK_WAIT);
-
-      return { selectionLabel: mapping.sportySelection, odds: oddsText };
+      return { selectionLabel: mapping.sportySelection, odds: found.oddsText };
     }
 
     return null; // fixture not found on current page
