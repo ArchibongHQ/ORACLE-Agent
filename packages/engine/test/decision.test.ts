@@ -73,6 +73,15 @@ describe("buildEligibleBets", () => {
 // ── decide — deterministic fallback path (no API key) ─────────────────────────
 
 describe("decide — deterministic fallback", () => {
+  // Prevent Tier-1 callClaudeCode from spawning the real claude binary.
+  // Without this, cross-test _localRuntimeCache pollution (e.g. from
+  // verification.test.ts setting ORACLE_RUNTIME=local) causes 5s timeouts.
+  beforeEach(() => {
+    process.env.ORACLE_RUNTIME = "ci";
+  });
+  afterEach(() => {
+    delete process.env.ORACLE_RUNTIME;
+  });
   it("returns NO_EDGE grade with placeholder pick when eligible bets are empty", async () => {
     const { decision } = await decide([], BASE_CTX, { claudeApiKey: "" });
     expect(decision.grade).toBe("NO_EDGE");
@@ -278,6 +287,7 @@ describe("decide — GLM-5.2 shadow run", () => {
   });
 
   it("attaches a shadow comparison when openrouterApiKey is present and GLM-5.2 agrees", async () => {
+    // Draft arrives via local Claude Code CLI (Tier 1); shadow uses OpenRouter GLM-5.2.
     const realResponse: DecisionOutput = {
       primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
       confidence: 0.78,
@@ -291,7 +301,8 @@ describe("decide — GLM-5.2 shadow run", () => {
       rejectedAndWhy: [],
     };
     vi.doMock("@oracle/llm", () => ({
-      callClaude: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
       callOpenRouterJson: vi.fn().mockResolvedValue(JSON.stringify(shadowResponse)),
       MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
       OPENROUTER_MODELS: { GLM_5_2: "z-ai/glm-5.2" },
@@ -323,7 +334,8 @@ describe("decide — GLM-5.2 shadow run", () => {
       rejectedAndWhy: [],
     };
     vi.doMock("@oracle/llm", () => ({
-      callClaude: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
       callOpenRouterJson: vi.fn().mockResolvedValue(JSON.stringify(shadowResponse)),
       MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
       OPENROUTER_MODELS: { GLM_5_2: "z-ai/glm-5.2" },
@@ -347,7 +359,8 @@ describe("decide — GLM-5.2 shadow run", () => {
       rejectedAndWhy: [],
     };
     vi.doMock("@oracle/llm", () => ({
-      callClaude: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(realResponse)),
       callOpenRouterJson: vi.fn().mockRejectedValue(new Error("OpenRouter down")),
       MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
       OPENROUTER_MODELS: { GLM_5_2: "z-ai/glm-5.2" },
@@ -454,14 +467,17 @@ describe("decide — final arbiter (opt-in)", () => {
   });
 
   it("does not attempt the arbiter when not opted in (default)", async () => {
-    const callClaudeCode = vi.fn();
+    // callClaudeCode may be called once for the Tier-1 draft (returns undefined → falls
+    // through to deterministic). What must NOT happen is a SECOND call for the arbiter
+    // — ORACLE_LOCAL_DECISION is unset, so arbitrate() must short-circuit immediately.
+    const callClaudeCode = vi.fn().mockResolvedValue(undefined);
     vi.doMock("@oracle/llm", () => ({
       isLocalRuntime: () => true,
       callClaudeCode,
-      callClaude: vi.fn().mockRejectedValue(new Error("claude down")),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
     }));
     const { decision } = await decide([makeMarket()], BASE_CTX, { claudeApiKey: "" });
-    expect(callClaudeCode).not.toHaveBeenCalled();
+    expect(callClaudeCode).toHaveBeenCalledTimes(1); // draft only, no arbiter call
     expect(decision.rationale).toMatch(/deterministic fallback|Deterministic/i);
     expect(decision.arbiterStatus).toBeUndefined();
     vi.doUnmock("@oracle/llm");
@@ -573,7 +589,8 @@ describe("decide — final arbiter (opt-in)", () => {
     };
     await decide([makeMarket()], ctxWithRawStats, { claudeApiKey: "ck" });
 
-    const prompt = callClaudeCode.mock.calls[0]?.[0] as string;
+    // calls[0] = draft prompt (buildPrompt); calls[1] = arbiter prompt (buildArbiterPrompt)
+    const prompt = callClaudeCode.mock.calls[1]?.[0] as string;
     expect(prompt).toContain("STEP 0 — RAW PER-CATEGORY DATA");
     expect(prompt).toContain("WWDLW");
     expect(prompt).toContain("h2hRecentScorelines");
@@ -599,7 +616,8 @@ describe("decide — final arbiter (opt-in)", () => {
     }));
 
     await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
-    const prompt = callClaudeCode.mock.calls[0]?.[0] as string;
+    // calls[0] = draft prompt (buildPrompt); calls[1] = arbiter prompt (buildArbiterPrompt)
+    const prompt = callClaudeCode.mock.calls[1]?.[0] as string;
     expect(prompt).toContain("STEP 0 — RAW PER-CATEGORY DATA");
     expect(prompt).toMatch(/STEP 0[\s\S]*?\(none supplied\)/);
     vi.doUnmock("@oracle/llm");
@@ -645,10 +663,12 @@ describe("decide — final arbiter (opt-in)", () => {
       rationale: "Claude Opus draft, arbiter unreachable.",
       rejectedAndWhy: [],
     };
+    // isLocalRuntime: true for the Tier-1 draft call → callClaudeCode produces the draft.
+    // false for the arbitrate() check → arbitrate short-circuits → arbiterStatus="unverified".
+    const isLocalRuntime = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
     vi.doMock("@oracle/llm", () => ({
-      isLocalRuntime: () => false,
-      callClaudeCode: vi.fn(),
-      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
+      isLocalRuntime,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
       MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
     }));
 
@@ -665,10 +685,14 @@ describe("decide — final arbiter (opt-in)", () => {
       rationale: "Claude Opus draft, arbiter timed out.",
       rejectedAndWhy: [],
     };
+    // First callClaudeCode call → draft JSON; second (arbiter) call → null (timeout sim).
+    const callClaudeCode = vi
+      .fn()
+      .mockResolvedValueOnce(JSON.stringify(draftResponse))
+      .mockResolvedValueOnce(null);
     vi.doMock("@oracle/llm", () => ({
       isLocalRuntime: () => true,
-      callClaudeCode: vi.fn().mockResolvedValue(null),
-      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
+      callClaudeCode,
       MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
     }));
 

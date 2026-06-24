@@ -3,11 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GoalsPreFilterResult } from "../src/goalsPreFilter.js";
 
 vi.mock("@oracle/llm", () => ({
-  callClaude: vi.fn(),
+  callClaudeCode: vi.fn(),
   MODELS: { CLAUDE_SONNET: "claude-sonnet-4-6" },
 }));
 
-const { callClaude } = await import("@oracle/llm");
+const { callClaudeCode: callClaude } = await import("@oracle/llm");
 const { mergeScreenedCandidates, screenGoalsCandidates } = await import("../src/goalsScreen.js");
 
 afterEach(() => vi.clearAllMocks());
@@ -25,16 +25,12 @@ function ctx(): LLMCallContext {
 }
 
 describe("screenGoalsCandidates", () => {
-  it("returns screened=false for every entry when claudeApiKey is absent (fail-open)", async () => {
+  it("returns screened=false for every entry when callClaudeCode returns null (fail-open)", async () => {
+    vi.mocked(callClaude).mockResolvedValue(null);
     const candidates = [candidate("A", "B", 50), candidate("C", "D", 40)];
-    const noKeyCtx: LLMCallContext = {
-      config: { claudeApiKey: "", geminiApiKey: "", bankroll: 0 },
-      requestedAt: "",
-    };
-    const results = await screenGoalsCandidates(candidates, noKeyCtx);
+    const results = await screenGoalsCandidates(candidates, ctx());
     expect(results).toHaveLength(2);
     expect(results.every((r) => !r.screened)).toBe(true);
-    expect(callClaude).not.toHaveBeenCalled();
   });
 
   it("falls open to unscreened when callClaude throws", async () => {

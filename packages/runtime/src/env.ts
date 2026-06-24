@@ -23,10 +23,16 @@ export function loadEnv(path: string): Record<string, string> {
     fromFile = Object.fromEntries(
       readFileSync(path, "utf8")
         .split("\n")
-        .filter((l) => l.includes("=") && !l.startsWith("#"))
+        .filter((l) => l.includes("=") && !l.trimStart().startsWith("#"))
         .map((l) => {
           const idx = l.indexOf("=");
-          return [l.slice(0, idx).trim(), l.slice(idx + 1).trim()] as [string, string];
+          const key = l.slice(0, idx).trim();
+          // Strip inline comments (# …) from values. Handles both bare values
+          // ("true") and inline-commented forms ("true  # explanation").
+          const raw = l.slice(idx + 1);
+          const commentIdx = raw.indexOf(" #");
+          const value = (commentIdx === -1 ? raw : raw.slice(0, commentIdx)).trim();
+          return [key, value] as [string, string];
         })
     );
   } catch {

@@ -134,7 +134,7 @@ export async function callVerification(prompt: string, ctx: LLMCallContext): Pro
   return {
     status: "SKIPPED",
     stamp: new Date().toISOString(),
-    rationale: ctx.config.claudeApiKey ? "CVL error — all tiers failed" : "no Claude key",
-    model: ctx.config.claudeApiKey ? MODELS.CLAUDE_OPUS : "none",
+    rationale: "CVL error — all tiers failed",
+    model: "none",
   };
 }

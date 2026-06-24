@@ -31,6 +31,7 @@ import {
   runGoalsFunnel,
   selectGoalsAccumulator,
   shouldReprompt,
+  sidecarKey,
   writeDailyFixtureReport,
 } from "@oracle/runtime";
 import { MemoryAdapter } from "@oracle/storage";
@@ -674,6 +675,7 @@ async function sendGoalsSlip(
     odds: l.odds,
     stakePct: 0, // accumulator leg — no per-leg Kelly stake
     confidence: l.mp,
+    ...(l.eventId ? { eventId: l.eventId } : {}),
   }));
 
   const summary: BatchSummary = {
@@ -788,7 +790,7 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
 
   process.stdout.write(`[goals] funnel: ${index.events.length} raw SportyBet fixtures\n`);
   const funnelResult = await runGoalsFunnel(index.events, {
-    llmCtx: config.claudeApiKey ? buildLlmCtx() : undefined,
+    llmCtx: buildLlmCtx(),
   });
   process.stdout.write(
     `[goals] funnel: preFiltered=${funnelResult.preFilteredCount} converted=${funnelResult.convertedCount}\n`
@@ -832,11 +834,19 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
     }
   );
 
+  // Build eventId lookup so the booking agent can navigate directly to each
+  // fixture's detail page instead of scanning the paginated listing DOM.
+  const eventIdByKey = new Map<string, string>();
+  for (const ev of index.events) {
+    if (ev.eventId) eventIdByKey.set(sidecarKey(ev.home, ev.away), ev.eventId);
+  }
+
   const selection = selectGoalsAccumulator(batch.jobs, {
     minConfidence: config.goalsMinConfidence,
     minImplied: config.goalsMinImplied,
     target: config.goalsTargetLegs,
     detailByKey: index.detailByKey,
+    eventIdByKey,
   });
 
   await finalizeGoalsSelection(selection, batch.date, batch.errorCount, trigger);
@@ -910,8 +920,8 @@ if (!IS_ONE_SHOT) {
   cron.schedule("0 0 * * *", () =>
     logJob("acquire-daily@00:00", async () => {
       await acquireDailyJob();
-      await logJob("daily-fixture-report@post-scrape", sendDailyFixtureReport);
-      await logJob("goals-batch@post-scrape", () => runGoalsBatch("scheduled"));
+      await sendDailyFixtureReport();
+      await runGoalsBatch("scheduled");
     })
   );
 

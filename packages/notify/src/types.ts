@@ -11,6 +11,10 @@ export interface ActionablePick {
   odds: number;
   stakePct: number;
   confidence: number;
+  /** SportyBet/Sportradar event ID (e.g. "sr:match:66456926") — lets the booking
+   *  agent navigate directly to the fixture detail page rather than scanning the
+   *  paginated listing DOM, which only renders currently-visible fixtures. */
+  eventId?: string;
 }
 
 export interface BatchSummary {

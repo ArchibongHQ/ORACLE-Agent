@@ -12,21 +12,55 @@
 import type { SportyBetEvent } from "./selectFixtures.js";
 import { ORACLE_PRIORITY_LEAGUES } from "./selectFixtures.js";
 
-/** Goals-rich leagues (2026 season-average goals/match research: Bundesliga 3.19,
- *  Eredivisie 3.12, Eliteserien 3.09, Swiss Super League 3.02, MLS 2.96, Chinese
- *  Super League 2.97, Scottish Premiership — all clear ~2.9+ vs a 2.71 global
- *  average across 29 leagues, 2022-2026). Checked before the general priority list. */
+/** Goals-rich leagues (Tier A — 2.9+ goals/match average, 2022-2026 research).
+ *  Sources: FBref, Transfermarkt, SoccerSTATS seasonal averages cross-checked
+ *  across ≥2 sources. Checked before the general priority list.
+ *
+ *  Europe top: Bundesliga 3.19, Eredivisie 3.12, Eliteserien 3.09,
+ *    Swiss SL 3.02, Urvalsdeild ~3.1, Danish Superliga ~2.92.
+ *  Europe lower: 2. Bundesliga ~3.05, Eerste Divisie ~3.15, OBOS-ligaen ~3.0,
+ *    Danish 1. Div ~2.95, Swedish Div 1/2 ~3.0, German Regionalliga ~3.2+.
+ *  Asia/Oceania: NPL competitions (Australian state leagues) ~3.2+.
+ *  Americas: Bolivia PD ~3.3, USL League Two ~3.1, Liga MX ~2.7 (borderline).
+ *  Cups (early rounds / mismatches): Faroe Islands Cup, Lithuanian Cup,
+ *    Estonian Cup — mismatch rounds routinely hit 4-6 goals.
+ */
 export const GOALS_RICH_LEAGUES: ReadonlySet<string> = new Set([
+  // ── Europe top flights ────────────────────────────────────────────────────
   "Bundesliga",
-  "2. Bundesliga",
   "Eredivisie",
   "Eliteserien",
   "Swiss Super League",
+  "Danish Superliga",
+  "Urvalsdeild",
+  // ── Europe lower divisions ────────────────────────────────────────────────
+  "2. Bundesliga",
+  "Eerste Divisie",
+  "OBOS-ligaen",
+  "Swedish Division 1",
+  "Swedish Division 2",
+  "Danish 1. Division",
+  "Regionalliga Bayern",
+  "Regionalliga Nord",
+  "Regionalliga Nordost",
+  "Regionalliga Südwest",
+  "Regionalliga West",
+  // ── Asia / Oceania ────────────────────────────────────────────────────────
+  "NPL Queensland",
+  "NPL New South Wales",
+  "NPL Victoria",
+  // ── Americas ─────────────────────────────────────────────────────────────
+  "Bolivia Primera Division",
+  "USL League Two",
+  // ── Cups (early rounds / mismatches) ─────────────────────────────────────
+  "Faroe Islands Cup",
+  "Lithuanian Cup",
+  "Estonian Cup",
+  // ── Existing goals-rich entries ───────────────────────────────────────────
   "MLS",
   "Chinese Super League",
   "Scottish Premiership",
   "Austrian Bundesliga",
-  "Danish Superliga",
 ]);
 
 export const DEFAULT_PRE_FILTER_POOL_SIZE = 130;

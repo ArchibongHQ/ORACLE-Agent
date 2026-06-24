@@ -2,11 +2,11 @@ import type { LLMCallContext } from "@oracle/llm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@oracle/llm", () => ({
-  callClaude: vi.fn(),
+  callClaudeCode: vi.fn(),
   MODELS: { CLAUDE_SONNET: "claude-sonnet-4-6" },
 }));
 
-const { callClaude } = await import("@oracle/llm");
+const { callClaudeCode: callClaude } = await import("@oracle/llm");
 const { runGoalsFunnel, sportyEventToFixtureJob } = await import("../src/goalsFunnel.js");
 
 import type { SportyBetEvent } from "../src/selectFixtures.js";

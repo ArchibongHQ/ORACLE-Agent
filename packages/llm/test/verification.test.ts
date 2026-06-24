@@ -162,13 +162,13 @@ describe("callVerification — terminal SKIPPED behavior", () => {
     const res = await callVerification("p", ctx);
     expect(res.status).toBe("SKIPPED");
     expect(res.rationale).toBe("CVL error — all tiers failed");
-    expect(res.model).toBe(MODELS.CLAUDE_OPUS);
+    expect(res.model).toBe("none");
   });
 
-  it("returns SKIPPED 'no Claude key' with model none when no keys configured", async () => {
+  it("returns SKIPPED 'all tiers failed' with model none when no keys configured", async () => {
     const res = await callVerification("p", makeCtx());
     expect(res.status).toBe("SKIPPED");
-    expect(res.rationale).toBe("no Claude key");
+    expect(res.rationale).toBe("CVL error — all tiers failed");
     expect(res.model).toBe("none");
     expect(fetchMock).not.toHaveBeenCalled();
   });
