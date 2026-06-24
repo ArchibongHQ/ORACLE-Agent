@@ -154,14 +154,50 @@ const ARBITER_TIMEOUT_MS = 45_000;
  *  verdict) per operator instruction, rather than a bare "return JSON" ask, so
  *  the model's chain of reasoning is forced to touch every evidence category
  *  instead of pattern-matching straight to an answer. */
+/** Renders DecisionContext.rawStatsBlock as labeled key-value lines, not prose
+ *  — structured raw data alongside (not replacing) the existing softContext
+ *  prose. Recurses one level into nested objects (e.g. {home:{...},away:{...}})
+ *  since rawStatsBlock mirrors @oracle/runtime's SportyBetStats shape (form/
+ *  standings/goals/h2h/xg/overunder/congestion/possessionValue), every
+ *  top-level key of which is either a flat scalar/array or a {home,away} pair. */
+function renderRawStatsBlock(block: Record<string, unknown> | undefined): string {
+  if (!block) return "";
+  const lines: string[] = [];
+  for (const [key, value] of Object.entries(block)) {
+    if (value == null) continue;
+    if (Array.isArray(value)) {
+      if (value.length) lines.push(`- ${key}: ${value.join("; ")}`);
+      continue;
+    }
+    if (typeof value === "object") {
+      const parts = Object.entries(value as Record<string, unknown>)
+        .filter(([, v]) => v != null)
+        .map(([side, v]) =>
+          typeof v === "object" && v !== null
+            ? `${side}={${Object.entries(v as Record<string, unknown>)
+                .filter(([, vv]) => vv != null)
+                .map(([k, vv]) => `${k}=${vv}`)
+                .join(", ")}}`
+            : `${side}=${v}`
+        );
+      if (parts.length) lines.push(`- ${key}: ${parts.join(", ")}`);
+      continue;
+    }
+    lines.push(`- ${key}: ${value}`);
+  }
+  return lines.join("\n");
+}
+
 function buildArbiterPrompt(
   eligibleBets: EVMarket[],
   ctx: DecisionContext,
   draft: DecisionOutput,
   draftModel: string
 ): string {
-  const { fixture, fp, lambdaH, lambdaA, expectedScoreline, regime, softContext } = ctx;
+  const { fixture, fp, lambdaH, lambdaA, expectedScoreline, regime, softContext, rawStatsBlock } =
+    ctx;
 
+  const rawStatsLines = renderRawStatsBlock(rawStatsBlock);
   const statsLines = (softContext ?? [])
     .filter((s) => s.kind === "stats")
     .map((s) => `- ${s.text}`)
@@ -183,10 +219,14 @@ deterministic engine and upstream models produced and issue the FINAL pick — y
 the last checkpoint before this goes to the user, not a draft generator. Return ONLY
 valid JSON — no markdown, no preamble, no commentary outside the JSON object.
 
-Work through these four steps in order before you decide. Do not skip a step even if
+Work through these five steps in order before you decide. Do not skip a step even if
 you think you already know the answer — each step exists to catch a different failure
 mode (stale stats, ignored injury news, a plausible-sounding rationale built on a math
 error, an engine number that doesn't match the market).
+
+STEP 0 — RAW PER-CATEGORY DATA (form/standings/goals/H2H/xG/over-under/congestion/
+shots-corners-possession, straight from the source — not summarized into prose)
+${rawStatsLines || "(none supplied)"}
 
 STEP 1 — STATS (does the hard data support a side?)
 ${statsLines || "(none supplied)"}
@@ -211,16 +251,18 @@ ${betLines || "NONE — no positive-EV market exists for this fixture"}
 
 === YOUR VERDICT ===
 Choose exactly one of:
-(a) RATIFY the draft pick as-is if steps 1-4 hold up under your own review.
+(a) RATIFY the draft pick as-is if steps 0-4 hold up under your own review.
 (b) OVERRIDE with a different market from the eligible list above if your review of
-    steps 1-3 contradicts the draft (e.g. news intel the draft under-weighted, a stats
-    signal pointing the other way, or a math/rationale mismatch you caught in step 4).
-    You may only choose a market that appears in the eligible list — never invent one.
-(c) FLAG missing data: if the stats and news-intel sections are too thin to support a
-    confident verdict either way (e.g. both are "(none supplied)" or near-empty, or a
-    key data point like lineups/injuries is conspicuously absent for a fixture close to
-    kickoff), set grade to "MISSING_DATA" and explain what's missing in rationale. This
-    is the honest answer when you don't have enough to decide — do not force a pick.
+    steps 0-3 contradicts the draft (e.g. the raw data or news intel the draft
+    under-weighted, a stats signal pointing the other way, or a math/rationale
+    mismatch you caught in step 4). You may only choose a market that appears in the
+    eligible list — never invent one.
+(c) FLAG missing data: if the raw-data, stats, and news-intel sections are too thin to
+    support a confident verdict either way (e.g. all are "(none supplied)" or
+    near-empty, or a key data point like lineups/injuries is conspicuously absent for a
+    fixture close to kickoff), set grade to "MISSING_DATA" and explain what's missing in
+    rationale. This is the honest answer when you don't have enough to decide — do not
+    force a pick.
 
 === REQUIRED OUTPUT (JSON only) ===
 {"primaryPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"altPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"confidence":0.0,"grade":"STRONG","rationale":"...","rejectedAndWhy":[]}
@@ -583,16 +625,36 @@ export function validateSelection(
 ): DecisionOutput {
   const ref = pick.primaryPick;
 
-  // Gate 1: pick must be in eligible set. MISSING_DATA is exempt — the arbiter is
-  // explicitly allowed to decline to commit to a market (e.g. when eligibleBets is
-  // empty), and forcing a deterministic placeholder here would silently erase that
+  // Gate 1: pick must be in eligible set. Matched on market AND side — matching
+  // on market (category) alone would accept any same-category EVMarket (e.g.
+  // any "Goals O/U" line) regardless of which specific side/line the LLM named,
+  // which would then let Gate 1.5 below overwrite stake/odds with the WRONG
+  // market's numbers. MISSING_DATA is exempt — the arbiter is explicitly
+  // allowed to decline to commit to a market (e.g. when eligibleBets is empty),
+  // and forcing a deterministic placeholder here would silently erase that
   // honest "not enough evidence" verdict and replace it with a fabricated pick.
-  const found = eligibleBets.find((m) => m.market === ref.market);
+  const found = eligibleBets.find(
+    (m) => m.market === ref.market && (!ref.side || m.side === ref.side)
+  );
   if (!found && pick.grade !== "MISSING_DATA") {
     return deterministicDecide(
       eligibleBets,
       `Rejected: ${ref.market} not in eligible set — deterministic fallback`
     ).decision;
+  }
+
+  // Gate 1.5: the LLM may choose WHICH eligible market to recommend, but the
+  // stake/odds MAGNITUDE must always be the engine's own number for that exact
+  // market, never the LLM's restated (and unreconciled) figure — the LLM
+  // self-reports stake/odds in its JSON response (see buildPrompt/
+  // buildArbiterPrompt's required output schema) and that figure flowed
+  // downstream unmodified until this fix, letting an LLM transcription error
+  // silently misstate the actual Kelly stake or price the engine computed.
+  if (found) {
+    pick = {
+      ...pick,
+      primaryPick: { ...ref, odds: found.odds, stake: found.stake },
+    };
   }
 
   // Gate 2: ML safety filter blocked — downgrade to NO_EDGE (pick stays for reporting)

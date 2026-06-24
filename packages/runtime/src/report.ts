@@ -4,7 +4,9 @@ import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BatchJobResult, BatchResult } from "@oracle/engine";
 
-function esc(s: unknown): string {
+/** Exported for reuse by dailyFixtureReport.ts — keeping one escaping/CSS
+ *  source for both report flavors avoids visual drift between them. */
+export function esc(s: unknown): string {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -12,11 +14,11 @@ function esc(s: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
-function pct(n: number, dec = 1): string {
+export function pct(n: number, dec = 1): string {
   return `${(n * 100).toFixed(dec)}%`;
 }
 
-const CSS = `
+export const CSS = `
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; max-width: 1400px; margin: 0 auto; }
 h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 16px; color: #f1f5f9; }

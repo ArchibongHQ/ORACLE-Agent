@@ -1,6 +1,7 @@
 /** ORACLE scheduled worker — thin cron shell.
- *  node-cron daily batch (06:00) -> goals batch (immediately after, sourced from
- *  the daily batch's own top-39) -> resolve-yesterday (14:00).
+ *  node-cron: acquire-daily@00:00 -> goals-batch immediately after (independent
+ *  discovery funnel over the full SportyBet pool) -> daily all-markets batch
+ *  @06:00 (independent) -> resolve-yesterday @14:00.
  *  All analysis/fixture/report logic lives in @oracle/runtime; this file only schedules. */
 
 import { execFile } from "node:child_process";
@@ -10,19 +11,27 @@ import { fileURLToPath } from "node:url";
 import { sendPuntPrompt } from "@oracle/bot";
 import type { BatchResult, RunManifest } from "@oracle/engine";
 import type { ActionablePick, BatchSummary } from "@oracle/notify";
-import { buildNotifiers, notifyAll, summarizeBatch } from "@oracle/notify";
+import { buildNotifiers, notifyAll, sendTelegramDocument, summarizeBatch } from "@oracle/notify";
 import {
   buildConfig,
+  buildNewsByTeam,
+  enrichWithH2H,
+  enrichWithLineups,
+  enrichWithNewsIntel,
   fetchTodaysFixtures,
   fixturesPartitionExists,
   type GoalsSelectionResult,
   loadEnv,
+  loadLineupSummaries,
   loadSportyBetIndex,
   markPrompted,
+  renderDailyFixtureReport,
   resolveDay,
   runAnalysis,
+  runGoalsFunnel,
   selectGoalsAccumulator,
   shouldReprompt,
+  writeDailyFixtureReport,
 } from "@oracle/runtime";
 import { MemoryAdapter } from "@oracle/storage";
 import cron from "node-cron";
@@ -372,6 +381,44 @@ async function acquireDailyJob(): Promise<void> {
   }
 }
 
+/** Daily raw-fixture-data report (item #5): every SportyBet fixture for the
+ *  day + its accompanying odds/stats/lineups/news — independent of engine
+ *  selection or the goals funnel. Generated + sent to Telegram as a document
+ *  attachment immediately after the 00:00 scrape, before anything else
+ *  (goals batch, daily batch) — per owner instruction "trigger immediately
+ *  after scrape and before any other thing." Best-effort: a failure here
+ *  (missing token, write error) is logged but never blocks the rest of the run. */
+async function sendDailyFixtureReport(): Promise<void> {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const index = await loadSportyBetIndex(today);
+    if (!index?.events.length) {
+      process.stdout.write("[fixture-report] no SportyBet fixtures available — skipping\n");
+      return;
+    }
+    const [lineups, newsByTeam] = await Promise.all([
+      loadLineupSummaries(),
+      buildNewsByTeam(index.events, today),
+    ]);
+    const html = renderDailyFixtureReport(index.events, today, { lineups, newsByTeam });
+    const reportPath = await writeDailyFixtureReport(html, today);
+    process.stdout.write(`[fixture-report] wrote ${reportPath}\n`);
+
+    if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
+      await sendTelegramDocument(
+        env.TELEGRAM_BOT_TOKEN,
+        env.TELEGRAM_CHAT_ID,
+        reportPath,
+        `ORACLE daily fixtures — ${today} (${index.events.length} fixtures)`
+      );
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[fixture-report] FAILED — ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+}
+
 // ── SportyBet streak tracker ──────────────────────────────────────────────────
 
 const STREAK_FILE = join(ROOT, ".tmp", "sportybet_streak.json");
@@ -481,8 +528,9 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
 
 // ── Daily batch (06:00) ───────────────────────────────────────────────────────
 
-/** Returns the analyzed batch (for runDailyThenGoals to source goals picks from)
- *  or null when there were no fixtures to analyze. */
+/** Returns the analyzed batch, or null when there were no fixtures to analyze.
+ *  The goals pipeline (runGoalsBatch) is fully independent of this batch as of
+ *  the 2026-06-24 rewrite — it no longer sources picks from this batch's output. */
 async function runDailyBatch(
   trigger: RunManifest["trigger"] = "scheduled"
 ): Promise<BatchResult | null> {
@@ -578,32 +626,45 @@ async function runDailyBatch(
 }
 
 // ── Goals-only accumulator ─────────────────────────────────────────────────────
-// As of 2026-06-20: runs immediately after a successful daily batch (see
-// runDailyThenGoals below), sourcing its candidate pool EXCLUSIVELY from the
-// daily batch's own top-39 (llmEligible) picks — no second fetch/analysis pass.
-// selectGoalsAccumulator then narrows those down further to whichever Over 1.5 /
-// Over 2.5 / Team Over 0.5 legs pass the data gate + confidence bars, ranks by
-// model confidence, caps at goalsTargetLegs (a ceiling, never a fill target).
+// As of 2026-06-24: fully independent pipeline — its own SportyBet index read,
+// its own discovery funnel (mechanical pre-filter -> Sonnet screen, over the
+// FULL daily fixture pool, not the main batch's top-N), its own runAnalysis
+// pass in goals-only-markets mode. selectGoalsAccumulator then narrows the
+// funnel's analyzed pool down to whichever Over 1.5 / Over 2.5 / Team Over 0.5
+// legs pass the data gate + confidence bars, builds two correlation-aware slips
+// (top-picks short slip + 39-leg lottery, see selectGoals.ts), and both are
+// delivered as separate Telegram messages + booking codes.
 
-const GOALS_TAG = "GOALS ACCA (Over 1.5/2.5/Team 0.5)";
+const TOP_PICKS_TAG = "GOALS — TOP PICKS";
+const LOTTERY_TAG = "GOALS — 39-LEG LOTTERY";
 
-/** Shared tail: turn a goals selection into a notify/booking/heartbeat cycle.
- *  Used by both runGoalsFromBatch (legs sourced from the daily batch that just
- *  ran) and the standalone runGoalsBatch (manual --run-goals-now debug path). */
-async function finalizeGoalsSelection(
-  selection: GoalsSelectionResult,
+/** Builds an LLMCallContext for the Sonnet screening stage (goalsFunnel.ts) —
+ *  same shape every other Claude-calling call site in this worker builds inline. */
+function buildLlmCtx() {
+  return {
+    config: {
+      claudeApiKey: config.claudeApiKey,
+      geminiApiKey: config.geminiApiKey,
+      bankroll: config.bankroll,
+    },
+    requestedAt: new Date().toISOString(),
+  };
+}
+
+/** One slip → notify/booking cycle. Shared by the top-picks and 39-leg lottery
+ *  sends so both go through the identical booking-gate + notify + error-handling
+ *  path, just with a different tag/leg-set/combinedProb-odds pair. */
+async function sendGoalsSlip(
+  legs: GoalsSelectionResult["legs"],
+  tag: string,
   date: string,
+  analysed: number,
   errorCount: number,
-  reportPath: string | null,
-  trigger: RunManifest["trigger"]
-): Promise<void> {
-  process.stdout.write(
-    `[goals] selected ${selection.legs.length}/${selection.target} ` +
-      `(over15=${selection.counts.over15} over25=${selection.counts.over25} ` +
-      `teamover05=${selection.counts.teamOver05}; qualified=${selection.qualified} of ${selection.analysed})\n`
-  );
-
-  const actionable: ActionablePick[] = selection.legs.map((l) => ({
+  combinedProb: number,
+  combinedOdds: number,
+  logPrefix: string
+): Promise<BatchSummary> {
+  const actionable: ActionablePick[] = legs.map((l) => ({
     home: l.home,
     away: l.away,
     league: l.league,
@@ -616,15 +677,12 @@ async function finalizeGoalsSelection(
   }));
 
   const summary: BatchSummary = {
-    date: `${date} — ${GOALS_TAG}`,
-    analysed: selection.analysed,
+    date: `${date} — ${tag}`,
+    analysed,
     actionableCount: actionable.length,
     errors: errorCount,
     actionable,
-    ...(reportPath ? { reportUrl: reportPath } : {}),
-    ...(actionable.length > 0
-      ? { combinedProb: selection.combinedProb, combinedOdds: selection.combinedOdds }
-      : {}),
+    ...(actionable.length > 0 ? { combinedProb, combinedOdds } : {}),
   };
 
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────
@@ -637,10 +695,10 @@ async function finalizeGoalsSelection(
         summary.bookingLoadUrl = booking.loadUrl ?? undefined;
         summary.bookingUnmatched = booking.unmatched;
         if (booking.loadUrl)
-          process.stdout.write(`[goals-booking] ${booking.code}: ${booking.loadUrl}\n`);
+          process.stdout.write(`[${logPrefix}-booking] ${booking.code}: ${booking.loadUrl}\n`);
         if (booking.unmatched.length)
           process.stderr.write(
-            `[goals-booking] ${booking.unmatched.length} leg(s) unmatched on SportyBet\n`
+            `[${logPrefix}-booking] ${booking.unmatched.length} leg(s) unmatched on SportyBet\n`
           );
       } else {
         summary.bookingError = booking.error ?? "no code returned";
@@ -656,83 +714,115 @@ async function finalizeGoalsSelection(
     await notifyAll(notifiers, summary);
   }
 
+  return summary;
+}
+
+/** Shared tail: turn a goals selection (BOTH slips) into two independent
+ *  notify/booking/heartbeat cycles — top picks (short, high-confidence slip)
+ *  sent first, then the 39-leg lottery slip. */
+async function finalizeGoalsSelection(
+  selection: GoalsSelectionResult,
+  date: string,
+  errorCount: number,
+  trigger: RunManifest["trigger"]
+): Promise<void> {
+  process.stdout.write(
+    `[goals] long=${selection.legs.length}/${selection.target} short=${selection.shortSlipLegs.length} ` +
+      `(over15=${selection.counts.over15} over25=${selection.counts.over25} ` +
+      `teamover05=${selection.counts.teamOver05}; qualified=${selection.qualified} of ${selection.analysed})\n`
+  );
+
+  const topPicks = await sendGoalsSlip(
+    selection.shortSlipLegs,
+    TOP_PICKS_TAG,
+    date,
+    selection.analysed,
+    errorCount,
+    selection.shortSlipCombinedProb,
+    selection.shortSlipCombinedOdds,
+    "top-picks"
+  );
+
+  const lottery = await sendGoalsSlip(
+    selection.legs,
+    LOTTERY_TAG,
+    date,
+    selection.analysed,
+    errorCount,
+    selection.combinedProb,
+    selection.combinedOdds,
+    "lottery"
+  );
+
   writeHeartbeat("lastGoalsBatch", {
     trigger,
     analysed: selection.analysed,
-    legs: selection.legs.length,
+    topPicksLegs: selection.shortSlipLegs.length,
+    lotteryLegs: selection.legs.length,
     target: selection.target,
-    booked: Boolean(summary.bookingCode),
+    topPicksBooked: Boolean(topPicks.bookingCode),
+    lotteryBooked: Boolean(lottery.bookingCode),
   });
 }
 
-/** Primary path (2026-06-20): runs right after a successful daily batch, reusing
- *  its already-analyzed jobs. Restricts the candidate pool to the daily batch's
- *  top-39 (llmEligible) fixtures only — per owner instruction, goals picks come
- *  exclusively from the daily batch's best 39, never the wider deterministic-only
- *  slate. No second fetch/scrape/analysis pass. */
-async function runGoalsFromBatch(
-  batch: BatchResult,
-  trigger: RunManifest["trigger"] = "scheduled"
-): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
-  // Pure file read — the sidecar is already fresh, either from the 00:00
-  // acquireDailyJob or runDailyBatch's own gap-fill moments earlier; no
-  // staleness fallback needed here.
-  const index = await loadSportyBetIndex(today);
-
-  const eligibleJobs = batch.jobs.filter((j) => j.llmEligible);
-  const selection = selectGoalsAccumulator(eligibleJobs, {
-    minConfidence: config.goalsMinConfidence,
-    minImplied: config.goalsMinImplied,
-    target: config.goalsTargetLegs,
-    detailByKey: index?.detailByKey,
-  });
-
-  await finalizeGoalsSelection(selection, batch.date, batch.errorCount, null, trigger);
-}
-
-/** Standalone manual debug path (--run-goals-now): independent fetch + analysis
- *  pass, not gated to any daily batch's top-39. Kept for ad-hoc testing of the
- *  goals selection logic without re-running the full daily pipeline. */
+/** The ONLY goals pipeline (2026-06-24 rewrite): independent of the main
+ *  all-markets daily batch entirely — its own SportyBet index read, its own
+ *  discovery funnel (mechanical pre-filter -> Sonnet screen, goalsFunnel.ts),
+ *  its own runAnalysis pass in goals-only-markets mode. Per owner instruction,
+ *  the funnel scans the FULL daily SportyBet pool (potentially 1000+ fixtures)
+ *  for goals-market opportunity — not whatever subset the main batch happened
+ *  to analyze for all markets. Runs as its own cron slot / --run-goals-now
+ *  invocation, no longer derived from or chained after the main daily batch. */
 async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
-  // Reuse a fresh sidecar; scrape only when stale (date !== today).
   let index = await loadSportyBetIndex(today);
   if (!index) {
     const sportyBetCount = await scrapeFixtures();
     checkSportyBetStreak(sportyBetCount);
     index = await loadSportyBetIndex(today);
   }
-
-  const storage = new MemoryAdapter(STORE_PATH);
-  const newsKey = config.enableNewsIntel ? config.perplexityApiKey : undefined;
-  const newsStorage = config.enableNewsIntel ? storage : undefined;
-  const { jobs } = await fetchTodaysFixtures(
-    config.oddsApiKey,
-    config.enableWebSearchOddsFallback,
-    config.geminiApiKey,
-    config.footballDataApiKey,
-    newsKey,
-    config.sharpApiIoKey,
-    config.apiFootballKey,
-    config.oddsApiIoKey,
-    config.oddsPapiKey,
-    config.sportsGameOddsKey,
-    config.maxFixturesPerRun,
-    newsStorage,
-    config.webOddsMinConsensus,
-    config.webOddsVarianceThreshold
-  );
-
-  if (!jobs.length) {
+  if (!index?.events.length) {
+    process.stdout.write("[goals] no SportyBet fixtures available — skipping\n");
     return;
   }
 
-  const { batch, reportPath } = await runAnalysis(
-    jobs,
-    { storage, config },
+  process.stdout.write(`[goals] funnel: ${index.events.length} raw SportyBet fixtures\n`);
+  const funnelResult = await runGoalsFunnel(index.events, {
+    llmCtx: config.claudeApiKey ? buildLlmCtx() : undefined,
+  });
+  process.stdout.write(
+    `[goals] funnel: preFiltered=${funnelResult.preFilteredCount} converted=${funnelResult.convertedCount}\n`
+  );
+
+  if (!funnelResult.jobs.length) {
+    process.stdout.write("[goals] funnel produced no analyzable fixtures — skipping\n");
+    return;
+  }
+
+  const storage = new MemoryAdapter(STORE_PATH);
+
+  // H2H -> news intel -> lineups — the same enrichment chain the main daily
+  // pipeline applies (fixtures.ts's `enrich`), so goals-funnel fixtures get the
+  // same evidence (H2H aggregates feeding the GBM model, injury/lineup news in
+  // softContext for the arbiter) the main batch's fixtures always had. Without
+  // this, fixtures sourced via the independent funnel would carry strictly
+  // less evidence into the arbiter than fixtures sourced via the main batch.
+  const withH2H = await enrichWithH2H(funnelResult.jobs, config.footballDataApiKey);
+  const withNews = config.enableNewsIntel
+    ? await enrichWithNewsIntel(withH2H, {
+        perplexityApiKey: config.perplexityApiKey,
+        geminiApiKey: config.geminiApiKey,
+        storage,
+      })
+    : withH2H;
+  const enrichedJobs = await enrichWithLineups(withNews);
+
+  const { batch } = await runAnalysis(
+    enrichedJobs,
+    { storage, config: { ...config, enableGoalsOnlyMode: true } },
     {
       trigger,
+      writeReportToDisk: false, // this pipeline's report-equivalent is the goals-ACCA notify itself
       batchOptions: {
         onProgress: ({ completed, total, current }) => {
           if (current) process.stdout.write(`[goals] ${completed}/${total}: ${current}\n`);
@@ -745,24 +835,10 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
     minConfidence: config.goalsMinConfidence,
     minImplied: config.goalsMinImplied,
     target: config.goalsTargetLegs,
-    detailByKey: index?.detailByKey,
+    detailByKey: index.detailByKey,
   });
 
-  await finalizeGoalsSelection(selection, batch.date, batch.errorCount, reportPath, trigger);
-}
-
-/** Combined scheduled flow (06:00): daily batch, then goals immediately on
- *  success, sourced exclusively from its top-39 (runGoalsFromBatch). If the
- *  daily batch finds no fixtures, goals is skipped — nothing to derive picks
- *  from. */
-async function runDailyThenGoals(trigger: RunManifest["trigger"] = "scheduled"): Promise<void> {
-  const batch = await runDailyBatch(trigger);
-  if (!batch) {
-    process.stdout.write("[worker] daily-batch produced no fixtures — skipping goals-batch\n");
-    return;
-  }
-  process.stdout.write("[worker] daily-batch complete — starting goals-batch from its top picks\n");
-  await runGoalsFromBatch(batch, trigger);
+  await finalizeGoalsSelection(selection, batch.date, batch.errorCount, trigger);
 }
 
 // ── Resolve yesterday (14:00) ────────────────────────────────────────────────
@@ -826,20 +902,27 @@ if (!IS_ONE_SHOT) {
 
   // Daily acquisition (00:00) — Parquet lake + JSON sidecar via acquire_daily.py,
   // then news enrichment. The 06:00 batch below reads this lake first and only
-  // falls back to its own gap-fill scrape when it's missing/stale.
-  cron.schedule("0 0 * * *", () => logJob("acquire-daily@00:00", acquireDailyJob));
+  // falls back to its own gap-fill scrape when it's missing/stale. Per owner
+  // instruction, immediately after this scrape — before anything else — the
+  // raw fixture-data report is generated+sent, THEN the goals batch runs (its
+  // own SportyBet index read, independent of the 06:00 all-markets batch).
+  cron.schedule("0 0 * * *", () =>
+    logJob("acquire-daily@00:00", async () => {
+      await acquireDailyJob();
+      await logJob("daily-fixture-report@post-scrape", sendDailyFixtureReport);
+      await logJob("goals-batch@post-scrape", () => runGoalsBatch("scheduled"));
+    })
+  );
 
   // Standalone fixture scrape — 11:45am only now; the 00:00 slot moved to the
   // fuller acquireDailyJob above (lake + sidecar + news).
   cron.schedule("45 11 * * *", () => logJob("scrape-fixtures@11:45", scrapeFixtures));
 
-  // Daily batch (06:00) -> goals batch immediately on success, sourced from the
-  // daily batch's own top-39 (see runDailyThenGoals). Its internal scrape is
-  // gap-fill-only — runDailyBatch only re-acquires when the 00:00 lake is
-  // missing/stale (see isLakeFreshForToday).
-  cron.schedule("0 6 * * *", () =>
-    logJob("daily-then-goals-batch", () => runDailyThenGoals("scheduled"))
-  );
+  // Main all-markets daily batch (06:00) — independent of the goals pipeline
+  // above (no longer chained/derived). Its internal scrape is gap-fill-only —
+  // runDailyBatch only re-acquires when the 00:00 lake is missing/stale (see
+  // isLakeFreshForToday).
+  cron.schedule("0 6 * * *", () => logJob("daily-batch", () => runDailyBatch("scheduled")));
 
   cron.schedule("0 14 * * *", () => logJob("resolve-yesterday", resolveYesterdayFixtures));
 
@@ -867,7 +950,7 @@ if (process.argv.includes("--run-acquire-now")) {
 
 if (process.argv.includes("--run-now")) {
   void runOnce("--run-now", async () => {
-    await runDailyThenGoals("manual");
+    await runDailyBatch("manual");
     await resolveYesterdayFixtures();
   });
 }

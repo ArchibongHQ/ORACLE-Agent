@@ -181,6 +181,14 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     goalsMinConfidence: Number(env.GOALS_MIN_CONFIDENCE ?? DEFAULT_GOALS_MIN_CONFIDENCE),
     goalsMinImplied: Number(env.GOALS_MIN_IMPLIED ?? DEFAULT_GOALS_MIN_IMPLIED),
     goalsTargetLegs: Math.floor(Number(env.GOALS_TARGET_LEGS ?? DEFAULT_GOALS_TARGET_LEGS)),
+    // Intentionally NOT read from ORACLE_GOALS_ONLY_MODE here. This flag is an
+    // exception scoped to the goals-discovery pipeline alone (apps/worker's
+    // runGoalsBatch reads the env var directly and applies it on its own
+    // runAnalysis call). buildConfig() produces ONE shared config object reused
+    // by every analysis call site (main daily batch, ad-hoc /analyze, CLI, web,
+    // punt counter-analysis) — defaulting it to the env var here would silently
+    // restrict every one of those paths to goals-only markets too.
+    enableGoalsOnlyMode: false,
     // Hardware capabilities — detected at startup, never hardcoded
     hasNvidiaGpu: hw.hasNvidiaGpu,
     isVps: hw.isVps,

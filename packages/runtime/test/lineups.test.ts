@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FixtureJob } from "@oracle/engine";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { enrichWithLineups } from "../src/lineups.js";
+import { enrichWithLineups, findLineupSummary, loadLineupSummaries } from "../src/lineups.js";
 
 let dir: string;
 let storePath: string;
@@ -109,5 +109,45 @@ describe("enrichWithLineups", () => {
     await writeFile(storePath, JSON.stringify([empty]), "utf8");
     const out = await enrichWithLineups([job("Arsenal", "Chelsea")], storePath);
     expect(out[0]?.state?.telemetry?.softContext).toBeUndefined();
+  });
+});
+
+describe("loadLineupSummaries", () => {
+  it("returns [] when the store file is missing", async () => {
+    expect(await loadLineupSummaries(join(dir, "nope.json"))).toEqual([]);
+  });
+
+  it("returns [] on invalid JSON or non-array payload", async () => {
+    await writeFile(storePath, "{not json", "utf8");
+    expect(await loadLineupSummaries(storePath)).toEqual([]);
+  });
+
+  it("filters out stale summaries", async () => {
+    const fresh = summary();
+    const stale = summary({ date: new Date(Date.now() - 48 * 3_600_000).toISOString() });
+    await writeFile(storePath, JSON.stringify([fresh, stale]), "utf8");
+    const out = await loadLineupSummaries(storePath);
+    expect(out).toHaveLength(1);
+  });
+
+  it("filters out summaries missing home/away", async () => {
+    const incomplete = summary({ home: undefined });
+    await writeFile(storePath, JSON.stringify([incomplete]), "utf8");
+    expect(await loadLineupSummaries(storePath)).toEqual([]);
+  });
+});
+
+describe("findLineupSummary", () => {
+  it("finds a summary by alias-aware name match", async () => {
+    await writeFile(storePath, JSON.stringify([summary()]), "utf8");
+    const summaries = await loadLineupSummaries(storePath);
+    const found = findLineupSummary(summaries, "Arsenal", "Chelsea");
+    expect(found?.home).toBe("Arsenal FC");
+  });
+
+  it("returns undefined for a non-matching fixture", async () => {
+    await writeFile(storePath, JSON.stringify([summary()]), "utf8");
+    const summaries = await loadLineupSummaries(storePath);
+    expect(findLineupSummary(summaries, "Liverpool", "Everton")).toBeUndefined();
   });
 });

@@ -149,6 +149,11 @@ export interface OracleConfig {
   goalsMinConfidence?: number; // model `mp` floor per goals leg (default 0.75)
   goalsMinImplied?: number; // implied-prob floor per goals leg (default 0.70)
   goalsTargetLegs?: number; // max legs in the goals accumulator (default 39)
+  // When true, scanMarkets only computes goals-shaped markets (Goals O/U, Asian 2
+  // Goals, Team Total) and BTTS — AH/DNB/Double-Chance/Win-Either-Half/First-Half
+  // are skipped entirely (not computed, not just filtered from output). Temporary
+  // pivot to prove prediction accuracy in goal markets before re-expanding scope.
+  enableGoalsOnlyMode?: boolean;
   // GBM residual model (tools/gbm_residual.py) — TS inference shim in ./gbm/index.ts.
   // Default OFF: the currently-saved model fails its own walk-forward significance
   // gate (gate_passed=false in .tmp/models/gbm_residual_meta.json — RPS improvement
@@ -193,6 +198,9 @@ export interface RunState {
     oppGA_H?: number;
     oppGA_A?: number;
     softContext?: SoftContextItem[];
+    /** Raw structured per-category stats passthrough (see DecisionContext.rawStatsBlock) —
+     *  same loose-passthrough convention as rawOddsPayload. */
+    rawStatsBlock?: Record<string, unknown>;
     [key: string]: unknown;
   };
   pipeline?: {
@@ -293,6 +301,15 @@ export interface DecisionContext {
   betTrigger: string;
   portfolioCorrelation: number | null;
   softContext?: SoftContextItem[];
+  /** Raw structured per-category fixture data (form/standings/goals/h2h/xg/
+   *  overunder/congestion/possessionValue + H2H scorelines where available) —
+   *  passthrough from RunState.telemetry.rawStatsBlock. Engine-agnostic
+   *  (Record<string, unknown>, same convention as rawOddsPayload) since the
+   *  concrete shape (SportyBetStats) is defined in @oracle/runtime, which
+   *  @oracle/engine cannot import without a circular dependency. Consumed only
+   *  by the arbiter prompt builder to give it raw data alongside the existing
+   *  distilled softContext prose. */
+  rawStatsBlock?: Record<string, unknown>;
 }
 
 // ── §11A Agent Ops Contract ────────────────────────────────────────────────────

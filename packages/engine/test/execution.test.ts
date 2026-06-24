@@ -297,3 +297,65 @@ describe("Correlated parlay hard veto (T189)", () => {
     }
   });
 });
+
+// ── enableGoalsOnlyMode (temporary scope pivot) ──────────────────────────────
+
+describe("enableGoalsOnlyMode", () => {
+  const NON_GOALS_CATS = [
+    "Asian Handicap",
+    "Win Either Half",
+    "First Half",
+    "Draw No Bet",
+    "Double Chance",
+  ];
+  const GOALS_CATS = ["Goals O/U", "Asian 2 Goals", "Team Total", "BTTS"];
+
+  // Full odds coverage so every block (AH/DNB/DC/WinEitherHalf/FirstHalf included)
+  // has the odds it needs to fire regardless of the flag — isolates the assertion
+  // to the flag's effect, not incidental odds-key absence in the minimal baseState.
+  const fullOddsState: RunState = {
+    ...baseState,
+    pipeline: {
+      ...baseState.pipeline,
+      fetched: {
+        odds: {
+          home: 1.85,
+          draw: 3.4,
+          away: 4.5,
+          // Deliberately generous (mispriced) — xH=1.8/xA=1.2 implies a high model
+          // P(Over 1.5); pricing it at even money guarantees a clearing positive-EV
+          // bet so the goals-presence assertion isn't dependent on hand-tuned odds.
+          "over_1.5": 2.0,
+          ah_hp05: 1.9,
+          ah_ap05: 1.9,
+          dnb_h: 1.6,
+          dnb_a: 2.3,
+          dc_1x: 1.2,
+          dc_x2: 1.4,
+          win_either_half_h: 1.5,
+          win_either_half_a: 2.0,
+          fh_under_1_5: 1.7,
+          fh_draw: 2.1,
+          btts_yes: 1.8,
+          btts_no: 1.9,
+        },
+      },
+    },
+  };
+
+  it("strips AH/DNB/Double-Chance/Win-Either-Half/First-Half but keeps goals + BTTS", async () => {
+    const goalsOnlyConfig: OracleConfig = { ...config, enableGoalsOnlyMode: true };
+    const r = await ExecutionEngine.run(fullOddsState, { storage, config: goalsOnlyConfig });
+    const cats = new Set(r.evMarkets.map((m) => m.cat));
+    for (const cat of NON_GOALS_CATS) expect(cats.has(cat)).toBe(false);
+    const goalsPresent = GOALS_CATS.some((cat) => cats.has(cat));
+    expect(goalsPresent).toBe(true);
+  }, 15_000);
+
+  it("default (flag off) still computes non-goals markets", async () => {
+    const r = await ExecutionEngine.run(fullOddsState, { storage, config });
+    const cats = new Set(r.evMarkets.map((m) => m.cat));
+    const anyNonGoals = NON_GOALS_CATS.some((cat) => cats.has(cat));
+    expect(anyNonGoals).toBe(true);
+  }, 15_000);
+});

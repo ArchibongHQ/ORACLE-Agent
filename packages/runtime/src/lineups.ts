@@ -24,7 +24,7 @@ const MAX_AGE_MS = 36 * 3_600_000; // ignore summaries whose fixture date is >36
 const XI_NAMES_SHOWN = 11;
 
 /** Shape written by tools/fetch_lineups.py (summarise_lineup). */
-interface LineupSummary {
+export interface LineupSummary {
   fixture_id?: number | string;
   home?: string;
   away?: string;
@@ -83,6 +83,32 @@ function toSoftContext(summary: LineupSummary): SoftContextItem[] {
   return texts
     .filter((t): t is string => t !== null)
     .map((text) => ({ kind: "lineup" as const, text, source: "api-football-lineups", observedAt }));
+}
+
+/** Raw fresh-summary read, name-keyed lookup convenience for callers that don't
+ *  have a FixtureJob to enrich (e.g. dailyFixtureReport.ts, which builds its
+ *  report straight from SportyBetEvent[]). Returns [] on any read/parse failure
+ *  or when the store file doesn't exist yet — never throws. */
+export async function loadLineupSummaries(
+  storePath: string = DEFAULT_STORE_PATH
+): Promise<LineupSummary[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(storePath, "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as LineupSummary[]).filter((s) => s.home && s.away && isFresh(s));
+  } catch {
+    return [];
+  }
+}
+
+/** Finds the freshest lineup summary for a given fixture by alias-aware name
+ *  match — same matching convention enrichWithLineups uses for FixtureJob[]. */
+export function findLineupSummary(
+  summaries: LineupSummary[],
+  home: string,
+  away: string
+): LineupSummary | undefined {
+  return summaries.find((s) => namesMatch(home, s.home!) && namesMatch(away, s.away!));
 }
 
 /** Merge API-Football lineup summaries into job.state.telemetry.softContext.

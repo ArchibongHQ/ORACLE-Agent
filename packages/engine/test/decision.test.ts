@@ -539,6 +539,72 @@ describe("decide — final arbiter (opt-in)", () => {
     expect(validated.primaryPick.market).toBe("1x2");
   });
 
+  it("includes rawStatsBlock as a structured STEP 0 section in the arbiter prompt", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const draftResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.7,
+      rationale: "Claude Opus draft.",
+      rejectedAndWhy: [],
+    };
+    const arbiterResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.72,
+      grade: "STRONG",
+      rationale: "(a) RATIFY",
+      rejectedAndWhy: [],
+    };
+    const callClaudeCode = vi.fn().mockResolvedValue(JSON.stringify(arbiterResponse));
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+
+    const ctxWithRawStats: DecisionContext = {
+      ...BASE_CTX,
+      rawStatsBlock: {
+        form: { home: { last5: "WWDLW" }, away: { last5: "LDWWL" } },
+        h2h: { total: 5, home_wins: 3 },
+        h2hRecentScorelines: ["2-1 (2025-03-02)", "1-1 (2024-11-10)"],
+        xg: { home: { xgf: 2.1, xga: 1.0 } },
+      },
+    };
+    await decide([makeMarket()], ctxWithRawStats, { claudeApiKey: "ck" });
+
+    const prompt = callClaudeCode.mock.calls[0]?.[0] as string;
+    expect(prompt).toContain("STEP 0 — RAW PER-CATEGORY DATA");
+    expect(prompt).toContain("WWDLW");
+    expect(prompt).toContain("h2hRecentScorelines");
+    expect(prompt).toContain("2-1 (2025-03-02)");
+    expect(prompt).toContain("xgf=2.1");
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("renders STEP 0 as '(none supplied)' when rawStatsBlock is absent", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const draftResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.7,
+      rationale: "Claude Opus draft.",
+      rejectedAndWhy: [],
+    };
+    const callClaudeCode = vi.fn().mockResolvedValue(JSON.stringify(draftResponse));
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+
+    await decide([makeMarket()], BASE_CTX, { claudeApiKey: "ck" });
+    const prompt = callClaudeCode.mock.calls[0]?.[0] as string;
+    expect(prompt).toContain("STEP 0 — RAW PER-CATEGORY DATA");
+    expect(prompt).toMatch(/STEP 0[\s\S]*?\(none supplied\)/);
+    vi.doUnmock("@oracle/llm");
+  });
+
   it("flags MISSING_DATA without being forced back onto a market by validateSelection", async () => {
     process.env.ORACLE_LOCAL_DECISION = "true";
     const draftResponse: DecisionOutput = {
@@ -644,7 +710,7 @@ describe("validateSelection", () => {
     }),
   ];
 
-  it("passes through a valid pick unchanged", () => {
+  it("passes through grade/confidence/rationale unchanged for a valid pick", () => {
     const pick: DecisionOutput = {
       primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1 },
       confidence: 0.7,
@@ -653,7 +719,47 @@ describe("validateSelection", () => {
       rejectedAndWhy: [],
     };
     const result = validateSelection(pick, eligible);
-    expect(result.primaryPick).toEqual(pick.primaryPick);
+    expect(result.grade).toBe(pick.grade);
+    expect(result.confidence).toBe(pick.confidence);
+    expect(result.rationale).toBe(pick.rationale);
+  });
+
+  it("overwrites stake/odds with the matched EVMarket's engine-computed values, never the LLM's self-reported figure", () => {
+    // makeMarket's default odds (2.1) matches the LLM's own figure here, so vary
+    // it to prove the engine's number — not the LLM's — wins after the fix.
+    const llmMisreportedOdds = [
+      makeMarket({ cat: "Goals O/U", market: "Goals O/U", label: "Over 2.5", side: "Over 2.5" }),
+    ];
+    const pick: DecisionOutput = {
+      // LLM reports a stake/odds that DIFFER from the engine's own EVMarket (odds=2.1, stake=0.03).
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 9.99, stake: 0.5 },
+      confidence: 0.7,
+      grade: "STRONG",
+      rationale: "good edge",
+      rejectedAndWhy: [],
+    };
+    const result = validateSelection(pick, llmMisreportedOdds);
+    expect(result.primaryPick.odds).toBe(2.1); // engine's number, not the LLM's 9.99
+    expect(result.primaryPick.stake).toBe(0.03); // engine's number, not the LLM's 0.5
+    expect(result.primaryPick.market).toBe("Goals O/U");
+    expect(result.primaryPick.side).toBe("Over 2.5");
+  });
+
+  it("rejects a pick whose side does not match any eligible market with that category, even if the market name matches", () => {
+    const eligibleOver25Only = [
+      makeMarket({ cat: "Goals O/U", market: "Goals O/U", label: "Over 2.5", side: "Over 2.5" }),
+    ];
+    const pick: DecisionOutput = {
+      // Same market category, but a side the engine never actually computed/offered.
+      primaryPick: { market: "Goals O/U", side: "Under 1.5", odds: 1.5, stake: 0.1 },
+      confidence: 0.7,
+      grade: "STRONG",
+      rationale: "fabricated side",
+      rejectedAndWhy: [],
+    };
+    const result = validateSelection(pick, eligibleOver25Only);
+    // Falls back to deterministic — must NOT keep the fabricated "Under 1.5" side.
+    expect(result.primaryPick.side).not.toBe("Under 1.5");
   });
 
   it("rejects pick not in eligible set → falls back to deterministic", () => {
@@ -716,7 +822,9 @@ describe("validateSelection", () => {
   });
 
   it("returns NO_EDGE placeholder when VERY_HIGH draw risk and only 1x2 eligible", () => {
-    const only1x2 = [makeMarket({ cat: "1x2", market: "1x2", label: "Home Win" })];
+    const only1x2 = [
+      makeMarket({ cat: "1x2", market: "1x2", label: "Home Win", side: "Home Win" }),
+    ];
     const pick: DecisionOutput = {
       primaryPick: { market: "1x2", side: "Home Win", odds: 2.1 },
       confidence: 0.6,

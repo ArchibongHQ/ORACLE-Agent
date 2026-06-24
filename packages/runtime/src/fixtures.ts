@@ -441,6 +441,11 @@ async function applySelection(
     const softMerge = statsContext.length
       ? { softContext: [...existingSoft, ...statsContext] }
       : {};
+    // Raw structured stats passthrough for the Opus arbiter prompt (STEP 0) —
+    // alongside, not instead of, the distilled softContext prose above.
+    const rawStatsMerge = detail?.stats
+      ? { rawStatsBlock: detail.stats as unknown as Record<string, unknown> }
+      : {};
     const hasOverrideOrContext = statsOverride !== null || statsContext.length > 0;
 
     if (c.hasBulkOdds) {
@@ -450,7 +455,7 @@ async function applySelection(
         ...job,
         state: {
           ...job.state,
-          telemetry: { ...existingTel, ...statsOverride, ...softMerge },
+          telemetry: { ...existingTel, ...statsOverride, ...softMerge, ...rawStatsMerge },
           pipeline: {
             ...job.state?.pipeline,
             fetched: { ...existingFetched, ...statsEnrich },
@@ -482,6 +487,7 @@ async function applySelection(
           hoursToKO,
           ...statsOverride,
           ...softMerge,
+          ...rawStatsMerge,
         },
         pipeline: {
           ...job.state?.pipeline,
