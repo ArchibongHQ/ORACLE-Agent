@@ -173,7 +173,12 @@ async function checkHeartbeatFreshness(): Promise<void> {
     process.stdout.write(
       "[worker] daily lake stale/missing — triggering back-online acquisition\n"
     );
-    logJob("acquire-daily@back-online", acquireDailyJob);
+    // After back-online acquisition completes, fire the goals batch immediately so a
+    // machine that was off at 09:30 WAT still produces picks as soon as it comes up.
+    logJob("acquire-daily@back-online", async () => {
+      await acquireDailyJob();
+      await runGoalsBatch("scheduled");
+    });
   }
 
   if (!lastBatchAt) return;
@@ -627,17 +632,22 @@ async function runDailyBatch(
 }
 
 // ── Goals-only accumulator ─────────────────────────────────────────────────────
-// As of 2026-06-24: fully independent pipeline — its own SportyBet index read,
-// its own discovery funnel (mechanical pre-filter -> Sonnet screen, over the
-// FULL daily fixture pool, not the main batch's top-N), its own runAnalysis
-// pass in goals-only-markets mode. selectGoalsAccumulator then narrows the
-// funnel's analyzed pool down to whichever Over 1.5 / Over 2.5 / Team Over 0.5
-// legs pass the data gate + confidence bars, builds two correlation-aware slips
-// (top-picks short slip + 39-leg lottery, see selectGoals.ts), and both are
-// delivered as separate Telegram messages + booking codes.
+// As of 2026-06-24 (enhanced 2026-06-25): fully independent pipeline — its own
+// SportyBet index read, its own discovery funnel (mechanical pre-filter ->
+// Sonnet screen, over the FULL daily fixture pool, not the main batch's top-N),
+// its own runAnalysis pass in goals-only-markets mode. selectGoalsAccumulator
+// produces FIVE distinct outputs delivered as separate Telegram messages:
+//   1. TOP PICKS (short slip, 4-9 legs, EV-maximized)
+//   2. 39-LEG LOTTERY (long slip, up to 39 legs, correlation-aware greedy)
+//   3. MINI-ACCA (2-4 legs, one per league, highest-edge)
+//   4. OUTPUT B (top 5 legs with odds ≥ 4.00, ranked by edge)
+//   5. OUTPUT C (top 3 legs with 2.50 ≤ odds < 4.00, ranked by edge)
 
 const TOP_PICKS_TAG = "GOALS — TOP PICKS";
 const LOTTERY_TAG = "GOALS — 39-LEG LOTTERY";
+const MINI_ACCA_TAG = "GOALS — MINI-ACCA (cross-league, 2-4 legs)";
+const OUTPUT_B_TAG = "GOALS — OUTPUT B (odds ≥ 4.00)";
+const OUTPUT_C_TAG = "GOALS — OUTPUT C (odds 2.50–3.99)";
 
 /** Builds an LLMCallContext for the Sonnet screening stage (goalsFunnel.ts) —
  *  same shape every other Claude-calling call site in this worker builds inline. */
@@ -675,6 +685,7 @@ async function sendGoalsSlip(
     odds: l.odds,
     stakePct: 0, // accumulator leg — no per-leg Kelly stake
     confidence: l.mp,
+    edge: l.edge,
     ...(l.eventId ? { eventId: l.eventId } : {}),
   }));
 
@@ -719,9 +730,8 @@ async function sendGoalsSlip(
   return summary;
 }
 
-/** Shared tail: turn a goals selection (BOTH slips) into two independent
- *  notify/booking/heartbeat cycles — top picks (short, high-confidence slip)
- *  sent first, then the 39-leg lottery slip. */
+/** Shared tail: turn a full goals selection into FIVE independent notify/booking
+ *  cycles — top picks, 39-leg lottery, mini-ACCA, Output B, Output C. */
 async function finalizeGoalsSelection(
   selection: GoalsSelectionResult,
   date: string,
@@ -730,10 +740,12 @@ async function finalizeGoalsSelection(
 ): Promise<void> {
   process.stdout.write(
     `[goals] long=${selection.legs.length}/${selection.target} short=${selection.shortSlipLegs.length} ` +
+      `miniAcca=${selection.miniAccaLegs.length} outputB=${selection.outputBLegs.length} outputC=${selection.outputCLegs.length} ` +
       `(over15=${selection.counts.over15} over25=${selection.counts.over25} ` +
       `teamover05=${selection.counts.teamOver05}; qualified=${selection.qualified} of ${selection.analysed})\n`
   );
 
+  // 1. Top picks — short, EV-maximized, 4-9 legs (high-confidence bar).
   const topPicks = await sendGoalsSlip(
     selection.shortSlipLegs,
     TOP_PICKS_TAG,
@@ -745,6 +757,7 @@ async function finalizeGoalsSelection(
     "top-picks"
   );
 
+  // 2. Lottery — long slip, up to 39 legs, greedy correlation-aware.
   const lottery = await sendGoalsSlip(
     selection.legs,
     LOTTERY_TAG,
@@ -756,11 +769,60 @@ async function finalizeGoalsSelection(
     "lottery"
   );
 
+  // 3. Mini-ACCA — 2-4 legs, one per league, highest edge (always sent; if <2
+  //    legs available the slip arrives as "no picks" rather than being skipped,
+  //    consistent with the empty-slip notification pattern above).
+  await sendGoalsSlip(
+    selection.miniAccaLegs,
+    MINI_ACCA_TAG,
+    date,
+    selection.analysed,
+    errorCount,
+    selection.miniAccaCombinedProb,
+    selection.miniAccaCombinedOdds,
+    "mini-acca"
+  );
+
+  // 4. Output B — top 5 legs with odds ≥ 4.00 (value/longshot tier).
+  if (selection.outputBLegs.length > 0) {
+    const bProb = selection.outputBLegs.reduce((acc, l) => acc * l.mp, 1);
+    const bOdds = selection.outputBLegs.reduce((acc, l) => acc * l.odds, 1);
+    await sendGoalsSlip(
+      selection.outputBLegs,
+      OUTPUT_B_TAG,
+      date,
+      selection.analysed,
+      errorCount,
+      bProb,
+      bOdds,
+      "output-b"
+    );
+  }
+
+  // 5. Output C — top 3 legs with 2.50 ≤ odds < 4.00 (mid-range value tier).
+  if (selection.outputCLegs.length > 0) {
+    const cProb = selection.outputCLegs.reduce((acc, l) => acc * l.mp, 1);
+    const cOdds = selection.outputCLegs.reduce((acc, l) => acc * l.odds, 1);
+    await sendGoalsSlip(
+      selection.outputCLegs,
+      OUTPUT_C_TAG,
+      date,
+      selection.analysed,
+      errorCount,
+      cProb,
+      cOdds,
+      "output-c"
+    );
+  }
+
   writeHeartbeat("lastGoalsBatch", {
     trigger,
     analysed: selection.analysed,
     topPicksLegs: selection.shortSlipLegs.length,
     lotteryLegs: selection.legs.length,
+    miniAccaLegs: selection.miniAccaLegs.length,
+    outputBLegs: selection.outputBLegs.length,
+    outputCLegs: selection.outputCLegs.length,
     target: selection.target,
     topPicksBooked: Boolean(topPicks.bookingCode),
     lotteryBooked: Boolean(lottery.bookingCode),
@@ -788,8 +850,26 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
     return;
   }
 
-  process.stdout.write(`[goals] funnel: ${index.events.length} raw SportyBet fixtures\n`);
-  const funnelResult = await runGoalsFunnel(index.events, {
+  // Filter to future kickoffs only — mirrors selectFixtures.ts:546-551.
+  // Fixtures that have already started (ko ≤ now) cannot be booked; keeping
+  // them pollutes the funnel, wastes LLM quota, and can produce stale slips.
+  // Fail-open for events with no kickoff_utc (they appear on SportyBet as
+  // "TBD" or intra-day entries without a confirmed time — keep them rather
+  // than silently dropping potentially valid fixtures).
+  const now = new Date();
+  const futureEvents = index.events.filter((ev) => {
+    if (!ev.kickoff_utc) return true;
+    const ko = new Date(ev.kickoff_utc).getTime();
+    return Number.isFinite(ko) && ko > now.getTime();
+  });
+  process.stdout.write(
+    `[goals] funnel: ${index.events.length} raw SportyBet fixtures → ${futureEvents.length} future KOs\n`
+  );
+  if (!futureEvents.length) {
+    process.stdout.write("[goals] no future-kickoff fixtures — skipping\n");
+    return;
+  }
+  const funnelResult = await runGoalsFunnel(futureEvents, {
     llmCtx: buildLlmCtx(),
   });
   process.stdout.write(
@@ -925,9 +1005,25 @@ if (!IS_ONE_SHOT) {
     })
   );
 
-  // Standalone fixture scrape — 11:45am only now; the 00:00 slot moved to the
-  // fuller acquireDailyJob above (lake + sidecar + news).
-  cron.schedule("45 11 * * *", () => logJob("scrape-fixtures@11:45", scrapeFixtures));
+  // Daily SportyBet scrape — 09:30 WAT (= 08:30 UTC). Bookmakers finalise their
+  // morning lines and player props by ~09:00 WAT; 09:30 hits after the morning sync
+  // completes and avoids the on-the-hour server spike. Back-online: if the machine
+  // was off at this slot, checkHeartbeatFreshness fires acquireDailyJob + goals
+  // immediately on daemon restart (see LAKE_STALE_MS trigger above).
+  cron.schedule("30 8 * * *", () =>
+    logJob("acquire-daily@09:30-WAT", async () => {
+      await acquireDailyJob();
+      await sendDailyFixtureReport();
+    })
+  );
+
+  // Goals-ACCA trigger — 09:40 WAT (= 08:40 UTC), 10 min after scrape starts.
+  // runGoalsBatch reads the SportyBet index written by acquireDailyJob; if the
+  // scrape is still in progress (in-flight guard) it waits for it via loadSportyBetIndex
+  // fallback + scrapeFixtures() call inside runGoalsBatch itself.
+  cron.schedule("40 8 * * *", () =>
+    logJob("goals-batch@09:40-WAT", () => runGoalsBatch("scheduled"))
+  );
 
   // Main all-markets daily batch (06:00) — independent of the goals pipeline
   // above (no longer chained/derived). Its internal scrape is gap-fill-only —

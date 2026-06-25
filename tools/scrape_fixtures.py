@@ -30,6 +30,7 @@ import asyncio
 import html
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -1657,7 +1658,8 @@ class SportyBetScraper:
             await page.goto(self.PAGE_URL, wait_until="domcontentloaded", timeout=40_000)
             await page.wait_for_timeout(3_000)
 
-            # If the first page indicates more results, fetch remaining pages directly
+            # If the first page indicates more results, fetch remaining pages directly.
+            # Delay 3–7 s between requests to avoid rate-limiting / IP blocks.
             if api_pages:
                 first = api_pages[0]
                 total = first.get("data", {}).get("totalNum", 0)
@@ -1666,6 +1668,7 @@ class SportyBetScraper:
                 # Fetch up to 10 additional pages to be safe
                 page_num = 2
                 while fetched < total and page_num <= 10:
+                    await asyncio.sleep(random.uniform(3, 7))
                     try:
                         url = self.API_BASE.format(page=page_num) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
                         resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
@@ -1680,12 +1683,14 @@ class SportyBetScraper:
             # Secondary sweep: todayGames=false&timeline=1 — catches WC/tournament
             # fixtures that the todayGames=true endpoint omits (e.g. World Cup groups
             # served under separate tournament headers on SportyBet).
+            # Same 3–7 s random throttle between pages applies to each sweep.
             for sweep_label, sweep_base, sweep_max_pages in [
                 ("upcoming-1d", self.API_BASE_UPCOMING, 5),
                 ("upcoming-3d", self.API_BASE_3DAY, 5),
             ]:
                 sweep_pages: list[dict] = []
                 try:
+                    await asyncio.sleep(random.uniform(3, 7))
                     url = sweep_base.format(page=1) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
                     resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
                     if resp:
@@ -1695,6 +1700,7 @@ class SportyBetScraper:
                         fetched_sw = len(first_sw.get("data", {}).get("tournaments", []))
                         page_num_sw = 2
                         while fetched_sw < total_sw and page_num_sw <= sweep_max_pages:
+                            await asyncio.sleep(random.uniform(3, 7))
                             try:
                                 url = sweep_base.format(page=page_num_sw) + f"&_t={int(datetime.now(tz=timezone.utc).timestamp() * 1000)}"
                                 resp = await page.goto(url, wait_until="domcontentloaded", timeout=15_000)
