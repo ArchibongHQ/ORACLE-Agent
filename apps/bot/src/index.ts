@@ -642,19 +642,28 @@ async function handleGoalsRun(chatId: string): Promise<void> {
     "⚽ *Triggering goals ACCA run…*\nScrape → funnel → 5 slips → Telegram. Takes 2–5 min."
   );
   const workerDist = join(ROOT, "apps", "worker", "dist", "index.js");
-  execFile(process.execPath, [workerDist, "--run-goals-now"], { cwd: ROOT }, async (err) => {
-    if (err) {
-      await sendTo(
-        chatId,
-        `⚠️ Goals run failed: \`${err.message.slice(0, 300)}\`\nCheck worker logs.`
-      );
-    } else {
-      await sendTo(
-        chatId,
-        "✅ Goals ACCA run complete — slips sent to Telegram. Use /goals for the summary."
-      );
+  // --max-old-space-size=2048: this box SIGKILLs the default-heap goals run mid-funnel
+  // (Windows OOM — see oracle_turbo_oom_windows memory). The funnel loads the full
+  // SportyBet pool + per-fixture analysis; a 2 GB old-space cap lets V8 GC under
+  // pressure instead of the process being killed before reaching slip dispatch.
+  execFile(
+    process.execPath,
+    ["--max-old-space-size=2048", workerDist, "--run-goals-now"],
+    { cwd: ROOT },
+    async (err) => {
+      if (err) {
+        await sendTo(
+          chatId,
+          `⚠️ Goals run failed: \`${err.message.slice(0, 300)}\`\nCheck worker logs.`
+        );
+      } else {
+        await sendTo(
+          chatId,
+          "✅ Goals ACCA run complete — slips sent to Telegram. Use /goals for the summary."
+        );
+      }
     }
-  });
+  );
 }
 
 async function handleScrape(chatId: string): Promise<void> {
