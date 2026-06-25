@@ -11,6 +11,7 @@
 
 import {
   CalibrationEngine,
+  applyPlatt,
   expectedCalibrationError,
   logLoss,
   plattScale,
@@ -530,5 +531,28 @@ describe("plattScale (PS-1 — PS-3)", () => {
     const params = plattScale(scores, labels);
     const calibrated = 1 / (1 + Math.exp(params.a * 0.8 + params.b));
     expect(calibrated).toBeLessThan(0.8);
+  });
+});
+
+describe("applyPlatt (AP-1 — AP-3)", () => {
+  it("AP-1: identity params {a:-1, b:0} leave score unchanged for midpoint", () => {
+    // 1/(1+exp(-1*0 + 0)) = 0.5 exactly
+    const p = applyPlatt(0, { a: -1, b: 0 });
+    expect(p).toBeCloseTo(0.5, 5);
+  });
+
+  it("AP-2: result is always clamped to [0, 1]", () => {
+    expect(applyPlatt(1e9, { a: -100, b: 0 })).toBeLessThanOrEqual(1);
+    expect(applyPlatt(-1e9, { a: -100, b: 0 })).toBeGreaterThanOrEqual(0);
+  });
+
+  it("AP-3: applies fitted params from plattScale consistently", () => {
+    const scores = [0.2, 0.5, 0.7, 0.8, 0.9, 0.3, 0.6, 0.4, 0.75, 0.85];
+    const labels = [0, 0, 1, 1, 1, 0, 1, 0, 1, 1];
+    const params = plattScale(scores, labels);
+    const p = applyPlatt(0.7, params);
+    expect(p).toBeGreaterThanOrEqual(0);
+    expect(p).toBeLessThanOrEqual(1);
+    expect(Number.isFinite(p)).toBe(true);
   });
 });
