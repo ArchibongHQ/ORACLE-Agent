@@ -33,6 +33,7 @@ import {
   MAX_GOALS,
   maxCrossFixtureCorrelation,
   monteCarlo,
+  negativeBinomialPMF,
   optimizedKelly,
   type PortfolioLeg,
   pairwiseCrossFixtureCorrelation,
@@ -43,6 +44,7 @@ import {
   safeNum,
   secondDigitFreq,
   selectPortfolioCombos,
+  simulateRuin,
 } from "@oracle/engine";
 import { describe, expect, it } from "vitest";
 
@@ -801,5 +803,71 @@ describe("selectPortfolioCombos", () => {
     const result = selectPortfolioCombos(shortlist, odds, 2, 2);
     expect(result).not.toBeNull();
     expect(result!.combo).toHaveLength(2);
+  });
+});
+
+describe("NEGATIVE BINOMIAL PMF (NB-1 — NB-5)", () => {
+  it("NB-1: sums to ~1 over 0..20 goals", () => {
+    let total = 0;
+    for (let k = 0; k <= 20; k++) total += negativeBinomialPMF(k, 1.5, 10);
+    expect(total).toBeGreaterThan(0.99);
+  });
+
+  it("NB-2: returns a positive probability for k=0,1,2", () => {
+    expect(negativeBinomialPMF(0, 1.5, 10)).toBeGreaterThan(0);
+    expect(negativeBinomialPMF(1, 1.5, 10)).toBeGreaterThan(0);
+    expect(negativeBinomialPMF(2, 1.5, 10)).toBeGreaterThan(0);
+  });
+
+  it("NB-3: converges toward Poisson as r → very large", () => {
+    const poisP2 = poissonPMF(2, 1.5);
+    const nbP2 = negativeBinomialPMF(2, 1.5, 1000);
+    expect(Math.abs(nbP2 - poisP2)).toBeLessThan(0.001);
+  });
+
+  it("NB-4: has higher P(0) than Poisson (overdispersion inflates zero mass)", () => {
+    // NB with moderate r should put more mass on 0 than Poisson at the same mean.
+    const poisP0 = poissonPMF(0, 1.5);
+    const nbP0 = negativeBinomialPMF(0, 1.5, 5);
+    expect(nbP0).toBeGreaterThan(poisP0);
+  });
+
+  it("NB-5: buildMatrix with nbDispersion produces a normalised matrix", () => {
+    const mat = buildMatrix(1.5, 1.2, -0.13, false, 0.08, 0, 10);
+    let sum = 0;
+    for (const row of mat) for (const v of row) sum += v;
+    expect(sum).toBeCloseTo(1, 4);
+  });
+});
+
+describe("simulateRuin (MCR-1 — MCR-5)", () => {
+  it("MCR-1: certain loss (winProb=0) → ruin ≈ 1", () => {
+    const r = simulateRuin(0, 0.1, 1.0, 200);
+    expect(r).toBeGreaterThan(0.95);
+  });
+
+  it("MCR-2: certain win (winProb=1) → ruin ≈ 0", () => {
+    const r = simulateRuin(1, 0.1, 1.0, 200);
+    expect(r).toBeLessThan(0.05);
+  });
+
+  it("MCR-3: fair coin (winProb=0.5) → ruin in (0, 1)", () => {
+    const r = simulateRuin(0.5, 0.1, 1.0, 5000);
+    expect(r).toBeGreaterThan(0);
+    expect(r).toBeLessThan(1);
+  });
+
+  it("MCR-4: larger bankroll relative to stake → lower ruin probability", () => {
+    const rSmall = simulateRuin(0.48, 0.2, 1.0, 2000);
+    const rLarge = simulateRuin(0.48, 0.05, 1.0, 2000);
+    expect(rLarge).toBeLessThan(rSmall);
+  });
+
+  it("MCR-5: result is always in [0, 1]", () => {
+    for (const wp of [0, 0.3, 0.5, 0.7, 1]) {
+      const r = simulateRuin(wp, 0.1, 1.0, 100);
+      expect(r).toBeGreaterThanOrEqual(0);
+      expect(r).toBeLessThanOrEqual(1);
+    }
   });
 });

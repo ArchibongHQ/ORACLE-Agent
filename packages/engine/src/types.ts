@@ -120,6 +120,9 @@ export interface OracleConfig {
   rankingMode?: RankingMode; // default CONFIDENCE_WEIGHTED
   useBivariatePoisson?: boolean; // PRD §8.1, default false
   useSkellam?: boolean; // PRD §8.2, default false
+  useNegBinom?: boolean; // NB overdispersion in score marginals, default false
+  nbDispersion?: number; // NB dispersion param r (default 10; larger → closer to Poisson)
+  useMCRuin?: boolean; // blend simulated ruin probability into varMultiplier, default false
   costCeilingUsd?: { perRun: number; perDay: number }; // PRD §11A.4
   // Feature flags (Phase 1+, all default false/undefined)
   usePiRatingsCanonical?: boolean;
