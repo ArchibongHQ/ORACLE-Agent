@@ -10,6 +10,8 @@ export interface CalibrationMetrics {
   recentBrier: number;
   rps: number | null;
   recentRPS: number | null;
+  logLoss: number | null;
+  ece: number | null;
   clv: number;
   roi: number;
   calibFactor: number;
@@ -204,6 +206,8 @@ export class CalibrationEngine {
       recentBrier: 0,
       rps: null,
       recentRPS: null,
+      logLoss: null,
+      ece: null,
       clv: 0,
       roi: 0,
       calibFactor: 1.0,
@@ -398,6 +402,15 @@ export class CalibrationEngine {
     const overallRPS = rpsN > 0 ? rpsSum / rpsN : null;
     const recentRPS = rpsBets.length > 0 ? rpsRecentSum / Math.min(15, rpsBets.length) : null;
 
+    // §8.4+ log-loss and ECE over resolved bets that have mp (predicted win prob) + binary outcome
+    const llBets = nonPush.filter(
+      (b) => typeof b.mp === "number" && (b.outcome === "win" || b.outcome === "loss")
+    );
+    const llProbs = llBets.map((b) => b.mp!);
+    const llLabels = llBets.map((b) => (b.outcome === "win" ? 1 : 0));
+    const overallLogLoss = llBets.length >= 10 ? logLoss(llProbs, llLabels) : null;
+    const overallEce = llBets.length >= 10 ? expectedCalibrationError(llProbs, llLabels) : null;
+
     const calibFactor =
       nonPush.length >= MIN_CALIB
         ? Math.max(0.5, Math.min(1.2, wins / Math.max(0.001, pSum)))
@@ -497,6 +510,8 @@ export class CalibrationEngine {
       recentBrier: recentBrier ?? 0,
       rps: overallRPS,
       recentRPS,
+      logLoss: overallLogLoss,
+      ece: overallEce,
       clv: res.length > 0 ? cSum / res.length : 0,
       roi: stk > 0 ? pnl / stk : 0,
       calibFactor,
@@ -504,9 +519,10 @@ export class CalibrationEngine {
       leagueData: { ...lData, _leagueCalibFactors: leagueCalibFactors },
       bbnParams,
       driftAlert:
-        overallRPS != null && recentRPS != null
+        (overallEce != null && overallEce > 0.05) ||
+        (overallRPS != null && recentRPS != null
           ? recentRPS > overallRPS + 0.02
-          : recentBrier > overallBrier + 0.05,
+          : recentBrier > overallBrier + 0.05),
       winRate: winRateCalc,
       totalPnl: pnl,
       totalStaked: stk,
@@ -752,4 +768,85 @@ export function isotonicCalibrateFp(
   const total = rawH + rawD + rawA;
   if (total <= 0) return fp;
   return { home: rawH / total, draw: rawD / total, away: rawA / total };
+}
+
+// ── §8.4+ Platt scaling + ECE + log-loss ─────────────────────────────────────
+
+/** Log-loss (binary cross-entropy) over a set of probability/label pairs.
+ *  probs[i] = P(label=1); labels[i] ∈ {0, 1}.
+ *  eps clamp prevents log(0). */
+export function logLoss(probs: number[], labels: number[], eps = 1e-7): number {
+  if (probs.length === 0 || probs.length !== labels.length) return NaN;
+  let sum = 0;
+  for (let i = 0; i < probs.length; i++) {
+    const p = clamp(probs[i]!, eps, 1 - eps);
+    sum += -(labels[i]! * Math.log(p) + (1 - labels[i]!) * Math.log(1 - p));
+  }
+  return sum / probs.length;
+}
+
+/** Expected Calibration Error — bucket-based reliability diagram metric.
+ *  Splits [0,1] into `bins` equal-width buckets, returns weighted mean
+ *  |mean(predicted) − mean(actual)| across occupied buckets.
+ *  Lower is better; 0 = perfectly calibrated; > 0.05 triggers the drift alert. */
+export function expectedCalibrationError(probs: number[], labels: number[], bins = 10): number {
+  if (probs.length === 0 || probs.length !== labels.length) return NaN;
+  const n = probs.length;
+  const buckets: Array<{ sumP: number; sumL: number; count: number }> = Array.from(
+    { length: bins },
+    () => ({ sumP: 0, sumL: 0, count: 0 })
+  );
+  for (let i = 0; i < n; i++) {
+    const p = clamp(probs[i]!, 0, 1);
+    const b = Math.min(Math.floor(p * bins), bins - 1);
+    buckets[b]!.sumP += p;
+    buckets[b]!.sumL += labels[i]!;
+    buckets[b]!.count++;
+  }
+  let ece = 0;
+  for (const bk of buckets) {
+    if (bk.count === 0) continue;
+    const avgP = bk.sumP / bk.count;
+    const avgL = bk.sumL / bk.count;
+    ece += (bk.count / n) * Math.abs(avgP - avgL);
+  }
+  return ece;
+}
+
+export interface PlattParams {
+  a: number;
+  b: number;
+}
+
+/** Platt scaling — fits a logistic sigmoid f(x) = 1/(1+exp(a·x+b)) to
+ *  (raw_score, label) pairs via 20 steps of gradient descent (lr=0.01).
+ *  Initialises a=−1, b=0 (identity logit). Returns {a, b}.
+ *
+ *  Usage: calibratedP = 1/(1+exp(a*rawScore + b))
+ *
+ *  Convergence is fast for typical n<500 football datasets; 20 steps keeps
+ *  this synchronous and sub-millisecond. Caller should verify loss decreases. */
+export function plattScale(scores: number[], labels: number[], steps = 20, lr = 0.01): PlattParams {
+  if (scores.length === 0 || scores.length !== labels.length) return { a: -1, b: 0 };
+  let a = -1,
+    b = 0;
+  const n = scores.length;
+  for (let step = 0; step < steps; step++) {
+    let dA = 0,
+      dB = 0;
+    for (let i = 0; i < n; i++) {
+      const p = 1 / (1 + Math.exp(a * scores[i]! + b));
+      const err = p - labels[i]!;
+      dA += err * scores[i]!;
+      dB += err;
+    }
+    a -= (lr * dA) / n;
+    b -= (lr * dB) / n;
+  }
+  return { a, b };
+}
+
+/** Apply Platt calibration to a raw score using fitted {a, b}. */
+export function applyPlatt(rawScore: number, params: PlattParams): number {
+  return clamp(1 / (1 + Math.exp(params.a * rawScore + params.b)), 0, 1);
 }

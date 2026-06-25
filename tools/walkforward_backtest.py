@@ -26,6 +26,7 @@ import json
 import math
 import os
 import random
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -165,27 +166,104 @@ def compute_rps_series(pairs: list) -> list:
     return scores
 
 
-# ── Candidate RPS (apply config delta — currently only flag-based changes) ───
+# ── Engine bridge — re-runs the TS engine with a config patch ────────────────
 
-def compute_candidate_rps_series(pairs: list, config_delta: dict) -> list:
-    """
-    Applies a config delta and re-evaluates RPS.
-    For flag-only changes (e.g. useBivariatePoisson), we cannot re-run the TS engine
-    from Python, so we report that a live re-run is required for non-trivial deltas.
+_BRIDGE_JS = os.path.join(
+    os.path.dirname(__file__), "..", "apps", "cli", "dist", "engine-bridge.js"
+)
 
-    For trivial deltas (no model-output-changing flags set), the candidate equals baseline.
-    """
-    model_flags = {"useBivariatePoisson", "useSkellam", "enableCalibratedZip",
-                   "quarantineMarketVelocity", "rankingMode"}
-    if any(k in config_delta for k in model_flags):
+def _run_engine_bridge(state: dict, config_patch: dict) -> dict | None:
+    """Calls the engine-bridge Node.js shim with the given RunState and config patch.
+    Returns the RunResult dict, or None on any error (fail-open — caller uses baseline)."""
+    bridge = os.path.abspath(_BRIDGE_JS)
+    if not os.path.exists(bridge):
         print(
-            f"[backtest] Config delta {config_delta} changes model output. "
-            "Re-run with --rerun-engine to execute the full TS engine per fixture "
-            "(requires Node.js; not yet implemented in this Python harness).\n"
-            "[backtest] Falling back to stored probabilities — candidate = baseline for this run.",
+            f"[backtest] engine-bridge not found at {bridge}. "
+            "Run `pnpm --filter @oracle/cli build` first.",
             file=sys.stderr,
         )
-    return compute_rps_series(pairs)
+        return None
+    try:
+        result = subprocess.run(
+            ["node", bridge, "--state", json.dumps(state), "--config-patch", json.dumps(config_patch)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(f"[backtest] engine-bridge exit {result.returncode}: {result.stderr.strip()}", file=sys.stderr)
+            return None
+        return json.loads(result.stdout.strip())
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError) as e:
+        print(f"[backtest] engine-bridge error: {e}", file=sys.stderr)
+        return None
+
+
+def _extract_fp_from_run_result(run_result: dict) -> dict | None:
+    """Extracts {home, draw, away} win probabilities from a RunResult dict."""
+    markets = run_result.get("markets") or []
+    for m in markets:
+        if m.get("marketType") == "1X2" or m.get("type") == "1X2":
+            fp = m.get("fp") or m.get("probabilities")
+            if fp and "home" in fp and "draw" in fp and "away" in fp:
+                return fp
+    # Fall back to top-level fp field if present
+    fp = run_result.get("fp") or run_result.get("probabilities")
+    if fp and "home" in fp:
+        return fp
+    return None
+
+
+# ── Candidate RPS (apply config delta via engine bridge) ─────────────────────
+
+def compute_candidate_rps_series(pairs: list, config_delta: dict, store_dir: Path | None = None) -> list:
+    """
+    Applies a config delta and re-evaluates RPS by re-running the TS engine
+    via engine-bridge.js for model-changing flags.
+
+    For trivial deltas (empty or non-model flags), candidate equals baseline.
+    Falls back to stored baseline probabilities if the bridge is unavailable or fails.
+    """
+    model_flags = {"useBivariatePoisson", "useSkellam", "enableCalibratedZip",
+                   "quarantineMarketVelocity", "rankingMode", "useNegBinom",
+                   "nbDispersion", "useMCRuin"}
+    needs_rerun = any(k in config_delta for k in model_flags)
+
+    if not needs_rerun:
+        return compute_rps_series(pairs)
+
+    if not os.path.exists(os.path.abspath(_BRIDGE_JS)):
+        print(
+            f"[backtest] Config delta {config_delta} requires engine re-run but "
+            "engine-bridge not built. Run `pnpm --filter @oracle/cli build`. "
+            "Falling back to baseline.",
+            file=sys.stderr,
+        )
+        return compute_rps_series(pairs)
+
+    scores = []
+    bridge_failures = 0
+    for a, r in pairs:
+        state = a.get("runState") or a.get("state") or {}
+        outcome = r.get("result", {}).get("outcome") or r.get("actualResult") or ""
+        if outcome not in ("home", "draw", "away") or not state:
+            continue
+        run_result = _run_engine_bridge(state, config_delta)
+        if run_result is None:
+            bridge_failures += 1
+            probs = a.get("probabilities", {})
+            if probs and outcome in ("home", "draw", "away"):
+                scores.append(rps(probs, outcome))
+            continue
+        fp = _extract_fp_from_run_result(run_result)
+        if fp:
+            scores.append(rps(fp, outcome))
+        else:
+            probs = a.get("probabilities", {})
+            if probs:
+                scores.append(rps(probs, outcome))
+
+    if bridge_failures > 0:
+        print(f"[backtest] {bridge_failures} fixtures fell back to baseline (bridge error).", file=sys.stderr)
+    return scores
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -236,7 +314,7 @@ def main():
         sys.exit(1)
 
     baseline_rps  = compute_rps_series(test_pairs)
-    candidate_rps = compute_candidate_rps_series(test_pairs, args.config_delta)
+    candidate_rps = compute_candidate_rps_series(test_pairs, args.config_delta, store_dir)
 
     if not baseline_rps:
         print("[backtest] No valid RPS scores in test window.", file=sys.stderr)
