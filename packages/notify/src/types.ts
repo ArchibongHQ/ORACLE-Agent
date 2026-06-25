@@ -11,6 +11,9 @@ export interface ActionablePick {
   odds: number;
   stakePct: number;
   confidence: number;
+  /** Model edge (mp − ip) — present on goals-accumulator legs, undefined on
+   *  main-batch picks (which use Kelly stake sizing instead). */
+  edge?: number;
   /** SportyBet/Sportradar event ID (e.g. "sr:match:66456926") — lets the booking
    *  agent navigate directly to the fixture detail page rather than scanning the
    *  paginated listing DOM, which only renders currently-visible fixtures. */
@@ -74,6 +77,15 @@ export function summarizeBatch(batch: BatchResult, reportUrl?: string): BatchSum
   };
 }
 
+/** Confidence tier label derived from model edge (mp − ip).
+ *  Aligns with the industry-standard 5/7/10% edge classification for sports betting. */
+function goalsEdgeLabel(edge: number): string {
+  if (edge >= 0.1) return "Very High";
+  if (edge >= 0.07) return "High";
+  if (edge >= 0.05) return "Medium";
+  return "Low";
+}
+
 /** Plain-text / Markdown rendering for chat channels (Telegram, Slack). */
 export function formatSummaryText(s: BatchSummary): string {
   const lines = s.alertText ? [`⚠️ *ORACLE alert* — ${s.alertText}`] : [];
@@ -85,8 +97,12 @@ export function formatSummaryText(s: BatchSummary): string {
   } else {
     for (const p of s.actionable) {
       const side = p.side ? ` (${p.side})` : "";
+      const edgePart =
+        p.edge !== undefined
+          ? ` · *${goalsEdgeLabel(p.edge)}* edge (+${(p.edge * 100).toFixed(1)}%)`
+          : ` · ${p.stakePct.toFixed(1)}% Kelly`;
       lines.push(
-        `• ${p.home} vs ${p.away} — ${p.market}${side} @ ${p.odds} · ${p.stakePct.toFixed(1)}% Kelly · ${(p.confidence * 100).toFixed(0)}% conf`
+        `• ${p.home} vs ${p.away} — ${p.market}${side} @ ${p.odds} · ${(p.confidence * 100).toFixed(0)}% conf${edgePart}`
       );
     }
   }

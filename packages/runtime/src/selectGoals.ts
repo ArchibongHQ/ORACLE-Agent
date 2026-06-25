@@ -57,6 +57,13 @@ export const DEFAULT_GOALS_MIN_CONFIDENCE = 0.72;
 export const DEFAULT_GOALS_MIN_IMPLIED = 0;
 export const DEFAULT_GOALS_TARGET_LEGS = 39;
 
+/** Minimum model-over-market edge (mp − ip) required for a leg to enter any slip.
+ *  Tightens the existing mp > ip requirement: a 3% edge is not a bet worth placing
+ *  in an accumulator context where compounding errors cost more than the small edge
+ *  recovers. 5% is a well-established minimum for positive-expectation sports betting
+ *  (Shin 1991; Stöckl et al. 2014). */
+export const MIN_GOALS_EDGE = 0.05;
+
 export interface GoalsSelectOptions {
   /** Model-probability (`mp`) floor per leg. Default 0.72. */
   minConfidence?: number;
@@ -86,6 +93,8 @@ export interface GoalsLeg {
   mp: number;
   /** Implied probability (1/odds). */
   ip: number;
+  /** Model edge: mp − ip. Always ≥ MIN_GOALS_EDGE for admitted legs. */
+  edge: number;
   /** SportyBet / Sportradar event ID (e.g. "sr:match:66456926") — used by the
    *  booking agent to navigate directly to the fixture detail page, bypassing
    *  the listing-page scroll that only shows fixtures visible in the DOM. */
@@ -112,6 +121,18 @@ export interface GoalsSelectionResult {
   /** Same for the short slip. */
   shortSlipCombinedProb: number;
   shortSlipCombinedOdds: number;
+  /** Output B — top 5 legs with decimal odds ≥ 4.00, ranked by edge descending. */
+  outputBLegs: GoalsLeg[];
+  /** Output C — top 3 legs with 2.50 ≤ odds < 4.00, ranked by edge descending. */
+  outputCLegs: GoalsLeg[];
+  /** Mini-ACCA — 2–4 highest-edge legs from strictly distinct leagues (no league repeat).
+   *  Intended as the lowest-correlation, highest-confidence same-day combo. */
+  miniAccaLegs: GoalsLeg[];
+  /** Naive joint probability for the mini-ACCA (product of mp values — no copula
+   *  correction; mini-ACCA is defined to be low-correlation by construction). */
+  miniAccaCombinedProb: number;
+  /** Combined decimal odds for the mini-ACCA (product of leg odds). */
+  miniAccaCombinedOdds: number;
 }
 
 type Side = "home" | "away";
@@ -201,10 +222,11 @@ export function pickSafestGoalsLeg(
   const all = job.result.evMarkets ?? [];
   const sGoals = all.filter((m: EVMarket) => GOALS_MARKETS.has(m.label));
   const sVeto = sGoals.filter((m: EVMarket) => !m.veto);
-  // Confidence floor + positive model edge (mp > ip). The implied floor is opt-in
-  // (default 0) — see DEFAULT_GOALS_MIN_IMPLIED for why a hard price floor is off.
+  // Confidence floor + minimum 5% model edge (mp − ip ≥ MIN_GOALS_EDGE). The
+  // implied floor is opt-in (default 0) — see DEFAULT_GOALS_MIN_IMPLIED for why a
+  // hard price floor is off. MIN_GOALS_EDGE supersedes the old `mp > ip` check.
   const sBars = sVeto.filter(
-    (m: EVMarket) => m.mp >= minConfidence && m.mp > m.ip && m.ip >= minImplied
+    (m: EVMarket) => m.mp >= minConfidence && m.mp - m.ip >= MIN_GOALS_EDGE && m.ip >= minImplied
   );
   const candidates = sBars.filter((m: EVMarket) => goalsDataGate(detail, job.league, m.label));
 
@@ -230,6 +252,7 @@ export function pickSafestGoalsLeg(
     odds: best.odds,
     mp: best.mp,
     ip: best.ip,
+    edge: best.mp - best.ip,
     ...(eventId ? { eventId } : {}),
   };
 }
@@ -326,6 +349,22 @@ function buildShortSlip(ranked: GoalsLeg[], maxLegs: number): GoalsLeg[] {
   return pool.filter((l) => comboKeys.has(`${l.home}|${l.away}`));
 }
 
+/** Greedily picks the highest-edge legs with no league repeat — used for the
+ *  mini-ACCA where strict cross-league independence is the primary requirement.
+ *  Legs must already be sorted by descending edge before calling this. */
+function forceDiverseLeaguesSlice(byEdge: GoalsLeg[], maxLegs: number): GoalsLeg[] {
+  const seen = new Set<string>();
+  const result: GoalsLeg[] = [];
+  for (const leg of byEdge) {
+    if (result.length >= maxLegs) break;
+    if (!seen.has(leg.league)) {
+      seen.add(leg.league);
+      result.push(leg);
+    }
+  }
+  return result;
+}
+
 const SHORT_SLIP_MIN = 4;
 const SHORT_SLIP_MAX = 9;
 /** A leg clearing this mp bar counts as "data-backed, fact-checked, high
@@ -384,6 +423,23 @@ export function selectGoalsAccumulator(
   const shortSlipCombinedProb = jointProb(shortSlipLegs);
   const shortSlipCombinedOdds = shortSlipLegs.reduce((acc, l) => acc * l.odds, 1);
 
+  // ── Three derived outputs (edge-ranked) ───────────────────────────────────
+  // Sort all qualified legs by edge descending (edge = mp − ip, populated above).
+  const allByEdge = [...all].sort((a, b) => b.edge - a.edge);
+
+  // Output B: high-value legs (odds ≥ 4.00), top 5 by edge.
+  const outputBLegs = allByEdge.filter((l) => l.odds >= 4.0).slice(0, 5);
+
+  // Output C: mid-range legs (2.50 ≤ odds < 4.00), top 3 by edge.
+  const outputCLegs = allByEdge.filter((l) => l.odds >= 2.5 && l.odds < 4.0).slice(0, 3);
+
+  // Mini-ACCA: 2–4 highest-edge legs, one per league (strict diversity).
+  const miniAccaLegs = forceDiverseLeaguesSlice(allByEdge, 4);
+  // Naive joint probability (product of mp) — mini-ACCA is cross-league by
+  // construction so copula correction is negligible (rho ≈ 0 between leagues).
+  const miniAccaCombinedProb = miniAccaLegs.reduce((acc, l) => acc * l.mp, 1);
+  const miniAccaCombinedOdds = miniAccaLegs.reduce((acc, l) => acc * l.odds, 1);
+
   return {
     legs,
     shortSlipLegs,
@@ -395,5 +451,10 @@ export function selectGoalsAccumulator(
     combinedOdds,
     shortSlipCombinedProb,
     shortSlipCombinedOdds,
+    outputBLegs,
+    outputCLegs,
+    miniAccaLegs,
+    miniAccaCombinedProb,
+    miniAccaCombinedOdds,
   };
 }

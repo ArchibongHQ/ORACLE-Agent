@@ -436,7 +436,7 @@ async function applySelection(
     // runtime never populated — and the full stats block as LLM soft context
     // (kind: "stats"). Both derive purely from `detail`, so safe to (re)compute
     // even when statsEnrich above was skipped as already-merged — idempotent.
-    const statsOverride = buildStatsOverride(detail);
+    const statsOverride = buildStatsOverride(detail, job.league);
     const statsContext = buildStatsSoftContext(detail);
     const softMerge = statsContext.length
       ? { softContext: [...existingSoft, ...statsContext] }
@@ -1177,7 +1177,7 @@ export async function fetchFixtureByName(
         if (detail?.odds?.["1x2"]) {
           const flat = flattenSidecarOdds(detail);
           if (flat.home && flat.away) {
-            const statsOverride = buildStatsOverride(detail);
+            const statsOverride = buildStatsOverride(detail, sidecarLeague);
             const statsContext = buildStatsSoftContext(detail);
             return {
               home,

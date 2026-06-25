@@ -24,6 +24,30 @@ import type { SportyBetEventDetail } from "./selectFixtures.js";
  *  existing league-average/LLM-estimate fallback. */
 const MIN_PLAYED_FOR_OVERRIDE = 4;
 
+/** Sample threshold for full lambda trust. Between MIN_PLAYED_FOR_OVERRIDE and
+ *  this, the raw lambda is shrunk toward the league prior using a linear
+ *  credibility weight: w = n / SHRINK_THRESHOLD (e.g. 0.625 at n=5). */
+const SHRINK_THRESHOLD = 8;
+
+/** League-specific prior expected goals (home / away) used for credibility
+ *  shrinkage when a team has played fewer than SHRINK_THRESHOLD matches.
+ *  Sources: FBref 2022-2026 seasonal averages cross-checked ≥2 sources. */
+const GOALS_SHRINK_PRIORS: Record<string, { homeAvg: number; awayAvg: number }> = {
+  "Premier League": { homeAvg: 1.55, awayAvg: 1.18 },
+  "La Liga": { homeAvg: 1.52, awayAvg: 1.14 },
+  Bundesliga: { homeAvg: 1.82, awayAvg: 1.37 },
+  "Serie A": { homeAvg: 1.55, awayAvg: 1.18 },
+  "Ligue 1": { homeAvg: 1.53, awayAvg: 1.2 },
+  Eredivisie: { homeAvg: 1.8, awayAvg: 1.32 },
+  Eliteserien: { homeAvg: 1.72, awayAvg: 1.37 },
+  "Swiss Super League": { homeAvg: 1.68, awayAvg: 1.34 },
+  "Danish Superliga": { homeAvg: 1.58, awayAvg: 1.34 },
+  MLS: { homeAvg: 1.6, awayAvg: 1.28 },
+  "Primeira Liga": { homeAvg: 1.5, awayAvg: 1.1 },
+  "Süper Lig": { homeAvg: 1.55, awayAvg: 1.18 },
+  Default: { homeAvg: 1.5, awayAvg: 1.2 },
+};
+
 const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
 const finiteOrZero = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
@@ -43,8 +67,15 @@ export interface StatsOverride {
  *  enough season sample (never overrides with garbage), while restH/restA are
  *  exact calendar deltas and apply whenever known. Returns null only when NONE
  *  of these could be derived — callers fall through to the engine's existing
- *  estimate/fallback behaviour in that case. */
-export function buildStatsOverride(detail: SportyBetEventDetail | undefined): StatsOverride | null {
+ *  estimate/fallback behaviour in that case.
+ *
+ *  When a team has ≥MIN_PLAYED_FOR_OVERRIDE but < SHRINK_THRESHOLD matches, the
+ *  raw lambda is shrunk toward a league prior via linear credibility weighting
+ *  (w = n / SHRINK_THRESHOLD) to dampen early-season noise. */
+export function buildStatsOverride(
+  detail: SportyBetEventDetail | undefined,
+  league?: string
+): StatsOverride | null {
   const stats = detail?.stats;
   if (!stats) return null;
 
@@ -70,6 +101,20 @@ export function buildStatsOverride(detail: SportyBetEventDetail | undefined): St
       override.xA = goalsAway;
       override.xgMode = "empirical";
       override.xg_confidence = "medium";
+    }
+
+    // Credibility shrinkage toward league prior when sample is thin (n < SHRINK_THRESHOLD).
+    // Applies only when xH/xA were successfully derived above and both teams played < threshold.
+    if (override.xH !== undefined && override.xA !== undefined) {
+      const nEff = Math.min(homePlayed, awayPlayed);
+      if (nEff < SHRINK_THRESHOLD) {
+        const w = nEff / SHRINK_THRESHOLD;
+        const prior = GOALS_SHRINK_PRIORS[league ?? ""] ?? GOALS_SHRINK_PRIORS.Default!;
+        override.xH = override.xH * w + prior.homeAvg * (1 - w);
+        override.xA = override.xA * w + prior.awayAvg * (1 - w);
+        // Downgrade confidence since shrinkage acknowledges the thin sample.
+        if (override.xg_confidence === "high") override.xg_confidence = "medium";
+      }
     }
 
     // SoS adjustment inputs — adjustXGForSoS clamps its own factor to [0.5, 2.0]x,

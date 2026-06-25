@@ -200,9 +200,11 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     isVps: hw.isVps,
     // Autonomous SkillOpt loop: requires explicit opt-in AND GPU/VPS capability
     enableAutoResearch: autoResearchRequested && gpuCapable,
-    // Negative Binomial overdispersion in score marginals (default off)
-    useNegBinom: env.USE_NEG_BINOM?.toLowerCase() === "true",
-    nbDispersion: env.NB_DISPERSION ? Number(env.NB_DISPERSION) : undefined,
+    // Negative Binomial overdispersion in score marginals (default ON, r=10 per
+    // Karlis & Ntzoufras 2003 calibrated for professional football; set
+    // USE_NEG_BINOM=false to revert to pure Poisson).
+    useNegBinom: env.USE_NEG_BINOM?.toLowerCase() !== "false",
+    nbDispersion: env.NB_DISPERSION ? Number(env.NB_DISPERSION) : 10,
     useMCRuin: env.USE_MC_RUIN?.toLowerCase() === "true",
   };
 }

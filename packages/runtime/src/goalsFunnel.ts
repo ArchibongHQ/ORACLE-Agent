@@ -31,13 +31,14 @@ export function sportyEventToFixtureJob(event: SportyBetEvent): FixtureJob | nul
   const flat = flattenSidecarOdds(detail);
   if (!flat.home || !flat.away) return null;
 
-  const statsOverride = buildStatsOverride(detail);
+  const league = event.league ?? "Unknown";
+  const statsOverride = buildStatsOverride(detail, league);
   const statsContext = buildStatsSoftContext(detail);
 
   return {
     home: event.home,
     away: event.away,
-    league: event.league ?? "Unknown",
+    league,
     kickoff: event.kickoff_utc ?? new Date().toISOString(),
     state: {
       telemetry: {
