@@ -198,6 +198,33 @@ export interface SportyBetStats {
   /** Recency-weighted complement to possessionValue.corners_avg: average corners
    *  won across each team's last 5 matches (stats_team_lastxextended). */
   recentCorners?: { home?: number; away?: number } | null;
+  /** Recency-weighted complement to goals.avg_scored/avg_conceded: average goals
+   *  scored/conceded across each team's last 5 matches (stats_team_lastxextended,
+   *  same docs as recentCorners — no extra fetch). The strongest recency signal
+   *  for the goals model; feeds the DC time-decay xH/xA adjustment. */
+  recentGoals?: {
+    home?: { scored_avg?: number; conceded_avg?: number; n?: number } | null;
+    away?: { scored_avg?: number; conceded_avg?: number; n?: number } | null;
+  } | null;
+  /** Season "Scoring & Conceding" profile (stats_season_teamscoringconceding) —
+   *  venue-split goal rates, BTTS/failed-to-score rates, half-time scoring. The
+   *  richest pre-match goals subtab SportyBet exposes; home team carries its home
+   *  split, away team its away split. */
+  scoringConceding?: {
+    home?: ScoringConcedingProfile | null;
+    away?: ScoringConcedingProfile | null;
+  } | null;
+}
+
+export interface ScoringConcedingProfile {
+  matches?: number;
+  scored_avg?: number;
+  conceded_avg?: number;
+  btts_rate?: number;
+  failed_to_score_rate?: number;
+  scoring_1h_rate?: number;
+  goals_1h_avg?: number;
+  clean_sheet_rate?: number;
 }
 
 export interface SportyBetEventDetail {

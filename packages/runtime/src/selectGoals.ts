@@ -100,6 +100,13 @@ export interface GoalsLeg {
    *  booking agent to navigate directly to the fixture detail page, bypassing
    *  the listing-page scroll that only shows fixtures visible in the DOM. */
   eventId?: string;
+  /** The decision-layer model that produced this leg's pick (decisionReplay.model
+   *  from the engine batch — e.g. "claude-opus-4-8", "gemini-3.5-flash"). Null when
+   *  the leg came from the deterministic-only path (no LLM tier ran for this
+   *  fixture). Surfaced in the Telegram slip so the message states which model did
+   *  the final analysis, and — when it wasn't Claude — implies why (no Claude tier
+   *  reached for that fixture). */
+  decisionModel?: string | null;
 }
 
 export interface GoalsSelectionResult {
@@ -264,6 +271,7 @@ export function pickSafestGoalsLeg(
     ip: best.ip,
     edge: best.mp - best.ip,
     ...(eventId ? { eventId } : {}),
+    decisionModel: job.decisionReplay?.model ?? null,
   };
 }
 

@@ -77,6 +77,8 @@ function renderFixtureRawData(
   const congestion = stats?.congestion;
   const pv = stats?.possessionValue;
   const recentCorners = stats?.recentCorners;
+  const recentGoals = stats?.recentGoals;
+  const scyc = stats?.scoringConceding;
 
   const sections = [
     renderOdds(event),
@@ -150,6 +152,28 @@ function renderFixtureRawData(
           "Recent corners (last 5)",
           String(recentCorners.home ?? "?"),
           String(recentCorners.away ?? "?")
+        )
+      : "",
+    recentGoals
+      ? side(
+          "Recent goals (last 5)",
+          recentGoals.home
+            ? `scored ${recentGoals.home.scored_avg ?? "?"}, conceded ${recentGoals.home.conceded_avg ?? "?"} (n${recentGoals.home.n ?? "?"})`
+            : null,
+          recentGoals.away
+            ? `scored ${recentGoals.away.scored_avg ?? "?"}, conceded ${recentGoals.away.conceded_avg ?? "?"} (n${recentGoals.away.n ?? "?"})`
+            : null
+        )
+      : "",
+    scyc
+      ? side(
+          "Scoring/Conceding (venue)",
+          scyc.home
+            ? `GF ${scyc.home.scored_avg ?? "?"}, GA ${scyc.home.conceded_avg ?? "?"}, BTTS ${pct(scyc.home.btts_rate ?? 0)}, FTS ${pct(scyc.home.failed_to_score_rate ?? 0)}, CS ${pct(scyc.home.clean_sheet_rate ?? 0)}, 1H goals ${scyc.home.goals_1h_avg ?? "?"}`
+            : null,
+          scyc.away
+            ? `GF ${scyc.away.scored_avg ?? "?"}, GA ${scyc.away.conceded_avg ?? "?"}, BTTS ${pct(scyc.away.btts_rate ?? 0)}, FTS ${pct(scyc.away.failed_to_score_rate ?? 0)}, CS ${pct(scyc.away.clean_sheet_rate ?? 0)}, 1H goals ${scyc.away.goals_1h_avg ?? "?"}`
+            : null
         )
       : "",
     lineup

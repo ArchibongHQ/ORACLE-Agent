@@ -284,6 +284,26 @@ export function buildStatsSoftContext(
     lines.push(`Recent corners (last 5) — Home: ${rc?.home ?? "?"} | Away: ${rc?.away ?? "?"}`);
   }
 
+  const rg = stats.recentGoals;
+  if (rg?.home || rg?.away) {
+    const side = (s: typeof rg.home) =>
+      s
+        ? `${s.scored_avg ?? "?"} scored / ${s.conceded_avg ?? "?"} conceded (last ${s.n ?? "?"})`
+        : "n/a";
+    lines.push(`Recent goals form — Home: ${side(rg.home)} | Away: ${side(rg.away)}`);
+  }
+
+  const scyc = stats.scoringConceding;
+  if (scyc?.home || scyc?.away) {
+    const side = (s: typeof scyc.home) =>
+      s
+        ? `${s.scored_avg ?? "?"} GF / ${s.conceded_avg ?? "?"} GA, BTTS ${pct(s.btts_rate)}, failed-to-score ${pct(s.failed_to_score_rate)}, clean-sheet ${pct(s.clean_sheet_rate)}, 1H goals ${s.goals_1h_avg ?? "?"}`
+        : "n/a";
+    lines.push(
+      `Scoring/conceding (venue split) — Home: ${side(scyc.home)} | Away: ${side(scyc.away)}`
+    );
+  }
+
   if (!lines.length) return [];
   return [
     {

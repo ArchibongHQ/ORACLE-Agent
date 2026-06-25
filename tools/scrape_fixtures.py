@@ -1194,18 +1194,32 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
     matches = versus_data.get("matches") or []
     if not matches:
         return None
-    summary = {"total": len(matches), "home_wins": 0, "away_wins": 0, "draws": 0}
-    for m in matches[:10]:
+    window = matches[:10]
+    # `total` is the size of the counted window (not len(matches)) so home_wins +
+    # away_wins + draws always reconciles to total — otherwise the report's
+    # "last N meetings, H/A/D" line never adds up.
+    summary = {"total": len(window), "home_wins": 0, "away_wins": 0, "draws": 0}
+    for m in window:
         res = m.get("result")
         # Defend against the legacy string-result shape: a bare string has no
         # .get(), so only an object carries a countable winner.
-        winner = (res.get("winner") or "").lower() if isinstance(res, dict) else ""
+        if not isinstance(res, dict):
+            continue
+        winner = (res.get("winner") or "").lower()
         if winner == "home":
             summary["home_wins"] += 1
         elif winner == "away":
             summary["away_wins"] += 1
         elif winner == "draw":
             summary["draws"] += 1
+        else:
+            # Live gismo records draws as winner:null with equal home/away goals
+            # (verified 2026-06-25 — e.g. {home:2,away:2,winner:null}), never the
+            # literal "draw" string. Infer the draw from the scoreline so drawn
+            # meetings aren't silently dropped from the H2H tally.
+            h, a = res.get("home"), res.get("away")
+            if isinstance(h, (int, float)) and isinstance(a, (int, float)) and h == a:
+                summary["draws"] += 1
     return summary
 
 
@@ -1371,6 +1385,100 @@ def _parse_recent_form_corners(
     return round(sum(vals) / len(vals), 2)
 
 
+def _parse_recent_form_goals(
+    lastx_data: dict, n: int = 5
+) -> Optional[dict]:
+    """Average goals scored/conceded (for the queried team) across its last N
+    matches from stats_team_lastxextended — a true recency signal for the goals
+    model, complementing the season-aggregate goals.avg_scored/avg_conceded.
+
+    Reuses the SAME lastxextended doc already fetched for recent corners (no extra
+    HTTP call). Live gismo shape: matches[] is ordered most-recent-first; each
+    match's `result` is {home, away} keyed by venue — must match against
+    `teams.home/away._id` per match to attribute scored vs conceded to the queried
+    team (same venue-keying as corners, verified live 2026-06-25 against
+    stats_team_lastxextended/44: result {home,away} carries the scoreline).
+    Returns {scored_avg, conceded_avg, n} or None when no countable matches.
+    """
+    if not lastx_data:
+        return None
+    team_id = (lastx_data.get("team") or {}).get("_id")
+    matches = lastx_data.get("matches")
+    if not isinstance(matches, list) or team_id is None:
+        return None
+    scored: list[float] = []
+    conceded: list[float] = []
+    for m in matches[:n]:
+        if not isinstance(m, dict) or m.get("postponed") or m.get("canceled"):
+            continue
+        res = m.get("result")
+        teams = m.get("teams") or {}
+        if not isinstance(res, dict):
+            continue
+        h, a = res.get("home"), res.get("away")
+        if not (isinstance(h, (int, float)) and isinstance(a, (int, float))):
+            continue
+        if (teams.get("home") or {}).get("_id") == team_id:
+            scored.append(float(h))
+            conceded.append(float(a))
+        elif (teams.get("away") or {}).get("_id") == team_id:
+            scored.append(float(a))
+            conceded.append(float(h))
+    if not scored:
+        return None
+    return {
+        "scored_avg": round(sum(scored) / len(scored), 2),
+        "conceded_avg": round(sum(conceded) / len(conceded), 2),
+        "n": len(scored),
+    }
+
+
+def _parse_scoring_conceding(scyc_data: dict, venue: str) -> Optional[dict]:
+    """Extract season scoring/conceding profile from stats_season_teamscoringconceding.
+
+    This is the "Scoring & Conceding" stats subtab — the richest pre-match goals
+    signal SportyBet exposes. Endpoint shape verified live 2026-06-25:
+    stats_season_teamscoringconceding/{seasonid}/{uid}/{limit} (keyed by uid, the
+    uniqueteam id — NOT _id) returns data.stats with `scoring`/`conceding` blocks,
+    each carrying {total, home, away} venue splits for goalsscored, BTTS rate,
+    failed-to-score rate, half-time scoring, and a goals-by-minute histogram.
+
+    `venue` selects which venue split to surface for this fixture's role: "home"
+    for the home team, "away" for the away team — a team's home goal rate is the
+    relevant prior when it plays at home. Returns a flat dict of the goals-relevant
+    averages, or None when the season has no recorded matches yet.
+    """
+    if not scyc_data:
+        return None
+    stats = scyc_data.get("stats")
+    if not isinstance(stats, dict):
+        return None
+    total_matches = ((stats.get("totalmatches") or {}).get(venue)) or 0
+    if not total_matches:
+        return None
+    scoring = stats.get("scoring") or {}
+    conceding = stats.get("conceding") or {}
+
+    def avg(block: dict, key: str) -> Optional[float]:
+        rec = block.get(key)
+        v = rec.get(venue) if isinstance(rec, dict) else None
+        return round(float(v), 2) if isinstance(v, (int, float)) else None
+
+    out = {
+        "matches": int(total_matches),
+        "scored_avg": avg(scoring, "goalsscoredaverage"),
+        "conceded_avg": avg(conceding, "goalsconcededaverage"),
+        "btts_rate": avg(scoring, "bothteamsscoredaverage"),
+        "failed_to_score_rate": avg(scoring, "failedtoscoreaverage"),
+        "scoring_1h_rate": avg(scoring, "scoringathalftimeaverage"),
+        "goals_1h_avg": avg(scoring, "goalsscoredfirsthalfaverage"),
+        "clean_sheet_rate": avg(conceding, "cleansheetsaverage"),
+    }
+    # Drop keys that came back null so the report only shows real values.
+    cleaned = {k: v for k, v in out.items() if v is not None}
+    return cleaned if len(cleaned) > 1 else None
+
+
 def _parse_funfacts(funfacts_data: dict) -> Optional[list[str]]:
     """Extract pre-match textual facts from match_funfacts — the closest verified
     gismo equivalent to a "commentary" subtab (live-probed 2026-06-21: no
@@ -1458,8 +1566,19 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
     _time.sleep(_SB_PACE)
     goals = _parse_goals(goals_data, home_id, away_id)
 
-    # 6. H2H (stats_team_versusrecent) — empty for most low-tier pairs; parse defensively
-    h2h_data = _gismo_doc(f"stats_team_versusrecent/{home_id}/{away_id}") if (home_id and away_id) else None
+    # 6. H2H (stats_team_versusrecent) — keyed by the team's "uniqueteam" id (`uid`),
+    # NOT the "team" doctype `_id` (verified live 2026-06-25 against match 66457034,
+    # Portugal vs Uzbekistan: _id=9531/311459 returns an empty doc, uid=4704/4723
+    # returns the matches array). This is the same uid-vs-_id gismo trap that bites
+    # stats_season_overunder. Passing _id here silently emptied H2H for every fixture
+    # whose _id != uid (i.e. virtually all non-classic teams — classic clubs like
+    # Liverpool happen to have _id==uid and masked the bug). Empty arrays remain
+    # common for genuinely-unmet low-tier pairs; parse defensively either way.
+    h2h_data = (
+        _gismo_doc(f"stats_team_versusrecent/{home_uid}/{away_uid}")
+        if (home_uid and away_uid)
+        else None
+    )
     if h2h_data:
         _time.sleep(_SB_PACE)
     h2h = _parse_h2h(h2h_data)
@@ -1507,6 +1626,37 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
     if a_corners is not None:
         recent_corners["away"] = a_corners
 
+    # 11b. Recent-form goals (last 5 scored/conceded per team) — reuses the SAME
+    # lastxextended docs above (no extra fetch). The strongest recency signal for a
+    # goals model; previously the per-match scoreline in lastxextended was fetched
+    # but only corners were extracted, discarding the goals entirely.
+    recent_goals: dict[str, dict] = {}
+    h_rg = _parse_recent_form_goals(home_lastx)
+    a_rg = _parse_recent_form_goals(away_lastx)
+    if h_rg is not None:
+        recent_goals["home"] = h_rg
+    if a_rg is not None:
+        recent_goals["away"] = a_rg
+
+    # 11c. Scoring & Conceding profile (stats_season_teamscoringconceding) — the
+    # richest pre-match goals subtab: BTTS rate, failed-to-score rate, half-time
+    # scoring, venue-split goal averages. Keyed by uid + seasonid + limit (verified
+    # live 2026-06-25). home team's "home" venue split + away team's "away" split
+    # are the relevant priors for this fixture's matchup.
+    scoring_conceding: dict[str, dict] = {}
+    if season_id and home_uid:
+        _time.sleep(_SB_PACE)
+        h_scyc = _gismo_doc(f"stats_season_teamscoringconceding/{season_id}/{home_uid}/10")
+        parsed = _parse_scoring_conceding(h_scyc, "home")
+        if parsed:
+            scoring_conceding["home"] = parsed
+    if season_id and away_uid:
+        _time.sleep(_SB_PACE)
+        a_scyc = _gismo_doc(f"stats_season_teamscoringconceding/{season_id}/{away_uid}/10")
+        parsed = _parse_scoring_conceding(a_scyc, "away")
+        if parsed:
+            scoring_conceding["away"] = parsed
+
     stats: dict = {}
     if form:
         stats["form"] = form
@@ -1526,6 +1676,10 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
         stats["possessionValue"] = possession_value
     if recent_corners:
         stats["recentCorners"] = recent_corners
+    if recent_goals:
+        stats["recentGoals"] = recent_goals
+    if scoring_conceding:
+        stats["scoringConceding"] = scoring_conceding
 
     return {
         "odds": odds,

@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BatchSummary } from "../src/index.js";
 import {
+  buildAnalysisModelNote,
   buildNotifiers,
   EmailNotifier,
   formatSummaryHtml,
@@ -114,6 +115,43 @@ describe("formatSummaryHtml", () => {
   });
   it("omits the combined slip line when combinedProb/combinedOdds are absent", () => {
     expect(formatSummaryHtml(sampleSummary)).not.toMatch(/Combined:/);
+  });
+});
+
+describe("buildAnalysisModelNote", () => {
+  it("reports Claude on all legs when every model is a claude-* id", () => {
+    const note = buildAnalysisModelNote(["claude-opus-4-8", "claude-opus-4-8"]);
+    expect(note).toMatch(/Claude \(claude-opus-4-8\) on all 2/);
+  });
+  it("states Claude NOT used and the reason when no leg used Claude", () => {
+    const note = buildAnalysisModelNote(["gemini-3.5-flash", "gemini-3.5-flash"]);
+    expect(note).toMatch(/Claude NOT used/);
+    expect(note).toMatch(/gemini-3\.5-flash/);
+    expect(note).toMatch(/cascade fell through/);
+  });
+  it("attributes deterministic-only legs when no model id is present", () => {
+    const note = buildAnalysisModelNote([null, null]);
+    expect(note).toMatch(/Claude NOT used/);
+    expect(note).toMatch(/deterministic engine only/);
+  });
+  it("splits the attribution on a mixed slip", () => {
+    const note = buildAnalysisModelNote(["claude-opus-4-8", "gemini-3.5-flash", null]);
+    expect(note).toMatch(/Claude on 1\/3/);
+    expect(note).toMatch(/gemini-3\.5-flash on the rest/);
+    expect(note).toMatch(/1 deterministic-only/);
+  });
+  it("returns undefined for an empty slip", () => {
+    expect(buildAnalysisModelNote([])).toBeUndefined();
+  });
+});
+
+describe("formatSummaryText analysisModelNote", () => {
+  it("renders the model attribution line when present", () => {
+    const txt = formatSummaryText({
+      ...sampleSummary,
+      analysisModelNote: "🧠 Final analysis: Claude (claude-opus-4-8) on all 1 leg(s).",
+    });
+    expect(txt).toMatch(/Final analysis: Claude/);
   });
 });
 

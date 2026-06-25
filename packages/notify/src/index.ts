@@ -8,7 +8,12 @@ export { SlackNotifier } from "./slack.js";
 export { TelegramNotifier } from "./telegram.js";
 export { sendTelegramDocument } from "./telegramDocument.js";
 export type { ActionablePick, BatchSummary, Notifier } from "./types.js";
-export { formatSummaryHtml, formatSummaryText, summarizeBatch } from "./types.js";
+export {
+  buildAnalysisModelNote,
+  formatSummaryHtml,
+  formatSummaryText,
+  summarizeBatch,
+} from "./types.js";
 
 import { EmailNotifier } from "./email.js";
 import { OpenClawNotifier } from "./openclaw.js";

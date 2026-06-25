@@ -40,6 +40,45 @@ export interface BatchSummary {
   combinedProb?: number;
   /** Combined decimal odds for the full accumulator slip (product of leg odds). */
   combinedOdds?: number;
+  /** Final-analysis model attribution line (goals slips). States which decision-layer
+   *  model analysed the picks and, when it wasn't Claude, why Claude wasn't reached.
+   *  Built by buildAnalysisModelNote() from the legs' decisionReplay.model values. */
+  analysisModelNote?: string;
+}
+
+/** Build the "which model did the final analysis" attribution line for a goals
+ *  slip, from the per-leg decision models. ORACLE's decision cascade is
+ *  Claude (Opus/Fable) → Gemini → OpenRouter (GLM/Qwen) → deterministic; a leg
+ *  is "Claude-analysed" only when its decisionReplay.model is a claude-* id.
+ *  When some/all legs fell through to a non-Claude tier, the note says so and
+ *  gives the implied reason (Claude tier unavailable/unreached for that fixture),
+ *  per the owner requirement that the Telegram message state when Claude was and
+ *  wasn't used and why. Returns undefined for an empty slip. */
+export function buildAnalysisModelNote(models: (string | null | undefined)[]): string | undefined {
+  if (models.length === 0) return undefined;
+  const isClaude = (m: string | null | undefined) => !!m && m.toLowerCase().startsWith("claude");
+  const claudeCount = models.filter(isClaude).length;
+  const total = models.length;
+  // Distinct non-Claude models actually used, for the "instead" reason.
+  const others = [...new Set(models.filter((m) => m && !isClaude(m)) as string[])];
+  const noneAttr = models.filter((m) => !m).length;
+
+  if (claudeCount === total) {
+    return `🧠 Final analysis: Claude (${[...new Set(models as string[])].join(", ")}) on all ${total} leg(s).`;
+  }
+  if (claudeCount === 0) {
+    const why =
+      others.length > 0
+        ? `Claude decision tier not reached — analysed by ${others.join(", ")} (cascade fell through: Claude key/quota unavailable or call failed, used next tier).`
+        : `no LLM tier ran (deterministic engine only) — Claude unavailable for these fixtures.`;
+    return `🧠 Final analysis: Claude NOT used. ${why}`;
+  }
+  const parts = [
+    `🧠 Final analysis: Claude on ${claudeCount}/${total} leg(s).`,
+    others.length > 0 ? `${others.join(", ")} on the rest` : "",
+    noneAttr > 0 ? `${noneAttr} deterministic-only` : "",
+  ].filter(Boolean);
+  return `${parts.join("; ")} (non-Claude legs: cascade fell through when Claude tier was unavailable/failed for that fixture).`;
 }
 
 /** A delivery channel. Implementations are constructed only when their env is configured. */
@@ -111,6 +150,7 @@ export function formatSummaryText(s: BatchSummary): string {
       `\nCombined: ${(s.combinedProb * 100).toFixed(1)}% win prob · @${s.combinedOdds.toFixed(2)} odds`
     );
   }
+  if (s.analysisModelNote) lines.push(`\n${s.analysisModelNote}`);
   if (s.bookingCode) {
     lines.push(`\n🎟 SportyBet Booking Code: *${s.bookingCode}*`);
     const loadUrl =
@@ -150,6 +190,7 @@ ${
     ? `<p><strong>Combined: ${(s.combinedProb * 100).toFixed(1)}% win prob · @${s.combinedOdds.toFixed(2)} odds</strong></p>`
     : ""
 }
+${s.analysisModelNote ? `<p><em>${s.analysisModelNote}</em></p>` : ""}
 ${
   s.bookingCode
     ? `<p><strong>🎟 SportyBet Booking Code: <code>${s.bookingCode}</code></strong><br>

@@ -203,6 +203,29 @@ class TestParseH2H:
         out = _parse_h2h(data)
         assert out == {"total": 2, "home_wins": 1, "away_wins": 0, "draws": 0}
 
+    def test_null_winner_equal_score_counts_as_draw(self):
+        # Real live shape (verified 2026-06-25, Liverpool vs Man Utd): draws come
+        # back as winner:null with equal home/away goals, NOT the literal "draw"
+        # string. These must be inferred from the scoreline, not dropped.
+        data = {
+            "matches": [
+                {"result": {"home": 2, "away": 2, "winner": None}},  # draw
+                {"result": {"home": 0, "away": 0, "winner": None}},  # draw
+                {"result": {"home": 3, "away": 1, "winner": "home"}},
+                {"result": {"home": 1, "away": 2, "winner": None}},  # non-equal null → not a draw
+            ]
+        }
+        out = _parse_h2h(data)
+        assert out == {"total": 4, "home_wins": 1, "away_wins": 0, "draws": 2}
+
+    def test_total_reconciles_to_counted_window(self):
+        # `total` must equal the size of the counted window (<=10), so
+        # home_wins + away_wins + draws always reconciles for the report line.
+        data = {"matches": [{"result": {"home": 1, "away": 0, "winner": "home"}}] * 15}
+        out = _parse_h2h(data)
+        assert out["total"] == 10
+        assert out["home_wins"] + out["away_wins"] + out["draws"] == out["total"]
+
 
 # Real shape verified live 2026-06-20 against stats_season_overunder/101177 (WC 2026):
 # `stats` is keyed by the team's "uniqueteam" id (team.uid), NOT the "team" doctype

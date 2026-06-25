@@ -11,7 +11,13 @@ import { fileURLToPath } from "node:url";
 import { sendPuntPrompt } from "@oracle/bot";
 import type { BatchResult, RunManifest } from "@oracle/engine";
 import type { ActionablePick, BatchSummary } from "@oracle/notify";
-import { buildNotifiers, notifyAll, sendTelegramDocument, summarizeBatch } from "@oracle/notify";
+import {
+  buildAnalysisModelNote,
+  buildNotifiers,
+  notifyAll,
+  sendTelegramDocument,
+  summarizeBatch,
+} from "@oracle/notify";
 import {
   buildConfig,
   buildNewsByTeam,
@@ -691,6 +697,9 @@ async function sendGoalsSlip(
     ...(l.eventId ? { eventId: l.eventId } : {}),
   }));
 
+  const modelNote =
+    actionable.length > 0 ? buildAnalysisModelNote(legs.map((l) => l.decisionModel)) : undefined;
+
   const summary: BatchSummary = {
     date: `${date} — ${tag}`,
     analysed,
@@ -698,6 +707,7 @@ async function sendGoalsSlip(
     errors: errorCount,
     actionable,
     ...(actionable.length > 0 ? { combinedProb, combinedOdds } : {}),
+    ...(modelNote ? { analysisModelNote: modelNote } : {}),
   };
 
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────
