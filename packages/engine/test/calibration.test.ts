@@ -9,7 +9,13 @@
  *   TS:  async instance methods backed by StoragePort
  */
 
-import { CalibrationEngine, significanceAcceptGate } from "@oracle/engine";
+import {
+  CalibrationEngine,
+  expectedCalibrationError,
+  logLoss,
+  plattScale,
+  significanceAcceptGate,
+} from "@oracle/engine";
 import { MemoryAdapter } from "@oracle/storage";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { BetRecord } from "../src/calibration/index.js";
@@ -442,5 +448,87 @@ describe("§8.3/§8.5 significanceAcceptGate", () => {
     const cand = Array(N).fill(0.24); // regression
     const result = significanceAcceptGate(base, cand, { minN: 10, nBootstrap: BOOT });
     expect(result.effectSize).toBeCloseTo(0.02, 4);
+  });
+});
+
+describe("logLoss (LL-1 — LL-4)", () => {
+  it("LL-1: perfect prediction → log-loss near 0", () => {
+    const probs = [0.99, 0.99, 0.01, 0.01];
+    const labels = [1, 1, 0, 0];
+    expect(logLoss(probs, labels)).toBeLessThan(0.02);
+  });
+
+  it("LL-2: 50/50 prediction → log-loss ≈ ln(2) ≈ 0.693", () => {
+    const probs = Array(100).fill(0.5);
+    const labels = Array(100)
+      .fill(0)
+      .map((_, i) => i % 2);
+    expect(logLoss(probs, labels)).toBeCloseTo(Math.LN2, 2);
+  });
+
+  it("LL-3: returns NaN for empty arrays", () => {
+    expect(logLoss([], [])).toBeNaN();
+  });
+
+  it("LL-4: higher confidence on wrong answers → higher loss than cautious prediction", () => {
+    const confidentWrong = logLoss([0.99], [0]);
+    const cautiousWrong = logLoss([0.6], [0]);
+    expect(confidentWrong).toBeGreaterThan(cautiousWrong);
+  });
+});
+
+describe("expectedCalibrationError (ECE-1 — ECE-3)", () => {
+  it("ECE-1: well-calibrated predictions → ECE < 0.15", () => {
+    // 100 predictions where each decile bucket has ~10 samples at the bucket midpoint
+    // and the label frequency matches the midpoint → near-perfect calibration
+    const probs: number[] = [];
+    const labels: number[] = [];
+    for (let b = 0; b < 10; b++) {
+      const p = (b + 0.5) / 10; // 0.05, 0.15, ..., 0.95
+      const wins = Math.round(p * 10);
+      for (let j = 0; j < 10; j++) {
+        probs.push(p);
+        labels.push(j < wins ? 1 : 0);
+      }
+    }
+    expect(expectedCalibrationError(probs, labels)).toBeLessThan(0.15);
+  });
+
+  it("ECE-2: severely overconfident → ECE > 0.2", () => {
+    const probs = Array(50).fill(0.95); // always predict 0.95
+    const labels = Array(50)
+      .fill(0)
+      .map((_, i) => (i < 10 ? 1 : 0)); // 20% win rate
+    expect(expectedCalibrationError(probs, labels)).toBeGreaterThan(0.2);
+  });
+
+  it("ECE-3: returns NaN for empty arrays", () => {
+    expect(expectedCalibrationError([], [])).toBeNaN();
+  });
+});
+
+describe("plattScale (PS-1 — PS-3)", () => {
+  it("PS-1: returns finite a and b", () => {
+    const scores = [0.2, 0.5, 0.7, 0.8, 0.9, 0.3, 0.6, 0.4, 0.75, 0.85];
+    const labels = [0, 0, 1, 1, 1, 0, 1, 0, 1, 1];
+    const params = plattScale(scores, labels);
+    expect(Number.isFinite(params.a)).toBe(true);
+    expect(Number.isFinite(params.b)).toBe(true);
+  });
+
+  it("PS-2: returns {a:-1, b:0} for empty arrays", () => {
+    const params = plattScale([], []);
+    expect(params).toEqual({ a: -1, b: 0 });
+  });
+
+  it("PS-3: calibrates an overconfident model (predicts 0.8; real win rate 20%) downward", () => {
+    // 50 bets all predicted at 0.8 but only 10 won → calibrated p should drop below 0.8
+    const scores = Array(50).fill(0.8);
+    const labels = Array(50)
+      .fill(0)
+      .map((_, i) => (i < 10 ? 1 : 0));
+    const params = plattScale(scores, labels);
+    const calibrated = 1 / (1 + Math.exp(params.a * 0.8 + params.b));
+    expect(calibrated).toBeLessThan(0.8);
   });
 });

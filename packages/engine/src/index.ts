@@ -14,10 +14,15 @@ export type {
   SignificanceGateResult,
 } from "./calibration/index.js";
 export {
+  applyPlatt,
   CalibrationEngine,
+  expectedCalibrationError,
   isotonicCalibrateFp,
+  logLoss,
+  plattScale,
   significanceAcceptGate,
 } from "./calibration/index.js";
+export type { PlattParams } from "./calibration/index.js";
 export type { DecisionResult } from "./decision/index.js";
 export {
   buildEligibleBets,

@@ -91,9 +91,23 @@ export async function addLegToBetslip(
     // current viewport are in the DOM. With 100+ fixtures across many leagues,
     // most picks won't be found by the listing scan. Navigate directly instead.
     if (pick.eventId) {
-      const detailUrl = `${BASE_URL}/${pick.eventId}`;
+      // SportyBet's SPA router requires at least country/league/teams slug segments
+      // before the sr:match: ID — the slug content is ignored, only the ID matters.
+      // Direct /sr:match:ID (no slug) returns the 404 error page even for valid fixtures.
+      const detailUrl = `${BASE_URL}/_/_/_/${pick.eventId}`;
       await page.goto(detailUrl, { waitUntil: "networkidle", timeout: NAV_TIMEOUT });
       await page.waitForTimeout(3_000);
+
+      // Detect SportyBet's 404 error page ("40X ERROR / OOPS...") — shown when the
+      // fixture has already kicked off/finished and been removed from the bet board,
+      // or is not available in this region. Treat as unmatched, not a hard error.
+      const is404 = await page.locator("text=OOPS").count();
+      if (is404 > 0) {
+        process.stderr.write(
+          `[booking] fixture not available on SportyBet NG (kicked off / not listed): ${pick.home} vs ${pick.away}\n`
+        );
+        return null;
+      }
 
       // For 1X2 on the detail page we still use the detail-page market blocks,
       // not the listing-row shortcut (which doesn't exist on the detail page).
