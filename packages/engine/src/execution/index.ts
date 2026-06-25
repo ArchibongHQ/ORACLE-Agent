@@ -43,6 +43,7 @@ import {
   lstmMarketDecoderProxy,
   monteCarlo,
   normalizedEfficiency,
+  simulateRuin,
   optimizedKelly,
   powerMethodVigRemoval,
   safeNum,
@@ -1152,10 +1153,13 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
     }
 
     // §8.1 A/B flag: bivariate Poisson models correlation via λ3 (no DC rho correction applied).
+    // useNegBinom adds NB overdispersion (r = nbDispersion, default 10) to the marginals when on.
+    // NB is mutually exclusive with bivariate Poisson (bivariate takes priority when both set).
+    const _nbDisp = cfg.useNegBinom ? (cfg.nbDispersion ?? 10) : undefined;
     const _buildCoreMat: (lh: number, la: number, rho: number) => Matrix =
       (cfg.useBivariatePoisson ?? false)
         ? (lh, la) => buildBivariateMatrix(lh, la, DEFAULT_BIVARIATE_LAMBDA3)
-        : (lh, la, rho) => buildMatrix(lh, la, rho);
+        : (lh, la, rho) => buildMatrix(lh, la, rho, false, 0.08, 0, _nbDisp);
 
     const matAlpha = _buildCoreMat(Math.max(0.1, cupsetLH), Math.max(0.1, cupsetLA), lp.baseRho);
 
@@ -1268,6 +1272,18 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       }
 
     const mc: VarianceResult = monteCarlo(eHg, eAg, dynamicRho ?? lp.baseRho, mcRuns);
+
+    // Optional MC ruin blend — when useMCRuin=true, simulate 5000 drawdown paths and
+    // apply ruin probability as an additional multiplier on top of the analytic varMultiplier.
+    if (cfg.useMCRuin) {
+      const winProb = Math.max(fp.home, fp.draw, fp.away);
+      // Stake as fraction of unit bankroll: matches the default 5% fractional Kelly cap.
+      const ruinP = simulateRuin(winProb, 0.05, 1.0, 5000);
+      // Blend: 0.5 * analytic + 0.5 * simulation-based multiplier (higher ruin → lower mult)
+      const simMult = 1.0 - ruinP;
+      mc.varMultiplier = 0.5 * mc.varMultiplier + 0.5 * simMult;
+      mc.varFlag = mc.varFlag || ruinP > 0.3;
+    }
 
     // Low-scoring regime + AH pivot
     const lowScoreRegime: RegimeReport = detectLowScoringRegime(finalMat, eHg, eAg);
