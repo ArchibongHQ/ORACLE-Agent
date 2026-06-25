@@ -31,8 +31,12 @@ const SHRINK_THRESHOLD = 8;
 
 /** League-specific prior expected goals (home / away) used for credibility
  *  shrinkage when a team has played fewer than SHRINK_THRESHOLD matches.
- *  Sources: FBref 2022-2026 seasonal averages cross-checked ≥2 sources. */
+ *  Sources: FBref 2022-2026 seasonal averages cross-checked ≥2 sources.
+ *  Tier A leagues (GOALS_RICH_LEAGUES) carry higher averages — their priors
+ *  must be set individually so shrinkage lands near their true mean, not the
+ *  generic 1.5/1.2 Default which would under-shrink high-scoring leagues. */
 const GOALS_SHRINK_PRIORS: Record<string, { homeAvg: number; awayAvg: number }> = {
+  // ── Europe top flights ──────────────────────────────────────────────────
   "Premier League": { homeAvg: 1.55, awayAvg: 1.18 },
   "La Liga": { homeAvg: 1.52, awayAvg: 1.14 },
   Bundesliga: { homeAvg: 1.82, awayAvg: 1.37 },
@@ -45,6 +49,45 @@ const GOALS_SHRINK_PRIORS: Record<string, { homeAvg: number; awayAvg: number }> 
   MLS: { homeAvg: 1.6, awayAvg: 1.28 },
   "Primeira Liga": { homeAvg: 1.5, awayAvg: 1.1 },
   "Süper Lig": { homeAvg: 1.55, awayAvg: 1.18 },
+  // ── Europe lower divisions (Tier A) ────────────────────────────────────
+  "2. Bundesliga": { homeAvg: 1.72, awayAvg: 1.33 },
+  "Eerste Divisie": { homeAvg: 1.85, awayAvg: 1.3 },
+  "OBOS-ligaen": { homeAvg: 1.65, awayAvg: 1.35 },
+  "Swedish Division 1": { homeAvg: 1.65, awayAvg: 1.35 },
+  "Swedish Division 2": { homeAvg: 1.7, awayAvg: 1.3 },
+  "Danish 1. Division": { homeAvg: 1.6, awayAvg: 1.35 },
+  "Regionalliga Bayern": { homeAvg: 1.8, awayAvg: 1.4 },
+  "Regionalliga Nord": { homeAvg: 1.75, awayAvg: 1.4 },
+  "Regionalliga Nordost": { homeAvg: 1.75, awayAvg: 1.4 },
+  "Regionalliga Südwest": { homeAvg: 1.75, awayAvg: 1.4 },
+  "Regionalliga West": { homeAvg: 1.78, awayAvg: 1.42 },
+  // ── Nordic / Baltic / Caucasus (Tier A) ────────────────────────────────
+  Veikkausliiga: { homeAvg: 1.65, awayAvg: 1.25 },
+  "Erovnuli Liga": { homeAvg: 1.75, awayAvg: 1.25 },
+  "Kyrgyz Premier League": { homeAvg: 1.85, awayAvg: 1.35 },
+  // ── Asia / Oceania (Tier A) ────────────────────────────────────────────
+  "NPL Queensland": { homeAvg: 1.8, awayAvg: 1.4 },
+  "NPL New South Wales": { homeAvg: 1.75, awayAvg: 1.4 },
+  "NPL Victoria": { homeAvg: 1.75, awayAvg: 1.35 },
+  "Singapore Premier League": { homeAvg: 1.6, awayAvg: 1.3 },
+  "Malaysia Super League": { homeAvg: 1.55, awayAvg: 1.25 },
+  "Qatar Stars League": { homeAvg: 1.55, awayAvg: 1.3 },
+  // ── Africa (Tier A) ────────────────────────────────────────────────────
+  "Tanzania Premier League": { homeAvg: 1.55, awayAvg: 1.1 },
+  "Syrian Premier League": { homeAvg: 1.6, awayAvg: 1.15 },
+  // ── Americas (Tier A) ──────────────────────────────────────────────────
+  "Bolivia Primera Division": { homeAvg: 1.8, awayAvg: 1.5 },
+  "USL League Two": { homeAvg: 1.7, awayAvg: 1.4 },
+  "Copa Chile": { homeAvg: 1.9, awayAvg: 1.6 },
+  "Copa Venezuela": { homeAvg: 1.85, awayAvg: 1.65 },
+  // ── Domestic cups / early rounds (Tier A) ─────────────────────────────
+  "Faroe Islands Cup": { homeAvg: 2.1, awayAvg: 1.5 },
+  "Lithuanian Cup": { homeAvg: 2.0, awayAvg: 1.4 },
+  "Estonian Cup": { homeAvg: 2.0, awayAvg: 1.4 },
+  // ── Other existing goals-rich leagues ─────────────────────────────────
+  "Chinese Super League": { homeAvg: 1.6, awayAvg: 1.2 },
+  "Scottish Premiership": { homeAvg: 1.62, awayAvg: 1.3 },
+  "Austrian Bundesliga": { homeAvg: 1.7, awayAvg: 1.35 },
   Default: { homeAvg: 1.5, awayAvg: 1.2 },
 };
 
