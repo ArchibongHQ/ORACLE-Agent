@@ -359,8 +359,10 @@ function acquireDaily(): Promise<number> {
 }
 
 // News enrichment runs as the second acquisition step (after fixtures land) —
-// best-effort, never blocks: a failed/slow Perplexity or Google AI pass just
-// means newsIntel.ts's own live fallback covers it later at analysis time.
+// best-effort, never blocks. This is the ONLY place live news scraping happens:
+// enrich_news.py populates the lake/file cache for ALL scraped fixtures here, so
+// downstream analysis (the goals pipeline runs cacheOnly) reads pre-enriched data
+// and never launches per-fixture live scraping mid-analysis.
 function runNewsEnrichment(): Promise<void> {
   if (!config.enableNewsIntel) return Promise.resolve();
   const python = PYTHON_BIN;
@@ -883,19 +885,16 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
 
   const storage = new MemoryAdapter(STORE_PATH);
 
-  // H2H -> news intel -> lineups — the same enrichment chain the main daily
-  // pipeline applies (fixtures.ts's `enrich`), so goals-funnel fixtures get the
-  // same evidence (H2H aggregates feeding the GBM model, injury/lineup news in
-  // softContext for the arbiter) the main batch's fixtures always had. Without
-  // this, fixtures sourced via the independent funnel would carry strictly
-  // less evidence into the arbiter than fixtures sourced via the main batch.
+  // H2H -> news intel (CACHE-ONLY) -> lineups. The goals pipeline consumes news
+  // already enriched during the daily-scrape phase (enrich_news.py + the main batch's
+  // live acquisition populate the lake / file cache / GBrain). It must NOT launch live
+  // per-fixture Playwright/Claude scraping in the middle of its own analysis run —
+  // that re-does work the scrape phase already did and serialises a heavy subprocess
+  // into the hot path. cacheOnly:true reads lake/file/GBrain only, never the live
+  // ensemble. H2H + lineups are local file reads (no live scraping) and stay as-is.
   const withH2H = await enrichWithH2H(funnelResult.jobs, config.footballDataApiKey);
   const withNews = config.enableNewsIntel
-    ? await enrichWithNewsIntel(withH2H, {
-        perplexityApiKey: config.perplexityApiKey,
-        geminiApiKey: config.geminiApiKey,
-        storage,
-      })
+    ? await enrichWithNewsIntel(withH2H, { storage, cacheOnly: true })
     : withH2H;
   const enrichedJobs = await enrichWithLineups(withNews);
 

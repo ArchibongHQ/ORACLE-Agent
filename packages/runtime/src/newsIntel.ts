@@ -95,6 +95,12 @@ export interface NewsIntelOpts {
   geminiApiKey?: string;
   /** Durable GBrain store for cross-day "remember this match" persistence. */
   storage?: StoragePort;
+  /** Cache-only mode: read the daily lake / file cache / GBrain ONLY — never trigger
+   *  the live ensemble (Perplexity/Playwright/Claude scrape). Used by the goals-ACCA
+   *  pipeline, which must consume news already enriched during the daily-scrape phase
+   *  (enrich_news.py + the main batch) rather than launch per-fixture live scraping
+   *  in the middle of its own analysis run. Default false (full live acquisition). */
+  cacheOnly?: boolean;
 }
 
 /** Map one per-team lake news row into SoftContextItems. "perplexity" rows
@@ -204,8 +210,12 @@ export async function enrichWithNewsIntel(
   jobs: FixtureJob[],
   opts: NewsIntelOpts
 ): Promise<FixtureJob[]> {
-  const { perplexityApiKey, geminiApiKey, storage } = opts;
+  const { perplexityApiKey, geminiApiKey, storage, cacheOnly } = opts;
   const hasLiveKeys = !!perplexityApiKey || !!geminiApiKey || isLocalRuntime();
+  // Whether to look beyond the daily lake (file cache + GBrain + maybe live ensemble).
+  // In cacheOnly mode we still read file cache + GBrain but never invoke the live
+  // ensemble — so the deeper lookup runs whenever there are live keys OR cacheOnly.
+  const useDeeperLookup = hasLiveKeys || !!cacheOnly;
 
   const eligible = jobs.map((job, idx) => ({ job, idx })).slice(0, MAX_JOBS);
   if (eligible.length === 0) return jobs;
@@ -222,7 +232,7 @@ export async function enrichWithNewsIntel(
       let items = await loadLakeNews(today, job.home, job.away);
       if (items.length > 0) lakeHits++;
 
-      if (items.length === 0 && hasLiveKeys) {
+      if (items.length === 0 && useDeeperLookup) {
         // 1. file cache (fast same-day reuse)
         let cached = await readCache(job.home, job.away);
 
@@ -235,8 +245,11 @@ export async function enrichWithNewsIntel(
           }
         }
 
-        // 3. acquire via ensemble (Perplexity + Google AI-Mode in parallel)
-        if (!cached) {
+        // 3. acquire via ensemble (Perplexity + Google AI-Mode in parallel).
+        //    Skipped entirely in cacheOnly mode — the goals pipeline must consume
+        //    news enriched during the daily-scrape phase, never launch live
+        //    per-fixture scraping mid-analysis.
+        if (!cached && !cacheOnly) {
           if (apiCalls > 0) await new Promise((r) => setTimeout(r, REQ_DELAY_MS));
           const intel = await fetchNewsEnsemble(job.home, job.away, job.league, job.kickoff, {
             perplexityKey: perplexityApiKey,

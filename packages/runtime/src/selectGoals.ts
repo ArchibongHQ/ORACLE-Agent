@@ -218,7 +218,15 @@ export function pickSafestGoalsLeg(
   const minConfidence = opts.minConfidence ?? DEFAULT_GOALS_MIN_CONFIDENCE;
   const minImplied = opts.minImplied ?? DEFAULT_GOALS_MIN_IMPLIED;
   const detail = findSidecarDetail(opts.detailByKey, job.home, job.away);
-  const eventId = opts.eventIdByKey?.get(sidecarKey(job.home, job.away));
+  // eventId resolution, tolerant in the same way findSidecarDetail is:
+  //   1. Prefer the matched detail's own eventId — findSidecarDetail already does
+  //      fuzzy name matching (regional suffixes etc.), so when the exact sidecarKey
+  //      misses, this still recovers the right event. This is the fix for booking
+  //      "no eventId" skips, where engine-normalised names (e.g. "Cuiaba Esporte
+  //      Clube MT") didn't exact-match the sidecar key in eventIdByKey.
+  //   2. Fall back to the exact-key map (covers the case where detailByKey wasn't
+  //      supplied but eventIdByKey was).
+  const eventId = detail?.eventId ?? opts.eventIdByKey?.get(sidecarKey(job.home, job.away));
 
   const all = job.result.evMarkets ?? [];
   const sGoals = all.filter((m: EVMarket) => GOALS_MARKETS.has(m.label));
