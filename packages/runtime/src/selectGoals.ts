@@ -35,16 +35,17 @@ export const GOALS_MARKETS: ReadonlySet<string> = new Set([
 const _EXCLUDE_RE =
   /cup|copa|coupe|pokal|trophy|shield|supercup|friendly|test\s*match|derby|derbi|clasico|clásico/i;
 
-/** International tournaments — checked BEFORE _EXCLUDE_RE. The bare "cup"
- *  substring in _EXCLUDE_RE was written for domestic knockout cups (rotation
- *  risk) but also matches "World Cup"/"Asian Cup"/etc, which carry no such
- *  rotation risk (full-strength squads, star players, high goal expectancy).
- *  The "euro" alternative requires either "european championship" or a year
- *  (e.g. "UEFA Euro 2026") — a bare /euro/i would also match a hypothetical
- *  domestic "Euro Friendly Cup"/"EuroLeague Youth Friendly" and incorrectly
- *  exempt it from the real rotation-risk exclusion below. */
+/** International tournaments + goals-rich domestic cups — checked BEFORE _EXCLUDE_RE.
+ *  The bare "cup"/"copa" substrings in _EXCLUDE_RE target domestic knockout ties
+ *  (rotation risk, tight knockout mentality) but also match:
+ *    • "World Cup"/"Asian Cup"/etc — no rotation risk (full-strength squads)
+ *    • "Copa Chile"/"Copa Venezuela" — explicitly added to GOALS_RICH_LEAGUES for
+ *      their historically high goal counts in early rounds (3.5+ gpg); excluding
+ *      them via the copa substring would contradict the Tier A designation.
+ *  The "euro" alternative requires "european championship" or a year so a bare
+ *  /euro/i doesn't also match "Euro Friendly Cup" / "EuroLeague Youth Friendly". */
 const _INTL_TOURNAMENT_RE =
-  /world\s*cup|euro(?:pean\s*championship)|uefa\s*euro\s*20\d{2}|euro\s*20\d{2}|copa\s*am[ée]rica|nations\s*league|africa(?:n)?\s*cup\s*of\s*nations|afcon|asian\s*cup|gold\s*cup|concacaf/i;
+  /world\s*cup|euro(?:pean\s*championship)|uefa\s*euro\s*20\d{2}|euro\s*20\d{2}|copa\s*am[ée]rica|copa\s*chile|copa\s*venezuela|nations\s*league|africa(?:n)?\s*cup\s*of\s*nations|afcon|asian\s*cup|gold\s*cup|concacaf/i;
 
 /** Default per-leg thresholds — the single source of truth, also consumed by
  *  buildConfig() in env.ts so an .env-less run and a coded default never drift. */
@@ -226,7 +227,8 @@ export function pickSafestGoalsLeg(
   // implied floor is opt-in (default 0) — see DEFAULT_GOALS_MIN_IMPLIED for why a
   // hard price floor is off. MIN_GOALS_EDGE supersedes the old `mp > ip` check.
   const sBars = sVeto.filter(
-    (m: EVMarket) => m.mp >= minConfidence && m.mp - m.ip >= MIN_GOALS_EDGE && m.ip >= minImplied
+    (m: EVMarket) =>
+      m.mp >= minConfidence && m.mp - m.ip >= MIN_GOALS_EDGE - 1e-9 && m.ip >= minImplied
   );
   const candidates = sBars.filter((m: EVMarket) => goalsDataGate(detail, job.league, m.label));
 

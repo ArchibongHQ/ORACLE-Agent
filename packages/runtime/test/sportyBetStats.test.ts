@@ -47,7 +47,13 @@ describe("buildStatsOverride", () => {
       },
     });
     const override = buildStatsOverride(d);
-    expect(override).toMatchObject({ xH: 1.4, xA: 0.8, xg_confidence: "medium" });
+    // No league passed → Default prior (homeAvg 1.5 / awayAvg 1.2).
+    // n=6 < SHRINK_THRESHOLD(8) → w=0.75; xH=0.75*1.4+0.25*1.5=1.425, xA=0.75*0.8+0.25*1.2=0.9
+    expect(override).toMatchObject({
+      xH: expect.closeTo(1.425, 3),
+      xA: expect.closeTo(0.9, 3),
+      xg_confidence: "medium",
+    });
   });
 
   it("does NOT override when either team's sample is below MIN_PLAYED (data-quality gate)", () => {

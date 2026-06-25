@@ -239,7 +239,7 @@ describe("pickSafestGoalsLeg", () => {
     const thin = detailMap([["A", "B", thinDetail()]]);
     const job = okJob("A", "B", [
       evm("Over 2.5", 0.95, 0.9), // would win on mp, but strict gate fails
-      evm("Over 1.5", 0.8, 0.76),
+      evm("Over 1.5", 0.8, 0.72), // edge=0.08 — above MIN_GOALS_EDGE
     ]);
     const leg = pickSafestGoalsLeg(job, { detailByKey: thin });
     expect(leg?.side).toBe("Over 1.5");
@@ -277,9 +277,10 @@ describe("pickSafestGoalsLeg", () => {
   });
 
   it("includes a leg sitting exactly on the confidence floor (>= is inclusive)", () => {
-    const atBar = okJob("A", "B", [evm("Over 1.5", 0.72, 0.7)]); // exactly default mp floor
+    // ip=0.60 → edge=0.12, well above MIN_GOALS_EDGE; test is about the mp floor only.
+    const atBar = okJob("A", "B", [evm("Over 1.5", 0.72, 0.6)]);
     expect(pickSafestGoalsLeg(atBar, { detailByKey })?.side).toBe("Over 1.5");
-    const justUnderMp = okJob("A", "B", [evm("Over 1.5", 0.7199, 0.7)]);
+    const justUnderMp = okJob("A", "B", [evm("Over 1.5", 0.7199, 0.6)]);
     expect(pickSafestGoalsLeg(justUnderMp, { detailByKey })).toBeNull();
   });
 });
@@ -296,7 +297,7 @@ describe("selectGoalsAccumulator", () => {
     // but staggering here too keeps this test about ranking/counting, not
     // correlation rejection (covered separately below).
     const jobs = [
-      okJob("A", "B", [evm("Over 2.5", 0.82, 0.78)], "Premier League", "2026-06-15T12:00:00Z"),
+      okJob("A", "B", [evm("Over 2.5", 0.82, 0.77)], "Premier League", "2026-06-15T12:00:00Z"),
       okJob("C", "D", [evm("Over 1.5", 0.9, 0.85)], "La Liga", "2026-06-15T19:00:00Z"),
     ];
     const res = selectGoalsAccumulator(jobs, { detailByKey });
