@@ -12,6 +12,10 @@ export const MODELS = {
   // Every other Claude call in the pipeline (Opus arbiter, briefing, CVL) stays
   // Opus/Fable-5-or-newer exactly as before — do not widen this exception.
   CLAUDE_SONNET: "claude-sonnet-4-6",
+  // Haiku — used ONLY for the news-intel Claude reshape path (fetchNewsViaClaudeReshape),
+  // where the task is structured JSON extraction from scraped prose, not reasoning.
+  // Cheapest Claude tier; do not use for any decision-layer work.
+  CLAUDE_HAIKU: "claude-haiku-4-5-20251001",
   KIMI_SWARM: "kimi-k2.6", // Kimi K2.6 via platform.moonshot.ai (OpenAI-compatible) — swarm workers
 } as const;
 

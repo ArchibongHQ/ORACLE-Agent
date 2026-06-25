@@ -6,6 +6,7 @@
  *
  *  ADMIN commands (full control):
  *    /run              Trigger the full daily analysis batch immediately
+ *    /goals-run        Trigger the goals ACCA pipeline (scrape → funnel → 5 slips → Telegram)
  *    /resolve          Resolve yesterday's fixtures and compute CLV
  *    /scrape           Fire the SportyBet fixture scraper right now
  *    /kaggle           Trigger the weekly Kaggle dataset refresh on-demand
@@ -19,6 +20,7 @@
  *
  *  USER + ADMIN commands (read / analysis):
  *    /today            Today's picks summary (fixture count, actionable picks, booking code)
+ *    /goals            Goals ACCA status — slip leg counts, booking state, age of last run
  *    /yesterday        Yesterday's resolved fixtures + realised CLV
  *    /picks            Reprint today's actionable picks
  *    /report [date]    Send HTML report as a file (today or YYYY-MM-DD)
@@ -261,6 +263,7 @@ function helpText(forAdmin: boolean): string {
     "*ORACLE — Available Commands*\n",
     "*Analysis & Picks*",
     "/today — Today's picks summary with fixture count, actionable picks, and booking code",
+    "/goals — Today's goals ACCA slips (top picks, lottery, mini-ACCA, Output B/C)",
     "/picks — Reprint actionable picks from the most recent batch",
     "/yesterday — Yesterday's resolved fixtures and realised CLV scores",
     "/analyze _Home vs Away_ \\[league\\] — Run an ad-hoc analysis on any fixture right now",
@@ -268,7 +271,7 @@ function helpText(forAdmin: boolean): string {
     "",
     "*Reports & Status*",
     "/report \\[YYYY-MM-DD\\] — Receive the HTML analysis report as a file (defaults to today)",
-    "/status — Worker heartbeat: last run time, fixture count, records stored",
+    "/status — Worker heartbeat: last run time, records stored, goals ACCA state",
     "",
     "*Help*",
     "/help — Show this message",
@@ -279,6 +282,7 @@ function helpText(forAdmin: boolean): string {
     "─────────────────────",
     "*Admin Commands*",
     "/run — Trigger the full daily analysis batch immediately",
+    "/goals-run — Trigger the goals ACCA pipeline right now (scrape → funnel → slips → Telegram)",
     "/confirm YES|NO — Confirm or cancel a pending SportyBet booking (60 s window after /run)",
     "/scrape — Fire the SportyBet fixture scraper right now (pre-batch)",
     "/resolve — Resolve yesterday's fixtures and compute CLV",
@@ -307,6 +311,9 @@ async function handleStatus(chatId: string): Promise<void> {
   const hb = readHeartbeat();
   const batch = hb.lastBatch;
   const resolve = hb.lastResolve;
+  const gb = hb.lastGoalsBatch as
+    | { at?: string; topPicksLegs?: number; lotteryLegs?: number; miniAccaLegs?: number }
+    | undefined;
   const lines: string[] = ["*ORACLE Status*\n"];
 
   if (batch) {
@@ -318,6 +325,16 @@ async function handleStatus(chatId: string): Promise<void> {
     );
   } else {
     lines.push("📦 No batch recorded yet.");
+  }
+
+  if (gb?.at) {
+    const gbAge = Math.round((Date.now() - new Date(gb.at).getTime()) / 60_000);
+    lines.push(
+      `\n⚽ *Last goals ACCA:* ${gb.at.slice(0, 16).replace("T", " ")} UTC _(${gbAge}m ago)_\n` +
+        `   Top Picks: ${String(gb.topPicksLegs ?? 0)} | Lottery: ${String(gb.lotteryLegs ?? 0)} | Mini: ${String(gb.miniAccaLegs ?? 0)}`
+    );
+  } else {
+    lines.push("\n⚽ No goals ACCA run recorded. Use /goals-run (admin) or wait for 09:40 WAT.");
   }
 
   if (resolve) {
@@ -405,6 +422,65 @@ async function handlePicks(chatId: string): Promise<void> {
       `Fixtures: ${String(batch?.fixtures ?? "?")} | Records: ${String(batch?.records ?? "?")}\n\n` +
       "Use /report to download the full annotated HTML report."
   );
+}
+
+async function handleGoals(chatId: string): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  const hb = readHeartbeat();
+  const gb = hb.lastGoalsBatch as
+    | {
+        at?: string;
+        trigger?: string;
+        analysed?: number;
+        topPicksLegs?: number;
+        lotteryLegs?: number;
+        miniAccaLegs?: number;
+        outputBLegs?: number;
+        outputCLegs?: number;
+        target?: number;
+        topPicksBooked?: boolean;
+        lotteryBooked?: boolean;
+      }
+    | undefined;
+
+  if (!gb) {
+    await sendTo(
+      chatId,
+      `ℹ️ No goals ACCA run recorded yet.\n` +
+        (isAdmin(chatId)
+          ? "Use /goals-run to trigger now (scrape → funnel → slips)."
+          : "Goals slips are sent at 09:40 WAT daily.")
+    );
+    return;
+  }
+
+  const gbDate = gb.at?.slice(0, 10);
+  const age = gb.at ? Math.round((Date.now() - new Date(gb.at).getTime()) / 60_000) : null;
+  const isToday = gbDate === today;
+
+  const lines = [
+    `⚽ *Goals ACCA — ${gbDate ?? "?"}*${isToday ? " ✅ today" : " ⚠️ not today"}`,
+    `Run: ${gb.trigger ?? "?"} | ${age !== null ? `${age}m ago` : ""}`,
+    `Analysed: ${String(gb.analysed ?? "?")} fixtures`,
+    ``,
+    `*Slips*`,
+    `🎯 Top Picks: ${String(gb.topPicksLegs ?? 0)} legs${gb.topPicksBooked ? " · booked ✅" : ""}`,
+    `🎰 Lottery: ${String(gb.lotteryLegs ?? 0)}/${String(gb.target ?? 39)} legs${gb.lotteryBooked ? " · booked ✅" : ""}`,
+    `🏆 Mini-ACCA: ${String(gb.miniAccaLegs ?? 0)} legs (cross-league)`,
+    `💎 Output B (odds ≥4.0): ${String(gb.outputBLegs ?? 0)} legs`,
+    `🔵 Output C (odds 2.5–4.0): ${String(gb.outputCLegs ?? 0)} legs`,
+  ];
+
+  if (!isToday) {
+    lines.push(
+      ``,
+      isAdmin(chatId)
+        ? `_Last run was ${gbDate ?? "unknown"}. Use /goals-run to trigger today's run._`
+        : `_Goals slips fire daily at 09:40 WAT._`
+    );
+  }
+
+  await sendTo(chatId, lines.join("\n"));
 }
 
 async function handleReport(chatId: string, dateArg?: string): Promise<void> {
@@ -558,6 +634,27 @@ async function handleRun(chatId: string): Promise<void> {
   } finally {
     await storage.close();
   }
+}
+
+async function handleGoalsRun(chatId: string): Promise<void> {
+  await sendTo(
+    chatId,
+    "⚽ *Triggering goals ACCA run…*\nScrape → funnel → 5 slips → Telegram. Takes 2–5 min."
+  );
+  const workerDist = join(ROOT, "apps", "worker", "dist", "index.js");
+  execFile(process.execPath, [workerDist, "--run-goals-now"], { cwd: ROOT }, async (err) => {
+    if (err) {
+      await sendTo(
+        chatId,
+        `⚠️ Goals run failed: \`${err.message.slice(0, 300)}\`\nCheck worker logs.`
+      );
+    } else {
+      await sendTo(
+        chatId,
+        "✅ Goals ACCA run complete — slips sent to Telegram. Use /goals for the summary."
+      );
+    }
+  });
 }
 
 async function handleScrape(chatId: string): Promise<void> {
@@ -923,6 +1020,7 @@ async function handleMessage(chatId: string, text: string): Promise<void> {
   if (cmd === "/today") return handleToday(chatId);
   if (cmd === "/yesterday") return handleYesterday(chatId);
   if (cmd === "/picks") return handlePicks(chatId);
+  if (cmd === "/goals") return handleGoals(chatId);
 
   if (cmd === "/report") {
     return handleReport(chatId, args[0]);
@@ -963,6 +1061,7 @@ async function handleMessage(chatId: string, text: string): Promise<void> {
   }
 
   if (cmd === "/run") return handleRun(chatId);
+  if (cmd === "/goals-run") return handleGoalsRun(chatId);
   if (cmd === "/confirm") {
     const answer = args[0] ?? "";
     return handleConfirm(chatId, answer);

@@ -15,7 +15,7 @@
  *  Pure functions — no I/O. Called from fixtures.ts at injection time, where
  *  the sidecar detail is already in memory (no extra fetch). */
 
-import type { SoftContextItem } from "@oracle/engine";
+import { applyTemporalDecay, type RecentMatch, type SoftContextItem } from "@oracle/engine";
 import type { SportyBetEventDetail } from "./selectFixtures.js";
 
 /** Season matches required before a goals/xG average is trusted enough to
@@ -94,6 +94,24 @@ const GOALS_SHRINK_PRIORS: Record<string, { homeAvg: number; awayAvg: number }> 
 const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
 const finiteOrZero = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
+/** Convert a sidecar form string (e.g. "WWDLW") + season avg_scored into synthetic
+ *  RecentMatch[] for applyTemporalDecay. No per-match goal counts exist in the sidecar;
+ *  we approximate: wins ≈ avg × 1.25, draws ≈ avg × 0.85, losses ≈ avg × 0.65.
+ *  Returns null when the form string or base average is absent. */
+function formToRecentMatches(
+  last5: string | null | undefined,
+  avgScored: number | null | undefined
+): RecentMatch[] | null {
+  if (!last5 || !finite(avgScored)) return null;
+  const MULTIPLIER: Record<string, number> = { W: 1.25, D: 0.85, L: 0.65 };
+  const matches: RecentMatch[] = [];
+  for (const ch of last5.toUpperCase().split("")) {
+    const mult = MULTIPLIER[ch];
+    if (mult !== undefined) matches.push({ goalsScored: avgScored * mult });
+  }
+  return matches.length >= 3 ? matches : null;
+}
+
 export interface StatsOverride {
   xH?: number;
   xA?: number;
@@ -158,6 +176,19 @@ export function buildStatsOverride(
         // Downgrade confidence since shrinkage acknowledges the thin sample.
         if (override.xg_confidence === "high") override.xg_confidence = "medium";
       }
+    }
+
+    // Temporal decay — blend recent-form trajectory into the season-average xH/xA.
+    // applyTemporalDecay uses exp-weighted recency (half-life 10 matches, 60/40 blend)
+    // but requires per-match goal counts, which the sidecar doesn't expose.
+    // Workaround: synthesise RecentMatch[] from form string + avg_scored (most-recent
+    // first in last5) so the function receives credible relative magnitudes rather than
+    // zeros. Only applied when both xH/xA were successfully set above.
+    if (override.xH !== undefined && override.xA !== undefined) {
+      const homeForm = formToRecentMatches(stats.form?.home?.last5, stats.goals?.home?.avg_scored);
+      const awayForm = formToRecentMatches(stats.form?.away?.last5, stats.goals?.away?.avg_scored);
+      if (homeForm) override.xH = applyTemporalDecay(homeForm, override.xH);
+      if (awayForm) override.xA = applyTemporalDecay(awayForm, override.xA);
     }
 
     // SoS adjustment inputs — adjustXGForSoS clamps its own factor to [0.5, 2.0]x,

@@ -20,7 +20,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FixtureJob } from "@oracle/engine";
-import { fetchNewsEnsemble, type NewsIntelResult } from "@oracle/llm";
+import { fetchNewsEnsemble, isLocalRuntime, type NewsIntelResult } from "@oracle/llm";
 import type { StoragePort } from "@oracle/storage";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -91,7 +91,7 @@ function toSoftContext(intel: NewsIntelResult): SoftContextItem[] {
 export interface NewsIntelOpts {
   /** Perplexity Sonar key — enables the Sonar path. */
   perplexityApiKey?: string;
-  /** Gemini key — enables the Google AI-Mode scrape + reshape fallback. */
+  /** Gemini key — enables the Google AI-Mode scrape + Gemini reshape fallback. */
   geminiApiKey?: string;
   /** Durable GBrain store for cross-day "remember this match" persistence. */
   storage?: StoragePort;
@@ -205,7 +205,7 @@ export async function enrichWithNewsIntel(
   opts: NewsIntelOpts
 ): Promise<FixtureJob[]> {
   const { perplexityApiKey, geminiApiKey, storage } = opts;
-  const hasLiveKeys = !!perplexityApiKey || !!geminiApiKey;
+  const hasLiveKeys = !!perplexityApiKey || !!geminiApiKey || isLocalRuntime();
 
   const eligible = jobs.map((job, idx) => ({ job, idx })).slice(0, MAX_JOBS);
   if (eligible.length === 0) return jobs;

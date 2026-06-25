@@ -2,16 +2,20 @@
  *  Complements Gemini acquisition: Gemini grounding finds ODDS; this layer finds NEWS —
  *  injury confirmations, suspensions, lineup leaks, motivation + travel flags, with citations.
  *
- *  Two acquisition paths, merged by `fetchNewsEnsemble`:
- *    1. Perplexity Sonar (OpenAI-compatible, https://api.perplexity.ai/chat/completions).
- *    2. Google "AI Mode" scrape (Playwright) reshaped into structured JSON via Gemini —
- *       the no-Perplexity-key fallback. Mirrors the fetchOddsViaGemini reshape pattern.
+ *  Three acquisition paths, merged by `fetchNewsEnsemble`:
+ *    1. Perplexity Sonar (OpenAI-compatible) — when PERPLEXITY_API_KEY is set.
+ *    2. Google "AI Mode" scrape (Playwright, keyless) → reshaped via Gemini Flash.
+ *    3. Google "AI Mode" scrape (Playwright, keyless) → reshaped via Claude Haiku —
+ *       activated when claudeKey is present and geminiKey is absent; same scrape, different
+ *       reshape model. This makes the tier fully functional with CLAUDE_API_KEY alone.
  *
- *  Every path returns null when no key, low confidence (<0.4), or any failure — NEVER throws.
- *  Verified June 2026: sonar/sonar-pro current; $1/$1 and $3/$15 per 1M tokens. */
+ *  Every path returns null on failure — NEVER throws. Missing API key is NEVER a blocker:
+ *  the Playwright scrape is keyless; only the reshape step needs a key, and Claude satisfies
+ *  that requirement on its own. */
 
 import { GoogleGenAI } from "@google/genai";
 import { scrapeGoogleAiMode } from "@oracle/research";
+import { callClaudeCode, isLocalRuntime } from "./callClaudeCode.js";
 import { MODELS } from "./cascade.js";
 
 export interface NewsIntelResult {
@@ -134,9 +138,9 @@ export async function fetchNewsIntelligence(
 
 const GEMINI_RESHAPE_SYSTEM = `You are a football pre-match intelligence extractor. You are given raw search-result prose about a match. Extract ONLY confirmed, sourced facts into the requested JSON. Never speculate. Return ONLY valid JSON, no markdown.`;
 
-/** fetchNewsViaGoogleAiMode — Perplexity-absent fallback.
- *  Scrapes Google "AI Mode" for team news, then reshapes the prose into the exact
- *  NewsIntelResult JSON via Gemini (mirrors fetchOddsViaGemini). Non-fatal → null. */
+/** fetchNewsViaGoogleAiMode — keyless scrape + reshape via Gemini Flash.
+ *  Scrapes Google "AI Mode" (Playwright, no API key needed) then reshapes the
+ *  prose into the exact NewsIntelResult JSON via Gemini. Non-fatal → null. */
 export async function fetchNewsViaGoogleAiMode(
   home: string,
   away: string,
@@ -197,6 +201,64 @@ ${scraped.text}
   return null;
 }
 
+/** fetchNewsViaClaudeReshape — local-CLI alternative to the Gemini reshape path.
+ *  Same Playwright scrape (keyless), reshape via `claude -p` (the local Claude Code
+ *  CLI — same transport as goalsScreen.ts). No API key needed in the function:
+ *  the CLI uses the account session the machine is already logged into.
+ *  Only runs when the local Claude runtime is available (isLocalRuntime() check). */
+export async function fetchNewsViaClaudeReshape(
+  home: string,
+  away: string,
+  league: string,
+  kickoff: string
+): Promise<NewsIntelResult | null> {
+  if (!isLocalRuntime()) return null;
+
+  const date = kickoff.slice(0, 10);
+  const query = `${home} vs ${away} ${league} ${date} confirmed team news injuries suspensions lineup`;
+
+  const scraped = await scrapeGoogleAiMode(query);
+  if (!scraped?.text) return null;
+
+  const reshapePrompt = `${GEMINI_RESHAPE_SYSTEM}
+
+${buildPrompt(home, away, league, kickoff)}
+
+Use ONLY the following researched prose as your source material (do not invent facts beyond it):
+"""
+${scraped.text}
+"""`;
+
+  try {
+    const text = await callClaudeCode(reshapePrompt, {
+      model: MODELS.CLAUDE_HAIKU,
+      timeoutMs: 20_000,
+    });
+    if (!text) return null;
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    const obj = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
+    const confidence = Math.max(0, Math.min(1, Number(obj.confidence ?? 0)));
+    if (confidence < MIN_CONFIDENCE) return null;
+
+    return {
+      injuries: asStringArray(obj.injuries),
+      suspensions: asStringArray(obj.suspensions),
+      lineupHints: asStringArray(obj.lineupHints),
+      motivationFlags: asStringArray(obj.motivationFlags),
+      travelFlags: asStringArray(obj.travelFlags),
+      sources: scraped.sources.slice(0, 10),
+      confidence,
+      model: "claude-local-reshape",
+      observedAt: scraped.observedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Merge two NewsIntelResults: union items, prefer more-recent observedAt, and
  *  boost confidence when both providers independently report the same fact
  *  (ensemble verification). */
@@ -236,8 +298,11 @@ function mergeResults(a: NewsIntelResult, b: NewsIntelResult): NewsIntelResult {
 }
 
 /** fetchNewsEnsemble — run available providers in parallel and merge with
- *  recency + agreement weighting. Perplexity (if key) + Google AI-Mode (if geminiKey).
- *  Returns the single best/merged NewsIntelResult, or null if all paths yield nothing. */
+ *  recency + agreement weighting.
+ *  Priority order: Perplexity (if key) → Google AI-Mode/Gemini (if geminiKey) →
+ *  Google AI-Mode/Claude-local (if local runtime available and no geminiKey —
+ *  avoids a duplicate Playwright scrape). No Perplexity or Gemini key needed:
+ *  the local-CLI path makes the tier functional on the owner's machine alone. */
 export async function fetchNewsEnsemble(
   home: string,
   away: string,
@@ -250,6 +315,8 @@ export async function fetchNewsEnsemble(
     tasks.push(fetchNewsIntelligence(home, away, league, kickoff, opts.perplexityKey));
   if (opts.geminiKey)
     tasks.push(fetchNewsViaGoogleAiMode(home, away, league, kickoff, opts.geminiKey));
+  // Local-CLI Claude path: only when Gemini key absent (avoids duplicate Playwright scrape).
+  if (!opts.geminiKey) tasks.push(fetchNewsViaClaudeReshape(home, away, league, kickoff));
   if (!tasks.length) return null;
 
   const settled = await Promise.allSettled(tasks);
