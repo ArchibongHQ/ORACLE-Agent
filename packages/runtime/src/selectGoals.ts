@@ -275,11 +275,10 @@ export function pickSafestGoalsLeg(
   const sVeto = sGoals.filter((m: EVMarket) => !m.veto);
   // Soft data-completeness haircut: a thin-data leg must clear a LARGER edge to
   // qualify (required edge = MIN_GOALS_EDGE / completeness), but is never hard-
-  // discarded. completeness is floored at 0.30 so the divisor — and thus the bar
-  // — never blows past ~3.3× MIN_GOALS_EDGE (≈16.7% edge), which a real leg can
-  // still clear. Full-data fixtures keep the plain 5% bar.
+  // discarded. dataCompleteness() floors at 0.5 so requiredEdge is capped at
+  // 2× MIN_GOALS_EDGE (10%). Full-data fixtures keep the plain 5% bar.
   const completeness = dataCompleteness(detail);
-  const requiredEdge = MIN_GOALS_EDGE / Math.max(0.3, completeness);
+  const requiredEdge = MIN_GOALS_EDGE / completeness;
   // Confidence floor + completeness-scaled minimum model edge (mp − ip). The
   // implied floor is opt-in (default 0) — see DEFAULT_GOALS_MIN_IMPLIED for why a
   // hard price floor is off. requiredEdge supersedes the old `mp > ip` check.

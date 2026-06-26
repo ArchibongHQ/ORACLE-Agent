@@ -13,7 +13,8 @@
  *  one cached JSON read. */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SoftContextItem } from "@oracle/engine";
 
 interface Venue {
@@ -22,7 +23,8 @@ interface Venue {
   altitude: number;
 }
 
-const VENUES_PATH = join(process.cwd(), ".tmp", "travel", "venues.json");
+const __dir = dirname(fileURLToPath(import.meta.url));
+const VENUES_PATH = join(__dir, "../../..", ".tmp", "travel", "venues.json");
 
 let _cache: Record<string, Venue> | null = null;
 let _loaded = false;
