@@ -462,8 +462,8 @@ async function decideInner(
   if (!ctx) return deterministicDecide(eligibleBets);
 
   const prompt = buildPrompt(eligibleBets, ctx);
-  const requestedAt = new Date().toISOString();
-  const geminiKey = config?.geminiApiKey ?? "";
+  const _requestedAt = new Date().toISOString();
+  const _geminiKey = config?.geminiApiKey ?? "";
   const openrouterKey = config?.openrouterApiKey ?? "";
 
   // ── Tier 1: local Claude Code CLI (no API key needed) ────────────────────

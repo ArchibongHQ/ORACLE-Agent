@@ -535,6 +535,12 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
     ".tmp/kaggle/player-scores",
   ]);
   await runKaggleTool("xg", "fetch_xg.py", ["--kaggle-ppda-dir", ".tmp/kaggle/xg-ppda"]);
+  // build_xg_table MUST run AFTER both fetch_fbref (adds xG columns) and fetch_xg
+  // (Understat per-match CSVs) — it merges both into the rolling team-xG prior,
+  // Understat winning on collisions, FBref extending coverage to WC/Brazil/etc.
+  await runKaggleTool("xg-table", "build_xg_table.py");
+  // Static venue table for the travel-friction + altitude engine features.
+  await runKaggleTool("travel", "fetch_travel.py");
 
   const total = ((Date.now() - wall) / 1000).toFixed(1);
   process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s ===\n`);

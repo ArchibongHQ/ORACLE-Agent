@@ -94,8 +94,12 @@ export interface GoalsLeg {
   mp: number;
   /** Implied probability (1/odds). */
   ip: number;
-  /** Model edge: mp − ip. Always ≥ MIN_GOALS_EDGE for admitted legs. */
+  /** Model edge: mp − ip. Always ≥ the completeness-scaled required edge
+   *  (MIN_GOALS_EDGE / completeness) for admitted legs. */
   edge: number;
+  /** Data-completeness fraction ∈ (0,1] used for the soft edge-haircut — surfaced
+   *  so the report and arbiter can flag thin-data legs. 1.0 = all subtabs present. */
+  completeness?: number;
   /** SportyBet / Sportradar event ID (e.g. "sr:match:66456926") — used by the
    *  booking agent to navigate directly to the fixture detail page, bypassing
    *  the listing-page scroll that only shows fixtures visible in the DOM. */
@@ -197,6 +201,37 @@ function hasBothTeamsGoalsAndDefence(detail: SportyBetEventDetail | undefined): 
   return hasDefenceFigure(detail, "home") && hasDefenceFigure(detail, "away");
 }
 
+/** Data-completeness fraction ∈ [0.5, 1]: how well-supported the goals MODEL is
+ *  for this fixture. Drives the soft edge-haircut in pickSafestGoalsLeg — a
+ *  thin-data leg must clear a *larger* edge to enter a slip (required edge =
+ *  MIN_GOALS_EDGE / completeness), but is never hard-discarded (ORACLE rule:
+ *  missing data is not a blocker, use fallbacks).
+ *
+ *  CORE inputs (goals signal, defensive figure, standings) are the baseline the
+ *  data gate already requires — having ALL three is treated as fully complete
+ *  (1.0), so a normally-gated leg faces the plain MIN_GOALS_EDGE bar and the
+ *  haircut never penalises ordinary fixtures. A MISSING core input is what marks a
+ *  fixture genuinely thin and triggers the haircut: each absent core input costs
+ *  0.25 (≤ two can be missing while a goals signal remains, per the lenient gate).
+ *  Enrichment signals (xG, recent-5 goals) can lift a fixture that's missing one
+ *  core input back toward 1.0 — they add 0.125 each on top of the core fraction.
+ *  Floored at 0.5 so the haircut never exceeds 2× MIN_GOALS_EDGE (10% edge). */
+export function dataCompleteness(detail: SportyBetEventDetail | undefined): number {
+  const stats = detail?.stats;
+  const core: boolean[] = [
+    hasAnyGoalsSignal(detail),
+    hasDefenceFigure(detail, "home") || hasDefenceFigure(detail, "away"),
+    stats?.standings?.home != null || stats?.standings?.away != null,
+  ];
+  const enrich: boolean[] = [
+    stats?.xg?.home?.xgf != null || stats?.xg?.away?.xgf != null,
+    stats?.recentGoals?.home != null || stats?.recentGoals?.away != null,
+  ];
+  const coreScore = core.filter(Boolean).length / core.length; // 0..1
+  const enrichBonus = enrich.filter(Boolean).length * 0.125; // 0, .125, .25
+  return Math.max(0.5, Math.min(1, coreScore + enrichBonus));
+}
+
 /** Tiered data gate. Returns true when the fixture's data supports `market`.
  *  - Always rejects cup/friendly/derby/low-signal leagues.
  *  - Over 2.5: strict — both teams need last-5 goals + a defensive figure.
@@ -238,12 +273,19 @@ export function pickSafestGoalsLeg(
   const all = job.result.evMarkets ?? [];
   const sGoals = all.filter((m: EVMarket) => GOALS_MARKETS.has(m.label));
   const sVeto = sGoals.filter((m: EVMarket) => !m.veto);
-  // Confidence floor + minimum 5% model edge (mp − ip ≥ MIN_GOALS_EDGE). The
+  // Soft data-completeness haircut: a thin-data leg must clear a LARGER edge to
+  // qualify (required edge = MIN_GOALS_EDGE / completeness), but is never hard-
+  // discarded. completeness is floored at 0.30 so the divisor — and thus the bar
+  // — never blows past ~3.3× MIN_GOALS_EDGE (≈16.7% edge), which a real leg can
+  // still clear. Full-data fixtures keep the plain 5% bar.
+  const completeness = dataCompleteness(detail);
+  const requiredEdge = MIN_GOALS_EDGE / Math.max(0.3, completeness);
+  // Confidence floor + completeness-scaled minimum model edge (mp − ip). The
   // implied floor is opt-in (default 0) — see DEFAULT_GOALS_MIN_IMPLIED for why a
-  // hard price floor is off. MIN_GOALS_EDGE supersedes the old `mp > ip` check.
+  // hard price floor is off. requiredEdge supersedes the old `mp > ip` check.
   const sBars = sVeto.filter(
     (m: EVMarket) =>
-      m.mp >= minConfidence && m.mp - m.ip >= MIN_GOALS_EDGE - 1e-9 && m.ip >= minImplied
+      m.mp >= minConfidence && m.mp - m.ip >= requiredEdge - 1e-9 && m.ip >= minImplied
   );
   const candidates = sBars.filter((m: EVMarket) => goalsDataGate(detail, job.league, m.label));
 
@@ -270,6 +312,7 @@ export function pickSafestGoalsLeg(
     mp: best.mp,
     ip: best.ip,
     edge: best.mp - best.ip,
+    completeness,
     ...(eventId ? { eventId } : {}),
     decisionModel: job.decisionReplay?.model ?? null,
   };

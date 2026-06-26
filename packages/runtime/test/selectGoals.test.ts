@@ -239,10 +239,27 @@ describe("pickSafestGoalsLeg", () => {
     const thin = detailMap([["A", "B", thinDetail()]]);
     const job = okJob("A", "B", [
       evm("Over 2.5", 0.95, 0.9), // would win on mp, but strict gate fails
-      evm("Over 1.5", 0.8, 0.72), // edge=0.08 — above MIN_GOALS_EDGE
+      // thinDetail has only a single-team goals signal → completeness floors at
+      // 0.5 → required edge = MIN_GOALS_EDGE / 0.5 = 0.10. Give Over 1.5 a 0.12
+      // edge so it clears the thin-data haircut and remains the kept leg.
+      evm("Over 1.5", 0.84, 0.72), // edge=0.12 — above the 0.10 thin-data bar
     ]);
     const leg = pickSafestGoalsLeg(job, { detailByKey: thin });
     expect(leg?.side).toBe("Over 1.5");
+  });
+
+  it("applies the data-completeness haircut: a thin-data leg needs a bigger edge", () => {
+    const thin = detailMap([["A", "B", thinDetail()]]); // completeness 0.5 → bar 0.10
+    // 0.08 edge clears the plain 5% bar but NOT the thin-data 10% bar → dropped.
+    const justUnder = okJob("A", "B", [evm("Over 1.5", 0.8, 0.72)]);
+    expect(pickSafestGoalsLeg(justUnder, { detailByKey: thin })).toBeNull();
+    // The same leg on a full-data (rich) fixture qualifies — completeness 1.0.
+    const rich = detailMap([["A", "B", richDetail()]]);
+    expect(
+      pickSafestGoalsLeg(okJob("A", "B", [evm("Over 1.5", 0.8, 0.72)]), {
+        detailByKey: rich,
+      })?.side
+    ).toBe("Over 1.5");
   });
 
   it("respects veto", () => {
@@ -296,9 +313,11 @@ describe("selectGoalsAccumulator", () => {
     // Staggered kickoffs (>3h apart) — different leagues already imply rho=0,
     // but staggering here too keeps this test about ranking/counting, not
     // correlation rejection (covered separately below).
+    // C-D uses thinDetail (completeness 0.5 → required edge 0.10), so give its
+    // Over 1.5 a 0.12 edge to clear the haircut; A-B is richDetail (full bar).
     const jobs = [
       okJob("A", "B", [evm("Over 2.5", 0.82, 0.77)], "Premier League", "2026-06-15T12:00:00Z"),
-      okJob("C", "D", [evm("Over 1.5", 0.9, 0.85)], "La Liga", "2026-06-15T19:00:00Z"),
+      okJob("C", "D", [evm("Over 1.5", 0.9, 0.78)], "La Liga", "2026-06-15T19:00:00Z"),
     ];
     const res = selectGoalsAccumulator(jobs, { detailByKey });
     expect(res.legs.map((l) => l.side)).toEqual(["Over 1.5", "Over 2.5"]);

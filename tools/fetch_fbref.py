@@ -9,7 +9,8 @@ Output: .tmp/fbref/team_season_stats.csv
 
 Columns: squad, comp, fdco_league, season, goals, assists, shots,
          shots_on_target, yellow_cards, red_cards, minutes, player_count,
-         goals_per90, shots_per90, sot_per90
+         goals_per90, shots_per90, sot_per90, xg, npxg, xag,
+         xg_per90, xag_per90
 """
 
 from __future__ import annotations
@@ -30,6 +31,11 @@ COMP_TO_FDCO = {
     "it Serie A":         "I1",
     "fr Ligue 1":         "F1",
     "eng Championship":   "E1",
+    # FBref publishes free xG (StatsBomb model) for these too — the source
+    # documents' "no public xG for World Cup / Brazil" claim is false.
+    "br Série A":         "BRA1",
+    "br Série B":         "BRA2",
+    "INT World Cup":      "WC",
 }
 
 # Infer season code from filename suffix e.g. "players_data_light-2024_2025.csv" -> "2425"
@@ -53,6 +59,7 @@ def aggregate_csv(path: Path, season: str) -> list[dict]:
         "goals": 0.0, "assists": 0.0, "shots": 0.0,
         "shots_on_target": 0.0, "yellow_cards": 0.0,
         "red_cards": 0.0, "minutes": 0.0, "player_count": 0,
+        "xg": 0.0, "npxg": 0.0, "xag": 0.0, "xg_present": 0,
     })
 
     with open(path, encoding="utf-8-sig") as f:
@@ -72,11 +79,21 @@ def aggregate_csv(path: Path, season: str) -> list[dict]:
             t["red_cards"]       += _safe_float(row.get("CrdR") or "0")
             t["minutes"]         += _safe_float(row.get("Min") or "0")
             t["player_count"]    += 1
+            # xG columns are only present in FBref "standard" exports; absent in
+            # leagues without StatsBomb coverage. Track presence so we don't emit
+            # a misleading 0.0 xG for a team that simply had no xG column.
+            xg_val = row.get("xG")
+            if xg_val not in (None, ""):
+                t["xg"]   += _safe_float(xg_val)
+                t["npxg"] += _safe_float(row.get("npxG") or "0")
+                t["xag"]  += _safe_float(row.get("xAG") or row.get("xA") or "0")
+                t["xg_present"] += 1
 
     rows = []
     for (squad, comp, ssn), stats in teams.items():
         mins = stats["minutes"] or 1.0
         nineties = mins / 90.0
+        has_xg = stats["xg_present"] > 0
         rows.append({
             "squad":            squad,
             "comp":             comp,
@@ -93,6 +110,11 @@ def aggregate_csv(path: Path, season: str) -> list[dict]:
             "goals_per90":      round(stats["goals"] / nineties, 4),
             "shots_per90":      round(stats["shots"] / nineties, 4),
             "sot_per90":        round(stats["shots_on_target"] / nineties, 4),
+            "xg":               round(stats["xg"], 2) if has_xg else "",
+            "npxg":             round(stats["npxg"], 2) if has_xg else "",
+            "xag":              round(stats["xag"], 2) if has_xg else "",
+            "xg_per90":         round(stats["xg"] / nineties, 4) if has_xg else "",
+            "xag_per90":        round(stats["xag"] / nineties, 4) if has_xg else "",
         })
     return rows
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 /**
  * engine-bridge — thin CLI shim that accepts a RunState + OracleConfig patch and
  * runs one ExecutionEngine pass, printing the EVMarket[] result as JSON to stdout.
@@ -13,12 +15,10 @@
  * Exit codes: 0 = success (JSON on stdout), 1 = bad args, 2 = engine threw.
  */
 import { parseArgs } from "node:util";
-import { ExecutionEngine } from "@oracle/engine";
 import type { OracleConfig, RunState } from "@oracle/engine";
+import { ExecutionEngine } from "@oracle/engine";
 import { buildConfig, loadEnv } from "@oracle/runtime";
 import { MemoryAdapter } from "@oracle/storage";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");

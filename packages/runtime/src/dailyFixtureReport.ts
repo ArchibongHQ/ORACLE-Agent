@@ -79,6 +79,13 @@ function renderFixtureRawData(
   const recentCorners = stats?.recentCorners;
   const recentGoals = stats?.recentGoals;
   const scyc = stats?.scoringConceding;
+  const disc = stats?.disciplinary;
+  const ph = stats?.positionHistory;
+  const tg = stats?.topGoals;
+  // xG provenance tag — Understat (per-match, true xGA) vs FBref (season aggregate,
+  // xGF only). Both home/away carry the same src in practice; read whichever exists.
+  const xgSrc = xg?.home?.src ?? xg?.away?.src;
+  const xgTag = xgSrc ? ` (${xgSrc})` : "";
 
   const sections = [
     renderOdds(event),
@@ -112,7 +119,7 @@ function renderFixtureRawData(
         )
       : line("H2H", "No history available"),
     side(
-      "xG",
+      `xG${xgTag}`,
       xg?.home
         ? `xGF ${xg.home.xgf ?? "?"}, xGA ${xg.home.xga ?? "?"}`
         : "N/A — outside xG coverage",
@@ -174,6 +181,35 @@ function renderFixtureRawData(
           scyc.away
             ? `GF ${scyc.away.scored_avg ?? "?"}, GA ${scyc.away.conceded_avg ?? "?"}, BTTS ${pct(scyc.away.btts_rate ?? 0)}, FTS ${pct(scyc.away.failed_to_score_rate ?? 0)}, CS ${pct(scyc.away.clean_sheet_rate ?? 0)}, 1H goals ${scyc.away.goals_1h_avg ?? "?"}`
             : null
+        )
+      : "",
+    disc
+      ? side(
+          "Discipline",
+          disc.home
+            ? `${disc.home.yellow_avg ?? "?"} yel, ${disc.home.red_avg ?? "?"} red, ${disc.home.fouls_avg ?? "?"} fouls`
+            : null,
+          disc.away
+            ? `${disc.away.yellow_avg ?? "?"} yel, ${disc.away.red_avg ?? "?"} red, ${disc.away.fouls_avg ?? "?"} fouls`
+            : null
+        )
+      : "",
+    ph
+      ? side(
+          "Position trend",
+          ph.home
+            ? `now ${ph.home.current ?? "?"} (best ${ph.home.best ?? "?"}, worst ${ph.home.worst ?? "?"}, trend ${ph.home.trend ?? "?"})`
+            : null,
+          ph.away
+            ? `now ${ph.away.current ?? "?"} (best ${ph.away.best ?? "?"}, worst ${ph.away.worst ?? "?"}, trend ${ph.away.trend ?? "?"})`
+            : null
+        )
+      : "",
+    tg
+      ? side(
+          "Lead scorer",
+          tg.home ? `${tg.home.top_scorer_name ?? "?"} (${tg.home.top_scorer_goals ?? "?"})` : null,
+          tg.away ? `${tg.away.top_scorer_name ?? "?"} (${tg.away.top_scorer_goals ?? "?"})` : null
         )
       : "",
     lineup

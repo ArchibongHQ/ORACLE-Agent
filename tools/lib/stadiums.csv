@@ -1,0 +1,62 @@
+# Stadium / home-city coordinates for travel-friction + altitude features.
+# Source: StadiumDB / OpenStreetMap / Wikipedia (public). lat,lon in decimal
+# degrees; altitude in metres. Keyed by raw team display name — fetch_travel.py
+# normalises via tools/lib/team_names.py so SportyBet display strings join.
+# This is a seed covering ORACLE priority-league hubs; extend as leagues grow.
+# Altitude matters most for Andean fixtures (La Paz ~3640m, Quito ~2850m).
+team,lat,lon,altitude
+# ── England ──
+Arsenal,51.5549,-0.1084,30
+Chelsea,51.4817,-0.1910,15
+Tottenham,51.6043,-0.0664,40
+Manchester United,53.4631,-2.2913,40
+Manchester City,53.4831,-2.2004,40
+Liverpool,53.4308,-2.9608,30
+Everton,53.4388,-2.9664,30
+Newcastle,54.9756,-1.6216,45
+Aston Villa,52.5092,-1.8848,110
+West Ham,51.5386,-0.0166,5
+# ── Spain ──
+Real Madrid,40.4531,-3.6883,667
+Barcelona,41.3809,2.1228,12
+Atletico Madrid,40.4362,-3.5995,667
+Sevilla,37.3840,-5.9705,11
+Valencia,39.4747,-0.3582,15
+Athletic Bilbao,43.2641,-2.9494,19
+# ── Germany ──
+Bayern Munich,48.2188,11.6247,520
+Borussia Dortmund,51.4926,7.4518,86
+RB Leipzig,51.3458,12.3483,113
+Bayer Leverkusen,51.0382,7.0022,60
+# ── Italy ──
+Juventus,45.1096,7.6413,239
+Inter,45.4781,9.1240,122
+AC Milan,45.4781,9.1240,122
+Napoli,40.8279,14.1931,30
+Roma,41.9339,12.4547,21
+# ── France ──
+Paris Saint Germain,48.8414,2.2530,35
+Marseille,43.2698,5.3958,12
+Lyon,45.7653,4.9822,170
+# ── Brazil ──
+Flamengo,-22.9121,-43.2302,5
+Palmeiras,-23.5275,-46.6781,760
+Corinthians,-23.5453,-46.4742,760
+Sao Paulo,-23.6005,-46.7197,760
+Gremio,-30.0654,-51.2356,10
+Internacional,-30.0654,-51.2356,10
+Atletico Mineiro,-19.8657,-43.9709,852
+Cruzeiro,-19.8657,-43.9709,852
+Fluminense,-22.9121,-43.2302,5
+Botafogo,-22.8930,-43.2920,5
+# ── Argentina ──
+Boca Juniors,-34.6356,-58.3647,25
+River Plate,-34.5453,-58.4497,25
+Racing Club,-34.6677,-58.3690,25
+Independiente,-34.6700,-58.3700,25
+# ── Bolivia (altitude) ──
+Bolivar,-16.5000,-68.1500,3640
+The Strongest,-16.5000,-68.1500,3640
+# ── Mexico ──
+Club America,19.3030,-99.1505,2240
+Chivas,20.6819,-103.4625,1566

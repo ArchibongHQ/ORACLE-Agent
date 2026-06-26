@@ -43,10 +43,10 @@ import {
   lstmMarketDecoderProxy,
   monteCarlo,
   normalizedEfficiency,
-  simulateRuin,
   optimizedKelly,
   powerMethodVigRemoval,
   safeNum,
+  simulateRuin,
   skellamAHCover,
   skellamProbs,
 } from "../math/index.js";
@@ -252,6 +252,54 @@ const LEAGUE_PARAMS: Record<string, LeagueParam> = {
     kFactor: 22,
     avgGA: 1.45,
     drawRate: 0.215,
+    reliability: "medium",
+    upsetLeague: true,
+  },
+  // South American top flights — strong home advantage, lower/cagier scoring than
+  // Europe. Baselines cross-checked vs FBref/FootyStats 2024-2026 (Brazil A ≈2.5,
+  // Brazil B ≈2.4, Argentina ≈2.3 goals/game).
+  "Brazilian Serie A": {
+    baseRho: -0.14,
+    homeAvg: 1.5,
+    awayAvg: 1.0,
+    kFactor: 10,
+    avgGA: 1.2,
+    drawRate: 0.28,
+    reliability: "medium",
+    upsetLeague: true,
+  },
+  "Brazilian Serie B": {
+    baseRho: -0.14,
+    homeAvg: 1.45,
+    awayAvg: 0.95,
+    kFactor: 9,
+    avgGA: 1.15,
+    drawRate: 0.3,
+    reliability: "medium",
+    upsetLeague: true,
+  },
+  "Argentine Primera Division": {
+    baseRho: -0.15,
+    homeAvg: 1.4,
+    awayAvg: 0.9,
+    kFactor: 9,
+    avgGA: 1.1,
+    drawRate: 0.3,
+    reliability: "medium",
+    upsetLeague: true,
+  },
+  // International tournament — neutral venues, so home/away advantage collapses
+  // (homeAvg ≈ awayAvg). Lower-scoring, cagier than club football → modest baseRho
+  // and high draw rate. Matched to the "FIFA World Cup" display string used across
+  // ORACLE_PRIORITY_LEAGUES (selectFixtures), CLV_ELIGIBLE_LEAGUES (analyze) and
+  // GOALS_SHRINK_PRIORS (sportyBetStats).
+  "FIFA World Cup": {
+    baseRho: -0.12,
+    homeAvg: 1.3,
+    awayAvg: 1.3,
+    kFactor: 12,
+    avgGA: 1.2,
+    drawRate: 0.27,
     reliability: "medium",
     upsetLeague: true,
   },

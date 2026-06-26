@@ -98,6 +98,9 @@ ESPN_LEAGUE_MAP: dict[str, str] = {
     "usa.3":            "USL League Two",
     "bol.1":            "Bolivia Primera Division",
     "mex.1":            "Liga MX",
+    "bra.1":            "Brazilian Serie A",
+    "bra.2":            "Brazilian Serie B",
+    "arg.1":            "Argentine Primera Division",
     # ── Europe (continental / global) ────────────────────────────────────────
     "uefa.champions":   "Champions League",
     "uefa.europa":      "Europa League",
@@ -817,14 +820,23 @@ def _load_xg_table() -> dict[str, dict]:
 
 
 def _xg_for(table: dict[str, dict], team: str) -> Optional[dict]:
-    """Look up a team's {xgf, xga} prior by normalised name. None when uncovered."""
+    """Look up a team's {xgf, xga, src} prior by normalised name. None when uncovered.
+
+    xgf is required; xga may be null for FBref-sourced records (season player
+    aggregate has no team-conceded figure). The TS override consumes xGF-only
+    records at medium confidence, so we pass them through with xga=None."""
     rec = table.get(normalise(team))
     if not rec:
         return None
     xgf, xga = rec.get("xgf"), rec.get("xga")
-    if not isinstance(xgf, (int, float)) or not isinstance(xga, (int, float)):
+    if not isinstance(xgf, (int, float)):
         return None
-    return {"xgf": float(xgf), "xga": float(xga)}
+    src = rec.get("src") if isinstance(rec.get("src"), str) else None
+    return {
+        "xgf": float(xgf),
+        "xga": float(xga) if isinstance(xga, (int, float)) else None,
+        "src": src,
+    }
 
 
 def _sb_get(url: str) -> Optional[dict]:
@@ -1494,12 +1506,111 @@ def _parse_funfacts(funfacts_data: dict) -> Optional[list[str]]:
     return out or None
 
 
-def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> dict:
+def _parse_disciplinary(disc_data: dict, venue: str) -> Optional[dict]:
+    """Cards/fouls per team from stats_season_teamdisciplinary/{seasonid}/{uid}.
+
+    Marginal goals signal (card-heavy refs → stoppages, fewer goals; many fouls →
+    set-pieces). Defensive against unverified schema: known gismo disciplinary docs
+    expose a `stats` dict with per-90 averages; we read the documented keys and
+    return None on any shape mismatch (never fabricate — see oracle_gismo_parsers).
+    `venue` selects the home/away split when present, falling back to `total`.
+    """
+    if not disc_data:
+        return None
+    stats = disc_data.get("stats")
+    if not isinstance(stats, dict):
+        return None
+
+    def avg(key: str) -> Optional[float]:
+        rec = stats.get(key)
+        if isinstance(rec, dict):
+            v = rec.get(venue, rec.get("total"))
+        else:
+            v = rec
+        return round(float(v), 2) if isinstance(v, (int, float)) else None
+
+    out = {
+        "yellow_avg": avg("yellowcardsaverage"),
+        "red_avg": avg("redcardsaverage"),
+        "fouls_avg": avg("foulsaverage"),
+    }
+    cleaned = {k: v for k, v in out.items() if v is not None}
+    return cleaned or None
+
+
+def _parse_position_history(ph_data: dict) -> Optional[dict]:
+    """League-position trend from stats_season_teampositionhistory/{seasonid}/{uid}.
+
+    Momentum signal: a team climbing vs sliding over recent rounds. Defensive parse —
+    returns {current, best, worst, trend} where trend = sign(earliest − latest) so a
+    positive trend means improving (lower position number). None on shape mismatch.
+    """
+    if not ph_data:
+        return None
+    hist = ph_data.get("positionhistory") or ph_data.get("history")
+    if not isinstance(hist, list) or not hist:
+        return None
+    positions: list[int] = []
+    for entry in hist:
+        p = entry.get("position") if isinstance(entry, dict) else entry
+        if isinstance(p, (int, float)):
+            positions.append(int(p))
+    if not positions:
+        return None
+    current = positions[-1]
+    trend = positions[0] - current  # >0 = climbed (lower number = better)
+    return {
+        "current": current,
+        "best": min(positions),
+        "worst": max(positions),
+        "trend": trend,
+        "n": len(positions),
+    }
+
+
+def _parse_top_goals(tg_data: dict, team_id: Optional[int], team_uid: Optional[int]) -> Optional[dict]:
+    """Top-scorer concentration from stats_season_topgoals/{seasonid}.
+
+    Key-player-absence signal when paired with news intel: a team whose goals are
+    concentrated in one scorer is more fragile to that player's absence. Returns
+    {top_scorer_goals, top_scorer_name} for this fixture's team. Defensive parse.
+    """
+    if not tg_data:
+        return None
+    players = tg_data.get("topgoals") or tg_data.get("players")
+    if not isinstance(players, list) or not players:
+        return None
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        team = p.get("team") or {}
+        tid = team.get("_id") if isinstance(team, dict) else None
+        tuid = team.get("uid") if isinstance(team, dict) else None
+        if (team_id and tid == team_id) or (team_uid and tuid == team_uid):
+            goals = p.get("goals")
+            if isinstance(goals, (int, float)):
+                return {
+                    "top_scorer_goals": int(goals),
+                    "top_scorer_name": str(p.get("name") or p.get("playername") or "?"),
+                }
+    return None
+
+
+def _fetch_fixture_detail(
+    event_id: str,
+    kickoff_utc: Optional[str] = None,
+    home: str = "",
+    away: str = "",
+) -> dict:
     """
     Fetch markets + stats for one fixture via anonymous plain HTTP.
 
     Returns a dict with keys: odds, stats, statscoverage.
     Any sub-call failure degrades that field to None — never raises.
+
+    home/away are used ONLY for the optional, dormant Apify reliability fallback
+    (tools/fetch_apify_stats.py) — a no-op unless APIFY_TOKEN is set. gismo stays
+    the primary source; Apify only fills H2H/standings when gismo returned null.
     """
     mid = event_id.rsplit(":", 1)[-1]
     # Validate mid is numeric-only before using it in Gismo URL paths to prevent path traversal
@@ -1583,6 +1694,21 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
         _time.sleep(_SB_PACE)
     h2h = _parse_h2h(h2h_data)
 
+    # 6b. DORMANT Apify reliability fallback — only fires when gismo returned no H2H
+    # AND APIFY_TOKEN is set (no token = no call, no cost). gismo stays primary.
+    if not h2h and home and away:
+        try:
+            from fetch_apify_stats import fetch_apify_subtab
+        except ImportError:  # repo root on sys.path instead of tools/
+            try:
+                from tools.fetch_apify_stats import fetch_apify_subtab
+            except ImportError:
+                fetch_apify_subtab = None  # type: ignore[assignment]
+        if fetch_apify_subtab is not None:
+            ap_h2h = fetch_apify_subtab(home, away, "h2h")
+            if ap_h2h:
+                h2h = ap_h2h
+
     # 7. Season over/under % (stats_season_overunder) — keyed by uid, not _id (see above)
     ou_data = _gismo_doc(f"stats_season_overunder/{season_id}") if season_id else None
     _time.sleep(_SB_PACE)
@@ -1657,6 +1783,50 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
         if parsed:
             scoring_conceding["away"] = parsed
 
+    # 12. Disciplinary (cards/fouls) — stats_season_teamdisciplinary/{seasonid}/{uid}.
+    # Marginal goals signal (referee/foul proxy). uid-keyed like overunder/h2h.
+    disciplinary: dict[str, dict] = {}
+    if season_id and home_uid:
+        _time.sleep(_SB_PACE)
+        h_disc = _gismo_doc(f"stats_season_teamdisciplinary/{season_id}/{home_uid}")
+        parsed = _parse_disciplinary(h_disc, "home")
+        if parsed:
+            disciplinary["home"] = parsed
+    if season_id and away_uid:
+        _time.sleep(_SB_PACE)
+        a_disc = _gismo_doc(f"stats_season_teamdisciplinary/{season_id}/{away_uid}")
+        parsed = _parse_disciplinary(a_disc, "away")
+        if parsed:
+            disciplinary["away"] = parsed
+
+    # 13. Position history (momentum trend) — stats_season_teampositionhistory/{seasonid}/{uid}.
+    position_history: dict[str, dict] = {}
+    if season_id and home_uid:
+        _time.sleep(_SB_PACE)
+        h_ph = _gismo_doc(f"stats_season_teampositionhistory/{season_id}/{home_uid}")
+        parsed = _parse_position_history(h_ph)
+        if parsed:
+            position_history["home"] = parsed
+    if season_id and away_uid:
+        _time.sleep(_SB_PACE)
+        a_ph = _gismo_doc(f"stats_season_teampositionhistory/{season_id}/{away_uid}")
+        parsed = _parse_position_history(a_ph)
+        if parsed:
+            position_history["away"] = parsed
+
+    # 14. Top scorers (key-player concentration) — stats_season_topgoals/{seasonid}.
+    # One doc covers the whole league; extract each team's lead scorer.
+    top_goals: dict[str, dict] = {}
+    if season_id:
+        _time.sleep(_SB_PACE)
+        tg_data = _gismo_doc(f"stats_season_topgoals/{season_id}")
+        h_tg = _parse_top_goals(tg_data, home_id, home_uid)
+        a_tg = _parse_top_goals(tg_data, away_id, away_uid)
+        if h_tg:
+            top_goals["home"] = h_tg
+        if a_tg:
+            top_goals["away"] = a_tg
+
     stats: dict = {}
     if form:
         stats["form"] = form
@@ -1680,6 +1850,12 @@ def _fetch_fixture_detail(event_id: str, kickoff_utc: Optional[str] = None) -> d
         stats["recentGoals"] = recent_goals
     if scoring_conceding:
         stats["scoringConceding"] = scoring_conceding
+    if disciplinary:
+        stats["disciplinary"] = disciplinary
+    if position_history:
+        stats["positionHistory"] = position_history
+    if top_goals:
+        stats["topGoals"] = top_goals
 
     return {
         "odds": odds,
@@ -1729,7 +1905,9 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
         if not eid:
             return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
         try:
-            detail = _fetch_fixture_detail(eid, ev.get("kickoff_utc"))
+            detail = _fetch_fixture_detail(
+                eid, ev.get("kickoff_utc"), ev.get("home", ""), ev.get("away", "")
+            )
             return {**ev, **detail, "xg": xg}
         except Exception:
             return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
@@ -2034,7 +2212,7 @@ def write_sportybet_sidecar(date_str: str, events: list[dict]) -> None:
     Each event record shape: {eventId, home, away, league, kickoff_utc, marketCount,
       odds: {1x2, ou15, ou25, ou35, btts, dc, dnb, ah}, stats: {form, standings, goals, h2h},
       statscoverage: {leaguetable, formtable, headtohead, …},
-      xg: {home: {xgf, xga} | null, away: {xgf, xga} | null}  # Understat top-5 only}
+      xg: {home: {xgf, xga|null, src} | null, away: ...}  # Understat top-5 + FBref fallback}
     """
     SPORTYBET_SIDECAR.parent.mkdir(parents=True, exist_ok=True)
     payload = {

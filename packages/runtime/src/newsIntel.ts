@@ -155,6 +155,24 @@ function lakeRowToSoftContext(row: {
   if (row.source === "rss_news" && row.summary) {
     return [{ kind: "news", text: row.summary, source: "rss-lake", observedAt: row.scrapedAt }];
   }
+  // OneFootball — confirmed/predicted lineups: the goals model cares most about
+  // attacker availability, so route to the "lineup" kind (STEP 2 of the arbiter).
+  if (row.source === "onefootball" && row.summary) {
+    return [
+      { kind: "lineup", text: row.summary, source: "onefootball-lake", observedAt: row.scrapedAt },
+    ];
+  }
+  // Evening Standard — World Cup squad / injury news (general reportage).
+  if (row.source === "evening_standard" && row.summary) {
+    return [
+      {
+        kind: "news",
+        text: row.summary,
+        source: "evening-standard-lake",
+        observedAt: row.scrapedAt,
+      },
+    ];
+  }
   if (
     (row.source === "transfermarkt" || row.source === "fotmob" || row.source === "sofascore") &&
     row.summary

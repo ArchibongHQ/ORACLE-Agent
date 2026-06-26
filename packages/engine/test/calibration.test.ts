@@ -10,8 +10,8 @@
  */
 
 import {
-  CalibrationEngine,
   applyPlatt,
+  CalibrationEngine,
   expectedCalibrationError,
   logLoss,
   plattScale,

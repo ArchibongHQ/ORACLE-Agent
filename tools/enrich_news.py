@@ -135,6 +135,15 @@ _RSS_FEEDS: dict[str, str] = {
     "sky_sports": "https://www.skysports.com/rss/0,20514,11095,00.xml",
     "the_athletic": "https://theathletic.com/football/?rss",
 }
+
+# Dedicated lineup/squad-news feeds written under their OWN source names (not the
+# generic "rss_news"), so newsIntel.ts can route them precisely: OneFootball →
+# kind "lineup" (confirmed/predicted XI — the goals model cares about attacker
+# availability), Evening Standard → kind "news" (World Cup squad / injury reportage).
+_DEDICATED_NEWS_FEEDS: dict[str, str] = {
+    "onefootball": "https://onefootball.com/en/rss",
+    "evening_standard": "https://www.standard.co.uk/sport/football/rss",
+}
 _RSS_HDR = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -414,6 +423,7 @@ def enrich(
     use_fotmob: bool = True,
     use_transfermarkt: bool = True,
     use_sofascore: bool = True,
+    use_dedicated_news: bool = True,
     limit: Optional[int] = None,
     quiet: bool = False,
 ) -> list[dict]:
@@ -462,6 +472,34 @@ def enrich(
             })
         if not quiet:
             print(f"[enrich_news] rss feeds:{len(feeds)}/{len(_RSS_FEEDS)} teams_matched:{rss_hits}", flush=True)
+
+    # Dedicated lineup/squad-news feeds (OneFootball, Evening Standard) — free,
+    # no-auth RSS, one fetch per feed for the whole slate, matched per team. Written
+    # under their OWN source name so newsIntel.ts routes them (OneFootball→lineup,
+    # Evening Standard→news). Reuses the same RSS fetch + team-matcher as the
+    # generic headline scan; a dead feed degrades to no rows, never blocks.
+    if use_dedicated_news:
+        for source_name, url in _DEDICATED_NEWS_FEEDS.items():
+            items = _fetch_rss(url)
+            if not items:
+                if not quiet:
+                    print(f"[enrich_news] {source_name} feed empty/unreachable", file=sys.stderr)
+                continue
+            feed_map = {source_name: items}
+            matched = 0
+            for team in team_names:
+                headlines = _rss_headlines_for_team(team, feed_map)
+                if not headlines:
+                    continue
+                matched += 1
+                rows.append({
+                    "dt": date_str, "team_slug": slug(team), "source": source_name,
+                    "summary": " | ".join(h["title"] for h in headlines)[:1000],
+                    "raw_json": json.dumps(headlines, ensure_ascii=False),
+                    "scraped_at": scraped_at,
+                })
+            if not quiet:
+                print(f"[enrich_news] {source_name} teams_matched:{matched}/{len(team_names)}", flush=True)
 
     # Transfermarkt — free, plain HTTP, full slate, thin-HTTP swarm cap
     # (genuinely zero browser footprint — see scrape_transfermarkt_live.py).
@@ -562,6 +600,7 @@ def main() -> None:
     parser.add_argument("--no-fotmob", action="store_true", help="Skip the free FotMob stats scrape")
     parser.add_argument("--no-transfermarkt", action="store_true", help="Skip the free Transfermarkt squad/market-value scrape")
     parser.add_argument("--no-sofascore", action="store_true", help="Skip the free Sofascore stats scrape (needs a real display)")
+    parser.add_argument("--no-dedicated-news", action="store_true", help="Skip the OneFootball + Evening Standard lineup/squad-news feeds")
     parser.add_argument("--limit", type=int, default=None, help="Cap the number of teams processed (cost control)")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -576,6 +615,7 @@ def main() -> None:
         use_fotmob=not args.no_fotmob,
         use_transfermarkt=not args.no_transfermarkt,
         use_sofascore=not args.no_sofascore,
+        use_dedicated_news=not args.no_dedicated_news,
         limit=args.limit,
         quiet=args.quiet,
     )

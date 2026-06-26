@@ -84,6 +84,12 @@ const GOALS_SHRINK_PRIORS: Record<string, { homeAvg: number; awayAvg: number }> 
   "Faroe Islands Cup": { homeAvg: 2.1, awayAvg: 1.5 },
   "Lithuanian Cup": { homeAvg: 2.0, awayAvg: 1.4 },
   "Estonian Cup": { homeAvg: 2.0, awayAvg: 1.4 },
+  // ── South American top flights (strong home edge, lower scoring) ────────
+  "Brazilian Serie A": { homeAvg: 1.5, awayAvg: 1.0 },
+  "Brazilian Serie B": { homeAvg: 1.45, awayAvg: 0.95 },
+  "Argentine Primera Division": { homeAvg: 1.4, awayAvg: 0.9 },
+  // ── International tournaments (neutral venue → home≈away, lower scoring) ──
+  "FIFA World Cup": { homeAvg: 1.3, awayAvg: 1.3 },
   // ── Other existing goals-rich leagues ─────────────────────────────────
   "Chinese Super League": { homeAvg: 1.6, awayAvg: 1.2 },
   "Scottish Premiership": { homeAvg: 1.62, awayAvg: 1.3 },
@@ -150,13 +156,24 @@ export function buildStatsOverride(
   if (enoughSample) {
     const xgHome = stats.xg?.home?.xgf;
     const xgAway = stats.xg?.away?.xgf;
+    const xgaHome = stats.xg?.home?.xga;
+    const xgaAway = stats.xg?.away?.xga;
     const goalsHome = stats.goals?.home?.avg_scored;
     const goalsAway = stats.goals?.away?.avg_scored;
-    if (finite(xgHome) && finite(xgAway)) {
+    // Full xG (xGF + true xGA, i.e. Understat per-match) → highest confidence.
+    if (finite(xgHome) && finite(xgAway) && finite(xgaHome) && finite(xgaAway)) {
       override.xH = xgHome;
       override.xA = xgAway;
       override.xgMode = "empirical";
       override.xg_confidence = "high";
+      // xGF-only (FBref season aggregate — no team-conceded figure) → still
+      // preferred over raw goals-avg since xG is more predictive, but capped at
+      // medium confidence to acknowledge the season-mean granularity.
+    } else if (finite(xgHome) && finite(xgAway)) {
+      override.xH = xgHome;
+      override.xA = xgAway;
+      override.xgMode = "empirical";
+      override.xg_confidence = "medium";
     } else if (finite(goalsHome) && finite(goalsAway)) {
       override.xH = goalsHome;
       override.xA = goalsAway;
@@ -179,22 +196,44 @@ export function buildStatsOverride(
     }
 
     // Temporal decay — blend recent-form trajectory into the season-average xH/xA.
-    // applyTemporalDecay uses exp-weighted recency (half-life 10 matches, 60/40 blend)
-    // but requires per-match goal counts, which the sidecar doesn't expose.
-    // Workaround: synthesise RecentMatch[] from form string + avg_scored (most-recent
-    // first in last5) so the function receives credible relative magnitudes rather than
-    // zeros. Only applied when both xH/xA were successfully set above.
+    // Preferred path: stats.recentGoals (last-5 scored averages, wired session 18)
+    // is a REAL recency signal, so blend it in directly at a 60/40 recent/season
+    // weight (matching applyTemporalDecay's blend ratio). Fallback path: when
+    // recentGoals is absent, synthesise RecentMatch[] from the form string +
+    // avg_scored and run applyTemporalDecay as before. Only when xH/xA were set.
     if (override.xH !== undefined && override.xA !== undefined) {
-      const homeForm = formToRecentMatches(stats.form?.home?.last5, stats.goals?.home?.avg_scored);
-      const awayForm = formToRecentMatches(stats.form?.away?.last5, stats.goals?.away?.avg_scored);
-      if (homeForm) override.xH = applyTemporalDecay(homeForm, override.xH);
-      if (awayForm) override.xA = applyTemporalDecay(awayForm, override.xA);
+      const rgHome = stats.recentGoals?.home?.scored_avg;
+      const rgAway = stats.recentGoals?.away?.scored_avg;
+      const RECENT_W = 0.6;
+      if (finite(rgHome)) {
+        override.xH = rgHome * RECENT_W + override.xH * (1 - RECENT_W);
+      } else {
+        const homeForm = formToRecentMatches(
+          stats.form?.home?.last5,
+          stats.goals?.home?.avg_scored
+        );
+        if (homeForm) override.xH = applyTemporalDecay(homeForm, override.xH);
+      }
+      if (finite(rgAway)) {
+        override.xA = rgAway * RECENT_W + override.xA * (1 - RECENT_W);
+      } else {
+        const awayForm = formToRecentMatches(
+          stats.form?.away?.last5,
+          stats.goals?.away?.avg_scored
+        );
+        if (awayForm) override.xA = applyTemporalDecay(awayForm, override.xA);
+      }
     }
 
     // SoS adjustment inputs — adjustXGForSoS clamps its own factor to [0.5, 2.0]x,
-    // so feeding real opponent-defense data here is safe even at the edges.
-    const awayConceded = stats.goals?.away?.avg_conceded;
-    const homeConceded = stats.goals?.home?.avg_conceded;
+    // so feeding real opponent-defense data here is safe even at the edges. Prefer
+    // the scoringConceding venue-split conceded average (wired session 18 — home
+    // team's home-conceded, away team's away-conceded; the sharpest defensive
+    // figure) over the venue-agnostic season goals.avg_conceded.
+    const awayConceded =
+      stats.scoringConceding?.away?.conceded_avg ?? stats.goals?.away?.avg_conceded;
+    const homeConceded =
+      stats.scoringConceding?.home?.conceded_avg ?? stats.goals?.home?.avg_conceded;
     if (finite(awayConceded)) override.oppGA_A = awayConceded;
     if (finite(homeConceded)) override.oppGA_H = homeConceded;
   }
@@ -208,6 +247,47 @@ export function buildStatsOverride(
   if (finiteOrZero(awayRest)) override.restA = awayRest;
 
   return Object.keys(override).length > 0 ? override : null;
+}
+
+/** Dead-rubber / motivation detection from standings.
+ *
+ *  No API exposes "must-win" directly (the source documents call this a manual
+ *  judgement). We approximate conservatively: when BOTH teams sit safely
+ *  mid-table late in the season — outside the top-5 (no title/continental push)
+ *  and outside the bottom-5 (no relegation fear) — stakes are low and goal
+ *  output tends to drift. We never hard-discard on this (ORACLE rule: data is
+ *  never a blocker); we emit a mild motivationScore (0.8, vs the 1.0 neutral)
+ *  plus an advisory item so the Claude arbiter can weigh it. Returns null when
+ *  standings are too thin to judge — the engine then keeps its 1.0 default.
+ *
+ *  The motivationScore lands in RunState.telemetry.motivationScore, which
+ *  execution/index.ts already reads (0.5=low … 1.2=high stakes). */
+export function buildMotivation(
+  detail: SportyBetEventDetail | undefined,
+  observedAt: string = new Date().toISOString()
+): { telemetry: { motivationScore?: number }; soft?: SoftContextItem } {
+  const s = detail?.stats?.standings;
+  const hp = s?.home?.pos;
+  const ap = s?.away?.pos;
+  const hPlayed = s?.home?.played ?? 0;
+  const aPlayed = s?.away?.played ?? 0;
+  // Need both positions and a season far enough along that "safe mid-table" means
+  // something (>=20 games filters out early-season noise where everything's open).
+  if (!finite(hp) || !finite(ap) || hPlayed < 20 || aPlayed < 20) return { telemetry: {} };
+
+  const safeMid = (pos: number) => pos > 5 && pos <= 14;
+  if (safeMid(hp) && safeMid(ap)) {
+    return {
+      telemetry: { motivationScore: 0.8 },
+      soft: {
+        kind: "motivation",
+        text: `Possible low-stakes fixture — both teams safely mid-table (home pos ${hp}, away pos ${ap}, ${hPlayed}/${aPlayed} games played). Reduced motivation can suppress goals.`,
+        source: "standings-heuristic",
+        observedAt,
+      },
+    };
+  }
+  return { telemetry: {} };
 }
 
 /** Render the sidecar stats block as advisory SoftContextItem[] (kind: "stats")
@@ -302,6 +382,33 @@ export function buildStatsSoftContext(
     lines.push(
       `Scoring/conceding (venue split) — Home: ${side(scyc.home)} | Away: ${side(scyc.away)}`
     );
+  }
+
+  const disc = stats.disciplinary;
+  if (disc?.home || disc?.away) {
+    const side = (s: typeof disc.home) =>
+      s
+        ? `${s.yellow_avg ?? "?"} yel / ${s.red_avg ?? "?"} red / ${s.fouls_avg ?? "?"} fouls per game`
+        : "n/a";
+    lines.push(`Discipline — Home: ${side(disc.home)} | Away: ${side(disc.away)}`);
+  }
+
+  const ph = stats.positionHistory;
+  if (ph?.home || ph?.away) {
+    const side = (s: typeof ph.home) => {
+      if (!s) return "n/a";
+      const t = s.trend;
+      const trendStr = typeof t === "number" ? (t > 0 ? `+${t}` : `${t}`) : "?";
+      return `now ${s.current ?? "?"} (best ${s.best ?? "?"}, worst ${s.worst ?? "?"}, trend ${trendStr})`;
+    };
+    lines.push(`Position trend — Home: ${side(ph.home)} | Away: ${side(ph.away)}`);
+  }
+
+  const tg = stats.topGoals;
+  if (tg?.home || tg?.away) {
+    const side = (s: typeof tg.home) =>
+      s ? `${s.top_scorer_name ?? "?"} ${s.top_scorer_goals ?? "?"} goals` : "n/a";
+    lines.push(`Lead scorer — Home: ${side(tg.home)} | Away: ${side(tg.away)}`);
   }
 
   if (!lines.length) return [];

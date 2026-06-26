@@ -58,6 +58,9 @@ export const ORACLE_PRIORITY_LEAGUES: ReadonlySet<string> = new Set([
   "USL League Two",
   "Bolivia Primera Division",
   "Liga MX",
+  "Brazilian Serie A",
+  "Brazilian Serie B",
+  "Argentine Primera Division",
   // ── Cups (early rounds / mismatches) ─────────────────────────────────────
   "Faroe Islands Cup",
   "Lithuanian Cup",
@@ -156,10 +159,12 @@ export interface SportyBetStats {
     away?: { avg_scored?: number; avg_conceded?: number } | null;
   } | null;
   h2h?: { total?: number; home_wins?: number; away_wins?: number; draws?: number } | null;
-  /** Understat rolling xG prior — populated for top-5 European leagues only. */
+  /** Rolling xG prior. Understat (top-5, per-match, true xGA) preferred; FBref
+   *  season-aggregate (World Cup, Brazil, wider leagues — xGF only, xga null)
+   *  merged in as a medium-confidence fallback. `src` records the origin. */
   xg?: {
-    home?: { xgf?: number; xga?: number } | null;
-    away?: { xgf?: number; xga?: number } | null;
+    home?: { xgf?: number; xga?: number | null; src?: string } | null;
+    away?: { xgf?: number; xga?: number | null; src?: string } | null;
   } | null;
   /** Season over-line hit rate per team (stats_season_overunder), both venues combined. */
   overunder?: {
@@ -213,6 +218,25 @@ export interface SportyBetStats {
   scoringConceding?: {
     home?: ScoringConcedingProfile | null;
     away?: ScoringConcedingProfile | null;
+  } | null;
+  /** Disciplinary profile (stats_season_teamdisciplinary) — cards/fouls per team.
+   *  Marginal goals signal: card-heavy referees → stoppages; many fouls →
+   *  set-pieces. Advisory (LLM soft-context + report), no engine coefficient. */
+  disciplinary?: {
+    home?: { yellow_avg?: number; red_avg?: number; fouls_avg?: number } | null;
+    away?: { yellow_avg?: number; red_avg?: number; fouls_avg?: number } | null;
+  } | null;
+  /** League-position trend (stats_season_teampositionhistory) — momentum signal.
+   *  trend>0 = climbing (lower position number = better). Advisory. */
+  positionHistory?: {
+    home?: { current?: number; best?: number; worst?: number; trend?: number; n?: number } | null;
+    away?: { current?: number; best?: number; worst?: number; trend?: number; n?: number } | null;
+  } | null;
+  /** Lead-scorer concentration (stats_season_topgoals) — key-player-absence
+   *  fragility signal when paired with news intel. Advisory. */
+  topGoals?: {
+    home?: { top_scorer_goals?: number; top_scorer_name?: string } | null;
+    away?: { top_scorer_goals?: number; top_scorer_name?: string } | null;
   } | null;
 }
 
@@ -328,8 +352,8 @@ export async function loadSportyBetIndex(
           const baseStats = (ev.stats as SportyBetStats | null) ?? null;
           const xgBlock = ev.xg as
             | {
-                home?: { xgf?: number; xga?: number } | null;
-                away?: { xgf?: number; xga?: number } | null;
+                home?: { xgf?: number; xga?: number | null; src?: string } | null;
+                away?: { xgf?: number; xga?: number | null; src?: string } | null;
               }
             | null
             | undefined;

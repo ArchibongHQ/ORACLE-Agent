@@ -7,7 +7,14 @@
   },
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!archive", "!ORACLE_v*.jsx", "!ORACLE_v*.js", "!**/dist"]
+    "includes": [
+      "**",
+      "!archive",
+      "!ORACLE_v*.jsx",
+      "!ORACLE_v*.js",
+      "!**/dist",
+      "!apps/booking/probe_*.mjs"
+    ]
   },
   "formatter": {
     "enabled": true,

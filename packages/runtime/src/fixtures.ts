@@ -25,8 +25,9 @@ import {
   selectFixtures,
 } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
-import { buildStatsOverride, buildStatsSoftContext } from "./sportyBetStats.js";
+import { buildMotivation, buildStatsOverride, buildStatsSoftContext } from "./sportyBetStats.js";
 import { namesMatch } from "./teamNames.js";
+import { buildTravel } from "./travel.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -438,15 +439,38 @@ async function applySelection(
     // even when statsEnrich above was skipped as already-merged — idempotent.
     const statsOverride = buildStatsOverride(detail, job.league);
     const statsContext = buildStatsSoftContext(detail);
-    const softMerge = statsContext.length
-      ? { softContext: [...existingSoft, ...statsContext] }
-      : {};
+
+    // Deterministic feeds for engine telemetry slots that the runtime never
+    // populated from data (only an optional LLM extraction): away-team travel +
+    // venue altitude (haversine from the static venue table) and a standings-based
+    // dead-rubber motivation signal. Both emit engine scalars AND an advisory
+    // softContext item so the Claude arbiter sees the same signal in its prompt.
+    const neutralVenue = job.league === "FIFA World Cup";
+    const travel = buildTravel(job.home, job.away, { neutralVenue });
+    const motivation = buildMotivation(detail);
+    const extraSoft: SoftContextItem[] = [];
+    if (travel.soft) extraSoft.push(travel.soft);
+    if (motivation.soft) extraSoft.push(motivation.soft);
+
+    const mergedSoft = [...existingSoft, ...statsContext, ...extraSoft];
+    const softMerge = mergedSoft.length > existingSoft.length ? { softContext: mergedSoft } : {};
+    const telemetryExtras = { ...travel.telemetry, ...motivation.telemetry };
     // Raw structured stats passthrough for the Opus arbiter prompt (STEP 0) —
-    // alongside, not instead of, the distilled softContext prose above.
+    // alongside, not instead of, the distilled softContext prose above. We pass the
+    // curated stats subtabs only (form/standings/goals/H2H/xG/O-U/congestion/
+    // shots-corners/recentGoals/scoringConceding/discipline/positionTrend/topScorer)
+    // — NOT the odds block: the engine-priced, de-vigged, EV-ranked markets already
+    // reach the arbiter as STEP 4 "eligible markets", so re-dumping raw odds here
+    // (let alone the 900-row allMarkets) would be redundant noise that dilutes the
+    // signal and wastes the token budget. Curated > complete (Workstream I).
     const rawStatsMerge = detail?.stats
       ? { rawStatsBlock: detail.stats as unknown as Record<string, unknown> }
       : {};
-    const hasOverrideOrContext = statsOverride !== null || statsContext.length > 0;
+    const hasOverrideOrContext =
+      statsOverride !== null ||
+      statsContext.length > 0 ||
+      extraSoft.length > 0 ||
+      Object.keys(telemetryExtras).length > 0;
 
     if (c.hasBulkOdds) {
       // Already has live odds — only touch the job if there's stats/override/context to add
@@ -455,7 +479,13 @@ async function applySelection(
         ...job,
         state: {
           ...job.state,
-          telemetry: { ...existingTel, ...statsOverride, ...softMerge, ...rawStatsMerge },
+          telemetry: {
+            ...existingTel,
+            ...telemetryExtras,
+            ...statsOverride,
+            ...softMerge,
+            ...rawStatsMerge,
+          },
           pipeline: {
             ...job.state?.pipeline,
             fetched: { ...existingFetched, ...statsEnrich },
@@ -485,6 +515,7 @@ async function applySelection(
           ohO: h,
           oaO: a,
           hoursToKO,
+          ...telemetryExtras,
           ...statsOverride,
           ...softMerge,
           ...rawStatsMerge,
@@ -1179,6 +1210,15 @@ export async function fetchFixtureByName(
           if (flat.home && flat.away) {
             const statsOverride = buildStatsOverride(detail, sidecarLeague);
             const statsContext = buildStatsSoftContext(detail);
+            const travel = buildTravel(home, away, {
+              neutralVenue: sidecarLeague === "FIFA World Cup",
+            });
+            const motivation = buildMotivation(detail);
+            const adHocSoft = [
+              ...statsContext,
+              ...(travel.soft ? [travel.soft] : []),
+              ...(motivation.soft ? [motivation.soft] : []),
+            ];
             return {
               home,
               away,
@@ -1186,8 +1226,10 @@ export async function fetchFixtureByName(
               kickoff: sidecarKickoff ?? new Date().toISOString(),
               state: {
                 telemetry: {
+                  ...travel.telemetry,
+                  ...motivation.telemetry,
                   ...statsOverride,
-                  ...(statsContext.length ? { softContext: statsContext } : {}),
+                  ...(adHocSoft.length ? { softContext: adHocSoft } : {}),
                 },
                 pipeline: {
                   fetched: {

@@ -10,6 +10,7 @@ export { parseFixtureList, runBatch } from "./batch/index.js";
 export { runPool } from "./batch/pool.js";
 export type {
   CalibrationRecord,
+  PlattParams,
   SignificanceGateOptions,
   SignificanceGateResult,
 } from "./calibration/index.js";
@@ -22,7 +23,6 @@ export {
   plattScale,
   significanceAcceptGate,
 } from "./calibration/index.js";
-export type { PlattParams } from "./calibration/index.js";
 export type { DecisionResult } from "./decision/index.js";
 export {
   buildEligibleBets,
