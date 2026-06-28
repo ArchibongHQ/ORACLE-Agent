@@ -16,6 +16,7 @@
  *  it can prove one out cleanly against the fixture's REAL quoted odds (never
  *  the LLM's restated odds — same Gate-1.5 philosophy as validateSelection). */
 
+import { familyOf } from "../markets/index.js";
 import { adjEV, clamp, hurdle, optimizedKelly } from "../math/index.js";
 import type {
   AllMarketEntry,
@@ -68,7 +69,12 @@ function findOutcome(
 
 function serializeMarkets(allMarkets: AllMarketEntry[]): string[] {
   return allMarkets.map((m) => {
-    const head = `${m.name || m.desc || m.id}${m.specifier ? ` (${m.specifier})` : ""}`;
+    // Tag each line with ORACLE's own canonical family (from the market index)
+    // so the model reasons with our classification, not just the bookmaker's raw
+    // name. Absent for ids not yet in the catalogue.
+    const fam = familyOf(m.id);
+    const famTag = fam ? ` {${fam}}` : "";
+    const head = `${m.name || m.desc || m.id}${m.specifier ? ` (${m.specifier})` : ""}${famTag}`;
     const outs = (m.outcomes ?? [])
       .map((o) => `[${m.id}|${o.id}] ${o.desc ?? o.id} @ ${o.odds ?? "?"}`)
       .join(" ; ");

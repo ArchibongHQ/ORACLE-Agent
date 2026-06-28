@@ -43,6 +43,15 @@ export {
   loadGbmModel,
   predictGbm,
 } from "./gbm/index.js";
+export type { MarketCatalogEntry, MarketFamily } from "./markets/index.js";
+export {
+  familyOf,
+  isPriceable,
+  lookupMarket,
+  MARKET_BY_ID,
+  MARKET_CATALOG,
+  PRICEABLE_FAMILIES,
+} from "./markets/index.js";
 export * from "./math/index.js";
 export type { PostmortemEntry, RAGEntry, RootCause } from "./rag/index.js";
 export { PostmortemRegistry, postmortemRegistry, RAGSystem, ROOT_CAUSES } from "./rag/index.js";

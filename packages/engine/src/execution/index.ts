@@ -5,6 +5,7 @@
 import type { StoragePort } from "@oracle/storage";
 import { isotonicCalibrateFp } from "../calibration/index.js";
 import { type GbmModel, loadGbmModel, predictGbm } from "../gbm/index.js";
+import { lookupMarket, type MarketFamily, PRICEABLE_FAMILIES } from "../markets/index.js";
 import type {
   AhPivotResult,
   MarketBook,
@@ -56,6 +57,7 @@ import type {
   AllMarketEntry,
   AllMarketOutcome,
   EVMarket,
+  MarketCoverage,
   Matrix,
   OracleConfig,
   RunResult,
@@ -519,7 +521,19 @@ function priceAllMarketOutcome(
   const specLc = (market.specifier ?? "").toLowerCase();
   const descLc = (outcome.desc ?? "").toLowerCase().trim();
   if (!descLc) return null;
-  if (/half|1st|2nd|\bht\b/.test(nameLc) || /half/.test(specLc)) return null;
+
+  // Catalog-driven gate: when the market is in the canonical index, trust its
+  // ORACLE family — only families we have a full-time goal-matrix model for are
+  // priced here; everything else (half, combo, specials, exotic, ...) is left to
+  // the LLM executor / left unpriced rather than mis-sniffed by name. For ids not
+  // yet in the catalog (a market SportyBet added since last regeneration) fall
+  // back to the original name-based half/in-play guard so nothing regresses.
+  const cat = lookupMarket(market.id);
+  if (cat) {
+    if (!PRICEABLE_FAMILIES.has(cat.family)) return null;
+  } else if (/half|1st|2nd|\bht\b/.test(nameLc) || /half/.test(specLc)) {
+    return null;
+  }
 
   // Correct score, e.g. outcome desc "2-1" / "2:1"
   const scoreMatch = descLc.match(/^(\d+)\s*[-:]\s*(\d+)$/);
@@ -931,16 +945,30 @@ export class ExecutionEngine {
     councilPenalty: boolean,
     varMultiplier: number,
     drawdownPenalty: number
-  ): EVMarket[] {
-    if (!allMarkets?.length) return [];
+  ): { markets: EVMarket[]; coverage: MarketCoverage } {
+    const coverage: MarketCoverage = { total: 0, inCatalog: 0, priceable: 0, priced: 0 };
+    if (!allMarkets?.length) return { markets: [], coverage };
     const out: EVMarket[] = [];
     for (const market of allMarkets) {
+      coverage.total++;
+      const cat = lookupMarket(market.id);
+      if (cat) coverage.inCatalog++;
+      // Skip whole families the deterministic pricer has no model for before
+      // touching outcomes — cheaper than pricing then discarding, and keeps the
+      // coverage tally honest (priceable counts only what we'd actually attempt).
+      // Uncatalogued ids fall through so a market SportyBet added since the last
+      // catalog regeneration still gets a chance via priceAllMarketOutcome.
+      if (cat && !PRICEABLE_FAMILIES.has(cat.family)) continue;
+      if (cat) coverage.priceable++;
+      const family: MarketFamily | undefined = cat?.family;
       const marketLabel = market.desc || market.name || "Market";
+      let pricedThisMarket = false;
       for (const outcome of market.outcomes ?? []) {
         const odds = parseFloat(outcome.odds ?? "");
         if (!Number.isFinite(odds) || odds <= 1) continue;
         const mp = priceAllMarketOutcome(finalMat, market, outcome);
         if (mp == null || mp <= 0 || mp >= 1) continue;
+        pricedThisMarket = true;
         const ip = 1 / odds;
         const rawEdge = mp - ip;
         const ev = adjEV(mp, odds);
@@ -965,6 +993,7 @@ export class ExecutionEngine {
           label: `${marketLabel} — ${outcome.desc ?? ""}`.trim(),
           market: "AllMarkets Scan",
           side: outcome.desc ?? undefined,
+          family,
           mp,
           modelProb: mp,
           ip,
@@ -977,8 +1006,9 @@ export class ExecutionEngine {
           varianceMod: 1.0,
         });
       }
+      if (pricedThisMarket) coverage.priced++;
     }
-    return out.sort((a, b) => b.rankingScore - a.rankingScore).slice(0, 10);
+    return { markets: out.sort((a, b) => b.rankingScore - a.rankingScore).slice(0, 10), coverage };
   }
 
   // ── SensitivityEngine (Gaussian ensemble, K=20) ──────────────────────────
@@ -1868,7 +1898,8 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
         mc.varMultiplier,
         drawdownPenalty
       );
-      if (scanned.length) rawRes.evMarkets = [...rawRes.evMarkets, ...scanned];
+      if (scanned.markets.length) rawRes.evMarkets = [...rawRes.evMarkets, ...scanned.markets];
+      if (allMarkets?.length) rawRes.marketCoverage = scanned.coverage;
     }
 
     // Portfolio covariance + correlated parlay hard cap (BUG-M05 FIX)
