@@ -147,6 +147,18 @@ describe("POST /comment", () => {
     expect(mockRunCommentBarInstruction).not.toHaveBeenCalled();
   });
 
+  it("malformed date (path-traversal attempt) → 400, never reaches the orchestrator", async () => {
+    const r = await handleRequest(
+      "POST",
+      "/comment",
+      `date=${encodeURIComponent("../../../../etc/passwd")}&instruction=summarize`,
+      "application/x-www-form-urlencoded",
+      deps
+    );
+    expect(r.status).toBe(400);
+    expect(mockRunCommentBarInstruction).not.toHaveBeenCalled();
+  });
+
   it("summarize action → renders landing page with the result text", async () => {
     mockRunCommentBarInstruction.mockResolvedValue({
       understood: true,

@@ -56,4 +56,15 @@ describe("writeGoalsArtifact / readGoalsArtifact", () => {
     const artifact = await readGoalsArtifact("2026-06-20", dir);
     expect(artifact?.selection.analysed).toBe(20);
   });
+
+  it("readGoalsArtifact returns null (not a thrown path-traversal read) for a malformed date", async () => {
+    const artifact = await readGoalsArtifact("../../../../etc/passwd", dir);
+    expect(artifact).toBeNull();
+  });
+
+  it("writeGoalsArtifact rejects a malformed date instead of writing outside outDir", async () => {
+    await expect(writeGoalsArtifact(selection(), "../../escape", dir)).rejects.toThrow(
+      /Invalid date/
+    );
+  });
 });

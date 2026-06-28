@@ -13,7 +13,14 @@ export interface GoalsArtifact {
   selection: GoalsSelectionResult;
 }
 
+/** Rejects anything but a strict YYYY-MM-DD date before it reaches a path
+ *  join — `date` can originate from a web request (apps/web's /comment
+ *  route passes user input through to here unvalidated), so this is the
+ *  last line of defense against path traversal via a crafted date string. */
 function artifactPath(date: string, outDir: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(`Invalid date for goals artifact: ${date}`);
+  }
   return join(outDir, `goals-${date}.json`);
 }
 

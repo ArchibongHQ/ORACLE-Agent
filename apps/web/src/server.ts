@@ -157,6 +157,9 @@ export async function handleRequest(
     if (!date?.trim() || !instruction?.trim()) {
       return html(400, renderNotice("Nothing to run", "Enter both a date and an instruction."));
     }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
+      return html(400, renderNotice("Bad request", "Date must be YYYY-MM-DD."));
+    }
     const result = await runCommentBarInstruction(instruction.trim(), date.trim(), deps);
     if (
       result.action === "reanalyze_fixture" &&
