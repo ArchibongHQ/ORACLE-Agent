@@ -24,6 +24,7 @@ import {
   enrichWithLineups,
   enrichWithNewsIntel,
   fetchTodaysFixtures,
+  findSidecarDetail,
   fixturesPartitionExists,
   type GoalsSelectionResult,
   generateAndWriteDailyFixtureReport,
@@ -125,6 +126,24 @@ const HEARTBEAT_STALE_MS = 36 * 60 * 60 * 1000; // 36h — daily batch + some sl
 let lastStaleAlertSentAt = 0;
 const STALE_ALERT_REPEAT_MS = 12 * 60 * 60 * 1000; // don't re-alert more than every 12h
 
+// Daily-batch back-online trigger: the 06:00 cron slot is a single point in
+// time — if the worker process is mid-restart at exactly that minute (Servy
+// auto-restart, machine sleep/wake, etc.) the whole day's run is silently
+// skipped with no catch-up, unlike acquireDailyJob below which retries on
+// every hourly tick until it succeeds. Confirmed in practice: 2026-06-25
+// through 06-28 all missed the 06:00 slot, leaving oracle-{date}.html and the
+// booking-eligible picks stale for days. Mirrors isLakeFreshForToday/
+// LAKE_TRIGGER_REPEAT_MS below, but keyed off lastBatch instead of lastAcquire.
+const DAILY_BATCH_STALE_MS = 20 * 60 * 60 * 1000; // ~20h — same-day batch is always fresher than this
+let lastDailyBatchTriggerAt = 0;
+const DAILY_BATCH_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a failing batch more than every 6h
+
+function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
+  if (!lastBatchAt) return false;
+  if (lastBatchAt.slice(0, 10) !== new Date().toISOString().slice(0, 10)) return false;
+  return Date.now() - new Date(lastBatchAt).getTime() < DAILY_BATCH_STALE_MS;
+}
+
 // Lake-staleness back-online trigger: unlike the alert above, this actively
 // re-runs acquisition rather than just notifying — so a daemon that was down
 // across 00:00 catches up as soon as it restarts, instead of waiting for
@@ -185,6 +204,20 @@ async function checkHeartbeatFreshness(): Promise<void> {
       await sendDailyFixtureReport();
       await runGoalsBatch("scheduled");
     });
+  }
+
+  // Same back-online pattern for the engine-decision daily batch — see
+  // DAILY_BATCH_STALE_MS comment above for why this is needed independently
+  // of the lake/acquire trigger above.
+  if (
+    !isDailyBatchFreshForToday(lastBatchAt) &&
+    Date.now() - lastDailyBatchTriggerAt >= DAILY_BATCH_TRIGGER_REPEAT_MS
+  ) {
+    lastDailyBatchTriggerAt = Date.now();
+    process.stdout.write(
+      "[worker] daily batch stale/missing for today — triggering back-online run\n"
+    );
+    logJob("daily-batch@back-online", () => runDailyBatch("scheduled"));
   }
 
   if (!lastBatchAt) return;
@@ -600,7 +633,14 @@ async function runDailyBatch(
     process.stderr.write("[batch] WARNING: cost cap halted the batch before completion\n");
 
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────
-  const summary = summarizeBatch(batch);
+  // resolveEventId looks up the sidecar's eventId for each pick — without it
+  // every ActionablePick.eventId is undefined and bookAccumulator skips every leg.
+  const sportyIndexForBooking = await loadSportyBetIndex(new Date().toISOString().slice(0, 10));
+  const summary = summarizeBatch(batch, undefined, (home, away) =>
+    sportyIndexForBooking
+      ? findSidecarDetail(sportyIndexForBooking.detailByKey, home, away)?.eventId
+      : undefined
+  );
   if (env.ENABLE_SPORTYBET_BOOKING === "true" && summary.actionable.length > 0) {
     try {
       const { bookAccumulator } = await import("@oracle/booking");

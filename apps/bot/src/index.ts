@@ -44,9 +44,11 @@ import {
   CLV_ELIGIBLE_LEAGUES,
   fetchFixtureByName,
   fetchTodaysFixtures,
+  findSidecarDetail,
   formatPuntResult,
   generateAndWriteDailyFixtureReport,
   loadEnv,
+  loadSportyBetIndex,
   markFulfilled,
   ORACLE_PRIORITY_LEAGUES,
   resolveDay,
@@ -90,6 +92,18 @@ const REPORTS_DIR = join(ROOT, ".tmp/reports");
 const ENV_PATH = join(ROOT, ".env");
 
 let env = loadEnv(ENV_PATH);
+
+/** Builds the (home, away) -> eventId resolver summarizeBatch needs to populate
+ *  ActionablePick.eventId — without it bookAccumulator skips every leg (no
+ *  eventId means no SportyBet event lookup). Null when today's sidecar is
+ *  missing/stale; callers degrade to no eventId, same as before this existed. */
+async function buildEventIdResolver(): Promise<
+  ((home: string, away: string) => string | undefined) | undefined
+> {
+  const index = await loadSportyBetIndex(new Date().toISOString().slice(0, 10));
+  if (!index) return undefined;
+  return (home, away) => findSidecarDetail(index.detailByKey, home, away)?.eventId;
+}
 
 const API = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
 
@@ -486,6 +500,12 @@ async function handleGoals(chatId: string): Promise<void> {
   await sendTo(chatId, lines.join("\n"));
 }
 
+/** /report's primary file is the engine-decision report (oracle-{date}.html),
+ *  only written by a full /run batch — too expensive (LLM credits) to generate
+ *  on demand here. When today's isn't on disk yet, the useful fallback is
+ *  TODAY's fixtures report (sidecar odds/stats/news — same content /fixtures
+ *  serves, cheap to (re)generate), not an arbitrary older engine report from a
+ *  past day mislabeled as "most recent". */
 async function handleReport(chatId: string, dateArg?: string): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const date = dateArg && /^\d{4}-\d{2}-\d{2}$/.test(dateArg) ? dateArg : today;
@@ -496,28 +516,36 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
     return;
   }
 
-  // Fallback: most recent available
+  const fixturesPath = join(REPORTS_DIR, `oracle-fixtures-${date}.html`);
+  if (existsSync(fixturesPath)) {
+    await sendDocumentTo(
+      chatId,
+      fixturesPath,
+      `ORACLE fixtures report — ${date} (engine-decision report not generated yet today; showing today's scrape instead)`
+    );
+    return;
+  }
+
+  await sendTo(chatId, `⏳ No report for ${date} yet — generating from today's scrape…`);
   try {
-    const files = readdirSync(REPORTS_DIR)
-      .filter((f) => f.startsWith("oracle-") && f.endsWith(".html"))
-      .sort()
-      .reverse();
-    if (files[0]) {
-      const fallbackDate = files[0].match(/oracle-(\d{4}-\d{2}-\d{2})\.html/)?.[1] ?? "unknown";
+    const result = await generateAndWriteDailyFixtureReport(date, REPORTS_DIR);
+    if (result) {
       await sendDocumentTo(
         chatId,
-        join(REPORTS_DIR, files[0]),
-        `ORACLE report — ${fallbackDate} (most recent; no report for ${date})`
+        result.path,
+        `ORACLE fixtures report — ${date} (${result.fixtureCount} fixtures; engine-decision report not generated yet today)`
       );
       return;
     }
-  } catch {
-    /* no reports dir */
+  } catch (err) {
+    process.stderr.write(
+      `[bot] /report on-demand generation failed: ${err instanceof Error ? err.message : String(err)}\n`
+    );
   }
 
   await sendTo(
     chatId,
-    `ℹ️ No reports found. ${isAdmin(chatId) ? "Use /run to generate one." : "Check back after the 09:00 batch."}`
+    `ℹ️ No reports found for ${date} — SportyBet hasn't been scraped yet today. ${isAdmin(chatId) ? "Use /scrape then /run to generate one." : "Check back after the next scrape."}`
   );
 }
 
@@ -582,7 +610,7 @@ async function handleAnalyze(chatId: string, query: string, league?: string): Pr
   const storage = new GBrainAdapter(DB_PATH);
   try {
     const { batch } = await runAnalysis([job], { storage, config }, { trigger: "manual" });
-    const summary = summarizeBatch(batch);
+    const summary = summarizeBatch(batch, undefined, await buildEventIdResolver());
     await sendTo(chatId, formatSummaryText(summary));
   } catch (err) {
     await sendTo(chatId, `⚠️ Analysis failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -647,7 +675,7 @@ async function handleRun(chatId: string): Promise<void> {
 
     const { batch } = await runAnalysis(jobs, { storage, config }, { trigger: "manual" });
 
-    const summary = summarizeBatch(batch);
+    const summary = summarizeBatch(batch, undefined, await buildEventIdResolver());
 
     await sendTo(chatId, formatSummaryText(summary));
 

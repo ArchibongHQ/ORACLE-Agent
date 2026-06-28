@@ -85,6 +85,18 @@ describe("summarizeBatch", () => {
     expect(s.actionable[0]?.market).toBe("Goals O/U");
     expect(s.reportUrl).toBe("http://x/r");
   });
+
+  it("leaves eventId undefined when no resolver is given", () => {
+    const s = summarizeBatch(fakeBatch());
+    expect(s.actionable[0]?.eventId).toBeUndefined();
+  });
+
+  it("populates eventId from the resolver when given (booking needs this — bookAccumulator skips legs with no eventId)", () => {
+    const s = summarizeBatch(fakeBatch(), undefined, (home, away) =>
+      home === "Arsenal" && away === "Chelsea" ? "sr:match:123" : undefined
+    );
+    expect(s.actionable[0]?.eventId).toBe("sr:match:123");
+  });
 });
 
 describe("formatSummaryText", () => {

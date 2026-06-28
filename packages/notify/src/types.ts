@@ -87,13 +87,22 @@ export interface Notifier {
   notify(summary: BatchSummary): Promise<void>;
 }
 
-/** Derive a channel-agnostic summary (actionable picks only) from a BatchResult. */
-export function summarizeBatch(batch: BatchResult, reportUrl?: string): BatchSummary {
+/** Derive a channel-agnostic summary (actionable picks only) from a BatchResult.
+ *  resolveEventId, when given, looks up the SportyBet sidecar eventId for a fixture
+ *  (e.g. via runtime's findSidecarDetail) — without it, picks carry no eventId and
+ *  the booking agent skips every leg (this package has no runtime dependency, so
+ *  the lookup itself must live in the caller). */
+export function summarizeBatch(
+  batch: BatchResult,
+  reportUrl?: string,
+  resolveEventId?: (home: string, away: string) => string | undefined
+): BatchSummary {
   const actionable: ActionablePick[] = [];
   for (const j of batch.jobs as BatchJobResult[]) {
     if (j.status !== "ok") continue;
     if (j.decision.grade === "NO_EDGE" || j.decision.grade === "MISSING_DATA") continue;
     const p = j.decision.primaryPick;
+    const eventId = resolveEventId?.(j.home, j.away);
     actionable.push({
       home: j.home,
       away: j.away,
@@ -104,6 +113,7 @@ export function summarizeBatch(batch: BatchResult, reportUrl?: string): BatchSum
       odds: p.odds,
       stakePct: (p.stake ?? 0) * 100,
       confidence: j.decision.confidence,
+      ...(eventId ? { eventId } : {}),
     });
   }
   return {

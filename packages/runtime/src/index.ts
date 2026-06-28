@@ -69,10 +69,12 @@ export type {
   SelectionCandidate,
   SelectionResult,
   SelectionStats,
+  SportyBetEventDetail,
   SportyBetIndex,
 } from "./selectFixtures.js";
 export {
   DEFAULT_MAX_FIXTURES_PER_RUN,
+  findSidecarDetail,
   loadSportyBetIndex,
   ORACLE_PRIORITY_LEAGUES,
   scoreFixture,
