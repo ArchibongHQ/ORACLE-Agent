@@ -14,6 +14,9 @@ import { loadDailyNews, teamSlug } from "./dailyStore.js";
 import { findLineupSummary, type LineupSummary } from "./lineups.js";
 import { CSS, esc, pct } from "./report.js";
 import type { SportyBetEvent } from "./selectFixtures.js";
+import { dataCompleteness } from "./selectGoals.js";
+import { buildMotivation } from "./sportyBetStats.js";
+import { buildTravel } from "./travel.js";
 
 function line(label: string, value: string | null | undefined): string {
   if (!value) return "";
@@ -86,6 +89,12 @@ function renderFixtureRawData(
   // xGF only). Both home/away carry the same src in practice; read whichever exists.
   const xgSrc = xg?.home?.src ?? xg?.away?.src;
   const xgTag = xgSrc ? ` (${xgSrc})` : "";
+
+  const travel = buildTravel(event.home, event.away, {
+    neutralVenue: event.league === "FIFA World Cup",
+  });
+  const motivation = buildMotivation(event.detail);
+  const completeness = dataCompleteness(event.detail);
 
   const sections = [
     renderOdds(event),
@@ -212,6 +221,9 @@ function renderFixtureRawData(
           tg.away ? `${tg.away.top_scorer_name ?? "?"} (${tg.away.top_scorer_goals ?? "?"})` : null
         )
       : "",
+    travel.soft ? line("Travel", travel.soft.text) : "",
+    motivation.soft ? line("Motivation", motivation.soft.text) : "",
+    line("Data completeness", pct(completeness)),
     lineup
       ? [
           lineup.home_formation || lineup.home_starting_xi?.length

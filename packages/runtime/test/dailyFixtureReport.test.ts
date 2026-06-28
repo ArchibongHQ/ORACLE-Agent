@@ -10,7 +10,12 @@ vi.mock("../src/dailyStore.js", () => ({
   teamSlug: (s: string) => s.toLowerCase().replace(/\s+/g, "_"),
 }));
 
+vi.mock("../src/travel.js", () => ({
+  buildTravel: vi.fn(() => ({ telemetry: {} })),
+}));
+
 const { loadDailyNews } = await import("../src/dailyStore.js");
+const { buildTravel } = await import("../src/travel.js");
 const { buildNewsByTeam, renderDailyFixtureReport, writeDailyFixtureReport } = await import(
   "../src/dailyFixtureReport.js"
 );
@@ -137,6 +142,72 @@ describe("renderDailyFixtureReport", () => {
     });
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("renders a Travel row when buildTravel reports km/altitude", () => {
+    vi.mocked(buildTravel).mockReturnValueOnce({
+      telemetry: { travelKm: 540, altitudeM: 1200 },
+      soft: {
+        kind: "news",
+        text: "Travel/venue — away travel ≈ 540 km, venue altitude ≈ 1200 m.",
+        source: "travel-table",
+        observedAt: "",
+      },
+    });
+    const html = renderDailyFixtureReport([event("A", "B")], "2026-06-25", {
+      lineups: [],
+      newsByTeam: new Map(),
+    });
+    expect(html).toContain("away travel ≈ 540 km");
+    expect(html).toContain("venue altitude ≈ 1200 m");
+  });
+
+  it("omits the Travel row when buildTravel has nothing to report", () => {
+    vi.mocked(buildTravel).mockReturnValue({ telemetry: {} });
+    const html = renderDailyFixtureReport([event("A", "B")], "2026-06-25", {
+      lineups: [],
+      newsByTeam: new Map(),
+    });
+    expect(html).not.toContain("away travel");
+  });
+
+  it("renders a Motivation row for a low-stakes mid-table fixture", () => {
+    const e = event("A", "B");
+    e.detail!.stats!.standings = {
+      home: { pos: 8, points: 35, gf: 20, ga: 18, played: 25 },
+      away: { pos: 10, points: 32, gf: 18, ga: 19, played: 24 },
+    };
+    const html = renderDailyFixtureReport([e], "2026-06-25", {
+      lineups: [],
+      newsByTeam: new Map(),
+    });
+    expect(html).toContain("Motivation");
+    expect(html).toContain("low-stakes");
+  });
+
+  it("omits the Motivation row for a normal title/relegation-relevant fixture", () => {
+    const html = renderDailyFixtureReport([event("A", "B")], "2026-06-25", {
+      lineups: [],
+      newsByTeam: new Map(),
+    });
+    expect(html).not.toContain("low-stakes");
+  });
+
+  it("renders 100% data completeness for a fully-stocked fixture", () => {
+    const html = renderDailyFixtureReport([event("A", "B")], "2026-06-25", {
+      lineups: [],
+      newsByTeam: new Map(),
+    });
+    expect(html).toContain("Data completeness");
+    expect(html).toContain("100.0%");
+  });
+
+  it("renders the floored 50% data completeness for a fixture with no stats", () => {
+    const html = renderDailyFixtureReport([event("C", "D", false)], "2026-06-25", {
+      lineups: [],
+      newsByTeam: new Map(),
+    });
+    expect(html).toContain("50.0%");
   });
 });
 

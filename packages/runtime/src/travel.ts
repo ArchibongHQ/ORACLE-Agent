@@ -92,7 +92,10 @@ export function buildTravel(
   if (!hv) return { telemetry: {} };
 
   const telemetry: { travelKm?: number; altitudeM?: number } = {};
-  if (hv.altitude) telemetry.altitudeM = Math.round(hv.altitude);
+  // typeof check, not a falsy check — a sea-level venue (altitude === 0) is
+  // real data and must not be treated the same as a missing/malformed entry
+  // from the cached venues.json.
+  if (typeof hv.altitude === "number") telemetry.altitudeM = Math.round(hv.altitude);
 
   if (!opts.neutralVenue && av) {
     telemetry.travelKm = Math.round(haversineKm(hv, av));
