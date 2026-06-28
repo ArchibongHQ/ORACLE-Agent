@@ -391,5 +391,13 @@ export type RunResult = {
   expectedScoreline: string;
   portfolioCorrelation: number | null;
   correlatedParlayRisk: Array<{ a: string; b: string; rho: number }> | null;
+  /** Set only when ORACLE_AGENT_VERIFY="true" and a local Claude Code runtime
+   *  verified this fixture's engine output against the scraped evidence. */
+  agentVerification?: {
+    lambdasConsistent: boolean;
+    topMarketSupported: boolean;
+    flags: string[];
+    orchestratorNote: string;
+  };
   [key: string]: unknown;
 };

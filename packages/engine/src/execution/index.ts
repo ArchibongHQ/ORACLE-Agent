@@ -1502,8 +1502,9 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       expectedScoreline = "0-0";
     for (let i = 0; i < N; i++)
       for (let j = 0; j < N; j++) {
-        if ((finalMat[i]?.[j] ?? 0) > maxProb) {
-          maxProb = finalMat[i]?.[j]!;
+        const p = finalMat[i]?.[j] ?? 0;
+        if (p > maxProb) {
+          maxProb = p;
           expectedScoreline = `${i}-${j}`;
         }
       }
@@ -1748,6 +1749,116 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
     return rawRes;
   }
 
+  // ── _agentOrchestrate — agent verification wrapper ───────────────────────
+  // Runs _run() then has the local Claude Code agent verify the engine output
+  // against all scraped data. The verification is wired into rawStatsBlock so
+  // the Opus arbiter (arbitrate() in decision/index.ts) sees it in STEP 0 of
+  // its prompt.
+  //
+  // Opt-in only via ORACLE_AGENT_VERIFY="true" (mirrors arbitrate()'s
+  // ORACLE_LOCAL_DECISION gate in decision/index.ts), AND capped to the same
+  // llmEligible top-N boundary _acquireContext already enforces above. Without
+  // both gates this would fire an uncounted local-CLI call for every fixture
+  // in a batch — invisible to batch/index.ts's AtomicCostTracker and a silent
+  // dependency for callers (e.g. apps/worker/src/smoke.ts) that assume
+  // ExecutionEngine.run() has no LLM dependency.
+  private async _agentOrchestrate(state: RunState): Promise<RunResult> {
+    if (process.env.ORACLE_AGENT_VERIFY !== "true" || state.telemetry?.llmEligible === false) {
+      return this._run(state);
+    }
+
+    let isLocal = false;
+    try {
+      const { isLocalRuntime } = await import("@oracle/llm");
+      isLocal = isLocalRuntime();
+    } catch {
+      /* @oracle/llm unavailable — deterministic only */
+    }
+    if (!isLocal) return this._run(state);
+
+    const engineResult = await this._run(state);
+
+    try {
+      const { callClaudeCode } = await import("@oracle/llm");
+
+      const fixture = state.pipeline?.fixture ?? {};
+      const tel = state.telemetry ?? {};
+      const scraped = JSON.stringify(tel.rawStatsBlock ?? {});
+      const softCtx = ((tel.softContext as SoftContextItem[] | undefined) ?? [])
+        .map((s) => `[${s.kind.toUpperCase()}] ${s.text}`)
+        .join("\n");
+
+      const markets = engineResult.evMarkets
+        .slice(0, 10)
+        .map(
+          (m, i) =>
+            `${i + 1}. [${m.cat}] ${m.label}  modelProb=${(m.mp * 100).toFixed(1)}%  odds=${m.odds}  ev=+${(m.ev * 100).toFixed(2)}  stake=${(m.stake * 100).toFixed(1)}% Kelly`
+        )
+        .join("\n");
+
+      const verifierPrompt = `You are ORACLE's verification orchestrator. The deterministic engine has run for this fixture. Your job is NOT to pick — it is to verify:
+1. Do the engine's lambdas (xG estimates) make sense against the scraped stats and soft context below?
+2. Are the top-ranked markets supported by the raw data, or do any contradict it?
+3. Flag any inconsistency between the math outputs and the scraped evidence.
+
+Return ONLY valid JSON — no markdown, no prose outside the object.
+
+=== FIXTURE ===
+${fixture.home ?? "?"} vs ${fixture.away ?? "?"}  |  ${fixture.league ?? "?"}  |  ${fixture.date ?? "?"}
+
+=== ENGINE OUTPUT ===
+λH=${engineResult.bayesian_lH.toFixed(2)}  λA=${engineResult.bayesian_lA.toFixed(2)}
+Home=${(engineResult.fp.home * 100).toFixed(1)}%  Draw=${(engineResult.fp.draw * 100).toFixed(1)}%  Away=${(engineResult.fp.away * 100).toFixed(1)}%
+Expected score: ${engineResult.expectedScoreline}
+Regime: ${(engineResult.lowScoreRegime as RegimeReport | undefined)?.regime ?? "STANDARD"}
+
+=== TOP MARKETS ===
+${markets || "NONE"}
+
+=== SCRAPED DATA (raw) ===
+${scraped || "(none)"}
+
+=== SOFT CONTEXT ===
+${softCtx || "(none)"}
+
+=== REQUIRED OUTPUT ===
+{"lambdasConsistent":true,"topMarketSupported":true,"flags":[],"orchestratorNote":"..."}
+"lambdasConsistent": true if engine xG aligns with form/H2H/standings data; false if the numbers look wrong against the evidence.
+"topMarketSupported": true if the top-ranked market is backed by the scraped data; false if the raw stats contradict it.
+"flags": array of short strings naming specific inconsistencies (empty array if none).
+"orchestratorNote": one sentence summary of the verification outcome.`;
+
+      const verifierRaw = await callClaudeCode(verifierPrompt, { timeoutMs: 30_000 });
+      if (verifierRaw) {
+        try {
+          const verification = JSON.parse(verifierRaw.trim()) as NonNullable<
+            RunResult["agentVerification"]
+          >;
+          engineResult.agentVerification = verification;
+
+          state.telemetry = state.telemetry ?? {};
+          const existing =
+            (state.telemetry.rawStatsBlock as Record<string, unknown> | undefined) ?? {};
+          state.telemetry.rawStatsBlock = {
+            ...existing,
+            agentOrchestration: {
+              lambdasConsistent: verification.lambdasConsistent,
+              topMarketSupported: verification.topMarketSupported,
+              flags: verification.flags,
+              note: verification.orchestratorNote,
+            },
+          };
+        } catch {
+          /* malformed JSON — pass through without annotation */
+        }
+      }
+    } catch {
+      /* verification call failed — engine result is still valid */
+    }
+
+    return engineResult;
+  }
+
   // ── Public static factory ─────────────────────────────────────────────────
 
   static async run(
@@ -1755,7 +1866,7 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
     deps: { storage: StoragePort; config: OracleConfig }
   ): Promise<RunResult> {
     const engine = new ExecutionEngine(deps.config, deps.storage);
-    return engine._run(state);
+    return engine._agentOrchestrate(state);
   }
 }
 

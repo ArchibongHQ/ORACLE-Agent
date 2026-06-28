@@ -1,15 +1,15 @@
-/** Sonnet screening pass — stage 2 of the goals-discovery funnel (mechanical
- *  filter → Sonnet screen → Poisson engine → Opus arbiter → top-N cut).
+/** LLM screening pass — stage 2 of the goals-discovery funnel (mechanical
+ *  filter → screening stage → Poisson engine → Opus arbiter → top-N cut).
  *
  *  Takes the ~100-150 fixtures preFilterGoalsCandidates() already mechanically
  *  ranked and runs a batched LLM judgment pass over compact per-fixture
  *  summaries, shortlisting by goals-opportunity strength before the costlier
  *  deterministic engine + Opus arbiter stages run on the survivors.
  *
- *  Model: Claude Sonnet (MODELS.CLAUDE_SONNET) — a narrow, explicit exception
- *  to this codebase's standing "never Sonnet" policy, scoped to this stage
- *  only (see cascade.ts). Chosen for cost reasons: this stage runs over a much
- *  larger fixture count than any other Claude call in the pipeline.
+ *  Model: calls callClaudeCode() (local CLI transport), the same Opus pin as
+ *  every other Claude call site in this pipeline — no cost-tier distinction
+ *  from the rest of the pipeline despite running over a much larger fixture
+ *  count than any other stage.
  *
  *  Batched (not one call per fixture) to bound daily cost — ~4-6 calls for a
  *  130-fixture pool at BATCH_SIZE=25, mirroring the FrugalGPT-style cascading
@@ -28,11 +28,11 @@ const REQUEST_TIMEOUT_MS = 25_000;
 export interface GoalsScreenResult {
   /** Index into the input candidates array. */
   index: number;
-  /** Sonnet's goals-opportunity rank within its batch (lower = stronger). Absent
-   *  when the batch fell through to the unscreened fallback. */
+  /** Goals-opportunity rank within its batch (lower = stronger). Absent when
+   *  the batch fell through to the unscreened fallback. */
   rank?: number;
   rationale?: string;
-  /** false when this entry is an unscreened fail-open fallback, not a real Sonnet verdict. */
+  /** false when this entry is an unscreened fail-open fallback, not a real screening verdict. */
   screened: boolean;
 }
 
@@ -102,9 +102,9 @@ function parseScreenResponse(
   }
 }
 
-/** Screens one batch via Sonnet. Returns null on any failure (timeout, missing
- *  key, throw, unparseable response) — caller falls back to the unscreened
- *  pre-filter order for that batch, never blocks. */
+/** Screens one batch via the local Claude Code CLI. Returns null on any failure
+ *  (timeout, missing key, throw, unparseable response) — caller falls back to
+ *  the unscreened pre-filter order for that batch, never blocks. */
 async function screenBatch(
   batch: GoalsPreFilterResult[],
   _ctx: LLMCallContext
@@ -169,8 +169,8 @@ export async function screenGoalsCandidates(
   return results;
 }
 
-/** Merges screen results back onto the candidate pool, sorted by Sonnet's
- *  ranking (screened entries first, ranked ascending), with unscreened entries
+/** Merges screen results back onto the candidate pool, sorted by the screening
+ *  rank (screened entries first, ranked ascending), with unscreened entries
  *  appended in their original pre-filter order. Fail-open: an entirely-failed
  *  screening pass (every batch null) returns the unscreened pre-filter order
  *  unchanged, never an empty list. */

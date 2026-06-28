@@ -58,6 +58,7 @@ export interface FixtureJobSuccess {
   swarmConsensus?: string; // Level-2 swarm consensus pick label
   swarmDivergence?: number; // 0–1; high = workers disagreed
   decisionShadow?: DecisionShadow; // GLM-5.2 shadow comparison, observability only
+  agentVerification?: RunResult["agentVerification"]; // ORACLE_AGENT_VERIFY local-CLI check, observability only
 }
 
 export interface FixtureJobError {
@@ -475,6 +476,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             briefingFlags,
             swarmConsensus,
             swarmDivergence: swarmDivergenceVal,
+            agentVerification: filteredResult.agentVerification,
           };
         },
         maxRetries,
@@ -512,11 +514,13 @@ Keep it under 200 words. Identify the single most important risk factor.`;
   const poolResults = await runPool(jobs, concurrency, processOne, {
     onSettled: (i, r) => {
       // Charge only billable (LLM) decisions toward the ceiling. The GLM-5.2
-      // shadow call (when present) is a second billable request — without
-      // this it would silently spend past costCeilingUsd.perRun unnoticed.
+      // shadow call and the ORACLE_AGENT_VERIFY local-CLI check (when present)
+      // are each a second billable request — without this they'd silently
+      // spend past costCeilingUsd.perRun unnoticed.
       if (r.status === "ok" && r.decisionReplay !== null) {
         costTracker.charge();
         if (r.decisionShadow) costTracker.charge();
+        if (r.agentVerification) costTracker.charge();
       }
       onProgress?.({
         completed: ++completedCounter,

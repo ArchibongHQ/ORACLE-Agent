@@ -6,11 +6,12 @@ export const MODELS = {
   GEMINI_PRO: "gemini-3.5-flash", // 3.5 Flash outperforms 3.1 Pro on agentic at 4x speed
   CLAUDE_OPUS: "claude-opus-4-8", // #1 SWE-bench (88.6%) — Briefing + framing-bias check + CVL pass
   CLAUDE_FABLE: "claude-fable-5", // newest Claude family — local-CLI arbiter targets this or Opus, never Sonnet/older
-  // Narrow, explicit exception to the no-Sonnet policy below: the goals-discovery
-  // pre-filtered-pool SCREENING stage only (packages/runtime/src/goalsScreen.ts) —
-  // cost-conscious by owner instruction, since it runs over ~100-150 fixtures/day.
-  // Every other Claude call in the pipeline (Opus arbiter, briefing, CVL) stays
-  // Opus/Fable-5-or-newer exactly as before — do not widen this exception.
+  // Dead constant: this was meant to be a narrow, cost-conscious exception for
+  // the goals-discovery screening stage (packages/runtime/src/goalsScreen.ts),
+  // routed through callClaude.ts's API transport. That routing was never wired
+  // up — goalsScreen.ts calls callClaudeCode() (local CLI, pinned to Opus) like
+  // every other call site. No code references this constant outside test
+  // mocks; the no-Sonnet policy has no exceptions in practice.
   CLAUDE_SONNET: "claude-sonnet-4-6",
   // Haiku — used ONLY for the news-intel Claude reshape path (fetchNewsViaClaudeReshape),
   // where the task is structured JSON extraction from scraped prose, not reasoning.
