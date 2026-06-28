@@ -179,10 +179,12 @@ async function checkHeartbeatFreshness(): Promise<void> {
     process.stdout.write(
       "[worker] daily lake stale/missing — triggering back-online acquisition\n"
     );
-    // After back-online acquisition completes, fire the goals batch immediately so a
-    // machine that was off at 09:30 WAT still produces picks as soon as it comes up.
+    // After back-online acquisition completes, send the fixture report and fire the
+    // goals batch immediately so a machine that was off across 00:00/09:30 WAT still
+    // gets the report + picks as soon as it comes up — mirrors the 00:00 cron sequence.
     logJob("acquire-daily@back-online", async () => {
       await acquireDailyJob();
+      await sendDailyFixtureReport();
       await runGoalsBatch("scheduled");
     });
   }
@@ -415,7 +417,7 @@ async function sendDailyFixtureReport(): Promise<void> {
       buildNewsByTeam(index.events, today),
     ]);
     const html = renderDailyFixtureReport(index.events, today, { lineups, newsByTeam });
-    const reportPath = await writeDailyFixtureReport(html, today);
+    const reportPath = await writeDailyFixtureReport(html, today, join(ROOT, ".tmp/reports"));
     process.stdout.write(`[fixture-report] wrote ${reportPath}\n`);
 
     if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
