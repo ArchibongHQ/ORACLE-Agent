@@ -33,6 +33,7 @@ function batchWith(
     away: string;
     pick: "NO_EDGE" | { market: string; side?: string; odds: number; stake?: number };
     confidence: number;
+    lowScoring?: boolean;
   }[]
 ): BatchResult {
   return {
@@ -51,6 +52,14 @@ function batchWith(
         rationale: "",
         rejectedAndWhy: [],
       },
+      ...(j.lowScoring
+        ? {
+            result: {
+              lowScoreRegime: { regime: "LOW_SCORING" },
+              ahPivot: { recommendation: "AH +0.5 home", rationale: "0-0 wins this line" },
+            },
+          }
+        : {}),
     })) as unknown as BatchResult["jobs"],
     completedCount: jobs.length,
     errorCount: 0,
@@ -154,6 +163,41 @@ describe("counterSlip", () => {
     const [leg] = counterSlip(legs, batch);
     expect(leg?.verdict).toBe("KEPT_LOW_CONVICTION");
     expect(leg?.pick.side).toBe("Home Win"); // his pick kept
+  });
+
+  it("surfaces the AH-pivot safety note whenever the fixture is flagged LOW_SCORING, regardless of verdict (Q4d)", () => {
+    const legs: PuntLeg[] = [
+      { raw: rawLeg({ marketDesc: "1X2", outcomeDesc: "Home" }), job: fakeJob },
+    ];
+    const batch = batchWith([
+      {
+        home: "Arsenal",
+        away: "Chelsea",
+        pick: { market: "1X2", side: "Home Win", odds: 2.0 },
+        confidence: 0.7,
+        lowScoring: true,
+      },
+    ]);
+    const [leg] = counterSlip(legs, batch);
+    expect(leg?.verdict).toBe("CONFIRMED");
+    expect(leg?.ahPivotNote).toContain("Low-scoring regime");
+    expect(leg?.ahPivotNote).toContain("AH +0.5 home");
+  });
+
+  it("leaves ahPivotNote unset when the fixture is not LOW_SCORING", () => {
+    const legs: PuntLeg[] = [
+      { raw: rawLeg({ marketDesc: "1X2", outcomeDesc: "Home" }), job: fakeJob },
+    ];
+    const batch = batchWith([
+      {
+        home: "Arsenal",
+        away: "Chelsea",
+        pick: { market: "1X2", side: "Home Win", odds: 2.0 },
+        confidence: 0.7,
+      },
+    ]);
+    const [leg] = counterSlip(legs, batch);
+    expect(leg?.ahPivotNote).toBeUndefined();
   });
 });
 

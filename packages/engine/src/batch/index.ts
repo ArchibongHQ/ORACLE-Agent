@@ -9,10 +9,12 @@ import {
   logPickDisagreement,
   validateSelection,
 } from "../decision/index.js";
+import type { MarketExecutorRiskParams } from "../decision/marketExecutor.js";
 import { ExecutionEngine } from "../execution/index.js";
 import type {
   AgentError,
   AgentErrorCode,
+  AllMarketEntry,
   DecisionOutput,
   DecisionReplay,
   DecisionShadow,
@@ -23,6 +25,7 @@ import type {
   RunState,
   SoftContextItem,
 } from "../types.js";
+import { computeMarketExecutorConcurrency } from "./marketExecutorConcurrency.js";
 import { AtomicCostTracker, runPool } from "./pool.js";
 
 export interface FixtureJob {
@@ -241,7 +244,19 @@ export async function runBatch(
 
   const agentErrors: AgentError[] = [];
   const total = jobs.length;
-  const concurrency = Math.max(1, options.concurrency ?? config.batchConcurrency ?? 8);
+  // Q4c: the all-markets LLM executor tier is a real per-fixture process spawn,
+  // not a cheap API call — when it's on, concurrency follows the owner-specified
+  // hardware-aware budget (2-3 local, ~1/fixture on VPS) instead of the normal
+  // batchConcurrency default, since that default predates this tier and was
+  // sized for cheap network calls, not local CLI spawns.
+  const marketExecutorActive = config.enableLlmMarketExecutor === true;
+  const concurrency = marketExecutorActive
+    ? computeMarketExecutorConcurrency(total, config.isVps)
+    : Math.max(1, options.concurrency ?? config.batchConcurrency ?? 8);
+  // Per owner instruction: uncapped spend on VPS specifically for this tier —
+  // scheduling never halts on the cost ceiling there. Local runs keep the
+  // existing ceiling behavior unchanged (concurrency is already low there).
+  const uncappedOnVps = marketExecutorActive && config.isVps === true;
   const costTracker = new AtomicCostTracker(LLM_COST_ESTIMATE_USD_PER_CALL, ceilingUsd);
   let completedCounter = 0;
 
@@ -287,6 +302,9 @@ export async function runBatch(
           const mlResult = runResult.mlFilter as Record<string, unknown> | undefined;
           const debateRes = runResult.debate as Record<string, unknown> | undefined;
           const regimeRes = runResult.lowScoreRegime as Record<string, unknown> | undefined;
+          const allMarkets = (
+            state.pipeline?.fetched?.sportyBetOdds as { allMarkets?: AllMarketEntry[] } | undefined
+          )?.allMarkets;
 
           const decisionCtx: DecisionContext = {
             fixture: { home: job.home, away: job.away, league: job.league, kickoff: job.kickoff },
@@ -303,6 +321,20 @@ export async function runBatch(
             portfolioCorrelation: runResult.portfolioCorrelation,
             softContext: state.telemetry?.softContext as SoftContextItem[] | undefined,
             rawStatsBlock: state.telemetry?.rawStatsBlock as Record<string, unknown> | undefined,
+            allMarkets,
+          };
+
+          // Risk multipliers the engine already computed for THIS fixture, reused
+          // so the all-markets LLM executor tier's Kelly stake (Q4b) is consistent
+          // with every other stake the engine produces — not a separate guess.
+          const mcResult = runResult.mc as { varMultiplier?: number } | undefined;
+          const marketExecutorRisk: MarketExecutorRiskParams = {
+            dqs: (runResult.dqs as number | undefined) ?? 0.85,
+            councilPenalty: (runResult.councilPenalty as boolean | undefined) ?? false,
+            varMultiplier: mcResult?.varMultiplier ?? 1.0,
+            drawdownPenalty: (runResult.drawdownPenalty as number | undefined) ?? 1.0,
+            calibFactor: (job.state?.ledger?.metrics?.calibFactor as number | undefined) ?? 1.0,
+            bankroll: config.bankroll,
           };
 
           // Two-tier gate: only the top-N fixtures (by composite stats score,
@@ -400,14 +432,19 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             decision: rawDecision,
             replay: decisionReplay,
             shadow: decisionShadow,
+            eligibleBets: executedEligible,
           } = await decide(
             eligible,
             decisionCtx,
             config,
-            !llmEligible // force deterministic for fixtures outside the top-N
+            !llmEligible, // force deterministic for fixtures outside the top-N
+            marketExecutorRisk
           );
+          // Widened by one synthetic EVMarket only when the Q4 all-markets LLM
+          // executor tier supplied the draft — identical to `eligible` otherwise.
+          const effectiveEligible = executedEligible ?? eligible;
           const mlFilter = { mlAllowed: decisionCtx.mlAllowed, drawRisk: decisionCtx.drawRisk };
-          const decision = validateSelection(rawDecision, eligible, mlFilter);
+          const decision = validateSelection(rawDecision, effectiveEligible, mlFilter);
 
           // B2: optional CVL adversarial verification
           let cvlStatus: "APPROVED" | "OVERRIDE" | "VETO" | "SKIPPED" | undefined;
@@ -423,7 +460,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
               rawDecision.grade !== "NO_EDGE"
             ) {
               const { callVerification } = await import("@oracle/llm");
-              const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(eligible.slice(0, 3))}`;
+              const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(effectiveEligible.slice(0, 3))}`;
               const llmCtx = {
                 config: {
                   claudeApiKey: config.claudeApiKey,
@@ -446,14 +483,14 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           }
 
           // Log when LLM disagrees with deterministic top (SkillOpt training signal)
-          await logPickDisagreement(deps.storage, rawDecision, eligible[0] ?? null, {
+          await logPickDisagreement(deps.storage, rawDecision, effectiveEligible[0] ?? null, {
             ...job,
             fixtureId,
           });
           void briefingText; // full briefing text retained for future report body rendering
 
           const primaryPick =
-            eligible.find((m) => m.market === decision.primaryPick.market) ?? null;
+            effectiveEligible.find((m) => m.market === decision.primaryPick.market) ?? null;
 
           const analysisId = makeAnalysisId(fixtureId, rankingMode, calibrationSnapshotId);
           return {
@@ -469,7 +506,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             decision,
             decisionReplay,
             decisionShadow,
-            eligibleBets: eligible,
+            eligibleBets: effectiveEligible,
             primaryPick,
             llmEligible,
             cvlStatus,
@@ -528,12 +565,16 @@ Keep it under 200 words. Identify the single most important risk factor.`;
         current: `${jobs[i]?.home} vs ${jobs[i]?.away}`,
       });
     },
-    shouldStop: () => costTracker.halted,
+    shouldStop: () => (uncappedOnVps ? false : costTracker.halted),
   });
 
   // runPool leaves holes for fixtures skipped after a cost-ceiling halt — drop them.
   const results = poolResults.filter((r): r is BatchJobResult => r != null);
-  const costHalted = costTracker.halted;
+  // costTracker.halted can still flip true on uncapped-VPS runs once spend
+  // crosses the ceiling (charge() sets it unconditionally) — but shouldStop
+  // above never acted on it there, so reporting halted=true would be a false
+  // alarm. Force it false in that case to reflect what actually happened.
+  const costHalted = uncappedOnVps ? false : costTracker.halted;
   if (costHalted) {
     agentErrors.push({
       code: "COST_CEILING_HIT",

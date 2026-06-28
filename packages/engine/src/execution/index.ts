@@ -53,6 +53,8 @@ import {
 import { RAGSystem } from "../rag/index.js";
 import { AntiSycophancyCircuit, ConvergenceScorer, MLSafetyFilter } from "../safety/index.js";
 import type {
+  AllMarketEntry,
+  AllMarketOutcome,
   EVMarket,
   Matrix,
   OracleConfig,
@@ -484,6 +486,122 @@ interface SensitivityResult {
   paramUncertaintyFlag: string | null;
 }
 
+// ── allMarkets fallback (Q4) ──────────────────────────────────────────────────
+// SportyBet's per-fixture catalogue can carry 900+ raw market entries beyond the
+// ~9 families scanMarkets() prices above (tools/scrape_fixtures.py's
+// _parse_all_markets, sidecarOdds → fetched.sportyBetOdds.allMarkets). This
+// generic combo-market pricer scans the raw catalogue unconditionally, pricing
+// each outcome straight off the same scoreline matrix (Q3 finding #3) — no new
+// modeling, just summing finalMat cells against a parsed full-time-goals
+// condition. Half-time/in-play markets can't be safely evaluated this way (the
+// matrix has no half split) and are skipped, not mis-priced. (AllMarketEntry/
+// AllMarketOutcome are defined in types.ts — shared with decision/marketExecutor.ts.)
+
+function matSumWhere(mat: Matrix, pred: (h: number, a: number) => boolean): number {
+  let p = 0;
+  for (let i = 0; i < mat.length; i++) {
+    const row = mat[i];
+    if (!row) continue;
+    for (let j = 0; j < row.length; j++) if (pred(i, j)) p += row[j] ?? 0;
+  }
+  return p;
+}
+
+/** Parse one allMarkets outcome into a model probability using only full-time
+ *  goal counts — returns null when the market can't be safely evaluated this way
+ *  (half-time/in-play markets, or a shape this parser doesn't recognise). */
+function priceAllMarketOutcome(
+  mat: Matrix,
+  market: AllMarketEntry,
+  outcome: AllMarketOutcome
+): number | null {
+  const nameLc = (market.name ?? market.desc ?? "").toLowerCase();
+  const specLc = (market.specifier ?? "").toLowerCase();
+  const descLc = (outcome.desc ?? "").toLowerCase().trim();
+  if (!descLc) return null;
+  if (/half|1st|2nd|\bht\b/.test(nameLc) || /half/.test(specLc)) return null;
+
+  // Correct score, e.g. outcome desc "2-1" / "2:1"
+  const scoreMatch = descLc.match(/^(\d+)\s*[-:]\s*(\d+)$/);
+  if (scoreMatch) {
+    const h = parseInt(scoreMatch[1]!, 10);
+    const a = parseInt(scoreMatch[2]!, 10);
+    return matSumWhere(mat, (i, j) => i === h && j === a);
+  }
+
+  // Odd/Even total goals
+  if (nameLc.includes("odd") && nameLc.includes("even")) {
+    if (descLc === "odd") return matSumWhere(mat, (i, j) => (i + j) % 2 === 1);
+    if (descLc === "even") return matSumWhere(mat, (i, j) => (i + j) % 2 === 0);
+    return null;
+  }
+
+  // Win to Nil
+  if (nameLc.includes("win to nil")) {
+    if (descLc.includes("home")) return matSumWhere(mat, (i, j) => i > j && j === 0);
+    if (descLc.includes("away")) return matSumWhere(mat, (i, j) => j > i && i === 0);
+    return null;
+  }
+
+  // Clean sheet
+  if (nameLc.includes("clean sheet")) {
+    const side = nameLc.includes("home") ? "home" : nameLc.includes("away") ? "away" : null;
+    if (!side) return null;
+    if (descLc === "yes") return matSumWhere(mat, (i, j) => (side === "home" ? j === 0 : i === 0));
+    if (descLc === "no") return matSumWhere(mat, (i, j) => (side === "home" ? j > 0 : i > 0));
+    return null;
+  }
+
+  const lineMatch = specLc.match(/total=([\d.]+)/) ?? descLc.match(/([\d.]+)/);
+  const line = lineMatch ? parseFloat(lineMatch[1]!) : Number.NaN;
+
+  // Team total Over/Under (home or away, any line)
+  if ((nameLc.includes("home") || nameLc.includes("away")) && Number.isFinite(line)) {
+    const side = nameLc.includes("home") ? "home" : "away";
+    if (descLc.startsWith("over"))
+      return matSumWhere(mat, (i, j) => (side === "home" ? i : j) > line);
+    if (descLc.startsWith("under"))
+      return matSumWhere(mat, (i, j) => (side === "home" ? i : j) < line);
+    return null;
+  }
+
+  // Full-match total goals Over/Under (any line, beyond the hardcoded 0.5-4.5 ladder)
+  if (Number.isFinite(line) && (descLc.startsWith("over") || descLc.startsWith("under"))) {
+    if (descLc.startsWith("over")) return matSumWhere(mat, (i, j) => i + j > line);
+    return matSumWhere(mat, (i, j) => i + j < line);
+  }
+
+  // Asian Handicap (any line beyond BLOCK 4's hardcoded ladder), mirrors
+  // asianHandicapPivot's quarter-line push/win split.
+  if (nameLc.includes("handicap") || nameLc.includes("asian")) {
+    const side = descLc.includes("home") ? "home" : descLc.includes("away") ? "away" : null;
+    const hcMatch = descLc.match(/([+-]?[\d.]+)\s*$/);
+    const hcLine = hcMatch ? parseFloat(hcMatch[1]!) : Number.NaN;
+    if (side && Number.isFinite(hcLine)) {
+      let pWin = 0;
+      let pPush = 0;
+      for (let i = 0; i < mat.length; i++) {
+        const row = mat[i];
+        if (!row) continue;
+        for (let j = 0; j < row.length; j++) {
+          const p = row[j] ?? 0;
+          if (!p) continue;
+          const margin = side === "home" ? i - j : j - i;
+          const adj = margin + hcLine;
+          if (Math.abs(adj - 0.25) < 0.01 || Math.abs(adj + 0.25) < 0.01) {
+            pWin += p * 0.5;
+            pPush += p * 0.5;
+          } else if (adj > 0.01) pWin += p;
+          else if (Math.abs(adj) <= 0.01) pPush += p;
+        }
+      }
+      return pWin + 0.5 * pPush;
+    }
+  }
+
+  return null;
+}
+
 // ── ExecutionEngine ───────────────────────────────────────────────────────────
 
 export class ExecutionEngine {
@@ -795,6 +913,72 @@ export class ExecutionEngine {
     }
 
     return evs.sort((a, b) => b.rankingScore - a.rankingScore);
+  }
+
+  // ── scanAllMarketsFallback (Q4) ───────────────────────────────────────────
+  // Runs unconditionally alongside scanMarkets() — no market is skipped from
+  // consideration, an edge could be buried in any of the 900+ raw entries.
+  // Prices the raw SportyBet allMarkets catalogue against the same matrix/Kelly
+  // machinery as scanMarkets, capped to the top 10 EV-positive entries so a
+  // 900-entry catalogue doesn't flood evMarkets with long-tail noise once the
+  // genuinely positive-EV ones have already been found and ranked.
+  private scanAllMarketsFallback(
+    finalMat: Matrix,
+    allMarkets: AllMarketEntry[] | undefined,
+    calibFactor: number,
+    bankroll: number,
+    dqs: number,
+    councilPenalty: boolean,
+    varMultiplier: number,
+    drawdownPenalty: number
+  ): EVMarket[] {
+    if (!allMarkets?.length) return [];
+    const out: EVMarket[] = [];
+    for (const market of allMarkets) {
+      const marketLabel = market.desc || market.name || "Market";
+      for (const outcome of market.outcomes ?? []) {
+        const odds = parseFloat(outcome.odds ?? "");
+        if (!Number.isFinite(odds) || odds <= 1) continue;
+        const mp = priceAllMarketOutcome(finalMat, market, outcome);
+        if (mp == null || mp <= 0 || mp >= 1) continue;
+        const ip = 1 / odds;
+        const rawEdge = mp - ip;
+        const ev = adjEV(mp, odds);
+        if (ev <= 0 || rawEdge < hurdle(mp)) continue;
+        const stake = clamp(
+          optimizedKelly(
+            rawEdge,
+            odds,
+            dqs,
+            councilPenalty,
+            varMultiplier,
+            drawdownPenalty,
+            calibFactor,
+            0.25,
+            mp
+          ),
+          0,
+          0.25
+        );
+        out.push({
+          cat: "AllMarkets Scan",
+          label: `${marketLabel} — ${outcome.desc ?? ""}`.trim(),
+          market: "AllMarkets Scan",
+          side: outcome.desc ?? undefined,
+          mp,
+          modelProb: mp,
+          ip,
+          rawEdge,
+          ev,
+          odds,
+          stake,
+          stakeAmt: stake * (bankroll || 1000),
+          rankingScore: ev,
+          varianceMod: 1.0,
+        });
+      }
+    }
+    return out.sort((a, b) => b.rankingScore - a.rankingScore).slice(0, 10);
   }
 
   // ── SensitivityEngine (Gaussian ensemble, K=20) ──────────────────────────
@@ -1666,6 +1850,26 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
         ? { ...m, veto: "STEAM_CHASER_VETO", stake: 0, stakeAmt: 0 }
         : m
     );
+
+    // Q4 (revised): no market is skipped for consideration — every raw SportyBet
+    // allMarkets entry (900+ on a liquid fixture) is priced against the same
+    // scoreline matrix and competes on equal footing with the ~9 hardcoded
+    // families above, always (not just when those families found nothing).
+    {
+      const allMarkets = (fetched.sportyBetOdds as { allMarkets?: AllMarketEntry[] } | undefined)
+        ?.allMarkets;
+      const scanned = this.scanAllMarketsFallback(
+        finalMat,
+        allMarkets,
+        calibFactor,
+        bankroll,
+        dqs,
+        councilPenalty,
+        mc.varMultiplier,
+        drawdownPenalty
+      );
+      if (scanned.length) rawRes.evMarkets = [...rawRes.evMarkets, ...scanned];
+    }
 
     // Portfolio covariance + correlated parlay hard cap (BUG-M05 FIX)
     if (!skipSensitivity && rawRes.evMarkets.length >= 2) {

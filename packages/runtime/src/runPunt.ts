@@ -12,8 +12,11 @@ import type { ActionablePick } from "@oracle/notify";
 import type { StoragePort } from "@oracle/storage";
 import { runAnalysis } from "./analyze.js";
 import { resolvePythonBin } from "./fixtures.js";
+import { preFilterGoalsCandidates } from "./goalsPreFilter.js";
+import { screenGoalsCandidates } from "./goalsScreen.js";
 import type { CounterLeg } from "./punt.js";
 import { counterSlip, loadedSlipToJobs } from "./punt.js";
+import type { SportyBetEvent } from "./selectFixtures.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -73,6 +76,66 @@ export async function refreshSidecarIfStale(): Promise<void> {
   } catch {
     // scrape failure is non-fatal
   }
+}
+
+/** Q4d: advisory-only mechanical pre-filter + Sonnet screen over the legs that
+ *  matched a SportyBet sidecar event today — context/confidence labels only,
+ *  per the goals-discovery funnel's stage 1+2 (mechanical filter → Sonnet
+ *  screen), reused here purely for labeling. NEVER filters/excludes a leg —
+ *  /punt's "never drop a fixture" policy holds regardless of score. Legs with
+ *  no sidecar event get no label (no fabricated score) rather than a zero.
+ *  Sonnet screening is gated by isLocalRuntime() — same guard every other
+ *  local-Claude-Code-CLI call site uses, so Vitest/non-local runs never spawn
+ *  a real `claude` process. Fails open: any error here never affects the punt
+ *  result, only the advisory labels go missing. */
+export async function computeAdvisoryLabels(
+  puntLegs: Array<{ sidecarEvent?: SportyBetEvent }>,
+  config: OracleConfig
+): Promise<{ mechanicalByLegIdx: Map<number, number>; sonnetByLegIdx: Map<number, string> }> {
+  const mechanicalByLegIdx = new Map<number, number>();
+  const sonnetByLegIdx = new Map<number, string>();
+
+  const eventToLegIdx = new Map<SportyBetEvent, number>();
+  const events: SportyBetEvent[] = [];
+  puntLegs.forEach((l, i) => {
+    if (l.sidecarEvent) {
+      events.push(l.sidecarEvent);
+      eventToLegIdx.set(l.sidecarEvent, i);
+    }
+  });
+  if (!events.length) return { mechanicalByLegIdx, sonnetByLegIdx };
+
+  const candidates = preFilterGoalsCandidates(events, events.length); // advisory — no cut
+  for (const c of candidates) {
+    const legIdx = eventToLegIdx.get(c.event);
+    if (legIdx !== undefined) mechanicalByLegIdx.set(legIdx, c.score);
+  }
+
+  try {
+    const { isLocalRuntime } = await import("@oracle/llm");
+    if (isLocalRuntime()) {
+      const llmCtx = {
+        config: {
+          claudeApiKey: config.claudeApiKey,
+          geminiApiKey: config.geminiApiKey,
+          bankroll: config.bankroll,
+        },
+        requestedAt: new Date().toISOString(),
+      };
+      const screenResults = await screenGoalsCandidates(candidates, llmCtx);
+      for (const r of screenResults) {
+        if (!r.screened || !r.rationale) continue;
+        const candidate = candidates[r.index];
+        if (!candidate) continue;
+        const legIdx = eventToLegIdx.get(candidate.event);
+        if (legIdx !== undefined) sonnetByLegIdx.set(legIdx, r.rationale);
+      }
+    }
+  } catch {
+    // advisory-only — a screening failure must never affect the punt result
+  }
+
+  return { mechanicalByLegIdx, sonnetByLegIdx };
 }
 
 /** Minimal empty BatchResult for the no-covered-fixtures path. */
@@ -150,8 +213,16 @@ export async function runPuntAnalysis(
     ? (await runAnalysis(jobs, { storage, config }, { trigger: "manual", persist: true })).batch
     : emptyBatch();
 
+  // 3.5. Advisory-only mechanical/Sonnet goals-opportunity labels (Q4d) — never
+  //      gates step 4 below, purely descriptive context attached afterward.
+  const { mechanicalByLegIdx, sonnetByLegIdx } = await computeAdvisoryLabels(puntLegs, config);
+
   // 4. Per-leg counter-decision (keep fixture; swap pick where ORACLE is stronger).
-  const legs = counterSlip(puntLegs, batch);
+  const legs = counterSlip(puntLegs, batch).map((l, i) => ({
+    ...l,
+    mechanicalScore: mechanicalByLegIdx.get(i),
+    sonnetVerdict: sonnetByLegIdx.get(i),
+  }));
 
   const counts = legs.reduce(
     (acc, l) => {
@@ -198,6 +269,18 @@ export function formatPuntResult(r: PuntResult): string {
     lines.push(
       `${tag} ${l.raw.home} vs ${l.raw.away} — ${l.pick.market}${side} @ ${l.pick.odds}${conf}`
     );
+    if (l.note) lines.push(`    ↳ ${l.note}`);
+    // Q4: the pick came from scanning beyond the ~9 typed market families —
+    // surface that provenance so it's clear this isn't a standard goals/1X2/AH pick.
+    if (l.pick.market === "AllMarkets Scan" || l.pick.market === "LLM Market Executor") {
+      lines.push(`    ↳ 🔎 sourced from the full markets scan (${l.pick.market})`);
+    }
+    if (l.ahPivotNote) lines.push(`    ↳ ⚠️ ${l.ahPivotNote}`);
+    if (l.mechanicalScore != null || l.sonnetVerdict) {
+      const mech = l.mechanicalScore != null ? `mech=${l.mechanicalScore.toFixed(0)}` : null;
+      const sonnet = l.sonnetVerdict ? `Sonnet: ${l.sonnetVerdict}` : null;
+      lines.push(`    ↳ 🧮 ${[mech, sonnet].filter(Boolean).join(" · ")}`);
+    }
   }
   if (r.oracleCode) {
     lines.push("");

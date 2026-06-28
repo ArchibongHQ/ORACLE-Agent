@@ -14,6 +14,7 @@ import type {
   OracleConfig,
   PickRef,
 } from "../types.js";
+import { type MarketExecutorRiskParams, runAllMarketsLlmExecutor } from "./marketExecutor.js";
 
 /** Paired output from decide() — decision for downstream gates, replay for the ledger. */
 export interface DecisionResult {
@@ -21,6 +22,11 @@ export interface DecisionResult {
   replay: DecisionReplay | null;
   /** GLM-5.2 shadow comparison — observability only, never affects `decision`. */
   shadow?: DecisionShadow;
+  /** The eligible-bets list actually used for the arbiter + downstream gates.
+   *  Only set (and widened by one synthetic EVMarket) when the all-markets LLM
+   *  executor tier (Q4) supplied the draft — absent otherwise, so callers should
+   *  fall back to their own input eligibleBets when this is undefined. */
+  eligibleBets?: EVMarket[];
 }
 
 // DecisionContext is the canonical fixture-evidence type — defined in types.ts (Appendix B),
@@ -420,24 +426,57 @@ async function shadowDecideWithGlm52(
 export async function decide(
   eligibleBets: EVMarket[],
   ctx?: DecisionContext,
-  config?: Pick<OracleConfig, "claudeApiKey" | "geminiApiKey" | "openrouterApiKey">,
-  forceDeterministic = false
+  config?: Pick<
+    OracleConfig,
+    "claudeApiKey" | "geminiApiKey" | "openrouterApiKey" | "enableLlmMarketExecutor"
+  >,
+  forceDeterministic = false,
+  marketExecutorRisk?: MarketExecutorRiskParams
 ): Promise<DecisionResult> {
-  const draft = await decideInner(eligibleBets, ctx, config, forceDeterministic);
+  let effectiveEligible = eligibleBets;
+  let draft: DecisionResult | undefined;
+
+  // Q4 (owner-directed): when on, REPLACES the eligibleBets-constrained cascade
+  // below for this fixture — an LLM agent reasons over the full allMarkets
+  // catalogue instead of being limited to the ~9 priced families. Fail-open: any
+  // missing data/call/parse/validation failure leaves draft unset and falls
+  // through to the normal cascade exactly as if the flag were off.
+  if (config?.enableLlmMarketExecutor && ctx && !forceDeterministic && marketExecutorRisk) {
+    const executed = await runAllMarketsLlmExecutor(ctx, marketExecutorRisk);
+    if (executed) {
+      // Splice the executor's pick into the eligible set so the arbiter (which
+      // audits the draft against an eligible list) and validateSelection's
+      // Gate 1 downstream both recognise it, even though scanMarkets() never
+      // priced this exact market — it's still a server-validated EVMarket.
+      // Exposed back via DecisionResult.eligibleBets so callers (batch/index.ts)
+      // use the SAME widened list for their own post-decide() gates/reporting.
+      effectiveEligible = [executed.market, ...eligibleBets];
+      draft = {
+        decision: executed.decision,
+        replay: executed.replay,
+        eligibleBets: effectiveEligible,
+      };
+    }
+  }
+
+  if (!draft) draft = await decideInner(effectiveEligible, ctx, config, forceDeterministic);
 
   let result = draft;
-  if (ctx && eligibleBets.length) {
-    result = await arbitrate(eligibleBets, ctx, draft);
+  if (ctx && effectiveEligible.length) {
+    result = await arbitrate(effectiveEligible, ctx, draft);
   }
 
   if (!ctx || draft.replay === null || !config?.openrouterApiKey) return result;
 
   // Skip when GLM-5.2 itself already produced the draft (Tier 3 last resort) —
-  // shadowing it against itself is a wasted call with a trivial result.
+  // shadowing it against itself is a wasted call with a trivial result. Also
+  // skip when the draft came from the market-executor tier — GLM-5.2 never saw
+  // the full allMarkets catalogue, so shadowing it here tests nothing useful.
+  if (draft.replay.model === "claude-code-market-executor") return result;
   const { OPENROUTER_MODELS } = await import("@oracle/llm");
   if (draft.replay.model === OPENROUTER_MODELS.GLM_5_2) return result;
 
-  const prompt = buildPrompt(eligibleBets, ctx);
+  const prompt = buildPrompt(effectiveEligible, ctx);
   const shadow = await shadowDecideWithGlm52(prompt, config.openrouterApiKey, draft.decision);
   return shadow ? { ...result, shadow } : result;
 }

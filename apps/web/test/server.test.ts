@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockFetchByName = vi.fn();
 const mockRunAnalysis = vi.fn();
 const mockParseList = vi.fn();
+const mockReadGoalsArtifact = vi.fn();
+const mockRunCommentBarInstruction = vi.fn();
 
 vi.mock("@oracle/storage", () => ({ GBrainAdapter: class {} }));
 
@@ -16,7 +18,13 @@ vi.mock("@oracle/runtime", () => ({
   buildConfig: () => ({ oddsApiKey: "k", rankingMode: "CONFIDENCE_WEIGHTED" }),
   fetchFixtureByName: (...a: unknown[]) => mockFetchByName(...a),
   runAnalysis: (...a: unknown[]) => mockRunAnalysis(...a),
+  readGoalsArtifact: (...a: unknown[]) => mockReadGoalsArtifact(...a),
+  runCommentBarInstruction: (...a: unknown[]) => mockRunCommentBarInstruction(...a),
   SPORT_TO_LEAGUE: { soccer_epl: "Premier League", soccer_spain_la_liga: "La Liga" },
+  ORACLE_PRIORITY_LEAGUES: ["Championship"],
+  GOALS_RICH_LEAGUES: ["Eredivisie"],
+  REPORT_CSS: "",
+  pct: (n: number) => `${(n * 100).toFixed(1)}%`,
 }));
 
 const { handleRequest } = await import("../src/server.js");
@@ -67,6 +75,115 @@ describe("GET routes", () => {
   it("unknown route → 404", async () => {
     const r = await handleRequest("GET", "/nope", "", "", deps);
     expect(r.status).toBe(404);
+  });
+});
+
+describe("GET /goals", () => {
+  it("GET /goals with no artifact for today → renders empty-state page", async () => {
+    mockReadGoalsArtifact.mockResolvedValue(null);
+    const r = await handleRequest("GET", "/goals", "", "", deps);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatch(/Goals ACCA/);
+    expect(r.body).toMatch(/No goals-ACCA run found/);
+  });
+
+  it("GET /goals/<date> with an artifact → renders the slips", async () => {
+    mockReadGoalsArtifact.mockResolvedValue({
+      date: "2026-06-20",
+      generatedAt: "2026-06-20T08:30:00.000Z",
+      selection: {
+        legs: [],
+        shortSlipLegs: [
+          {
+            home: "Arsenal",
+            away: "Chelsea",
+            league: "Premier League",
+            kickoff: "2026-06-20T15:00:00Z",
+            market: "Goals O/U",
+            side: "Over 2.5",
+            odds: 1.85,
+            mp: 0.78,
+            ip: 0.54,
+            edge: 0.24,
+          },
+        ],
+        target: 39,
+        analysed: 50,
+        qualified: 1,
+        counts: { over15: 1, over25: 1, teamOver05: 0 },
+        combinedProb: 0,
+        combinedOdds: 0,
+        shortSlipCombinedProb: 0.78,
+        shortSlipCombinedOdds: 1.85,
+        outputBLegs: [],
+        outputCLegs: [],
+        miniAccaLegs: [],
+        miniAccaCombinedProb: 0,
+        miniAccaCombinedOdds: 0,
+      },
+    });
+    const r = await handleRequest("GET", "/goals/2026-06-20", "", "", deps);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatch(/Arsenal vs Chelsea/);
+    expect(mockReadGoalsArtifact).toHaveBeenCalledWith("2026-06-20", expect.any(String));
+  });
+
+  it("GET /goals/<bad date> → 400", async () => {
+    const r = await handleRequest("GET", "/goals/not-a-date", "", "", deps);
+    expect(r.status).toBe(400);
+  });
+});
+
+describe("POST /comment", () => {
+  it("missing date or instruction → 400", async () => {
+    const r = await handleRequest(
+      "POST",
+      "/comment",
+      "instruction=summarize",
+      "application/x-www-form-urlencoded",
+      deps
+    );
+    expect(r.status).toBe(400);
+    expect(mockRunCommentBarInstruction).not.toHaveBeenCalled();
+  });
+
+  it("summarize action → renders landing page with the result text", async () => {
+    mockRunCommentBarInstruction.mockResolvedValue({
+      understood: true,
+      action: "summarize",
+      resultText: "3 fixture(s) across 2 league(s).",
+    });
+    const r = await handleRequest(
+      "POST",
+      "/comment",
+      "date=2026-06-20&instruction=summarize+today",
+      "application/x-www-form-urlencoded",
+      deps
+    );
+    expect(mockRunCommentBarInstruction).toHaveBeenCalledWith(
+      "summarize today",
+      "2026-06-20",
+      deps
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toMatch(/3 fixture\(s\) across 2 league\(s\)/);
+  });
+
+  it("reanalyze_fixture action returning a full report → serves it standalone", async () => {
+    mockRunCommentBarInstruction.mockResolvedValue({
+      understood: true,
+      action: "reanalyze_fixture",
+      resultText: "<!DOCTYPE html><html><body>REPORT</body></html>",
+    });
+    const r = await handleRequest(
+      "POST",
+      "/comment",
+      "date=2026-06-20&instruction=reanalyze+Arsenal+vs+Chelsea",
+      "application/x-www-form-urlencoded",
+      deps
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe("<!DOCTYPE html><html><body>REPORT</body></html>");
   });
 });
 

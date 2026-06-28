@@ -4,9 +4,16 @@
 
 export type { AnalyzeOptions, AnalyzeResult, ResolveDayResult } from "./analyze.js";
 export { CLV_ELIGIBLE_LEAGUES, resolveDay, runAnalysis } from "./analyze.js";
+export type {
+  CommentBarAction,
+  CommentBarActionType,
+  CommentBarResult,
+} from "./commentBarOrchestrator.js";
+export { runCommentBarInstruction } from "./commentBarOrchestrator.js";
 export type { DailyFixtureReportDeps } from "./dailyFixtureReport.js";
 export {
   buildNewsByTeam,
+  generateAndWriteDailyFixtureReport,
   renderDailyFixtureReport,
   writeDailyFixtureReport,
 } from "./dailyFixtureReport.js";
@@ -21,6 +28,8 @@ export {
   resolvePythonBin,
   SPORT_TO_LEAGUE,
 } from "./fixtures.js";
+export type { GoalsArtifact } from "./goalsArtifact.js";
+export { readGoalsArtifact, writeGoalsArtifact } from "./goalsArtifact.js";
 export type { GoalsFunnelOptions, GoalsFunnelResult } from "./goalsFunnel.js";
 export { runGoalsFunnel, sportyEventToFixtureJob } from "./goalsFunnel.js";
 export type { GoalsPreFilterResult } from "./goalsPreFilter.js";
@@ -51,7 +60,7 @@ export {
 } from "./punt.js";
 export type { PuntDayState } from "./puntState.js";
 export { markFulfilled, markPrompted, readPuntState, shouldReprompt } from "./puntState.js";
-export { renderReport, writeReport } from "./report.js";
+export { CSS as REPORT_CSS, esc, pct, renderReport, writeReport } from "./report.js";
 export type { ResolveResult } from "./resolveFixtures.js";
 export { computeRealisedClv, formatClv, resolveRecords } from "./resolveFixtures.js";
 export type { PuntResult } from "./runPunt.js";

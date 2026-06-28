@@ -54,6 +54,8 @@ h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 16px; color: #f1f5f9; }
 .adv-label { font-weight: 700; margin-right: 4px; }
 .rationale { font-size: 0.72rem; color: #64748b; margin-top: 4px; font-style: italic; }
 .error-body { color: #fca5a5; font-size: 0.82rem; margin-top: 6px; }
+.enrichment { margin-top: 8px; border-top: 1px solid #334155; padding-top: 8px; }
+.enrichment summary { cursor: pointer; color: #7dd3fc; font-weight: 600; font-size: 0.72rem; }
 `;
 
 function cardClass(job: BatchJobResult): string {
@@ -63,12 +65,22 @@ function cardClass(job: BatchJobResult): string {
   return "card card-actionable";
 }
 
-function renderCard(job: BatchJobResult): string {
+/** Per-fixture enrichment HTML (xG provenance, travel, motivation,
+ *  completeness, lineups, news, full markets) keyed by "home|away", sourced
+ *  from dailyFixtureReport.ts's findFixtureEnrichmentHtml — see renderReport's
+ *  `enrichmentByFixture` param. Empty/missing entries render nothing. */
+function renderCard(job: BatchJobResult, enrichmentByFixture?: Map<string, string>): string {
+  const enrichmentHtml = enrichmentByFixture?.get(`${job.home}|${job.away}`);
+  const enrichmentBlock = enrichmentHtml
+    ? `<details class="enrichment"><summary>Fixture data (xG, travel, lineups, news…)</summary>${enrichmentHtml}</details>`
+    : "";
+
   if (job.status === "error") {
     return `
 <div class="card card-error">
   <div class="card-header"><span class="teams">${esc(job.home)} vs ${esc(job.away)}</span></div>
   <div class="error-body">Error: ${esc(job.reason)}</div>
+  ${enrichmentBlock}
 </div>`;
   }
 
@@ -144,10 +156,20 @@ function renderCard(job: BatchJobResult): string {
   </div>
   ${adversary ? `<div class="adversary"><span class="adv-label">Adversary:</span>${esc(adversary)}</div>` : ""}
   ${d.rationale ? `<div class="rationale">${esc(d.rationale)}</div>` : ""}
+  ${enrichmentBlock}
 </div>`;
 }
 
-export function renderReport(batch: BatchResult): string {
+/** Renders the engine-decision report. `enrichmentByFixture` (optional, keyed
+ *  "home|away") layers in xG/travel/motivation/completeness/lineup/news data
+ *  per card — see dailyFixtureReport.ts's findFixtureEnrichmentHtml, which
+ *  apps/web's /analyze route uses so the web report shows the same enrichment
+ *  fields as the Telegram daily fixture report. Omitted entirely (no dropdown)
+ *  when no map is passed, preserving the worker/CLI report's existing output. */
+export function renderReport(
+  batch: BatchResult,
+  enrichmentByFixture?: Map<string, string>
+): string {
   const hasHighCorr = (batch.jobs as BatchJobResult[]).some(
     (j) =>
       j.status === "ok" &&
@@ -155,7 +177,7 @@ export function renderReport(batch: BatchResult): string {
       (j.result.portfolioCorrelation as number) > 0.5
   );
 
-  const cards = batch.jobs.map(renderCard).join("\n");
+  const cards = batch.jobs.map((j) => renderCard(j, enrichmentByFixture)).join("\n");
 
   return `<!DOCTYPE html>
 <html lang="en">

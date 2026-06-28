@@ -24,6 +24,7 @@
  *    /yesterday        Yesterday's resolved fixtures + realised CLV
  *    /picks            Reprint today's actionable picks
  *    /report [date]    Send HTML report as a file (today or YYYY-MM-DD)
+ *    /fixtures [date]  Send the raw scrape-fixtures report on demand (today or YYYY-MM-DD)
  *    /status           Worker heartbeat — last batch time, records, state
  *    /analyze <Home vs Away> [league]   Ad-hoc fixture analysis
  *    /punt <CODE>      Counter-analyse a SportyBet booking code
@@ -44,6 +45,7 @@ import {
   fetchFixtureByName,
   fetchTodaysFixtures,
   formatPuntResult,
+  generateAndWriteDailyFixtureReport,
   loadEnv,
   markFulfilled,
   ORACLE_PRIORITY_LEAGUES,
@@ -271,6 +273,7 @@ function helpText(forAdmin: boolean): string {
     "",
     "*Reports & Status*",
     "/report \\[YYYY-MM-DD\\] — Receive the HTML analysis report as a file (defaults to today)",
+    "/fixtures \\[YYYY-MM-DD\\] — Receive the raw scrape-fixtures report (odds, stats, news, full markets) — generates on demand if not already on disk",
     "/status — Worker heartbeat: last run time, records stored, goals ACCA state",
     "",
     "*Help*",
@@ -516,6 +519,41 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
     chatId,
     `ℹ️ No reports found. ${isAdmin(chatId) ? "Use /run to generate one." : "Check back after the 09:00 batch."}`
   );
+}
+
+/** On-demand raw-fixture-data report (the scrape report, distinct from /report's
+ *  engine-decision report) — fires immediately whenever asked, not just on the
+ *  worker's 00:00/08:30 cron ticks. Generates it fresh from today's SportyBet
+ *  sidecar when no file is already sitting on disk, so the request never comes
+ *  back empty just because the cron tick hasn't fired yet. */
+async function handleFixturesReport(chatId: string, dateArg?: string): Promise<void> {
+  const today = new Date().toISOString().slice(0, 10);
+  const date = dateArg && /^\d{4}-\d{2}-\d{2}$/.test(dateArg) ? dateArg : today;
+  const reportPath = join(REPORTS_DIR, `oracle-fixtures-${date}.html`);
+
+  if (existsSync(reportPath)) {
+    await sendDocumentTo(chatId, reportPath, `ORACLE daily fixtures — ${date}`);
+    return;
+  }
+
+  await sendTo(chatId, `⏳ Generating fixtures report for ${date}…`);
+  try {
+    const result = await generateAndWriteDailyFixtureReport(date, REPORTS_DIR);
+    if (!result) {
+      await sendTo(chatId, `ℹ️ No SportyBet fixtures found for ${date}.`);
+      return;
+    }
+    await sendDocumentTo(
+      chatId,
+      result.path,
+      `ORACLE daily fixtures — ${date} (${result.fixtureCount} fixtures)`
+    );
+  } catch (err) {
+    await sendTo(
+      chatId,
+      `⚠️ Fixtures report failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 }
 
 async function handleAnalyze(chatId: string, query: string, league?: string): Promise<void> {
@@ -1033,6 +1071,10 @@ async function handleMessage(chatId: string, text: string): Promise<void> {
 
   if (cmd === "/report") {
     return handleReport(chatId, args[0]);
+  }
+
+  if (cmd === "/fixtures") {
+    return handleFixturesReport(chatId, args[0]);
   }
 
   if (cmd === "/analyze" || cmd === "/analyse") {

@@ -20,25 +20,23 @@ import {
 } from "@oracle/notify";
 import {
   buildConfig,
-  buildNewsByTeam,
   enrichWithH2H,
   enrichWithLineups,
   enrichWithNewsIntel,
   fetchTodaysFixtures,
   fixturesPartitionExists,
   type GoalsSelectionResult,
+  generateAndWriteDailyFixtureReport,
   loadEnv,
-  loadLineupSummaries,
   loadSportyBetIndex,
   markPrompted,
-  renderDailyFixtureReport,
   resolveDay,
   runAnalysis,
   runGoalsFunnel,
   selectGoalsAccumulator,
   shouldReprompt,
   sidecarKey,
-  writeDailyFixtureReport,
+  writeGoalsArtifact,
 } from "@oracle/runtime";
 import { MemoryAdapter } from "@oracle/storage";
 import cron from "node-cron";
@@ -407,25 +405,19 @@ async function acquireDailyJob(): Promise<void> {
 async function sendDailyFixtureReport(): Promise<void> {
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const index = await loadSportyBetIndex(today);
-    if (!index?.events.length) {
+    const result = await generateAndWriteDailyFixtureReport(today, join(ROOT, ".tmp/reports"));
+    if (!result) {
       process.stdout.write("[fixture-report] no SportyBet fixtures available — skipping\n");
       return;
     }
-    const [lineups, newsByTeam] = await Promise.all([
-      loadLineupSummaries(),
-      buildNewsByTeam(index.events, today),
-    ]);
-    const html = renderDailyFixtureReport(index.events, today, { lineups, newsByTeam });
-    const reportPath = await writeDailyFixtureReport(html, today, join(ROOT, ".tmp/reports"));
-    process.stdout.write(`[fixture-report] wrote ${reportPath}\n`);
+    process.stdout.write(`[fixture-report] wrote ${result.path}\n`);
 
     if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
       await sendTelegramDocument(
         env.TELEGRAM_BOT_TOKEN,
         env.TELEGRAM_CHAT_ID,
-        reportPath,
-        `ORACLE daily fixtures — ${today} (${index.events.length} fixtures)`
+        result.path,
+        `ORACLE daily fixtures — ${today} (${result.fixtureCount} fixtures)`
       );
     }
   } catch (err) {
@@ -847,6 +839,18 @@ async function finalizeGoalsSelection(
     topPicksBooked: Boolean(topPicks.bookingCode),
     lotteryBooked: Boolean(lottery.bookingCode),
   });
+
+  // Persist the full selection so apps/web's /goals route can show it — the
+  // pipeline was previously worker -> Telegram/email only, zero web surface.
+  try {
+    await writeGoalsArtifact(selection, date, join(ROOT, ".tmp/goals"));
+  } catch (err) {
+    process.stderr.write(
+      `[goals] WARN: artifact write failed (non-fatal): ${
+        err instanceof Error ? err.message : String(err)
+      }\n`
+    );
+  }
 }
 
 /** The ONLY goals pipeline (2026-06-24 rewrite): independent of the main

@@ -18,13 +18,15 @@ import {
   formatPuntResult,
   loadEnv,
   markFulfilled,
+  readGoalsArtifact,
   readPuntState,
   runAnalysis,
+  runCommentBarInstruction,
   runPuntAnalysis,
 } from "@oracle/runtime";
 import type { StoragePort } from "@oracle/storage";
 import { GBrainAdapter } from "@oracle/storage";
-import { renderNotice, renderPage, renderPuntPage } from "./page.js";
+import { renderGoalsPage, renderNotice, renderPage, renderPuntPage } from "./page.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -56,7 +58,14 @@ const jsonRes = (status: number, obj: unknown): WebResponse => ({
 function parseBody(
   body: string,
   contentType: string
-): { query?: string; league?: string; list?: string; code?: string } {
+): {
+  query?: string;
+  league?: string;
+  list?: string;
+  code?: string;
+  date?: string;
+  instruction?: string;
+} {
   if (!body) return {};
   if (contentType.includes("application/json")) {
     try {
@@ -66,7 +75,14 @@ function parseBody(
     }
   }
   const params = new URLSearchParams(body);
-  const out: { query?: string; league?: string; list?: string; code?: string } = {};
+  const out: {
+    query?: string;
+    league?: string;
+    list?: string;
+    code?: string;
+    date?: string;
+    instruction?: string;
+  } = {};
   const q = params.get("query");
   if (q) out.query = q;
   const l = params.get("league");
@@ -75,6 +91,10 @@ function parseBody(
   if (list) out.list = list;
   const code = params.get("code");
   if (code) out.code = code;
+  const date = params.get("date");
+  if (date) out.date = date;
+  const instruction = params.get("instruction");
+  if (instruction) out.instruction = instruction;
   return out;
 }
 
@@ -132,6 +152,36 @@ export async function handleRequest(
     return html(200, renderPuntPage(readPuntState(ROOT), block));
   }
 
+  if (method === "POST" && urlPath === "/comment") {
+    const { date, instruction } = parseBody(body, contentType);
+    if (!date?.trim() || !instruction?.trim()) {
+      return html(400, renderNotice("Nothing to run", "Enter both a date and an instruction."));
+    }
+    const result = await runCommentBarInstruction(instruction.trim(), date.trim(), deps);
+    if (
+      result.action === "reanalyze_fixture" &&
+      result.understood &&
+      result.resultText.startsWith("<!DOCTYPE")
+    ) {
+      return html(200, result.resultText);
+    }
+    return html(200, renderPage(result.resultText));
+  }
+
+  if (method === "GET" && urlPath === "/goals") {
+    const date = new Date().toISOString().slice(0, 10);
+    const artifact = await readGoalsArtifact(date, join(ROOT, ".tmp/goals"));
+    return html(200, renderGoalsPage(date, artifact));
+  }
+
+  if (method === "GET" && urlPath.startsWith("/goals/")) {
+    const date = urlPath.slice("/goals/".length);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+      return html(400, renderNotice("Bad request", "Date must be YYYY-MM-DD."));
+    const artifact = await readGoalsArtifact(date, join(ROOT, ".tmp/goals"));
+    return html(200, renderGoalsPage(date, artifact));
+  }
+
   if (method === "GET" && urlPath.startsWith("/reports/")) {
     const date = urlPath.slice("/reports/".length);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
@@ -181,6 +231,7 @@ export async function handleRequest(
     const { reportHtml } = await runAnalysis(jobs, deps, {
       trigger: "manual",
       batchOptions: { rankingMode: deps.config.rankingMode },
+      includeFixtureEnrichment: true,
     });
     return html(200, reportHtml);
   }

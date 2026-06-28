@@ -126,13 +126,81 @@ describe("renderDailyFixtureReport", () => {
   });
 
   it("renders news rows when present, keyed by team slug", () => {
-    const newsByTeam = new Map([["a", [{ source: "perplexity", summary: "Key striker injured" }]]]);
+    const newsByTeam = new Map([
+      [
+        "a",
+        [
+          {
+            source: "perplexity",
+            summary: "Key striker injured",
+            rawJson: "{}",
+            scrapedAt: "2026-06-25T00:00:00Z",
+          },
+        ],
+      ],
+    ]);
     const html = renderDailyFixtureReport([event("A", "B")], "2026-06-25", {
       lineups: [],
       newsByTeam,
     });
     expect(html).toContain("Key striker injured");
     expect(html).toContain("perplexity");
+  });
+
+  it("renders the full raw scrape payload (rawJson) in a collapsible dropdown, not just the summary", () => {
+    const newsByTeam = new Map([
+      [
+        "a",
+        [
+          {
+            source: "perplexity",
+            summary: "Key striker injured",
+            rawJson: '{"detail":"full raw payload text"}',
+            scrapedAt: "2026-06-25T00:00:00Z",
+          },
+        ],
+      ],
+    ]);
+    const html = renderDailyFixtureReport([event("A", "B")], "2026-06-25", {
+      lineups: [],
+      newsByTeam,
+    });
+    expect(html).toContain("raw scrape");
+    expect(html).toContain("full raw payload text");
+    expect(html).toContain("<details");
+  });
+
+  it("renders every entry of the raw allMarkets catalogue, not just the typed odds families", () => {
+    const e = event("A", "B");
+    e.detail!.odds!.allMarkets = [
+      {
+        id: "999",
+        name: "Correct Score",
+        desc: null,
+        group: null,
+        specifier: null,
+        outcomes: [
+          { id: "1", desc: "2-1", odds: "8.5" },
+          { id: "2", desc: "0-0", odds: "9.0" },
+        ],
+      },
+    ];
+    const html = renderDailyFixtureReport([e], "2026-06-25", {
+      lineups: [],
+      newsByTeam: new Map(),
+    });
+    expect(html).toContain("Full markets catalogue (1)");
+    expect(html).toContain("Correct Score");
+    expect(html).toContain("2-1: 8.5");
+    expect(html).toContain("0-0: 9.0");
+  });
+
+  it("omits the markets dropdown entirely when allMarkets is absent", () => {
+    const html = renderDailyFixtureReport([event("A", "B")], "2026-06-25", {
+      lineups: [],
+      newsByTeam: new Map(),
+    });
+    expect(html).not.toContain("Full markets catalogue");
   });
 
   it("escapes HTML in team names", () => {
@@ -219,7 +287,9 @@ describe("buildNewsByTeam", () => {
         : []
     );
     const result = await buildNewsByTeam([event("A", "B")], "2026-06-25");
-    expect(result.get("a")).toEqual([{ source: "perplexity", summary: "news for A" }]);
+    expect(result.get("a")).toEqual([
+      { source: "perplexity", summary: "news for A", rawJson: "{}", scrapedAt: "" },
+    ]);
     expect(result.has("b")).toBe(false); // no rows returned for B — not added
   });
 

@@ -31,6 +31,8 @@ export {
   logPickDisagreement,
   validateSelection,
 } from "./decision/index.js";
+export type { MarketExecutorResult, MarketExecutorRiskParams } from "./decision/marketExecutor.js";
+export { runAllMarketsLlmExecutor } from "./decision/marketExecutor.js";
 export type { ExecutionResult } from "./execution/index.js";
 export { applyRankingMode, ExecutionEngine } from "./execution/index.js";
 export type { GbmLiveInputs, GbmModel } from "./gbm/index.js";
@@ -63,6 +65,8 @@ export {
 export type {
   AgentError,
   AgentErrorCode,
+  AllMarketEntry,
+  AllMarketOutcome,
   AnalysisRecord,
   ClvSourceQuality,
   DecisionContext,

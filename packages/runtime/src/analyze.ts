@@ -18,6 +18,7 @@ import type {
 import { ANALYSIS_SCHEMA_VERSION, RUN_MANIFEST_SCHEMA_VERSION, runBatch } from "@oracle/engine";
 import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS } from "@oracle/storage";
+import { findFixtureEnrichmentHtml, loadFixtureEnrichmentContext } from "./dailyFixtureReport.js";
 import { renderReport, writeReport } from "./report.js";
 import type { ResolveResult } from "./resolveFixtures.js";
 import { resolveRecords, resolveUnmatchedViaWebSearch } from "./resolveFixtures.js";
@@ -49,6 +50,12 @@ export interface AnalyzeOptions {
   writeReportToDisk?: boolean;
   /** Batch options forwarded to runBatch (rankingMode, marketWhitelist, onProgress, …). */
   batchOptions?: BatchOptions;
+  /** When true, the HTML report includes a per-fixture enrichment dropdown
+   *  (xG provenance, travel, motivation, completeness, lineups, news) sourced
+   *  from dailyFixtureReport.ts — same fields the Telegram daily report shows.
+   *  Off by default (worker/CLI reports are unaffected); apps/web's /analyze
+   *  route opts in so the web UI gets enrichment parity. */
+  includeFixtureEnrichment?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -183,7 +190,23 @@ export async function runAnalysis(
   }
 
   // Report
-  const reportHtml = renderReport(batch);
+  let enrichmentByFixture: Map<string, string> | undefined;
+  if (opts.includeFixtureEnrichment) {
+    try {
+      const ctx = await loadFixtureEnrichmentContext(batch.date);
+      if (ctx) {
+        enrichmentByFixture = new Map();
+        for (const j of batch.jobs) {
+          if (j.status !== "ok") continue;
+          const fixtureHtml = findFixtureEnrichmentHtml(j.home, j.away, ctx);
+          if (fixtureHtml) enrichmentByFixture.set(`${j.home}|${j.away}`, fixtureHtml);
+        }
+      }
+    } catch {
+      // Missing/unreadable SportyBet index for this date — cards render without enrichment.
+    }
+  }
+  const reportHtml = renderReport(batch, enrichmentByFixture);
   let reportPath: string | null = null;
   if (writeToDisk) reportPath = await writeReport(batch);
 

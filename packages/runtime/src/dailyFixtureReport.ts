@@ -10,12 +10,13 @@
  *  helpers for visual consistency with the engine-decision report. */
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { loadDailyNews, teamSlug } from "./dailyStore.js";
-import { findLineupSummary, type LineupSummary } from "./lineups.js";
+import { type DailyNewsRow, loadDailyNews, teamSlug } from "./dailyStore.js";
+import { findLineupSummary, type LineupSummary, loadLineupSummaries } from "./lineups.js";
 import { CSS, esc, pct } from "./report.js";
-import type { SportyBetEvent } from "./selectFixtures.js";
+import { loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
 import { dataCompleteness } from "./selectGoals.js";
 import { buildMotivation } from "./sportyBetStats.js";
+import { namesMatch } from "./teamNames.js";
 import { buildTravel } from "./travel.js";
 
 function line(label: string, value: string | null | undefined): string {
@@ -64,11 +65,48 @@ function renderOdds(event: SportyBetEvent): string {
   return parts.map((p) => line("Odds", p)).join("\n");
 }
 
-function renderFixtureRawData(
+/** Every raw SportyBet market this fixture carries (900+ on a liquid fixture) —
+ *  collapsed by default so the at-a-glance report stays readable, but nothing
+ *  is summarized or dropped: every market/outcome/odds triple is in there. */
+function renderAllMarkets(event: SportyBetEvent): string {
+  const markets = event.detail?.odds?.allMarkets;
+  if (!markets?.length) return "";
+  const rows = markets
+    .map((m) => {
+      const label = esc(m.desc || m.name || m.id);
+      const outs = (m.outcomes ?? [])
+        .map((o) => `${esc(o.desc ?? o.id)}: ${esc(o.odds ?? "?")}`)
+        .join(" | ");
+      return `<div class="raw-market-row">${label}${m.specifier ? ` <span class="raw-meta">(${esc(m.specifier)})</span>` : ""} — ${outs}</div>`;
+    })
+    .join("\n");
+  return `<details class="raw-details"><summary>Full markets catalogue (${markets.length})</summary>${rows}</details>`;
+}
+
+/** Full raw scrape payload per news source — the report's "summary" line above
+ *  this is an LLM-condensed digest; this dropdown carries the untouched
+ *  rawJson + scrapedAt so nothing the scraper captured is left out of the report. */
+function renderNewsRaw(label: string, rows: DailyNewsRow[]): string {
+  if (!rows.length) return "";
+  const blocks = rows
+    .map(
+      (r) =>
+        `<div class="raw-news-raw"><span class="raw-label">${esc(r.source)}</span> _(scraped ${esc(r.scrapedAt)})_<pre>${esc(r.rawJson)}</pre></div>`
+    )
+    .join("\n");
+  return `<details class="raw-details"><summary>${esc(label)} — raw scrape (${rows.length})</summary>${blocks}</details>`;
+}
+
+/** Renders the same enrichment block (xG provenance, travel, motivation,
+ *  completeness, lineups, news, full markets) used by the standalone daily
+ *  fixture report — exported so apps/web's /analyze report can append it per
+ *  fixture (see report.ts renderCard's `enrichment` param) without duplicating
+ *  any of the field-shaping logic. */
+export function renderFixtureRawData(
   event: SportyBetEvent,
   lineup: LineupSummary | undefined,
-  homeNews: { source: string; summary: string }[],
-  awayNews: { source: string; summary: string }[]
+  homeNews: DailyNewsRow[],
+  awayNews: DailyNewsRow[]
 ): string {
   const stats = event.detail?.stats;
   const form = stats?.form;
@@ -254,6 +292,9 @@ function renderFixtureRawData(
     awayNews.length
       ? awayNews.map((n) => line(`Away news (${n.source})`, n.summary)).join("\n")
       : line("Away news", "No news intel"),
+    renderNewsRaw("Home news", homeNews),
+    renderNewsRaw("Away news", awayNews),
+    renderAllMarkets(event),
   ];
 
   return sections.filter((s) => s.length > 0).join("\n");
@@ -262,8 +303,8 @@ function renderFixtureRawData(
 function renderFixtureBlock(
   event: SportyBetEvent,
   lineup: LineupSummary | undefined,
-  homeNews: { source: string; summary: string }[],
-  awayNews: { source: string; summary: string }[]
+  homeNews: DailyNewsRow[],
+  awayNews: DailyNewsRow[]
 ): string {
   return `
 <div class="raw-fixture">
@@ -278,14 +319,18 @@ const RAW_CSS = `
 .raw-meta { font-size: 0.72rem; color: #64748b; font-weight: 400; margin-left: 8px; }
 .raw-line { font-size: 0.78rem; color: #cbd5e1; margin-bottom: 3px; }
 .raw-label { color: #64748b; font-weight: 600; margin-right: 4px; }
+.raw-details { margin: 6px 0 3px; font-size: 0.76rem; color: #94a3b8; }
+.raw-details summary { cursor: pointer; color: #7dd3fc; font-weight: 600; }
+.raw-market-row { padding: 2px 0 2px 14px; border-bottom: 1px solid #1e293b; }
+.raw-news-raw pre { white-space: pre-wrap; word-break: break-word; background: #0f172a; padding: 6px; border-radius: 4px; margin: 4px 0 8px; }
 `;
 
 export interface DailyFixtureReportDeps {
   lineups: LineupSummary[];
-  /** Resolves a team's news rows (source/summary only — raw_json/scrapedAt
-   *  omitted from this plain-text report). Caller is responsible for sourcing
-   *  rows from loadDailyNews(date, teamSlug(team)) per side. */
-  newsByTeam: Map<string, { source: string; summary: string }[]>;
+  /** Full news rows (source/summary/rawJson/scrapedAt) per team, keyed by
+   *  teamSlug. Caller is responsible for sourcing rows from
+   *  loadDailyNews(date, teamSlug(team)) per side — see buildNewsByTeam(). */
+  newsByTeam: Map<string, DailyNewsRow[]>;
 }
 
 /** Builds a plain "every fixture today + its data" HTML report — no picks,
@@ -326,24 +371,22 @@ ${blocks}
 }
 
 /** Fetches news rows for every team across the day's fixtures, keyed by
- *  teamSlug, in one pass — avoids one loadDailyNews() call per fixture side. */
+ *  teamSlug, in one pass — avoids one loadDailyNews() call per fixture side.
+ *  Keeps the full row (including rawJson/scrapedAt) so the report's raw-scrape
+ *  dropdown has everything the scraper captured, not just the digest summary. */
 export async function buildNewsByTeam(
   events: SportyBetEvent[],
   date: string
-): Promise<Map<string, { source: string; summary: string }[]>> {
+): Promise<Map<string, DailyNewsRow[]>> {
   const slugs = new Set<string>();
   for (const e of events) {
     slugs.add(teamSlug(e.home));
     slugs.add(teamSlug(e.away));
   }
-  const byTeam = new Map<string, { source: string; summary: string }[]>();
+  const byTeam = new Map<string, DailyNewsRow[]>();
   for (const slug of slugs) {
     const rows = await loadDailyNews(date, slug);
-    if (rows?.length)
-      byTeam.set(
-        slug,
-        rows.map((r) => ({ source: r.source, summary: r.summary }))
-      );
+    if (rows?.length) byTeam.set(slug, rows);
   }
   return byTeam;
 }
@@ -367,4 +410,68 @@ export async function writeDailyFixtureReport(
   }
   await writeFile(outPath, html, "utf8");
   return outPath;
+}
+
+/** One-call generate-and-write for a given date — shared by the worker's cron/
+ *  back-online triggers AND the bot's on-demand /fixtures command, so both
+ *  paths produce an identical report from identical logic. Returns null when
+ *  SportyBet listed no fixtures for that date (nothing to report); never throws. */
+export async function generateAndWriteDailyFixtureReport(
+  date: string,
+  outDir: string
+): Promise<{ path: string; fixtureCount: number } | null> {
+  const index = await loadSportyBetIndex(date);
+  if (!index?.events.length) return null;
+  const [lineups, newsByTeam] = await Promise.all([
+    loadLineupSummaries(),
+    buildNewsByTeam(index.events, date),
+  ]);
+  const html = renderDailyFixtureReport(index.events, date, { lineups, newsByTeam });
+  const path = await writeDailyFixtureReport(html, date, outDir);
+  return { path, fixtureCount: index.events.length };
+}
+
+export interface FixtureEnrichmentContext {
+  events: SportyBetEvent[];
+  lineups: LineupSummary[];
+  newsByTeam: Map<string, DailyNewsRow[]>;
+}
+
+/** Loads everything findFixtureEnrichmentHtml needs for a date ONCE — the
+ *  SportyBet index, lineups, and news. Callers enriching many fixtures from
+ *  the same date (e.g. analyze.ts's per-batch enrichment) must load this once
+ *  and reuse it; loadSportyBetIndex() itself hits disk/DuckDB on every call
+ *  with no caching, so calling it per-fixture in a batch would reload the
+ *  same day's index N times. Returns null when SportyBet listed no fixtures
+ *  for that date (nothing to enrich with). */
+export async function loadFixtureEnrichmentContext(
+  date: string
+): Promise<FixtureEnrichmentContext | null> {
+  const index = await loadSportyBetIndex(date);
+  if (!index?.events.length) return null;
+  const [lineups, newsByTeam] = await Promise.all([
+    loadLineupSummaries(),
+    buildNewsByTeam(index.events, date),
+  ]);
+  return { events: index.events, lineups, newsByTeam };
+}
+
+/** Looks up one fixture's enrichment HTML (xG provenance, travel, motivation,
+ *  completeness, lineups, news, full markets) by team name within an
+ *  already-loaded FixtureEnrichmentContext — used by apps/web's /analyze
+ *  report to give each engine pick card the same enrichment fields the
+ *  Telegram daily report shows. Returns "" when the fixture isn't in the
+ *  context's events (no data to show) rather than throwing — never blocks
+ *  rendering the pick card itself. */
+export function findFixtureEnrichmentHtml(
+  home: string,
+  away: string,
+  ctx: FixtureEnrichmentContext
+): string {
+  const event = ctx.events.find((e) => namesMatch(home, e.home) && namesMatch(away, e.away));
+  if (!event) return "";
+  const lineup = findLineupSummary(ctx.lineups, event.home, event.away);
+  const homeNews = ctx.newsByTeam.get(teamSlug(event.home)) ?? [];
+  const awayNews = ctx.newsByTeam.get(teamSlug(event.away)) ?? [];
+  return renderFixtureRawData(event, lineup, homeNews, awayNews);
 }

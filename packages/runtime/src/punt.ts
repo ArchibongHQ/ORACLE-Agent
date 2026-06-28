@@ -11,7 +11,7 @@ import { fetchFixtureByName, geminiOddsGapFill } from "./fixtures.js";
 import { enrichWithH2H } from "./h2h.js";
 import { enrichWithLineups } from "./lineups.js";
 import { enrichWithNewsIntel } from "./newsIntel.js";
-import type { SportyBetEventDetail } from "./selectFixtures.js";
+import type { SportyBetEvent, SportyBetEventDetail } from "./selectFixtures.js";
 import { loadSportyBetIndex, sidecarKey } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
 
@@ -28,6 +28,10 @@ export type LegVerdict =
 export interface PuntLeg {
   raw: RawLeg;
   job: FixtureJob | null; // null ⇒ no coverage ⇒ pass-through
+  /** Matching SportyBet sidecar event, when one exists today — independent of
+   *  which path resolved `job` (odds-api/sidecar/Gemini). Advisory-only input
+   *  to the goals-opportunity mechanical scorer (Q4d); never gates a verdict. */
+  sidecarEvent?: SportyBetEvent;
 }
 
 export interface CounterLeg {
@@ -38,6 +42,18 @@ export interface CounterLeg {
   /** ORACLE's confidence in the chosen selection (0–1), when known. */
   oracleConfidence: number | null;
   note?: string;
+  /** Goals-opportunity mechanical pre-filter score (0-100+, see goalsPreFilter.ts)
+   *  for this fixture, when a sidecar event matched — advisory context only,
+   *  never used to filter/exclude a leg (Q4d). */
+  mechanicalScore?: number;
+  /** Sonnet/Claude screening rationale for this fixture's goals-opportunity
+   *  strength, when the screening pass ran successfully — advisory only (Q4d). */
+  sonnetVerdict?: string;
+  /** Low-scoring/AH-pivot safety note — set whenever ORACLE's regime detector
+   *  flags this fixture LOW_SCORING, regardless of which market was picked
+   *  (Q4d): explicit 0:0/Under-2.5 risk + the recommended AH line as a safer
+   *  alternative. */
+  ahPivotNote?: string;
 }
 
 // ── SportyBet raw market/outcome → ORACLE market category + side ────────────────
@@ -183,6 +199,14 @@ export async function loadedSlipToJobs(
 
   const out: PuntLeg[] = [];
   for (const raw of slip.legs) {
+    // Resolve the matching sidecar event for this leg, independent of which path
+    // ends up resolving `job` below — feeds the advisory mechanical/Sonnet
+    // goals-opportunity scoring in runPuntAnalysis (Q4d), never gates the verdict.
+    const legKey = sidecarKey(raw.home, raw.away);
+    const sidecarEvent: SportyBetEvent | undefined =
+      sidecar?.events.find((e) => sidecarKey(e.home, e.away) === legKey) ??
+      sidecar?.events.find((e) => nameMatches(e.home, raw.home) && nameMatches(e.away, raw.away));
+
     let job: FixtureJob | null = null;
     try {
       job = await fetchFixtureByName(
@@ -289,7 +313,7 @@ export async function loadedSlipToJobs(
       }
     }
 
-    out.push({ raw, job });
+    out.push({ raw, job, sidecarEvent });
   }
   return out;
 }
@@ -304,14 +328,27 @@ function findActionable(
   batch: BatchResult,
   home: string,
   away: string
-): { pick: PickRef; confidence: number; grade: string } | null {
+): { pick: PickRef; confidence: number; grade: string; ahPivotNote: string | null } | null {
   for (const j of batch.jobs as BatchJobResult[]) {
     if (j.status !== "ok") continue;
     if (!nameMatches(j.home, home) || !nameMatches(j.away, away)) continue;
+    // Q4d: surface the AH-pivot safety note whenever the regime detector flags
+    // this fixture LOW_SCORING — independent of which market ORACLE/the punter
+    // picked, this is a 0:0/Under-2.5 risk warning with a safer AH alternative.
+    const regimeRes = j.result?.lowScoreRegime as { regime?: string } | undefined;
+    const ahPivot = j.result?.ahPivot as
+      | { recommendation?: string; rationale?: string }
+      | null
+      | undefined;
+    const ahPivotNote =
+      regimeRes?.regime === "LOW_SCORING" && ahPivot
+        ? `Low-scoring regime — 0:0/Under-2.5 risk. Safer alternative: ${ahPivot.recommendation ?? "n/a"}${ahPivot.rationale ? ` (${ahPivot.rationale})` : ""}`
+        : null;
     return {
       pick: j.decision.primaryPick,
       confidence: j.decision.confidence,
       grade: j.decision.grade,
+      ahPivotNote,
     };
   }
   return null;
@@ -369,6 +406,7 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
             : oracle.grade === "MISSING_DATA"
               ? "ORACLE best pick matches (arbiter flagged missing data)"
               : undefined,
+        ahPivotNote: oracle.ahPivotNote ?? undefined,
       };
     }
 
@@ -398,6 +436,7 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
         pick: adjusted,
         oracleConfidence: oracle.confidence,
         note: `swapped ${his.market}/${his.side ?? "-"} → ${oracle.pick.market}/${oracle.pick.side ?? "-"}`,
+        ahPivotNote: oracle.ahPivotNote ?? undefined,
       };
     }
 
@@ -413,6 +452,7 @@ export function counterSlip(legs: PuntLeg[], batch: BatchResult): CounterLeg[] {
           : oracle.grade === "MISSING_DATA"
             ? `ORACLE arbiter flagged MISSING_DATA on this fixture — punter's pick kept`
             : `ORACLE edge ${(oracle.confidence - hisImplied).toFixed(3)} below ${ADJUST_MIN_CONFIDENCE_DELTA} threshold`,
+      ahPivotNote: oracle.ahPivotNote ?? undefined,
     };
   });
 }

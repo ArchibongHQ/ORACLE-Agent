@@ -1,6 +1,13 @@
 /** The ORACLE web landing page — a Google-search-styled fixture input.
  *  Zero-dep, all CSS/JS inline (matches the report.ts house style). */
-import { SPORT_TO_LEAGUE } from "@oracle/runtime";
+import type { GoalsArtifact, GoalsLeg } from "@oracle/runtime";
+import {
+  GOALS_RICH_LEAGUES,
+  ORACLE_PRIORITY_LEAGUES,
+  pct,
+  REPORT_CSS,
+  SPORT_TO_LEAGUE,
+} from "@oracle/runtime";
 
 const PAGE_CSS = `
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -46,23 +53,71 @@ fileInput.addEventListener('change', async () => {
 form.addEventListener('submit', () => { document.body.classList.add('loading'); });
 `;
 
-/** Build the <option> list for the league hint dropdown. */
+/** Build the <option> list for the league hint dropdown. Union of all three
+ *  league sets the runtime knows about — this is a UI autocomplete hint only,
+ *  not a fixture-eligibility filter, so widening it is purely additive. */
 function leagueOptions(): string {
-  const leagues = Array.from(new Set(Object.values(SPORT_TO_LEAGUE))).sort();
+  const leagues = Array.from(
+    new Set([...Object.values(SPORT_TO_LEAGUE), ...ORACLE_PRIORITY_LEAGUES, ...GOALS_RICH_LEAGUES])
+  ).sort();
   return [
     '<option value="">Any league</option>',
     ...leagues.map((l) => `<option value="${l}">${l}</option>`),
   ].join("");
 }
 
-export function renderPage(): string {
+/** Comment-bar section — lets a user point at a date's already-generated
+ *  daily fixture report and type a plain-English instruction (summarize,
+ *  filter by league, re-analyze a fixture). The LLM only classifies the
+ *  instruction; runCommentBarInstruction() executes it deterministically —
+ *  see commentBarOrchestrator.ts. `resultText` (if present) is the prior
+ *  instruction's output, rendered above the form. */
+function renderCommentBar(resultText?: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const result = resultText ? `<div class="comment-result">${esc(resultText)}</div>` : "";
+  return `
+<div class="comment-bar">
+  <div class="toggle">
+    <button class="btn-secondary" type="button" id="toggle-comment">▾ point at a fixture report + comment</button>
+  </div>
+  <div class="comment-area" id="comment-area" hidden>
+    <form method="POST" action="/comment">
+      <div class="row">
+        <input type="date" name="date" value="${today}">
+        <input type="text" name="instruction" placeholder="e.g. summarize today's fixtures, or only show Premier League" style="flex:1;min-width:260px">
+        <button class="btn" type="submit">Run</button>
+      </div>
+      <div class="hint">References the daily fixture report already generated for that date — does not re-scrape.</div>
+    </form>
+  </div>
+  ${result}
+</div>`;
+}
+
+const COMMENT_CSS = `
+.comment-bar { width: 100%; max-width: 640px; margin-top: 18px; }
+.comment-area { margin-top: 8px; }
+.comment-area[hidden] { display: none; }
+.comment-area input[type=date] { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px 12px; color: #e2e8f0; font-size: 0.85rem; }
+.comment-area input[type=text] { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 10px 14px; color: #f1f5f9; font-size: 0.85rem; outline: none; }
+.comment-area input[type=text]:focus { border-color: #3b82f6; }
+.comment-result { margin-top: 14px; background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 14px; white-space: pre-wrap; font-size: 0.82rem; color: #e2e8f0; max-height: 480px; overflow: auto; }
+`;
+
+const COMMENT_JS = `
+const ctoggle = document.getElementById('toggle-comment');
+const carea = document.getElementById('comment-area');
+if (ctoggle) ctoggle.addEventListener('click', () => { carea.hidden = !carea.hidden; });
+`;
+
+export function renderPage(commentResultText?: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ORACLE</title>
-<style>${PAGE_CSS}</style>
+<style>${PAGE_CSS}${COMMENT_CSS}</style>
 </head>
 <body>
 <div class="logo">OR<span>A</span>CLE</div>
@@ -86,7 +141,8 @@ export function renderPage(): string {
   <div class="spinner"></div>
 </form>
 <div class="hint" style="margin-top:28px">Type a single fixture, or paste/upload a list. Odds are pulled live from the Odds API.</div>
-<script>${PAGE_JS}</script>
+${renderCommentBar(commentResultText)}
+<script>${PAGE_JS}${COMMENT_JS}</script>
 </body>
 </html>`;
 }
@@ -149,4 +205,107 @@ export function renderNotice(title: string, message: string): string {
 <style>body{font-family:-apple-system,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:20px;text-align:center}
 h1{color:#f1f5f9;margin-bottom:12px}p{color:#94a3b8;max-width:520px;margin-bottom:24px}a{color:#3b82f6;text-decoration:none}</style>
 </head><body><h1>${t}</h1><p>${m}</p><a href="/">← back to search</a></body></html>`;
+}
+
+const GOALS_CSS = `
+.slip { margin-bottom: 28px; }
+.slip-title { font-size: 1rem; font-weight: 700; color: #f1f5f9; margin-bottom: 4px; }
+.slip-meta { font-size: 0.72rem; color: #64748b; margin-bottom: 10px; }
+.leg-table { width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; border: 1px solid #334155; }
+.leg-table th { text-align: left; font-size: 0.65rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; padding: 8px 10px; border-bottom: 1px solid #334155; }
+.leg-table td { font-size: 0.8rem; color: #e2e8f0; padding: 7px 10px; border-bottom: 1px solid #1e293b; }
+.leg-table tr:last-child td { border-bottom: none; }
+`;
+
+function renderLegRows(legs: GoalsLeg[]): string {
+  if (!legs.length)
+    return `<tr><td colspan="6" style="color:#64748b">No qualifying legs.</td></tr>`;
+  return legs
+    .map(
+      (l) => `<tr>
+  <td>${esc(l.home)} vs ${esc(l.away)}</td>
+  <td>${esc(l.league)}</td>
+  <td>${esc(l.market)} — ${esc(l.side)}</td>
+  <td>${l.odds.toFixed(2)}</td>
+  <td>${pct(l.mp)}</td>
+  <td>${pct(l.edge)}</td>
+</tr>`
+    )
+    .join("\n");
+}
+
+function renderSlip(
+  title: string,
+  legs: GoalsLeg[],
+  combinedProb: number | undefined,
+  combinedOdds: number | undefined
+): string {
+  const meta =
+    combinedProb !== undefined && combinedOdds !== undefined
+      ? `${legs.length} leg(s) · combined prob ${pct(combinedProb)} · combined odds ${combinedOdds.toFixed(2)}`
+      : `${legs.length} leg(s)`;
+  return `
+<div class="slip">
+  <div class="slip-title">${esc(title)}</div>
+  <div class="slip-meta">${meta}</div>
+  <table class="leg-table">
+    <thead><tr><th>Fixture</th><th>League</th><th>Market</th><th>Odds</th><th>Model prob</th><th>Edge</th></tr></thead>
+    <tbody>${renderLegRows(legs)}</tbody>
+  </table>
+</div>`;
+}
+
+/** Renders the daily goals-ACCA selection (top picks / 39-leg lottery /
+ *  mini-ACCA / Output B / Output C) — previously worker-> Telegram/email
+ *  only, now also visible on the web. `artifact` is null when no run has
+ *  happened yet for the requested date. */
+export function renderGoalsPage(date: string, artifact: GoalsArtifact | null): string {
+  const body = !artifact
+    ? `<p class="hint" style="margin-top:40px">No goals-ACCA run found for ${esc(date)} yet.</p>`
+    : [
+        renderSlip(
+          "Top Picks",
+          artifact.selection.shortSlipLegs,
+          artifact.selection.shortSlipCombinedProb,
+          artifact.selection.shortSlipCombinedOdds
+        ),
+        renderSlip(
+          "39-Leg Lottery",
+          artifact.selection.legs,
+          artifact.selection.combinedProb,
+          artifact.selection.combinedOdds
+        ),
+        renderSlip(
+          "Mini-ACCA",
+          artifact.selection.miniAccaLegs,
+          artifact.selection.miniAccaCombinedProb,
+          artifact.selection.miniAccaCombinedOdds
+        ),
+        renderSlip("Output B (odds ≥ 4.00)", artifact.selection.outputBLegs, undefined, undefined),
+        renderSlip(
+          "Output C (2.50 ≤ odds < 4.00)",
+          artifact.selection.outputCLegs,
+          undefined,
+          undefined
+        ),
+      ].join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ORACLE — Goals ACCA ${esc(date)}</title>
+<style>${REPORT_CSS}${GOALS_CSS}</style>
+</head>
+<body>
+<h1>ORACLE Goals ACCA — ${esc(date)}</h1>
+<div class="summary">
+  <div class="stat"><span class="stat-label">Date</span><span class="stat-val">${esc(date)}</span></div>
+  ${artifact ? `<div class="stat"><span class="stat-label">Analysed</span><span class="stat-val">${artifact.selection.analysed}</span></div>` : ""}
+  ${artifact ? `<div class="stat"><span class="stat-label">Generated</span><span class="stat-val">${esc(artifact.generatedAt.slice(0, 16).replace("T", " "))}</span></div>` : ""}
+</div>
+${body}
+</body>
+</html>`;
 }

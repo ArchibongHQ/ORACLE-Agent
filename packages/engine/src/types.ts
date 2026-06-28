@@ -81,6 +81,28 @@ export interface PickRef {
   stake?: number; // Kelly fraction, 0–1
 }
 
+/** One outcome of a raw SportyBet allMarkets entry (tools/scrape_fixtures.py's
+ *  _parse_all_markets) — verbatim id/desc/odds straight from the API. */
+export interface AllMarketOutcome {
+  id: string;
+  desc?: string | null;
+  odds?: string | null;
+}
+
+/** One raw SportyBet market entry (900+ per liquid fixture). Generic capture of
+ *  every market beyond the ~9 families scanMarkets() prices syntactically —
+ *  shared between the deterministic generic combo-market pricer
+ *  (execution/index.ts) and the LLM market-executor (decision/marketExecutor.ts),
+ *  both of which need the exact same raw shape. */
+export interface AllMarketEntry {
+  id: string;
+  name?: string | null;
+  desc?: string | null;
+  group?: string | null;
+  specifier?: string | null;
+  outcomes: AllMarketOutcome[];
+}
+
 /** An EV-positive market candidate surfaced by scanMarkets.
  *  cat/label are the canonical JSX field names; market/side/modelProb are backward-compat aliases. */
 export interface EVMarket {
@@ -127,8 +149,6 @@ export interface OracleConfig {
   // Feature flags (Phase 1+, all default false/undefined)
   usePiRatingsCanonical?: boolean;
   enableCalibratedZip?: boolean;
-  enableLowScoreRegime?: boolean;
-  enableAhPivot?: boolean;
   quarantineMarketVelocity?: boolean;
   enableSoftmaxBlend?: boolean;
   xgPrimaryWeight?: number; // default 0.40
@@ -169,6 +189,16 @@ export interface OracleConfig {
   isVps?: boolean; // ORACLE_IS_VPS=true or systemd-detect-virt detects VM
   hasNvidiaGpu?: boolean; // nvidia-smi available and returned a GPU name
   enableAutoResearch?: boolean; // ORACLE_AUTORESEARCH_ENABLED=true + GPU/VPS required
+  // All-markets LLM execution tier (decision/marketExecutor.ts) — default OFF.
+  // When on, an LLM agent (local Claude Code CLI) reasons over the FULL raw
+  // allMarkets catalogue (900+ entries on a liquid fixture) plus the engine's
+  // own parameters for every llmEligible fixture, REPLACING the eligibleBets-
+  // constrained decide() cascade rather than augmenting it — per owner
+  // instruction, no market family is privileged over any other for consideration.
+  // Concurrency is hardware-aware locally (computeMarketExecutorConcurrency) and
+  // scales to ~1 agent per fixture on VPS, where it also ignores costCeilingUsd
+  // (uncapped spend on VPS is an explicit owner choice, not an oversight).
+  enableLlmMarketExecutor?: boolean;
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
@@ -313,6 +343,11 @@ export interface DecisionContext {
    *  by the arbiter prompt builder to give it raw data alongside the existing
    *  distilled softContext prose. */
   rawStatsBlock?: Record<string, unknown>;
+  /** Raw SportyBet allMarkets catalogue (900+ entries on a liquid fixture) —
+   *  passthrough from fetched.sportyBetOdds.allMarkets. Consumed by the
+   *  all-markets LLM executor tier (decision/marketExecutor.ts) when
+   *  config.enableLlmMarketExecutor is on; ignored otherwise. */
+  allMarkets?: AllMarketEntry[];
 }
 
 // ── §11A Agent Ops Contract ────────────────────────────────────────────────────

@@ -92,6 +92,8 @@ function scanUserProfilesForPython(): string | undefined {
 const PYTHON_BIN = resolvePythonBin();
 
 // ── Odds API sport → ORACLE league name ──────────────────────────────────────
+// This is the Odds-API pricing map (sport key → league display name) — it does
+// NOT gate fixture eligibility. Fixture selection never filters by league.
 
 export const SPORT_TO_LEAGUE: Record<string, string> = {
   // European leagues (season Apr–May, off Jun–Jul)
