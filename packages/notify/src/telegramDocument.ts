@@ -45,8 +45,12 @@ export async function sendTelegramDocument(
         fileName,
         fileBuf
       );
-    } catch {
-      /* best-effort — a report-attachment failure must never block the run */
+    } catch (err) {
+      // best-effort — a report-attachment failure must never block the run, but it
+      // must be visible in logs instead of vanishing silently.
+      process.stderr.write(
+        `[telegram-document] send failed — ${err instanceof Error ? err.message : String(err)}\n`
+      );
     }
   }
 }
@@ -89,8 +93,20 @@ function postMultipartViaHttps(
         timeout: 30_000,
       },
       (res) => {
-        res.on("data", () => {});
-        res.on("end", () => resolve());
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          const status = res.statusCode ?? 0;
+          if (status >= 200 && status < 300) {
+            resolve();
+          } else {
+            reject(
+              new Error(
+                `Telegram sendDocument failed: ${status} ${Buffer.concat(chunks).toString("utf8")}`
+              )
+            );
+          }
+        });
       }
     );
     req.on("error", reject);
