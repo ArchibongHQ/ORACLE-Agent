@@ -1097,6 +1097,11 @@ def _parse_combo_markets(markets_data: dict) -> dict:
         "1x2_btts": None, "ou_btts": {}, "1x2_ou": {},
     }
 
+    def _line_key(spec: Optional[str]) -> Optional[str]:
+        if not spec or "total=" not in spec:
+            return None
+        return spec.split("total=", 1)[-1].strip()
+
     for market in markets_data.get("markets") or []:
         mid = str(market.get("id", ""))
         spec = market.get("specifier")
@@ -1112,7 +1117,7 @@ def _parse_combo_markets(markets_data: dict) -> dict:
                 "away_yes": by_id.get("86"), "away_no": by_id.get("88"),
             }
         elif mid == "37":
-            line = spec.split("total=", 1)[-1].strip() if spec and "total=" in spec else None
+            line = _line_key(spec)
             if line:
                 result["1x2_ou"][line] = {  # type: ignore[index]
                     "home_under": by_id.get("794"), "home_over": by_id.get("796"),
@@ -1120,7 +1125,7 @@ def _parse_combo_markets(markets_data: dict) -> dict:
                     "away_under": by_id.get("802"), "away_over": by_id.get("804"),
                 }
         elif mid == "36":
-            line = spec.split("total=", 1)[-1].strip() if spec and "total=" in spec else None
+            line = _line_key(spec)
             if line:
                 cell: dict[str, Optional[str]] = {}
                 for o in outcomes:

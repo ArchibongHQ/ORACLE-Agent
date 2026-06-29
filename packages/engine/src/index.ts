@@ -92,6 +92,7 @@ export type {
   OracleConfig,
   Outcome,
   PickRef,
+  PickRefMarket,
   RankingMode,
   Regime,
   ResolutionRecord,
