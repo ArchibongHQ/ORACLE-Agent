@@ -4,7 +4,13 @@
  *  no Playwright, no I/O beyond fetchFixtureByName (which is cache-first). */
 
 import type { LoadedSlip, RawLeg } from "@oracle/booking";
-import type { BatchJobResult, BatchResult, FixtureJob, PickRef } from "@oracle/engine";
+import type {
+  BatchJobResult,
+  BatchResult,
+  FixtureJob,
+  PickRef,
+  SoftContextItem,
+} from "@oracle/engine";
 import type { ActionablePick } from "@oracle/notify";
 import type { StoragePort } from "@oracle/storage";
 import { fetchFixtureByName, geminiOddsGapFill } from "./fixtures.js";
@@ -14,6 +20,8 @@ import { enrichWithNewsIntel } from "./newsIntel.js";
 import type { SportyBetEvent, SportyBetEventDetail } from "./selectFixtures.js";
 import { loadSportyBetIndex, sidecarKey } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
+import { buildMotivation, buildStatsOverride, buildStatsSoftContext } from "./sportyBetStats.js";
+import { buildTravel } from "./travel.js";
 
 /** Minimum confidence margin by which ORACLE must beat the punter's implied edge to override
  *  his pick. Tunable in one place. 0.05 = ORACLE needs ≥5 pts more model confidence. */
@@ -159,12 +167,35 @@ function jobFromSidecar(
   const flat = flattenSidecarOdds(detail);
   const hasOdds = flat.home !== undefined && flat.away !== undefined;
 
+  // Mirror the main pipeline's sidecar wiring (fixtures.ts injectSidecarOdds): the
+  // engine xH/xA/SoS/rest override, the LLM soft-context, travel + standings
+  // motivation, and the raw-stats passthrough the Opus arbiter reads at STEP 0.
+  // Previously punt legs reached the engine with NONE of this — a bare odds job —
+  // so a punt analysis ignored every scraped stat. Fixed for parity across paths.
+  const statsOverride = buildStatsOverride(detail, league);
+  const statsContext = buildStatsSoftContext(detail);
+  const travel = buildTravel(raw.home, raw.away, { neutralVenue: league === "FIFA World Cup" });
+  const motivation = buildMotivation(detail);
+  const extraSoft: SoftContextItem[] = [];
+  if (travel.soft) extraSoft.push(travel.soft);
+  if (motivation.soft) extraSoft.push(motivation.soft);
+  const mergedSoft = [...statsContext, ...extraSoft];
+
   return {
     home: raw.home,
     away: raw.away,
     league,
     kickoff,
     state: {
+      telemetry: {
+        ...travel.telemetry,
+        ...motivation.telemetry,
+        ...statsOverride,
+        ...(mergedSoft.length ? { softContext: mergedSoft } : {}),
+        ...(detail.stats
+          ? { rawStatsBlock: detail.stats as unknown as Record<string, unknown> }
+          : {}),
+      },
       pipeline: {
         fetched: {
           ...(hasOdds ? { odds: flat } : {}),

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SportyBetEventDetail } from "../src/selectFixtures.js";
-import { buildStatsOverride, buildStatsSoftContext } from "../src/sportyBetStats.js";
+import {
+  buildStatsOverride,
+  buildStatsSoftContext,
+  goalRateNudge,
+  leaguePrior,
+} from "../src/sportyBetStats.js";
 
 function detail(stats: SportyBetEventDetail["stats"]): SportyBetEventDetail {
   return { eventId: "test", odds: null, stats, statscoverage: null };
@@ -154,6 +159,24 @@ describe("buildStatsSoftContext", () => {
     expect(items).toEqual([]);
   });
 
+  it("appends H2H match-by-match results to the H2H line", () => {
+    const d = detail({
+      h2h: {
+        total: 3,
+        home_wins: 2,
+        away_wins: 0,
+        draws: 1,
+        matches: [
+          { home_goals: 2, away_goals: 0, winner: "home" },
+          { home_goals: 1, away_goals: 1, winner: "draw" },
+          { home_goals: 3, away_goals: 1, winner: "home" },
+        ],
+      },
+    });
+    const text = buildStatsSoftContext(d)[0]!.text;
+    expect(text).toContain("recent results 2-0, 1-1, 3-1");
+  });
+
   it("renders possessionValue and recentCorners blocks when present", () => {
     const d = detail({
       possessionValue: {
@@ -181,5 +204,61 @@ describe("buildStatsSoftContext", () => {
     expect(text).toContain("6 SoT");
     expect(text).toContain("53% poss");
     expect(text).toContain("Recent corners (last 5) — Home: 5.4 | Away: 3.2");
+  });
+});
+
+describe("goalRateNudge", () => {
+  it("returns 1.0 (no-op) when no over/under or BTTS signal is present", () => {
+    expect(goalRateNudge(detail({}), "home")).toBe(1.0);
+    expect(goalRateNudge(undefined, "home")).toBe(1.0);
+  });
+
+  it("nudges up for a high-scoring profile and down for a low one, clamped to [0.9,1.1]", () => {
+    const high = detail({
+      overunder: { home: { over25_pct: 0.9 } },
+      scoringConceding: { home: { btts_rate: 0.9 } },
+    });
+    const low = detail({
+      overunder: { home: { over25_pct: 0.1 } },
+      scoringConceding: { home: { btts_rate: 0.1 } },
+    });
+    const up = goalRateNudge(high, "home");
+    const down = goalRateNudge(low, "home");
+    expect(up).toBeGreaterThan(1.0);
+    expect(up).toBeLessThanOrEqual(1.1);
+    expect(down).toBeLessThan(1.0);
+    expect(down).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it("never exceeds the [0.9,1.1] clamp even at extreme inputs", () => {
+    const extreme = detail({
+      overunder: { home: { over25_pct: 1 } },
+      scoringConceding: { home: { btts_rate: 1 } },
+    });
+    expect(goalRateNudge(extreme, "home")).toBe(1.1);
+  });
+});
+
+describe("leaguePrior", () => {
+  it("uses the researched table for a known league", () => {
+    expect(leaguePrior("Premier League")).toEqual({ homeAvg: 1.55, awayAvg: 1.18 });
+  });
+
+  it("derives a prior from the standings table for an uncovered league", () => {
+    // Uncovered league name → fall through to standings-derived (gf/played, ga/played).
+    const d = detail({
+      standings: {
+        home: { gf: 30, ga: 20, played: 14 }, // 2.14 scored, 1.43 conceded
+        away: { gf: 14, ga: 24, played: 14 }, // 1.0 scored, 1.71 conceded
+      },
+    });
+    const prior = leaguePrior("Faroe Islands Premier League", d);
+    // homeAvg ≈ (2.14 + 1.71)/2 ≈ 1.93 ; awayAvg ≈ (1.0 + 1.43)/2 ≈ 1.21
+    expect(prior.homeAvg).toBeCloseTo(1.93, 1);
+    expect(prior.awayAvg).toBeCloseTo(1.21, 1);
+  });
+
+  it("falls back to Default when neither table nor standings can resolve", () => {
+    expect(leaguePrior("Some Unknown League", detail({}))).toEqual({ homeAvg: 1.5, awayAvg: 1.2 });
   });
 });
