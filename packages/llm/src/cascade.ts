@@ -42,17 +42,21 @@ export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 /** OpenRouter model IDs — Tier 2 (paid) and Tier 3 (free).
  *  Cascade order per owner directive 2026-06-29:
- *  Claude (primary) → GLM-5.2 → GLM-5.1 → DeepSeek → Kimi-2.7 → GPT → Qwen3 → Minimax-M3
+ *  Claude (primary) → GLM-5.2 → GLM-5.1 → DeepSeek → Kimi-K2 → GPT → Qwen3 → Minimax-M3
  *  then free tier: GPT-OSS-120B → Nemotron → Qwen3-Next 80B → etc. */
 export const OPENROUTER_MODELS = {
   // ── Tier 2 — paid frontier models ────────────────────────────────────────
   GLM_5_2: "z-ai/glm-5.2", // 744B MoE, 1M ctx — primary OR model
   GLM_5_1: "z-ai/glm-5.1", // GLM-5.2 internal fallback
-  DEEPSEEK_R1: "deepseek/deepseek-r1", // DeepSeek R1 reasoning model
-  KIMI_K2_7: "moonshotai/kimi-k2", // Kimi K2.7 (verify slug on openrouter.ai/models)
-  GPT_4O: "openai/gpt-4o", // GPT-4o (verify slug on openrouter.ai/models)
+  DEEPSEEK_R1: "deepseek/deepseek-r1", // DeepSeek R1 reasoning model — verified 2026-06-29
+  // Owner asked for "Kimi-2.7"; verified 2026-06-29 there is no general-purpose
+  // kimi-k2.7 slug — only the original kimi-k2 (general chat/JSON, no forced
+  // extended thinking) and kimi-k2.7-code (coding-specialized, always-thinking,
+  // risks the 20-60s call-site timeouts). Owner chose the original general slug.
+  KIMI_K2: "moonshotai/kimi-k2",
+  GPT_4O: "openai/gpt-4o", // verified 2026-06-29 on openrouter.ai/models
   QWEN3_235B_THINKING: "qwen/qwen3-235b-a22b-thinking-2507", // Qwen3 235B — reasoning, near-frontier
-  MINIMAX_M3: "minimax/minimax-m3", // Minimax M3 (verify slug on openrouter.ai/models)
+  MINIMAX_M3: "minimax/minimax-m3", // verified 2026-06-29 on openrouter.ai/models
   MIMO_V2_5_PRO: "xiaomi/mimo-v2.5-pro", // beats Claude Opus on SWE-bench Pro
   QWEN3_CODER_NEXT: "qwen/qwen3-coder-next", // SWE-bench Verified >70%, 80B MoE
   // ── Tier 3 — free (:free variants) ───────────────────────────────────────
