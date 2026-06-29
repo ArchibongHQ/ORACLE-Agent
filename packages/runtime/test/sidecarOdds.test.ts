@@ -149,6 +149,68 @@ describe("flattenSidecarOdds — Asian Handicap", () => {
   });
 });
 
+describe("flattenSidecarOdds — first-half exotics", () => {
+  it("flattens ht_ou lines 0.5/1.5/2.5 into fh_over_*/fh_under_*", () => {
+    const flat = flattenSidecarOdds(
+      detail({
+        half: {
+          ht_ou: {
+            "0.5": { over: 1.25, under: 3.8 },
+            "1.5": { over: 2.4, under: 1.55 },
+            "2.5": { over: 5.0, under: 1.15 },
+          },
+        },
+      })
+    );
+    expect(flat.fh_over_0_5).toBe(1.25);
+    expect(flat.fh_under_0_5).toBe(3.8);
+    expect(flat.fh_over_1_5).toBe(2.4);
+    expect(flat.fh_under_1_5).toBe(1.55);
+    expect(flat.fh_over_2_5).toBe(5.0);
+    expect(flat.fh_under_2_5).toBe(1.15);
+  });
+
+  it("flattens ht_team_ou 0.5 over into fh_home_over_0_5 / fh_away_over_0_5", () => {
+    const flat = flattenSidecarOdds(
+      detail({
+        half: {
+          ht_team_ou: {
+            home: { "0.5": { over: 1.7, under: 2.0 } },
+            away: { "0.5": { over: 1.9, under: 1.8 } },
+          },
+        },
+      })
+    );
+    expect(flat.fh_home_over_0_5).toBe(1.7);
+    expect(flat.fh_away_over_0_5).toBe(1.9);
+  });
+
+  it("flattens win_either_half yes prices into win_either_half_h / _a", () => {
+    const flat = flattenSidecarOdds(
+      detail({
+        half: {
+          win_either_half: {
+            home: { yes: 1.3, no: 3.2 },
+            away: { yes: 1.5, no: 2.5 },
+          },
+        },
+      })
+    );
+    expect(flat.win_either_half_h).toBe(1.3);
+    expect(flat.win_either_half_a).toBe(1.5);
+  });
+
+  it("omits fh_* keys for unsourced markets and invalid odds", () => {
+    const flat = flattenSidecarOdds(
+      detail({ half: { ht_ou: { "1.5": { over: 1.0, under: 1.55 } } } })
+    );
+    expect(flat.fh_over_1_5).toBeUndefined(); // 1.0 rejected by toNum
+    expect(flat.fh_under_1_5).toBe(1.55);
+    expect(flat.fh_draw).toBeUndefined(); // no scraper source — never set
+    expect(flat.fh_home_win).toBeUndefined();
+  });
+});
+
 describe("flattenSidecarOdds — empty / null odds", () => {
   it("returns empty object when odds block is null", () => {
     const flat = flattenSidecarOdds(detail({}));
