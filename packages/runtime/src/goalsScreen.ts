@@ -20,7 +20,7 @@ import { callClaudeCode } from "@oracle/llm";
 import type { GoalsPreFilterResult } from "./goalsPreFilter.js";
 
 export const DEFAULT_SCREEN_BATCH_SIZE = 100;
-const REQUEST_TIMEOUT_MS = 25_000;
+const REQUEST_TIMEOUT_MS = 60_000; // raised from 25s: BATCH_SIZE=100 prompts are ~10x larger
 
 export interface GoalsScreenResult {
   /** Index into the input candidates array. */

@@ -1,9 +1,9 @@
-/** Mechanical goals-opportunity pre-filter — stage 1 of the goals-discovery
- *  funnel (mechanical filter → Sonnet screen → Poisson engine → Opus arbiter →
- *  top-N cut). Cuts the full daily SportyBet pool (potentially 1000+ fixtures)
- *  down to a bounded candidate pool (~100-150) before the costlier Sonnet
- *  screening pass runs — same cost-bounding shape as FrugalGPT-style LLM
- *  cascading: cheap mechanical filter first, LLM only on the survivors.
+/** Mechanical edge-opportunity pre-filter — stage 1 of the full-market discovery
+ *  funnel (mechanical filter → LLM screen → Poisson engine → Opus arbiter →
+ *  top-N cut). Scores and ranks the full daily SportyBet pool (potentially 1000+
+ *  fixtures) by goals/edge potential; the LLM screen then runs over the top-1000
+ *  ranked fixtures. Same cost-bounding shape as FrugalGPT-style LLM cascading:
+ *  cheap mechanical filter first, LLM only on survivors.
  *
  *  Pure, synchronous, no I/O — same style as predictabilityScore() in
  *  selectFixtures.ts. Never excludes a fixture for lacking data; low/no-data
