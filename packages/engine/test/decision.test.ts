@@ -599,6 +599,52 @@ describe("decide — final arbiter (opt-in)", () => {
     vi.doUnmock("@oracle/llm");
   });
 
+  it("renders an array nested two levels deep (h2h.matches) as readable text, not [object Object]", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const draftResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.7,
+      rationale: "Claude Opus draft.",
+      rejectedAndWhy: [],
+    };
+    const arbiterResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.72,
+      grade: "STRONG",
+      rationale: "(a) RATIFY",
+      rejectedAndWhy: [],
+    };
+    const callClaudeCode = vi.fn().mockResolvedValue(JSON.stringify(arbiterResponse));
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      callClaude: vi.fn().mockResolvedValue(JSON.stringify(draftResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+
+    const ctxWithH2hMatches: DecisionContext = {
+      ...BASE_CTX,
+      rawStatsBlock: {
+        h2h: {
+          total: 3,
+          home_wins: 2,
+          matches: [
+            { home_goals: 2, away_goals: 0, winner: "home" },
+            { home_goals: 1, away_goals: 1, winner: "draw" },
+          ],
+        },
+      },
+    };
+    await decide([makeMarket()], ctxWithH2hMatches, { claudeApiKey: "ck" });
+
+    const prompt = callClaudeCode.mock.calls[1]?.[0] as string;
+    expect(prompt).toContain("home_goals=2");
+    expect(prompt).toContain("away_goals=0");
+    expect(prompt).toContain("winner=draw");
+    expect(prompt).not.toContain("[object Object]");
+    vi.doUnmock("@oracle/llm");
+  });
+
   it("renders STEP 0 as '(none supplied)' when rawStatsBlock is absent", async () => {
     process.env.ORACLE_LOCAL_DECISION = "true";
     const draftResponse: DecisionOutput = {

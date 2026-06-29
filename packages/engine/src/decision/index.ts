@@ -166,6 +166,22 @@ const ARBITER_TIMEOUT_MS = 45_000;
  *  since rawStatsBlock mirrors @oracle/runtime's SportyBetStats shape (form/
  *  standings/goals/h2h/xg/overunder/congestion/possessionValue), every
  *  top-level key of which is either a flat scalar/array or a {home,away} pair. */
+/** Inline-renders a nested value (object, array, or array-of-objects) for the
+ *  one-level-deep "side" slots below — e.g. h2h.matches is an array of match
+ *  objects nested inside the h2h object, two levels deep, so the rendering
+ *  itself must recurse rather than assume "side" values bottom out at scalars. */
+function renderInline(v: unknown): string {
+  if (v == null) return "";
+  if (Array.isArray(v)) return v.map(renderInline).join("; ");
+  if (typeof v === "object") {
+    return Object.entries(v as Record<string, unknown>)
+      .filter(([, vv]) => vv != null)
+      .map(([k, vv]) => `${k}=${renderInline(vv)}`)
+      .join(", ");
+  }
+  return String(v);
+}
+
 function renderRawStatsBlock(block: Record<string, unknown> | undefined): string {
   if (!block) return "";
   const lines: string[] = [];
@@ -179,12 +195,7 @@ function renderRawStatsBlock(block: Record<string, unknown> | undefined): string
       const parts = Object.entries(value as Record<string, unknown>)
         .filter(([, v]) => v != null)
         .map(([side, v]) =>
-          typeof v === "object" && v !== null
-            ? `${side}={${Object.entries(v as Record<string, unknown>)
-                .filter(([, vv]) => vv != null)
-                .map(([k, vv]) => `${k}=${vv}`)
-                .join(", ")}}`
-            : `${side}=${v}`
+          typeof v === "object" && v !== null ? `${side}={${renderInline(v)}}` : `${side}=${v}`
         );
       if (parts.length) lines.push(`- ${key}: ${parts.join(", ")}`);
       continue;

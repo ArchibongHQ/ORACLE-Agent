@@ -6,8 +6,10 @@
  *     HTML report surfaced only a fraction of what the scraper captures; here the
  *     full SportyBetStats surface is laid out column-by-column so nothing is hidden.
  *   - "Markets": one row per (fixture × market × outcome) — the line-by-line "all
- *     markets + odds" requirement. Written via ExcelJS's streaming workbook writer
- *     so a 1000-fixture day (900+ markets each) doesn't balloon the JS heap.
+ *     markets + odds" requirement. Built via ExcelJS's regular in-memory Workbook
+ *     API (not the streaming WorkbookWriter), so renderFixtureWorkbook can stay a
+ *     pure function its own tests read back in-memory; revisit if a slate's total
+ *     fixture×market×outcome row count starts threatening JS heap limits.
  *
  *  Reuses the exact data-loading + field-shaping helpers the HTML report used
  *  (loadSportyBetIndex / loadLineupSummaries / buildNewsByTeam / buildMotivation /
@@ -53,6 +55,16 @@ interface FixtureRowCtx {
 
 function newsSummaryLine(rows: DailyNewsRow[]): string {
   return rows.map((n) => `${n.source}: ${n.summary}`).join(" | ");
+}
+
+/** Neutralizes CSV/XLSX formula injection (CWE-1236): every text column here is
+ *  sourced from scraped/external data (team names, RSS/news summaries, lineup
+ *  names, market labels) — a value starting with one of these characters is
+ *  auto-evaluated as a formula by Excel/LibreOffice/Sheets on open. Prefixing
+ *  with a single quote forces text interpretation in every major spreadsheet app. */
+function sanitizeCell<T>(v: T): T {
+  if (typeof v !== "string" || v.length === 0) return v;
+  return (/^[=+\-@\t\r]/.test(v) ? `'${v}` : v) as unknown as T;
 }
 
 const FIXTURE_COLUMNS: FixtureColumn[] = [
@@ -403,7 +415,7 @@ export function renderFixtureWorkbook(
     const homeNews = deps.newsByTeam.get(teamSlug(event.home)) ?? [];
     const awayNews = deps.newsByTeam.get(teamSlug(event.away)) ?? [];
     const ctx: FixtureRowCtx = { event, lineup, homeNews, awayNews };
-    fx.addRow(FIXTURE_COLUMNS.map((c) => c.get(ctx) ?? null));
+    fx.addRow(FIXTURE_COLUMNS.map((c) => sanitizeCell(c.get(ctx) ?? null)));
 
     for (const m of event.detail?.odds?.allMarkets ?? []) {
       const cat = lookupMarket(m.id);
@@ -413,17 +425,19 @@ export function renderFixtureWorkbook(
           : cat.family
         : "";
       for (const o of m.outcomes ?? []) {
-        mk.addRow([
-          event.home,
-          event.away,
-          m.id,
-          m.desc || m.name || m.id,
-          family,
-          m.group ?? "",
-          m.specifier ?? "",
-          o.desc ?? o.id,
-          o.odds ?? "",
-        ]);
+        mk.addRow(
+          [
+            event.home,
+            event.away,
+            m.id,
+            m.desc || m.name || m.id,
+            family,
+            m.group ?? "",
+            m.specifier ?? "",
+            o.desc ?? o.id,
+            o.odds ?? "",
+          ].map(sanitizeCell)
+        );
       }
     }
   }

@@ -52,11 +52,12 @@ export async function sendTelegramDocument(
     form.append("chat_id", chatId);
     form.append("caption", caption);
     form.append("document", blob, fileName);
-    await fetch(API(botToken, "sendDocument"), {
+    const res = await fetch(API(botToken, "sendDocument"), {
       method: "POST",
       body: form,
       signal: AbortSignal.timeout(30_000),
     });
+    if (!res.ok) throw new Error(`Telegram sendDocument failed: ${res.status} ${await res.text()}`);
   } catch {
     // fetch threw (transport error) — retry via node:https with a manual multipart body.
     try {
@@ -152,12 +153,13 @@ export async function sendTelegramText(
   if (!botToken || !chatId || !text) return;
   const body = JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true });
   try {
-    await fetch(API(botToken, "sendMessage"), {
+    const res = await fetch(API(botToken, "sendMessage"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body,
       signal: AbortSignal.timeout(15_000),
     });
+    if (!res.ok) throw new Error(`Telegram sendMessage failed: ${res.status} ${await res.text()}`);
   } catch {
     try {
       await postJsonViaHttps(API(botToken, "sendMessage"), body);
