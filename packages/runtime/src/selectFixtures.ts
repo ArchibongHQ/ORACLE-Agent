@@ -115,6 +115,41 @@ export interface SportyBetOdds {
       Record<string, { over?: number | null; under?: number | null }>
     > | null;
   } | null;
+  /** Typed accessors for the joint 1X2+BTTS / 1X2+O-U / O-U+BTTS combo markets
+   *  (market IDs verified live 2026-06-29 — see tools/scrape_fixtures.py
+   *  _parse_combo_markets docstring). */
+  combo?: {
+    "1x2_btts"?: {
+      home_yes?: string | null;
+      home_no?: string | null;
+      draw_yes?: string | null;
+      draw_no?: string | null;
+      away_yes?: string | null;
+      away_no?: string | null;
+    } | null;
+    /** 1X2 & Over/Under, keyed by line (e.g. "2.5"). */
+    "1x2_ou"?: Record<
+      string,
+      {
+        home_under?: string | null;
+        home_over?: string | null;
+        draw_under?: string | null;
+        draw_over?: string | null;
+        away_under?: string | null;
+        away_over?: string | null;
+      }
+    > | null;
+    /** Over/Under & BTTS, keyed by line (e.g. "2.5"). */
+    ou_btts?: Record<
+      string,
+      {
+        over_yes?: string | null;
+        over_no?: string | null;
+        under_yes?: string | null;
+        under_no?: string | null;
+      }
+    > | null;
+  } | null;
   /** Generic capture of EVERY SportyBet market for this fixture (900+ entries
    *  on a typical live fixture) — see tools/scrape_fixtures.py _parse_all_markets.
    *  Use this for any market not covered by the typed fields above; outcome
