@@ -1166,12 +1166,9 @@ export class ExecutionEngine {
       coverage.total++;
       const cat = lookupMarket(market.id);
       if (cat) coverage.inCatalog++;
-      // Skip whole families the deterministic pricer has no model for before
-      // touching outcomes — cheaper than pricing then discarding, and keeps the
-      // coverage tally honest (priceable counts only what we'd actually attempt).
-      // Uncatalogued ids fall through so a market SportyBet added since the last
-      // catalog regeneration still gets a chance via priceAllMarketOutcome.
-      if (cat && !PRICEABLE_FAMILIES.has(cat.family)) continue;
+      // All families attempt pricing via priceAllMarketOutcome — returns null
+      // for families without a Poisson model, caught by the mp guard below.
+      // Uncatalogued ids also fall through for a chance via priceAllMarketOutcome.
       if (cat) coverage.priceable++;
       const family: MarketFamily | undefined = cat?.family;
       const marketLabel = market.desc || market.name || "Market";

@@ -160,13 +160,20 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
     }
   }
 
-  // Tier 2/3: OpenRouter, GLM-first — GLM-5.2 → GLM-5.1 → Qwen3 235B Thinking → GPT-oss-120B
+  // Tier 2/3: OpenRouter — GLM-5.2 → GLM-5.1 → DeepSeek → Kimi-2.7 → GPT → Qwen3 → Minimax-M3
+  // then free-tier safety net (GPT-OSS-120B → Nemotron → Qwen3-Next 80B → etc.)
   if (ctx.config.openrouterApiKey) {
     for (const model of [
       OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GLM_5_1,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.KIMI_K2_7,
+      OPENROUTER_MODELS.GPT_4O,
       OPENROUTER_MODELS.QWEN3_235B_THINKING,
+      OPENROUTER_MODELS.MINIMAX_M3,
       OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
+      OPENROUTER_MODELS.QWEN3_NEXT_80B,
     ]) {
       const text = await callOpenRouterJson(
         BRIEFING_OR_SYSTEM,

@@ -80,7 +80,7 @@ export const GOALS_RICH_LEAGUES: ReadonlySet<string> = new Set([
   "Austrian Bundesliga",
 ]);
 
-export const DEFAULT_PRE_FILTER_POOL_SIZE = 130;
+export const DEFAULT_PRE_FILTER_POOL_SIZE = 1000;
 
 export interface GoalsPreFilterResult {
   event: SportyBetEvent;

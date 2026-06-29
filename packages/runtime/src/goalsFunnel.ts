@@ -1,9 +1,10 @@
-/** Goals-discovery funnel orchestration — wires stages 1-2 (mechanical filter →
- *  Sonnet screen, goalsPreFilter.ts + goalsScreen.ts) into FixtureJob[] ready
- *  for stage 3 (the existing deterministic engine, runAnalysis with
- *  enableGoalsOnlyMode). Stage 4 (Opus arbiter) and stage 5 (top-N cut via
- *  selectGoalsAccumulator) are unchanged existing mechanisms — this file's job
- *  ends at producing the FixtureJob[] stage 3 consumes.
+/** Full-market discovery funnel orchestration — wires stages 1-2 (mechanical
+ *  filter → LLM screen, goalsPreFilter.ts + goalsScreen.ts) into FixtureJob[]
+ *  ready for stage 3 (the existing deterministic engine, runAnalysis with full
+ *  market scope — all 1000+ SportyBet markets, goals prioritized). Stage 4
+ *  (Opus arbiter) and stage 5 (top-N cut via selectGoalsAccumulator) are
+ *  unchanged existing mechanisms — this file's job ends at producing the
+ *  FixtureJob[] stage 3 consumes.
  *
  *  Independent of the main all-markets daily pipeline (fetchTodaysFixtures/
  *  selectFixtures) — those route through the Odds-API/Gemini-fallback cascade
