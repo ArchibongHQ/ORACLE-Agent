@@ -28,6 +28,12 @@ export {
   resolvePythonBin,
   SPORT_TO_LEAGUE,
 } from "./fixtures.js";
+export type { FixtureWorkbookDeps } from "./fixtureWorkbook.js";
+export {
+  generateAndWriteFixtureWorkbook,
+  renderFixtureWorkbook,
+  writeFixtureWorkbook,
+} from "./fixtureWorkbook.js";
 export type { GoalsArtifact } from "./goalsArtifact.js";
 export { readGoalsArtifact, writeGoalsArtifact } from "./goalsArtifact.js";
 export type { GoalsFunnelOptions, GoalsFunnelResult } from "./goalsFunnel.js";

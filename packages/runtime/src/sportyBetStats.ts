@@ -129,6 +129,75 @@ export interface StatsOverride {
   restA?: number;
 }
 
+/** Resolve the credibility-shrinkage prior for a league.
+ *
+ *  Order: (1) the researched GOALS_SHRINK_PRIORS table; (2) a STANDINGS-DERIVED
+ *  prior computed from the fixture's own season table (gf/played, ga/played) —
+ *  this is what lets a league absent from the table (e.g. the Faroe Islands top
+ *  flight from the audit) still shrink toward its REAL mean instead of the generic
+ *  1.5/1.2 Default; (3) the Default constant as a last resort.
+ *
+ *  The standings-derived figure uses each team's own gf/ga rate averaged — a
+ *  coarse league proxy, but a real one drawn from this season's actual scoring,
+ *  which beats a hardcoded guess for any uncovered league. */
+export function leaguePrior(
+  league: string | undefined,
+  detail?: SportyBetEventDetail | undefined
+): { homeAvg: number; awayAvg: number } {
+  const table = GOALS_SHRINK_PRIORS[league ?? ""];
+  if (table) return table;
+
+  const st = detail?.stats?.standings;
+  const rate = (gf: unknown, ga: unknown, played: unknown): [number, number] | null => {
+    if (!finite(gf) || !finite(ga) || !finite(played) || played < 1) return null;
+    return [gf / played, ga / played];
+  };
+  const h = rate(st?.home?.gf, st?.home?.ga, st?.home?.played);
+  const a = rate(st?.away?.gf, st?.away?.ga, st?.away?.played);
+  if (h && a) {
+    // Average each side's scored & conceded rate into a league home/away prior.
+    const homeAvg = (h[0] + a[1]) / 2; // home scoring ≈ (home GF rate + away GA rate)/2
+    const awayAvg = (a[0] + h[1]) / 2;
+    if (finite(homeAvg) && finite(awayAvg)) {
+      // Clamp to a sane football range so a tiny/aberrant table can't poison the prior.
+      return {
+        homeAvg: Math.min(3.5, Math.max(0.5, homeAvg)),
+        awayAvg: Math.min(3.5, Math.max(0.4, awayAvg)),
+      };
+    }
+  }
+  return GOALS_SHRINK_PRIORS.Default!;
+}
+
+/** Bounded multiplicative nudge to the season-average xH/xA from over/under hit-
+ *  rates + BTTS rate — two strong, already-scraped goal signals the engine math
+ *  never consumed (they reached only the LLM as prose). Clamped to [0.9, 1.1]x so
+ *  it sharpens the lambda without ever overpowering the xG/goals base it modulates.
+ *
+ *  Signal: a team whose matches go Over 2.5 far more than the ~50% league norm is
+ *  systematically involved in higher-scoring games than its raw scored-average
+ *  alone implies (it concedes too); the O2.5 rate captures that joint tendency.
+ *  BTTS rate corroborates. We map the blended signal linearly onto [0.9, 1.1].
+ *  Returns 1.0 (no-op) when neither signal is present. */
+export function goalRateNudge(
+  detail: SportyBetEventDetail | undefined,
+  side: "home" | "away"
+): number {
+  const stats = detail?.stats;
+  const ou = stats?.overunder?.[side]?.over25_pct;
+  const btts = stats?.scoringConceding?.[side]?.btts_rate;
+  const signals: number[] = [];
+  // over25_pct and btts_rate are 0..1 rates; centre on 0.5 (≈ league-neutral) and
+  // scale the deviation. A team at O2.5=0.75 → +0.25 dev → strong upward nudge.
+  if (finiteOrZero(ou)) signals.push(ou - 0.5);
+  if (finiteOrZero(btts)) signals.push(btts - 0.5);
+  if (signals.length === 0) return 1.0;
+  const dev = signals.reduce((s, v) => s + v, 0) / signals.length;
+  // 0.4 gain → a full ±0.5 deviation maps to ±0.20, then clamp to ±0.10.
+  const raw = 1 + dev * 0.4;
+  return Math.min(1.1, Math.max(0.9, raw));
+}
+
 /** Data-quality-gated hard override of the engine's xH/xA + SoS/fatigue inputs.
  *  Each input is gated independently: the xH/xA + SoS override requires a thick
  *  enough season sample (never overrides with garbage), while restH/restA are
@@ -187,7 +256,7 @@ export function buildStatsOverride(
       const nEff = Math.min(homePlayed, awayPlayed);
       if (nEff < SHRINK_THRESHOLD) {
         const w = nEff / SHRINK_THRESHOLD;
-        const prior = GOALS_SHRINK_PRIORS[league ?? ""] ?? GOALS_SHRINK_PRIORS.Default!;
+        const prior = leaguePrior(league, detail);
         override.xH = override.xH * w + prior.homeAvg * (1 - w);
         override.xA = override.xA * w + prior.awayAvg * (1 - w);
         // Downgrade confidence since shrinkage acknowledges the thin sample.
@@ -223,6 +292,13 @@ export function buildStatsOverride(
         );
         if (awayForm) override.xA = applyTemporalDecay(awayForm, override.xA);
       }
+
+      // Goal-rate nudge — fold the over/under + BTTS hit-rates (already scraped,
+      // previously LLM-prose-only) into the lambda as a bounded [0.9,1.1]x factor.
+      // Applied last so it modulates the fully-built season+recency xH/xA without
+      // overpowering it. Same enoughSample gate as everything above.
+      override.xH = override.xH * goalRateNudge(detail, "home");
+      override.xA = override.xA * goalRateNudge(detail, "away");
     }
 
     // SoS adjustment inputs — adjustXGForSoS clamps its own factor to [0.5, 2.0]x,
@@ -329,8 +405,16 @@ export function buildStatsSoftContext(
 
   const h2h = stats.h2h;
   if (h2h && (h2h.total ?? 0) > 0) {
+    // Append the actual scorelines (un-discarded match-by-match detail) so the LLM
+    // sees the goal trend, not just the win/draw tally — the audit's specific gap.
+    const results = (h2h.matches ?? [])
+      .filter((m) => typeof m.home_goals === "number" && typeof m.away_goals === "number")
+      .slice(0, 5)
+      .map((m) => `${m.home_goals}-${m.away_goals}`)
+      .join(", ");
+    const resultsSuffix = results ? ` — recent results ${results}` : "";
     lines.push(
-      `H2H (last ${h2h.total} meetings) — home wins ${h2h.home_wins ?? 0}, away wins ${h2h.away_wins ?? 0}, draws ${h2h.draws ?? 0}`
+      `H2H (last ${h2h.total} meetings) — home wins ${h2h.home_wins ?? 0}, away wins ${h2h.away_wins ?? 0}, draws ${h2h.draws ?? 0}${resultsSuffix}`
     );
   }
 

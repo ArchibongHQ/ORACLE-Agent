@@ -61,6 +61,15 @@ describe("sportyEventToFixtureJob", () => {
     expect(sportyEventToFixtureJob(eventWithoutOdds("A", "B"))).toBeNull();
   });
 
+  it("carries rawStatsBlock + travel/motivation telemetry — Phase 3.4 parity fix with the main pipeline", () => {
+    // Before the fix, goals-acca legs reached the arbiter with no rawStatsBlock
+    // (STEP-0 stats were dropped entirely for this path). Assert the fix sticks.
+    const event = eventWithOdds("A", "B");
+    const job = sportyEventToFixtureJob(event);
+    expect(job?.state?.telemetry?.rawStatsBlock).toBe(event.detail?.stats);
+    expect(job?.state?.telemetry?.softContext).toBeDefined();
+  });
+
   it("returns null when the event has no detail at all", () => {
     const bare: SportyBetEvent = { home: "A", away: "B", marketCount: 0 };
     expect(sportyEventToFixtureJob(bare)).toBeNull();

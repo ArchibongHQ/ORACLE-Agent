@@ -1,8 +1,15 @@
 import type { BatchResult } from "@oracle/engine";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RawLeg } from "../../../apps/booking/src/loadCode.js";
 import type { PuntLeg } from "../src/punt.js";
 import { counterSlip, loadedSlipToJobs, rawLegToMarketSide } from "../src/punt.js";
+import type { SportyBetEventDetail } from "../src/selectFixtures.js";
+import { loadSportyBetIndex, sidecarKey } from "../src/selectFixtures.js";
+
+vi.mock("../src/selectFixtures.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/selectFixtures.js")>();
+  return { ...actual, loadSportyBetIndex: vi.fn() };
+});
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
 
@@ -227,5 +234,49 @@ describe("loadedSlipToJobs", () => {
     const legs = await loadedSlipToJobs(slip, { oddsApiKey: undefined });
     expect(legs).toHaveLength(1);
     expect(legs[0]!.job).toBeNull();
+  });
+
+  it("wires sidecar stats into a sidecar-built job — rawStatsBlock + override reach the engine, not just bare odds", async () => {
+    // Before the Phase-3.4 fix, jobFromSidecar returned only flattened odds — a
+    // punt leg's engine job carried none of the scraped stats. Assert the fix:
+    // the override, soft-context, and rawStatsBlock the main pipeline already
+    // gets via fixtures.ts injectSidecarOdds now also land here.
+    const detail: SportyBetEventDetail = {
+      eventId: "e_test",
+      odds: { "1x2": { home: 1.9, draw: 3.3, away: 4.0 } },
+      stats: {
+        goals: { home: { avg_scored: 2.0 }, away: { avg_scored: 1.4 } },
+        overunder: { home: { over25_pct: 0.6 }, away: { over25_pct: 0.5 } },
+      },
+      statscoverage: null,
+    };
+    const key = sidecarKey("Fictional FC", "Made Up United");
+    vi.mocked(loadSportyBetIndex).mockResolvedValue({
+      date: "2026-06-29",
+      byKey: new Map([[key, 10]]),
+      detailByKey: new Map([[key, detail]]),
+      events: [
+        {
+          home: "Fictional FC",
+          away: "Made Up United",
+          marketCount: 10,
+          league: "Nowhere League",
+          kickoff_utc: "2026-06-29T15:00:00Z",
+          detail,
+        },
+      ],
+    });
+
+    const slip = {
+      code: "X",
+      legs: [rawLeg({ home: "Fictional FC", away: "Made Up United", league: "Nowhere League" })],
+      totalOdds: 2,
+      loadedAt: "",
+    };
+    const legs = await loadedSlipToJobs(slip, { oddsApiKey: undefined });
+    const job = legs[0]?.job;
+    expect(job).not.toBeNull();
+    expect(job?.state?.telemetry?.rawStatsBlock).toBe(detail.stats);
+    expect(job?.state?.pipeline?.fetched?.sportyBetStats).toBe(detail.stats);
   });
 });

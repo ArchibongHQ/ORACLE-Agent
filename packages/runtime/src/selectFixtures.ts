@@ -193,7 +193,25 @@ export interface SportyBetStats {
     home?: { avg_scored?: number; avg_conceded?: number } | null;
     away?: { avg_scored?: number; avg_conceded?: number } | null;
   } | null;
-  h2h?: { total?: number; home_wins?: number; away_wins?: number; draws?: number } | null;
+  h2h?: {
+    total?: number;
+    home_wins?: number;
+    away_wins?: number;
+    draws?: number;
+    /** Most-recent meetings with scoreline + date (stats_team_versusrecent matches[],
+     *  ≤10). The per-match detail behind the aggregate counters — feeds the
+     *  spreadsheet H2H column and the arbiter's raw-stats block (e.g. "2-0; 2-2; 3-1").
+     *  home_team/away_team are that historical match's sides, not the current fixture's. */
+    matches?: Array<{
+      date?: string | null;
+      uts?: number | null;
+      home_team?: string | null;
+      away_team?: string | null;
+      home_goals?: number;
+      away_goals?: number;
+      winner?: string | null;
+    }> | null;
+  } | null;
   /** Rolling xG prior. Understat (top-5, per-match, true xGA) preferred; FBref
    *  season-aggregate (World Cup, Brazil, wider leagues — xGF only, xga null)
    *  merged in as a medium-confidence fallback. `src` records the origin. */

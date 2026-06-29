@@ -1232,6 +1232,9 @@ export async function fetchFixtureByName(
                   ...motivation.telemetry,
                   ...statsOverride,
                   ...(adHocSoft.length ? { softContext: adHocSoft } : {}),
+                  ...(detail.stats
+                    ? { rawStatsBlock: detail.stats as unknown as Record<string, unknown> }
+                    : {}),
                 },
                 pipeline: {
                   fetched: {

@@ -87,6 +87,79 @@ def browser_swarm_max_workers(default_unbounded: int) -> int:
     return min(4, default_unbounded) if _is_local_windows() else default_unbounded
 
 
+# Minimum free physical memory (MB) before a Playwright/browser-page swarm is
+# considered safe to launch on the local Windows box. Below this, spinning up
+# multiple Chromium renderers risks the integrated-GPU driver crash/BSOD seen in
+# the oracle_swarm_gpu_bsod_incident — better to skip browser enrichment for the
+# run (degrade to gismo+RSS) than reboot the machine mid-scrape.
+_MIN_FREE_MB_FOR_BROWSER = 1500
+
+
+def _available_memory_mb() -> Optional[float]:
+    """Available physical memory in MB. Prefers psutil; falls back to a pure-stdlib
+    ctypes GlobalMemoryStatusEx call on Windows (no extra dependency). Returns None
+    when neither path can measure (gate then fails open)."""
+    try:
+        import psutil  # optional dep
+
+        return psutil.virtual_memory().available / (1024 * 1024)
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class _MEMSTAT(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = _MEMSTAT()
+            stat.dwLength = ctypes.sizeof(_MEMSTAT)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return stat.ullAvailPhys / (1024 * 1024)
+        except Exception:
+            pass
+    return None
+
+
+def browser_workload_health_gate() -> tuple[bool, str]:
+    """Pre-flight check before launching a browser-page swarm (FotMob/Sofascore/
+    Google-AI). Returns (ok, reason).
+
+    VPS / non-Windows: always (True, ...) — no shared-GPU contention risk there,
+    and the owner wants the swarm to fan out fully on the VPS (ORACLE_IS_VPS=true).
+
+    Local Windows: gate on available physical memory. A heavily-loaded box (the
+    failure mode behind the two BSODs in oracle_swarm_gpu_bsod_incident — heavy
+    concurrent page load on the integrated Intel UHD GPU while other work ran)
+    should NOT also be asked to launch a Chromium swarm; we skip browser
+    enrichment and let the caller fall back to the thin-HTTP/RSS tiers instead.
+    Best-effort: if free memory can't be measured (no psutil, query fails), fail
+    OPEN (allow) rather than block enrichment on an unmeasurable box."""
+    if not _is_local_windows():
+        return True, "non-local (VPS/non-Windows) — browser swarm unrestricted"
+    avail_mb = _available_memory_mb()
+    if avail_mb is None:
+        # Can't measure — don't block. The browser-swarm cap (4) is still in force.
+        return True, "memory unmeasurable — allowing, cap still applies"
+    if avail_mb < _MIN_FREE_MB_FOR_BROWSER:
+        return (
+            False,
+            f"low free memory ({avail_mb:.0f}MB < {_MIN_FREE_MB_FOR_BROWSER}MB) — "
+            "skipping browser swarm to avoid GPU-driver crash",
+        )
+    return True, f"healthy ({avail_mb:.0f}MB free)"
+
+
 async def run_swarm(
     tasks: list[T],
     worker: Callable[[T], Awaitable[R]],

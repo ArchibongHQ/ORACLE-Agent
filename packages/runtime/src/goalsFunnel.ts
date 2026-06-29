@@ -11,13 +11,14 @@
  *  on a single shared analysis pass). This pipeline scans the FULL daily
  *  SportyBet pool (potentially 1000+ fixtures) for goals-market opportunity
  *  specifically, independent of whatever the main batch chose to analyze. */
-import type { FixtureJob } from "@oracle/engine";
+import type { FixtureJob, SoftContextItem } from "@oracle/engine";
 import type { LLMCallContext } from "@oracle/llm";
 import { DEFAULT_PRE_FILTER_POOL_SIZE, preFilterGoalsCandidates } from "./goalsPreFilter.js";
 import { mergeScreenedCandidates, screenGoalsCandidates } from "./goalsScreen.js";
 import type { SportyBetEvent, SportyBetEventDetail } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
-import { buildStatsOverride, buildStatsSoftContext } from "./sportyBetStats.js";
+import { buildMotivation, buildStatsOverride, buildStatsSoftContext } from "./sportyBetStats.js";
+import { buildTravel } from "./travel.js";
 
 /** Converts one SportyBet sidecar event into a FixtureJob, reusing the exact
  *  same odds-flatten + stats-override + soft-context wiring the main daily
@@ -34,6 +35,18 @@ export function sportyEventToFixtureJob(event: SportyBetEvent): FixtureJob | nul
   const league = event.league ?? "Unknown";
   const statsOverride = buildStatsOverride(detail, league);
   const statsContext = buildStatsSoftContext(detail);
+  // Mirror the main pipeline's full wiring (fixtures.ts injectSidecarOdds): travel +
+  // standings-motivation telemetry/soft-context AND the raw stats passthrough the Opus
+  // arbiter reads at STEP 0. Previously the funnel set neither, so goals-acca legs
+  // reached the arbiter with no raw-stats block — fixed for parity across paths.
+  const travel = buildTravel(event.home, event.away, {
+    neutralVenue: league === "FIFA World Cup",
+  });
+  const motivation = buildMotivation(detail);
+  const extraSoft: SoftContextItem[] = [];
+  if (travel.soft) extraSoft.push(travel.soft);
+  if (motivation.soft) extraSoft.push(motivation.soft);
+  const mergedSoft = [...statsContext, ...extraSoft];
 
   return {
     home: event.home,
@@ -42,8 +55,13 @@ export function sportyEventToFixtureJob(event: SportyBetEvent): FixtureJob | nul
     kickoff: event.kickoff_utc ?? new Date().toISOString(),
     state: {
       telemetry: {
+        ...travel.telemetry,
+        ...motivation.telemetry,
         ...statsOverride,
-        ...(statsContext.length ? { softContext: statsContext } : {}),
+        ...(mergedSoft.length ? { softContext: mergedSoft } : {}),
+        ...(detail.stats
+          ? { rawStatsBlock: detail.stats as unknown as Record<string, unknown> }
+          : {}),
         // Every fixture that survives the funnel (mechanical filter + Sonnet
         // screen) earns full LLM-tier treatment — unlike the main batch's
         // maxFixturesPerRun cap, this pool is already small and pre-screened.

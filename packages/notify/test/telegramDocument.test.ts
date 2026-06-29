@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sendTelegramDocument } from "../src/telegramDocument.js";
+import { sendTelegramDocument, sendTelegramText } from "../src/telegramDocument.js";
 
 let dir: string;
 let filePath: string;
@@ -53,5 +53,48 @@ describe("sendTelegramDocument", () => {
     await expect(
       sendTelegramDocument("TOKEN", "CHAT", filePath, "caption")
     ).resolves.toBeUndefined();
+  });
+
+  it("never throws when fetch resolves with a non-2xx status", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => "Forbidden" });
+    await expect(
+      sendTelegramDocument("TOKEN", "CHAT", filePath, "caption")
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("sendTelegramText", () => {
+  it("posts JSON to the Telegram sendMessage endpoint", async () => {
+    await sendTelegramText("TOKEN", "CHAT", "hello");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, opts] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
+    expect(url).toContain("/botTOKEN/sendMessage");
+    expect(opts.method).toBe("POST");
+    expect(JSON.parse(opts.body)).toMatchObject({ chat_id: "CHAT", text: "hello" });
+  });
+
+  it("no-ops silently when botToken is empty", async () => {
+    await sendTelegramText("", "CHAT", "hello");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("no-ops silently when chatId is empty", async () => {
+    await sendTelegramText("TOKEN", "", "hello");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("no-ops silently when text is empty", async () => {
+    await sendTelegramText("TOKEN", "CHAT", "");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("never throws when fetch rejects", async () => {
+    fetchMock.mockRejectedValue(new Error("network down"));
+    await expect(sendTelegramText("TOKEN", "CHAT", "hello")).resolves.toBeUndefined();
+  });
+
+  it("never throws when fetch resolves with a non-2xx status", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => "Forbidden" });
+    await expect(sendTelegramText("TOKEN", "CHAT", "hello")).resolves.toBeUndefined();
   });
 });
