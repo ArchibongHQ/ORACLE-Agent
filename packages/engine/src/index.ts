@@ -45,6 +45,8 @@ export {
 } from "./gbm/index.js";
 export type { MarketCatalogEntry, MarketFamily } from "./markets/index.js";
 export {
+  devigThreeWay,
+  devigTwoWay,
   familyOf,
   isPriceable,
   lookupMarket,

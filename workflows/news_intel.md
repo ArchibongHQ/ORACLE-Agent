@@ -40,12 +40,24 @@ Additive — one source failing degrades that row to a skip, never a block. All 
 
 ### RSS feed URLs
 
+Generic (`_RSS_FEEDS` → `source="rss_news"` → LLM kind `news`):
+
 | Feed | URL | Status |
 | --- | --- | --- |
 | BBC Sport | `http://feeds.bbci.co.uk/sport/football/rss.xml` | ✅ Working |
 | Sky Sports | `https://www.skysports.com/rss/0,20514,11095,00.xml` | ✅ Working |
 | The Athletic | `https://theathletic.com/football/?rss` | ✅ Working — soft-paywalled: headline+teaser text only, never full article body. This is the feed's own limitation, not a bypass being deliberately avoided — login/paywall-bypass is out of scope by design |
+| The Guardian (Football) | `https://www.theguardian.com/football/rss` | ✅ Working — confirmed 200 2026-06-28; high-quality injury/squad/tactical reportage |
+| Olé Internacional | `http://www.ole.com.ar/rss/futbol-internacional/` | ✅ Working — follows 301 redirect; covers La Liga/Serie A/Bundesliga; useful for motivation/Copa America hangover signals |
 | ESPN FC | — | ❌ Blocked — every URL variant tried returns HTTP 202 with an empty body (bot-mitigation gate). Excluded from `_RSS_FEEDS`. ESPN's JSON fixture API (used in `scrape_fixtures.py` for fixture listing) is unaffected — only the news RSS feed is blocked |
+
+Dedicated (`_DEDICATED_NEWS_FEEDS` → own `source` name → routed to specific LLM kind):
+
+| Feed | Source key | LLM kind | URL | Status |
+| --- | --- | --- | --- | --- |
+| OneFootball | `onefootball` | `lineup` | `https://onefootball.com/en/rss` | ✅ Working |
+| Evening Standard | `evening_standard` | `news` | `https://www.standard.co.uk/sport/football/rss` | ✅ Working |
+| FootballCritic | `footballcritic` | `news` | `https://www.footballcritic.com/rss` | ✅ Working — requires Chrome UA header (returns 403 without); `_fetch_rss` sends `_RSS_HDR` globally; confirmed 200 2026-06-28; wide global club/transfer/injury coverage |
 
 ## Cost Gate (Perplexity)
 

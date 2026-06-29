@@ -31,10 +31,11 @@ describe("market catalog", () => {
     expect(isPriceable("29")).toBe(true);
   });
 
-  it("leaves combo / half / unknown markets unpriceable", () => {
-    expect(isPriceable("37")).toBe(false); // 1X2 & Over/Under (combo)
+  it("prices combo / half markets and leaves specials / unknown unpriceable", () => {
+    expect(familyOf("37")).toBe("combo"); // 1X2 & Over/Under
+    expect(isPriceable("37")).toBe(true); // combo now priced (v1 independence)
     expect(familyOf("68")).toBe("half"); // 1st Half - Over/Under
-    expect(isPriceable("68")).toBe(false);
+    expect(isPriceable("68")).toBe(true); // half now priced (scaled-Poisson FH)
     expect(isPriceable("999999")).toBe(false); // not in catalog
     expect(lookupMarket("999999")).toBeUndefined();
   });

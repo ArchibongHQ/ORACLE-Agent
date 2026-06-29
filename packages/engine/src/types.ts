@@ -112,8 +112,8 @@ export interface EVMarket {
   label: string; // specific bet: "Over 2.5", "AH Home +0.5", etc.
   market: string; // = cat  (kept for decision module compat)
   side?: string; // = label (kept for PickRef compat)
-  /** Canonical ORACLE market family, when the source market id is in the index
-   *  (set by the allMarkets scan). Absent for the ~9 hardcoded scanMarkets blocks. */
+  /** Canonical ORACLE market family. Set by all scanMarkets BLOCKs and the
+   *  allMarkets fallback scan. Absent only for the 1x2 placeholder pick. */
   family?: MarketFamily;
   mp: number; // model probability
   modelProb: number; // = mp   (kept for safety module compat)

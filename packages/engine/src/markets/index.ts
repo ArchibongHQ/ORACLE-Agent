@@ -15,6 +15,7 @@
 
 import { MARKET_CATALOG } from "./catalog.generated.js";
 
+export { devigThreeWay, devigTwoWay } from "./devig.js";
 export { MARKET_CATALOG };
 
 /** Canonical ORACLE market family. Advisory classification of a market id's
@@ -62,11 +63,10 @@ export interface MarketCatalogEntry {
   fixturesSeen: number;
 }
 
-/** Families the deterministic pricer (priceAllMarketOutcome) has a goal-matrix
- *  model for today. Single source of truth for "can the engine deterministically
- *  price this market". Everything else is in-catalog but unpriced — visible as a
- *  gap, not silently dropped. Half-scoped markets stay out: the matrix is
- *  full-time only (priceAllMarketOutcome early-returns on half/in-play). */
+/** Families the deterministic pricer (priceAllMarketOutcome / scanMarkets) has a
+ *  goal-matrix model for today. Single source of truth for "can the engine
+ *  deterministically price this market". Everything else is in-catalog but
+ *  unpriced — visible as a gap, not silently dropped. */
 export const PRICEABLE_FAMILIES: ReadonlySet<MarketFamily> = new Set<MarketFamily>([
   "goals_ou",
   "team_total",
@@ -76,6 +76,8 @@ export const PRICEABLE_FAMILIES: ReadonlySet<MarketFamily> = new Set<MarketFamil
   "win_to_nil",
   "clean_sheet",
   "odd_even",
+  "half",
+  "combo",
 ]);
 
 /** Index of the catalog by SportyBet market id, built once at module load. */
@@ -98,3 +100,30 @@ export function isPriceable(id: string | number): boolean {
   const fam = familyOf(id);
   return fam != null && PRICEABLE_FAMILIES.has(fam);
 }
+
+/** Human-readable display label for each canonical market family.
+ *  Use this in all UI/display code instead of the raw family slug. */
+export const FAMILY_LABEL: Record<MarketFamily, string> = {
+  match_result: "1X2",
+  double_chance: "Double Chance",
+  dnb: "Draw No Bet",
+  goals_ou: "Goals O/U",
+  team_total: "Team Total",
+  btts: "BTTS",
+  asian_handicap: "Asian Handicap",
+  handicap: "Handicap",
+  correct_score: "Correct Score",
+  exact_goals: "Exact Goals",
+  odd_even: "Odd/Even",
+  clean_sheet: "Clean Sheet",
+  win_to_nil: "Win to Nil",
+  ht_ft: "HT/FT",
+  highest_scoring_half: "Highest Scoring Half",
+  half: "Half",
+  multigoals: "Multigoals",
+  winning_margin: "Winning Margin",
+  which_team_scores: "Which Team Scores",
+  combo: "Combo",
+  specials: "Specials",
+  exotic: "Exotic",
+};

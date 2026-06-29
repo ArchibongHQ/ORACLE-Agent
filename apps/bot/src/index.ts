@@ -1210,6 +1210,7 @@ export async function runBot(): Promise<void> {
   const token = TOKEN();
   const adminId = CHAT_ID();
   if (!token || !adminId) {
+    process.stderr.write("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing — bot will not start\n");
     return;
   }
   let offset = 0;

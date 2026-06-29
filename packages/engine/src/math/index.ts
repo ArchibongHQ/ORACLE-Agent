@@ -52,6 +52,22 @@ export interface AhBook {
   qEV: QEVFn;
   [key: string]: number | Record<string, number | string> | QEVFn;
 }
+/** Half-time probability snapshot derived from a scaled Poisson FH matrix.
+ *  fh* = first-half, sh* = second-half (inferred from FT − FH marginals). */
+export interface HalfTimeBook {
+  fhHw: number;
+  fhDr: number;
+  fhAw: number;
+  fhBtts: number;
+  fhOu: Record<string, number>; // "over_0.5", "under_0.5", "over_1.5", "under_1.5"
+  fhTeamH: Record<string, number>;
+  fhTeamA: Record<string, number>;
+  shHw: number;
+  shDr: number;
+  shAw: number;
+  shOu: Record<string, number>;
+}
+
 export interface MarketBook {
   hw: number;
   dr: number;
@@ -67,6 +83,7 @@ export interface MarketBook {
   teamH: Record<string, number>;
   teamA: Record<string, number>;
   asian2: { over: number; under: number };
+  ht?: HalfTimeBook;
 }
 export interface SyntheticScript {
   title: string;
@@ -643,6 +660,137 @@ export const extractMarkets = (mat: Matrix): MarketBook => {
     asian2: asian2Effective,
   };
 };
+
+/** Scale full-time lambdas to half-time.
+ *  Industry calibration: FH absorbs ~45% of total goals (SH slightly higher due to
+ *  fatigue and late pressure), so FH lambda ≈ 0.45 × FT lambda. */
+export function halfTimeLambdas(lH: number, lA: number): { fhLH: number; fhLA: number } {
+  return { fhLH: lH * 0.45, fhLA: lA * 0.45 };
+}
+
+/** Build a first-half goal matrix from full-time lambdas.
+ *  Uses plain Poisson (rho=0) — DC correlation weakens within a half because
+ *  score effects are smaller over 45 minutes. */
+export function buildHalfTimeMatrix(lH: number, lA: number): Matrix {
+  const { fhLH, fhLA } = halfTimeLambdas(lH, lA);
+  return buildMatrix(fhLH, fhLA, 0);
+}
+
+/** Extract HalfTimeBook from the first-half matrix + full-time matrix.
+ *  Second-half distributions are inferred by marginal subtraction:
+ *    P(SH goals_h = i) ≈ P(FT_h ≥ i) − P(FH_h ≥ i) normalised.
+ *  This is an approximation (assumes FH and SH are marginally independent
+ *  given lambda); adequate for v1 pricing. */
+export function extractHalfTimeMarkets(fhMat: Matrix, ftMat: Matrix): HalfTimeBook {
+  const N = fhMat.length;
+
+  // --- FH marginal distributions ---
+  const fhHomeDist = new Array(N).fill(0);
+  const fhAwayDist = new Array(N).fill(0);
+  let fhHw = 0,
+    fhDr = 0,
+    fhAw = 0,
+    fhBtts = 0;
+  for (let i = 0; i < N; i++) {
+    if (!fhMat[i]) continue;
+    for (let j = 0; j < N; j++) {
+      const p = fhMat[i][j] || 0;
+      fhHomeDist[i] += p;
+      fhAwayDist[j] += p;
+      if (i > j) fhHw += p;
+      else if (i === j) fhDr += p;
+      else fhAw += p;
+      if (i > 0 && j > 0) fhBtts += p;
+    }
+  }
+
+  const fhOu: Record<string, number> = {};
+  const fhTeamH: Record<string, number> = {};
+  const fhTeamA: Record<string, number> = {};
+  [0.5, 1.5, 2.5].forEach((t) => {
+    let totalOver = 0,
+      hOver = 0,
+      aOver = 0;
+    for (let g = Math.ceil(t); g < N; g++) {
+      hOver += fhHomeDist[g];
+      aOver += fhAwayDist[g];
+    }
+    // total goals over t: sum over i+j > t
+    for (let i = 0; i < N; i++) {
+      if (!fhMat[i]) continue;
+      for (let j = 0; j < N; j++) {
+        if (i + j > t) totalOver += fhMat[i][j] || 0;
+      }
+    }
+    fhOu[`over_${t}`] = totalOver;
+    fhOu[`under_${t}`] = 1 - totalOver;
+    fhTeamH[`over_${t}`] = hOver;
+    fhTeamH[`under_${t}`] = 1 - hOver;
+    fhTeamA[`over_${t}`] = aOver;
+    fhTeamA[`under_${t}`] = 1 - aOver;
+  });
+
+  // --- SH: infer from FT marginals minus FH marginals (normalised) ---
+  const ftHomeDist = new Array(N).fill(0);
+  const ftAwayDist = new Array(N).fill(0);
+  for (let i = 0; i < N; i++) {
+    if (!ftMat[i]) continue;
+    for (let j = 0; j < N; j++) {
+      const p = ftMat[i][j] || 0;
+      ftHomeDist[i] += p;
+      ftAwayDist[j] += p;
+    }
+  }
+  // SH marginal = FT cumulative − FH cumulative (goals scored in second half ≥ k)
+  // Simplified: use E[SH goals] = E[FT goals] − E[FH goals], build Poisson from that
+  const eFtH = ftHomeDist.reduce((s, p, g) => s + p * g, 0);
+  const eFtA = ftAwayDist.reduce((s, p, g) => s + p * g, 0);
+  const eFhH = fhHomeDist.reduce((s, p, g) => s + p * g, 0);
+  const eFhA = fhAwayDist.reduce((s, p, g) => s + p * g, 0);
+  const shLH = Math.max(0.01, eFtH - eFhH);
+  const shLA = Math.max(0.01, eFtA - eFhA);
+  const shMat = buildMatrix(shLH, shLA, 0);
+
+  let shHw = 0,
+    shDr = 0,
+    shAw = 0;
+  const shN = shMat.length;
+  for (let i = 0; i < shN; i++) {
+    if (!shMat[i]) continue;
+    for (let j = 0; j < shN; j++) {
+      const p = shMat[i][j] || 0;
+      if (i > j) shHw += p;
+      else if (i === j) shDr += p;
+      else shAw += p;
+    }
+  }
+  const shOu: Record<string, number> = {};
+  [0.5, 1.5, 2.5].forEach((t) => {
+    let totalOver = 0;
+    for (let i = 0; i < shN; i++) {
+      if (!shMat[i]) continue;
+      for (let j = 0; j < shN; j++) {
+        if (i + j > t) totalOver += shMat[i][j] || 0;
+      }
+    }
+    shOu[`over_${t}`] = totalOver;
+    shOu[`under_${t}`] = 1 - totalOver;
+  });
+
+  return {
+    fhHw,
+    fhDr,
+    fhAw,
+    fhBtts,
+    fhOu,
+    fhTeamH,
+    fhTeamA,
+    shHw,
+    shDr,
+    shAw,
+    shOu,
+  };
+}
 
 /** generateSyntheticAlpha — line 641. Correlated-parlay "scripts" with per-leg vig (BUG-L03). */
 export function generateSyntheticAlpha(mat: Matrix): SyntheticScript[] {
