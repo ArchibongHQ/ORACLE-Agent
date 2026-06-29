@@ -1,6 +1,14 @@
 /** Shared types for @oracle/engine. These are imported by oracle_math.ts and all engine modules. */
 
-import type { MarketFamily } from "./markets/index.js";
+import type { FamilyLabel, MarketFamily } from "./markets/index.js";
+
+/** The real value space of PickRef.market/EVMarket.market: FAMILY_LABEL display
+ *  strings emitted by scanMarkets' `check()`, plus the two special-path literals
+ *  set outside the family system (execution/index.ts scanAllMarketsFallback,
+ *  decision/marketExecutor.ts). The decision/index.ts:64 "1x2" placeholder is a
+ *  pre-existing casing mismatch against FAMILY_LABEL.match_result ("1X2") —
+ *  carried through as-is, not fixed here. */
+export type PickRefMarket = FamilyLabel | "1x2" | "AllMarkets Scan" | "LLM Market Executor";
 
 /** A 2D goal-probability matrix: matrix[homeGoals][awayGoals] = P(score). */
 export type Matrix = number[][];
@@ -77,7 +85,7 @@ export interface DecisionShadow {
 
 /** Reference to a specific market + odds combination. */
 export interface PickRef {
-  market: string;
+  market: PickRefMarket;
   side?: string;
   odds: number;
   stake?: number; // Kelly fraction, 0–1
@@ -110,7 +118,7 @@ export interface AllMarketEntry {
 export interface EVMarket {
   cat: string; // market category: "Goals O/U", "Asian Handicap", etc.
   label: string; // specific bet: "Over 2.5", "AH Home +0.5", etc.
-  market: string; // = cat  (kept for decision module compat)
+  market: PickRefMarket; // = cat  (kept for decision module compat)
   side?: string; // = label (kept for PickRef compat)
   /** Canonical ORACLE market family. Set by all scanMarkets BLOCKs and the
    *  allMarkets fallback scan. Absent only for the 1x2 placeholder pick. */

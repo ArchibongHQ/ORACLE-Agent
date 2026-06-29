@@ -101,9 +101,37 @@ export function isPriceable(id: string | number): boolean {
   return fam != null && PRICEABLE_FAMILIES.has(fam);
 }
 
+/** Literal union of every FAMILY_LABEL display value — the real value space of
+ *  PickRef.market/EVMarket.market (display labels, not the raw MarketFamily
+ *  slugs). Hand-kept in sync with FAMILY_LABEL below; the Record<MarketFamily, _>
+ *  annotation on FAMILY_LABEL makes a missing/typo'd entry a compile error. */
+export type FamilyLabel =
+  | "1X2"
+  | "Double Chance"
+  | "Draw No Bet"
+  | "Goals O/U"
+  | "Team Total"
+  | "BTTS"
+  | "Asian Handicap"
+  | "Handicap"
+  | "Correct Score"
+  | "Exact Goals"
+  | "Odd/Even"
+  | "Clean Sheet"
+  | "Win to Nil"
+  | "HT/FT"
+  | "Highest Scoring Half"
+  | "Half"
+  | "Multigoals"
+  | "Winning Margin"
+  | "Which Team Scores"
+  | "Combo"
+  | "Specials"
+  | "Exotic";
+
 /** Human-readable display label for each canonical market family.
  *  Use this in all UI/display code instead of the raw family slug. */
-export const FAMILY_LABEL: Record<MarketFamily, string> = {
+export const FAMILY_LABEL: Record<MarketFamily, FamilyLabel> = {
   match_result: "1X2",
   double_chance: "Double Chance",
   dnb: "Draw No Bet",
