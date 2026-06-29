@@ -442,6 +442,26 @@ def enrich(
         teams = teams[:limit]
     team_names = [t[0] for t in teams]
 
+    # Pre-run machine-health gate (owner instruction): before launching ANY
+    # browser-page swarm (Google AI / FotMob / Sofascore), confirm the local box
+    # is healthy enough. On an unhealthy/loaded local Windows machine we skip the
+    # browser tier entirely (degrade to RSS + Transfermarkt thin-HTTP) rather than
+    # risk the GPU-driver crash. On VPS the gate always passes. The thin-HTTP and
+    # RSS sources are unaffected — only the three browser sources are gated.
+    browser_ok, browser_reason = _swarm.browser_workload_health_gate()
+    if not browser_ok:
+        if not quiet:
+            print(
+                f"[enrich_news] browser-swarm health gate FAILED — {browser_reason}; "
+                "skipping Google AI / FotMob / Sofascore this run",
+                file=sys.stderr,
+            )
+        use_google = False
+        use_fotmob = False
+        use_sofascore = False
+    elif not quiet:
+        print(f"[enrich_news] browser-swarm health gate ok — {browser_reason}", flush=True)
+
     scraped_at = ds.utc_now_stamp()
     rows: list[dict] = []
 
