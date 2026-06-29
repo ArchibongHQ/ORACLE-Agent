@@ -1,0 +1,130 @@
+graph TD
+    subgraph L1["Layer 1 — Workflows (Instructions)"]
+        W1["workflows/scrape_fixtures.md"]
+        W2["workflows/select_goals.md"]
+        W3["workflows/news_intel.md"]
+        W4["workflows/integrations.md"]
+    end
+
+    subgraph L2["Layer 2 — Agent (Decision-Maker · Claude)"]
+        AGT["Claude Sonnet 4.6\nOrchestrator"]
+        LLM1["Tier 1: Claude Sonnet\nMechanical filter + scoring"]
+        LLM2["Tier 2: Claude Opus\nArbiter (top-N ambiguous legs)"]
+    end
+
+    subgraph L3["Layer 3 — Tools (Deterministic Execution)"]
+        subgraph SCRAPE["Data Acquisition"]
+            T1["tools/scrape_fixtures.py\n(Playwright · SportyBet)"]
+            T2["tools/fetch_fbref.py\n(xG / shots)"]
+            T3["tools/enrich_news.py\n(News intel)"]
+            T4["tools/fetch_travel.py\n(Travel distances)"]
+        end
+
+        subgraph ENGINE["Deterministic Engine · @oracle/engine"]
+            E1["Poisson Goal Model\n(xG → P(goals))"]
+            E2["Dixon-Coles\nCorrection (DC time-decay)"]
+            E3["Kelly Criterion\nStake sizing"]
+            E4["H2H + Standings\nRanker"]
+        end
+
+        subgraph RUNTIME["@oracle/runtime"]
+            R1["selectFixtures.ts\nFixture funnel"]
+            R2["selectGoals.ts\nGoals-only funnel"]
+            R3["sportyBetStats.ts\nSidecar stat bridge"]
+            R4["newsIntel.ts\nClaude news path"]
+            R5["dailyFixtureReport.ts\nReport builder"]
+        end
+
+        subgraph STORAGE["@oracle/storage · DuckDB + PGlite"]
+            DB1["Fixture cache"]
+            DB2["Odds history"]
+            DB3["Result store"]
+        end
+    end
+
+    subgraph SIDECAR["SportyBet Sidecar (no-auth gismo)"]
+        SC1["Live odds · markets"]
+        SC2["H2H · form · standings"]
+        SC3["xG · shots · possession"]
+        SC4["Over/Under · BTTS stats"]
+    end
+
+    subgraph NOTIFY["@oracle/notify · Push Layer"]
+        N1["Telegram Bot\n(ORACLE punt tips)"]
+        N2["Web UI\n127.0.0.1:8787"]
+        N3["Slack / Email\n(optional webhooks)"]
+    end
+
+    subgraph WORKER["@oracle/worker · Cron Daemon"]
+        CRN["Cron 08:30 UTC daily\n(Windows Service)"]
+    end
+
+    %% Layer 1 → Layer 2
+    W1 -->|"SOP context"| AGT
+    W2 -->|"SOP context"| AGT
+    W3 -->|"SOP context"| AGT
+    W4 -->|"SOP context"| AGT
+
+    %% Layer 2 → Layer 3 dispatch
+    AGT -->|"orchestrates"| SCRAPE
+    AGT -->|"reads/writes"| STORAGE
+    AGT -->|"runs tiers"| LLM1
+    LLM1 -->|"top-N ambiguous"| LLM2
+
+    %% Scrape → Sidecar
+    T1 <-->|"Playwright scrape"| SIDECAR
+
+    %% Scrape → Runtime
+    T1 -->|"fixtures + odds"| R1
+    T2 -->|"xG / shot data"| E1
+    T3 -->|"news context"| R4
+    T4 -->|"km + rest days"| R1
+
+    %% Sidecar stats → Runtime bridge
+    SC2 -->|"H2H / form"| R3
+    SC3 -->|"xG / possession"| R3
+    SC4 -->|"O/U / BTTS"| R3
+    R3 -->|"enriched stats"| E4
+
+    %% Runtime → Engine
+    R1 -->|"candidate fixtures"| E1
+    R2 -->|"goals funnel"| E1
+    E1 -->|"raw probs"| E2
+    E2 -->|"corrected probs"| E3
+    E4 -->|"H2H weight"| E1
+    E3 -->|"stake + edge"| R5
+
+    %% Engine ↔ Storage
+    E1 <-->|"cache"| DB1
+    E3 <-->|"odds history"| DB2
+    R5 <-->|"results"| DB3
+
+    %% LLM analysis
+    LLM1 -->|"mechanical picks"| R2
+    LLM2 -->|"arbiter verdict"| R5
+
+    %% Runtime → Notify
+    R5 -->|"daily report"| N1
+    R5 -->|"daily report"| N2
+    R5 -->|"daily report"| N3
+
+    %% Worker drives it all
+    CRN -->|"triggers pipeline"| R1
+    CRN -->|"triggers pipeline"| R2
+
+    %% Styles
+    classDef layer1 fill:#1e3a5f,stroke:#4a90d9,color:#e8f4fd
+    classDef layer2 fill:#1a4731,stroke:#27ae60,color:#d5f5e3
+    classDef layer3 fill:#4a1942,stroke:#9b59b6,color:#f5eef8
+    classDef engine fill:#7b2d00,stroke:#e67e22,color:#fef9e7,font-weight:bold
+    classDef sidecar fill:#1a3a4a,stroke:#17a589,color:#d1f2eb
+    classDef notify fill:#2c2c2c,stroke:#95a5a6,color:#ecf0f1
+    classDef worker fill:#3d1a00,stroke:#e74c3c,color:#fadbd8
+
+    class W1,W2,W3,W4 layer1
+    class AGT,LLM1,LLM2 layer2
+    class T1,T2,T3,T4,R1,R2,R3,R4,R5,DB1,DB2,DB3 layer3
+    class E1,E2,E3,E4 engine
+    class SC1,SC2,SC3,SC4 sidecar
+    class N1,N2,N3 notify
+    class CRN worker

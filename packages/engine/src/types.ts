@@ -1,5 +1,7 @@
 /** Shared types for @oracle/engine. These are imported by oracle_math.ts and all engine modules. */
 
+import type { MarketFamily } from "./markets/index.js";
+
 /** A 2D goal-probability matrix: matrix[homeGoals][awayGoals] = P(score). */
 export type Matrix = number[][];
 
@@ -110,6 +112,9 @@ export interface EVMarket {
   label: string; // specific bet: "Over 2.5", "AH Home +0.5", etc.
   market: string; // = cat  (kept for decision module compat)
   side?: string; // = label (kept for PickRef compat)
+  /** Canonical ORACLE market family. Set by all scanMarkets BLOCKs and the
+   *  allMarkets fallback scan. Absent only for the 1x2 placeholder pick. */
+  family?: MarketFamily;
   mp: number; // model probability
   modelProb: number; // = mp   (kept for safety module compat)
   ip: number; // implied probability (1/odds)
@@ -434,5 +439,20 @@ export type RunResult = {
     flags: string[];
     orchestratorNote: string;
   };
+  /** Coverage of the raw SportyBet allMarkets catalogue against the canonical
+   *  market index (packages/engine/src/markets). Lets the daily report show how
+   *  much of what the book published the engine recognises and can price.
+   *  Undefined when the fixture carried no allMarkets payload. */
+  marketCoverage?: MarketCoverage;
   [key: string]: unknown;
 };
+
+/** How a fixture's raw allMarkets entries map onto the canonical index:
+ *  priced ≤ priceable ≤ inCatalog ≤ total. `total` counts distinct market
+ *  entries (not per-outcome). */
+export interface MarketCoverage {
+  total: number; // raw allMarkets entries seen
+  inCatalog: number; // entries whose market id is in the canonical index
+  priceable: number; // entries whose catalog family has a deterministic model
+  priced: number; // entries that actually produced an EV candidate
+}

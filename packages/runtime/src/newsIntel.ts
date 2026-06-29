@@ -173,6 +173,23 @@ function lakeRowToSoftContext(row: {
       },
     ];
   }
+  // Guardian Football — high-quality injury/squad/tactical reportage.
+  if (row.source === "guardian_football" && row.summary) {
+    return [
+      { kind: "news", text: row.summary, source: "guardian-lake", observedAt: row.scrapedAt },
+    ];
+  }
+  // Olé Internacional — La Liga/Serie A/Bundesliga from South American lens;
+  // useful for motivation/Copa America hangover signals.
+  if (row.source === "ole_internacional" && row.summary) {
+    return [{ kind: "news", text: row.summary, source: "ole-lake", observedAt: row.scrapedAt }];
+  }
+  // FootballCritic — wide global club/transfer/injury headline coverage.
+  if (row.source === "footballcritic" && row.summary) {
+    return [
+      { kind: "news", text: row.summary, source: "footballcritic-lake", observedAt: row.scrapedAt },
+    ];
+  }
   if (
     (row.source === "transfermarkt" || row.source === "fotmob" || row.source === "sofascore") &&
     row.summary

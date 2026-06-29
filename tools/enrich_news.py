@@ -126,23 +126,30 @@ SYSTEM_PROMPT = (
 
 _GOOGLE_AI_MODE = "https://www.google.com/search?udm=50&q={q}"
 
-# Football-specific RSS feeds confirmed live 2026-06-23 (see oracle_site_probe_findings
+# Football-specific RSS feeds confirmed live 2026-06-28 (see oracle_site_probe_findings
 # memory). ESPN's RSS endpoints return an empty 202 bot-mitigation response — excluded.
 # The Athletic is soft-paywalled: RSS exposes headline+teaser only, never full article
 # body — that limitation is inherent to the feed, not a bypass we're avoiding.
+# FootballCritic returns 403 without a browser UA — wired in _DEDICATED_NEWS_FEEDS so
+# it uses _RSS_HDR (same Chrome UA the others use); confirmed 200 with UA 2026-06-28.
+# Olé Internacional follows a 301 redirect — urllib.request handles this natively.
 _RSS_FEEDS: dict[str, str] = {
     "bbc_sport": "http://feeds.bbci.co.uk/sport/football/rss.xml",
     "sky_sports": "https://www.skysports.com/rss/0,20514,11095,00.xml",
     "the_athletic": "https://theathletic.com/football/?rss",
+    "guardian_football": "https://www.theguardian.com/football/rss",
+    "ole_internacional": "http://www.ole.com.ar/rss/futbol-internacional/",
 }
 
 # Dedicated lineup/squad-news feeds written under their OWN source names (not the
 # generic "rss_news"), so newsIntel.ts can route them precisely: OneFootball →
 # kind "lineup" (confirmed/predicted XI — the goals model cares about attacker
 # availability), Evening Standard → kind "news" (World Cup squad / injury reportage).
+# FootballCritic → kind "news" (global club/transfer/injury headlines, wide coverage).
 _DEDICATED_NEWS_FEEDS: dict[str, str] = {
     "onefootball": "https://onefootball.com/en/rss",
     "evening_standard": "https://www.standard.co.uk/sport/football/rss",
+    "footballcritic": "https://www.footballcritic.com/rss",
 }
 _RSS_HDR = {
     "User-Agent": (

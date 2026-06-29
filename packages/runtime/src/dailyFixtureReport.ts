@@ -10,6 +10,7 @@
  *  helpers for visual consistency with the engine-decision report. */
 import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { lookupMarket, PRICEABLE_FAMILIES } from "@oracle/engine";
 import { type DailyNewsRow, loadDailyNews, teamSlug } from "./dailyStore.js";
 import { findLineupSummary, type LineupSummary, loadLineupSummaries } from "./lineups.js";
 import { CSS, esc, pct } from "./report.js";
@@ -71,16 +72,34 @@ function renderOdds(event: SportyBetEvent): string {
 function renderAllMarkets(event: SportyBetEvent): string {
   const markets = event.detail?.odds?.allMarkets;
   if (!markets?.length) return "";
+  // Coverage against the canonical ORACLE market index (packages/engine/markets):
+  // how many of the markets the book published this fixture ORACLE recognises and
+  // has a deterministic model for. Out-of-catalog entries = markets SportyBet
+  // added since the index was last regenerated (build_market_catalog.py).
+  let inCatalog = 0;
+  let priceable = 0;
+  for (const m of markets) {
+    const c = lookupMarket(m.id);
+    if (!c) continue;
+    inCatalog++;
+    if (PRICEABLE_FAMILIES.has(c.family)) priceable++;
+  }
+  const coverage = line(
+    "Market index coverage",
+    `${inCatalog}/${markets.length} in catalog, ${priceable} deterministically priceable`
+  );
   const rows = markets
     .map((m) => {
+      const c = lookupMarket(m.id);
+      const fam = c ? ` <span class="raw-meta">[${c.family}]</span>` : "";
       const label = esc(m.desc || m.name || m.id);
       const outs = (m.outcomes ?? [])
         .map((o) => `${esc(o.desc ?? o.id)}: ${esc(o.odds ?? "?")}`)
         .join(" | ");
-      return `<div class="raw-market-row">${label}${m.specifier ? ` <span class="raw-meta">(${esc(m.specifier)})</span>` : ""} — ${outs}</div>`;
+      return `<div class="raw-market-row">${label}${fam}${m.specifier ? ` <span class="raw-meta">(${esc(m.specifier)})</span>` : ""} — ${outs}</div>`;
     })
     .join("\n");
-  return `<details class="raw-details"><summary>Full markets catalogue (${markets.length})</summary>${rows}</details>`;
+  return `${coverage}<details class="raw-details"><summary>Full markets catalogue (${markets.length})</summary>${rows}</details>`;
 }
 
 /** Full raw scrape payload per news source — the report's "summary" line above

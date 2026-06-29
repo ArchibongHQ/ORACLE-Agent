@@ -5,6 +5,13 @@
 import type { StoragePort } from "@oracle/storage";
 import { isotonicCalibrateFp } from "../calibration/index.js";
 import { type GbmModel, loadGbmModel, predictGbm } from "../gbm/index.js";
+import {
+  devigTwoWay,
+  FAMILY_LABEL,
+  lookupMarket,
+  type MarketFamily,
+  PRICEABLE_FAMILIES,
+} from "../markets/index.js";
 import type {
   AhPivotResult,
   MarketBook,
@@ -23,6 +30,7 @@ import {
   applyTravelFriction,
   asianHandicapPivot,
   buildBivariateMatrix,
+  buildHalfTimeMatrix,
   buildMatrix,
   CorrelationMatrix,
   calibratedZipPi,
@@ -32,6 +40,7 @@ import {
   DEFAULT_BIVARIATE_LAMBDA3,
   detectLowScoringRegime,
   drawCalibrationFactor,
+  extractHalfTimeMarkets,
   extractMarkets,
   gaussianRand,
   generateSyntheticAlpha,
@@ -56,6 +65,7 @@ import type {
   AllMarketEntry,
   AllMarketOutcome,
   EVMarket,
+  MarketCoverage,
   Matrix,
   OracleConfig,
   RunResult,
@@ -519,7 +529,19 @@ function priceAllMarketOutcome(
   const specLc = (market.specifier ?? "").toLowerCase();
   const descLc = (outcome.desc ?? "").toLowerCase().trim();
   if (!descLc) return null;
-  if (/half|1st|2nd|\bht\b/.test(nameLc) || /half/.test(specLc)) return null;
+
+  // Catalog-driven gate: when the market is in the canonical index, trust its
+  // ORACLE family — only families we have a full-time goal-matrix model for are
+  // priced here; everything else (half, combo, specials, exotic, ...) is left to
+  // the LLM executor / left unpriced rather than mis-sniffed by name. For ids not
+  // yet in the catalog (a market SportyBet added since last regeneration) fall
+  // back to the original name-based half/in-play guard so nothing regresses.
+  const cat = lookupMarket(market.id);
+  if (cat) {
+    if (!PRICEABLE_FAMILIES.has(cat.family)) return null;
+  } else if (/half|1st|2nd|\bht\b/.test(nameLc) || /half/.test(specLc)) {
+    return null;
+  }
 
   // Correct score, e.g. outcome desc "2-1" / "2:1"
   const scoreMatch = descLc.match(/^(\d+)\s*[-:]\s*(\d+)$/);
@@ -632,12 +654,23 @@ export class ExecutionEngine {
     if (!oddsData) return evs;
     const proximateVeto = hoursToKO < 1.5 && globalVelocity < -0.02;
 
-    const check = (cat: string, label: string, mp: number | undefined, od: number | undefined) => {
+    const check = (
+      cat: MarketFamily,
+      label: string,
+      mp: number | undefined,
+      od: number | undefined,
+      /** Complementary leg's odds, when known (e.g. BTTS No when pricing BTTS
+       *  Yes). When present, the implied probability used for `rawEdge` is
+       *  devigged against this pair instead of the raw 1/od — `od` itself
+       *  (and therefore `ev`, the actual payout math) is untouched. */
+      oppositeOd?: number
+    ) => {
       if (!mp || !od || od <= 1) return;
-      const ip = 1 / od,
+      const devigged = oppositeOd ? devigTwoWay(od, oppositeOd) : undefined;
+      const ip = devigged ? devigged[0] : 1 / od,
         rawEdge = mp - ip,
         ev = adjEV(mp, od);
-      const adjHurdle = cat === "1x2" ? Math.max(0.1, hurdle(mp)) : hurdle(mp);
+      const adjHurdle = cat === "match_result" ? Math.max(0.1, hurdle(mp)) : hurdle(mp);
       const _varMod = (() => {
         const lb = label;
         if (lb.includes("First Half Under 1.5") || lb.includes("FH Under 1.5")) return 1.2;
@@ -685,8 +718,7 @@ export class ExecutionEngine {
       const sentinelVeto =
         (rawEdge > 0 && globalVelocity < -0.08) || proximateVeto || isUpsetVetoed;
       const isVolLoving =
-        (cat === "Goals O/U" && label.includes("Over")) ||
-        (cat === "BTTS" && label.includes("Yes"));
+        (cat === "goals_ou" && label.includes("Over")) || (cat === "btts" && label.includes("Yes"));
       const mVarMult = varMultiplier < 1.0 && isVolLoving ? 1.0 : varMultiplier;
       const isElasticMesVeto = mes < 0.85 && rawEdge < 0.08;
 
@@ -710,9 +742,10 @@ export class ExecutionEngine {
         stake = clamp(stake, 0, 0.25);
         const rankScore = ev * _varMod;
         evs.push({
-          cat,
+          cat: FAMILY_LABEL[cat],
           label,
-          market: cat,
+          market: FAMILY_LABEL[cat],
+          family: cat,
           side: label,
           mp,
           modelProb: mp,
@@ -727,9 +760,10 @@ export class ExecutionEngine {
         });
       } else if (isElasticMesVeto && ev > 0) {
         evs.push({
-          cat,
+          cat: FAMILY_LABEL[cat],
           label,
-          market: cat,
+          market: FAMILY_LABEL[cat],
+          family: cat,
           side: label,
           mp,
           modelProb: mp,
@@ -745,9 +779,10 @@ export class ExecutionEngine {
         });
       } else if (sentinelVeto && ev > 0) {
         evs.push({
-          cat,
+          cat: FAMILY_LABEL[cat],
           label,
-          market: cat,
+          market: FAMILY_LABEL[cat],
+          family: cat,
           side: label,
           mp,
           modelProb: mp,
@@ -764,18 +799,78 @@ export class ExecutionEngine {
       }
     };
 
-    // BLOCK 1: Goals O/U
+    // BLOCK 1: Goals O/U (over/under devigged pairwise at each matching line)
     if (markets.ou) {
-      check("Goals O/U", "Over 2.5", markets.ou["over_2.5"], oddsData["over_2.5"]);
-      check("Goals O/U", "Under 3.5", markets.ou["under_3.5"], oddsData["under_3.5"]);
-      check("Goals O/U", "Under 4.5", markets.ou["under_4.5"], oddsData["under_4.5"]);
-      check("Goals O/U", "Under 2.5", markets.ou["under_2.5"], oddsData["under_2.5"]);
-      check("Goals O/U", "Over 1.5", markets.ou["over_1.5"], oddsData["over_1.5"]);
-      check("Goals O/U", "Over 0.5", markets.ou["over_0.5"], oddsData["over_0.5"]);
-      check("Goals O/U", "Over 3.5", markets.ou["over_3.5"], oddsData["over_3.5"]);
-      check("Goals O/U", "Over 4.5", markets.ou["over_4.5"], oddsData["over_4.5"]);
-      check("Goals O/U", "Under 1.5", markets.ou["under_1.5"], oddsData["under_1.5"]);
-      check("Goals O/U", "Under 0.5", markets.ou["under_0.5"], oddsData["under_0.5"] ?? 0);
+      check(
+        "goals_ou",
+        "Over 0.5",
+        markets.ou["over_0.5"],
+        oddsData["over_0.5"],
+        oddsData["under_0.5"]
+      );
+      check(
+        "goals_ou",
+        "Under 0.5",
+        markets.ou["under_0.5"],
+        oddsData["under_0.5"] ?? 0,
+        oddsData["over_0.5"]
+      );
+      check(
+        "goals_ou",
+        "Over 1.5",
+        markets.ou["over_1.5"],
+        oddsData["over_1.5"],
+        oddsData["under_1.5"]
+      );
+      check(
+        "goals_ou",
+        "Under 1.5",
+        markets.ou["under_1.5"],
+        oddsData["under_1.5"],
+        oddsData["over_1.5"]
+      );
+      check(
+        "goals_ou",
+        "Over 2.5",
+        markets.ou["over_2.5"],
+        oddsData["over_2.5"],
+        oddsData["under_2.5"]
+      );
+      check(
+        "goals_ou",
+        "Under 2.5",
+        markets.ou["under_2.5"],
+        oddsData["under_2.5"],
+        oddsData["over_2.5"]
+      );
+      check(
+        "goals_ou",
+        "Over 3.5",
+        markets.ou["over_3.5"],
+        oddsData["over_3.5"],
+        oddsData["under_3.5"]
+      );
+      check(
+        "goals_ou",
+        "Under 3.5",
+        markets.ou["under_3.5"],
+        oddsData["under_3.5"],
+        oddsData["over_3.5"]
+      );
+      check(
+        "goals_ou",
+        "Over 4.5",
+        markets.ou["over_4.5"],
+        oddsData["over_4.5"],
+        oddsData["under_4.5"]
+      );
+      check(
+        "goals_ou",
+        "Under 4.5",
+        markets.ou["under_4.5"],
+        oddsData["under_4.5"],
+        oddsData["over_4.5"]
+      );
     }
 
     // BLOCK 2: Asian 2 Goals
@@ -792,8 +887,8 @@ export class ExecutionEngine {
           : markets.asian2.under > 0.01
             ? 1 / markets.asian2.under
             : 0;
-      check("Asian 2 Goals", "Asian Over 2 Goals", markets.asian2.over, a2Over);
-      check("Asian 2 Goals", "Asian Under 2 Goals", markets.asian2.under, a2Under);
+      check("goals_ou", "Asian Over 2 Goals", markets.asian2.over, a2Over);
+      check("goals_ou", "Asian Under 2 Goals", markets.asian2.under, a2Under);
     }
 
     // BLOCK 3: Team totals
@@ -822,14 +917,14 @@ export class ExecutionEngine {
           : (markets.teamA["under_1.5"] ?? 0) > 0.01
             ? 1 / markets.teamA["under_1.5"]!
             : 0;
-      check("Team Total", "Home Total Over 0.5", markets.teamH["over_0.5"], htHOdds05);
-      check("Team Total", "Away Total Over 0.5", markets.teamA["over_0.5"], atAOdds05);
-      check("Team Total", "Home Total Under 1.5", markets.teamH["under_1.5"], htHU15);
-      check("Team Total", "Away Total Under 1.5", markets.teamA["under_1.5"], atAU15);
+      check("team_total", "Home Total Over 0.5", markets.teamH["over_0.5"], htHOdds05);
+      check("team_total", "Away Total Over 0.5", markets.teamA["over_0.5"], atAOdds05);
+      check("team_total", "Home Total Under 1.5", markets.teamH["under_1.5"], htHU15);
+      check("team_total", "Away Total Under 1.5", markets.teamA["under_1.5"], atAU15);
       const h15 = markets.teamH["over_1.5"] ?? 0;
       const a15 = markets.teamA["over_1.5"] ?? 0;
-      check("Team Total", "Home Total Over 1.5", h15, h15 > 0.01 ? 1 / h15 : 0);
-      check("Team Total", "Away Total Over 1.5", a15, a15 > 0.01 ? 1 / a15 : 0);
+      check("team_total", "Home Total Over 1.5", h15, h15 > 0.01 ? 1 / h15 : 0);
+      check("team_total", "Away Total Over 1.5", a15, a15 > 0.01 ? 1 / a15 : 0);
     }
 
     // BLOCK 4: Asian Handicap
@@ -864,7 +959,7 @@ export class ExecutionEngine {
       ];
       ahLines.forEach((m) =>
         check(
-          "Asian Handicap",
+          "asian_handicap",
           m.label,
           markets.ah[m.key] as number | undefined,
           oddsData[`ah_${m.key}`]
@@ -880,8 +975,8 @@ export class ExecutionEngine {
       const wEHA_mp = markets.teamA
         ? Math.min(0.97, (markets.teamA["over_0.5"] ?? 0) * 0.88 + markets.aw * 0.12)
         : markets.aw;
-      check("Win Either Half", "Win Either Half (H)", wEHH_mp, oddsData.win_either_half_h);
-      check("Win Either Half", "Win Either Half (A)", wEHA_mp, oddsData.win_either_half_a);
+      check("half", "Win Either Half (H)", wEHH_mp, oddsData.win_either_half_h);
+      check("half", "Win Either Half (A)", wEHA_mp, oddsData.win_either_half_a);
     }
 
     // BLOCK 6: First Half
@@ -890,26 +985,158 @@ export class ExecutionEngine {
       const fhLA = (markets.teamA ? (markets.teamA["over_0.5"] ?? 0) : 0.6) * 0.5;
       const fhGoals0 = Math.exp(-(fhLH + fhLA));
       const fhU15_mp = fhGoals0 + fhGoals0 * (fhLH + fhLA);
-      check("First Half", "FH Under 1.5 Goals", Math.min(0.95, fhU15_mp), oddsData.fh_under_1_5);
+      check("half", "FH Under 1.5 Goals", Math.min(0.95, fhU15_mp), oddsData.fh_under_1_5);
     }
     if ((oddsData.fh_draw ?? 0) > 1 && !cfg.enableGoalsOnlyMode) {
-      check("First Half", "FH Draw", Math.min(0.55, markets.dr * 1.35), oddsData.fh_draw);
+      check("half", "FH Draw", Math.min(0.55, markets.dr * 1.35), oddsData.fh_draw);
     }
 
     // BLOCK 7: BTTS
-    check("BTTS", "BTTS Yes", markets.btts, oddsData.btts_yes);
-    check("BTTS", "BTTS No", markets.noBtts, oddsData.btts_no);
+    check("btts", "BTTS Yes", markets.btts, oddsData.btts_yes, oddsData.btts_no);
+    check("btts", "BTTS No", markets.noBtts, oddsData.btts_no, oddsData.btts_yes);
 
     // BLOCK 8: Draw No Bet
     if (!cfg.enableGoalsOnlyMode) {
-      check("Draw No Bet", "DNB Home", markets.dnb_h, oddsData.dnb_h);
-      check("Draw No Bet", "DNB Away", markets.dnb_a, oddsData.dnb_a);
+      check("dnb", "DNB Home", markets.dnb_h, oddsData.dnb_h, oddsData.dnb_a);
+      check("dnb", "DNB Away", markets.dnb_a, oddsData.dnb_a, oddsData.dnb_h);
     }
 
     // BLOCK 9: Double Chance
     if (!cfg.enableGoalsOnlyMode) {
-      check("Double Chance", "1X", markets.dc_1x, oddsData.dc_1x);
-      check("Double Chance", "X2", markets.dc_x2, oddsData.dc_x2);
+      check("double_chance", "1X", markets.dc_1x, oddsData.dc_1x);
+      check("double_chance", "X2", markets.dc_x2, oddsData.dc_x2);
+    }
+
+    // BLOCK 10: First Half (full Poisson model via HalfTimeBook)
+    if (markets.ht && !cfg.enableGoalsOnlyMode) {
+      const ht = markets.ht;
+      check(
+        "half",
+        "FH Over 0.5",
+        ht.fhOu["over_0.5"],
+        oddsData.fh_over_0_5,
+        oddsData.fh_under_0_5
+      );
+      check(
+        "half",
+        "FH Under 0.5",
+        ht.fhOu["under_0.5"],
+        oddsData.fh_under_0_5,
+        oddsData.fh_over_0_5
+      );
+      check(
+        "half",
+        "FH Over 1.5",
+        ht.fhOu["over_1.5"],
+        oddsData.fh_over_1_5,
+        oddsData.fh_under_1_5
+      );
+      check(
+        "half",
+        "FH Under 1.5 Goals",
+        ht.fhOu["under_1.5"],
+        oddsData.fh_under_1_5,
+        oddsData.fh_over_1_5
+      );
+      check(
+        "half",
+        "FH Over 2.5",
+        ht.fhOu["over_2.5"],
+        oddsData.fh_over_2_5,
+        oddsData.fh_under_2_5
+      );
+      check(
+        "half",
+        "FH Under 2.5",
+        ht.fhOu["under_2.5"],
+        oddsData.fh_under_2_5,
+        oddsData.fh_over_2_5
+      );
+      check("half", "FH Home Win", ht.fhHw, oddsData.fh_home_win ?? oddsData.fh_1);
+      check("half", "FH Draw", ht.fhDr, oddsData.fh_draw ?? oddsData.fh_x);
+      check("half", "FH Away Win", ht.fhAw, oddsData.fh_away_win ?? oddsData.fh_2);
+      check("half", "FH BTTS Yes", ht.fhBtts, oddsData.fh_btts_yes, oddsData.fh_btts_no);
+      check("half", "FH BTTS No", 1 - ht.fhBtts, oddsData.fh_btts_no, oddsData.fh_btts_yes);
+      check("half", "FH DC 1X", ht.fhHw + ht.fhDr, oddsData.fh_dc_1x);
+      check("half", "FH DC X2", ht.fhAw + ht.fhDr, oddsData.fh_dc_x2);
+      check("half", "FH Home Total Over 0.5", ht.fhTeamH["over_0.5"], oddsData.fh_home_over_0_5);
+      check("half", "FH Away Total Over 0.5", ht.fhTeamA["over_0.5"], oddsData.fh_away_over_0_5);
+    }
+
+    // BLOCK 11: Second Half (inferred from FT − FH)
+    if (markets.ht && !cfg.enableGoalsOnlyMode) {
+      const ht = markets.ht;
+      check(
+        "half",
+        "SH Over 0.5",
+        ht.shOu["over_0.5"],
+        oddsData.sh_over_0_5,
+        oddsData.sh_under_0_5
+      );
+      check(
+        "half",
+        "SH Under 0.5",
+        ht.shOu["under_0.5"],
+        oddsData.sh_under_0_5,
+        oddsData.sh_over_0_5
+      );
+      check(
+        "half",
+        "SH Over 1.5",
+        ht.shOu["over_1.5"],
+        oddsData.sh_over_1_5,
+        oddsData.sh_under_1_5
+      );
+      check(
+        "half",
+        "SH Under 1.5",
+        ht.shOu["under_1.5"],
+        oddsData.sh_under_1_5,
+        oddsData.sh_over_1_5
+      );
+      check(
+        "half",
+        "SH Over 2.5",
+        ht.shOu["over_2.5"],
+        oddsData.sh_over_2_5,
+        oddsData.sh_under_2_5
+      );
+      check(
+        "half",
+        "SH Under 2.5",
+        ht.shOu["under_2.5"],
+        oddsData.sh_under_2_5,
+        oddsData.sh_over_2_5
+      );
+      check("half", "SH Home Win", ht.shHw, oddsData.sh_home_win ?? oddsData.sh_1);
+      check("half", "SH Draw", ht.shDr, oddsData.sh_draw ?? oddsData.sh_x);
+      check("half", "SH Away Win", ht.shAw, oddsData.sh_away_win ?? oddsData.sh_2);
+    }
+
+    // BLOCK 12: Combo (joint outcomes, v1 independence assumption)
+    if (!cfg.enableGoalsOnlyMode) {
+      // 1X2 & BTTS
+      check("combo", "Home & BTTS Yes", markets.hw * markets.btts, oddsData.combo_home_btts_yes);
+      check("combo", "Draw & BTTS Yes", markets.dr * markets.btts, oddsData.combo_draw_btts_yes);
+      check("combo", "Away & BTTS Yes", markets.aw * markets.btts, oddsData.combo_away_btts_yes);
+      check("combo", "Home & BTTS No", markets.hw * markets.noBtts, oddsData.combo_home_btts_no);
+      check("combo", "Away & BTTS No", markets.aw * markets.noBtts, oddsData.combo_away_btts_no);
+      // 1X2 & Over/Under 2.5
+      const ou25 = markets.ou["over_2.5"] ?? 0;
+      const un25 = markets.ou["under_2.5"] ?? 0;
+      check("combo", "Home & Over 2.5", markets.hw * ou25, oddsData.combo_home_over_2_5);
+      check("combo", "Draw & Under 2.5", markets.dr * un25, oddsData.combo_draw_under_2_5);
+      check("combo", "Away & Over 2.5", markets.aw * ou25, oddsData.combo_away_over_2_5);
+      check("combo", "Home & Under 2.5", markets.hw * un25, oddsData.combo_home_under_2_5);
+      check("combo", "Away & Under 2.5", markets.aw * un25, oddsData.combo_away_under_2_5);
+      // Over/Under 2.5 & BTTS
+      check("combo", "Over 2.5 & BTTS Yes", ou25 * markets.btts, oddsData.combo_over_2_5_btts_yes);
+      check(
+        "combo",
+        "Under 2.5 & BTTS No",
+        un25 * markets.noBtts,
+        oddsData.combo_under_2_5_btts_no
+      );
     }
 
     return evs.sort((a, b) => b.rankingScore - a.rankingScore);
@@ -931,16 +1158,30 @@ export class ExecutionEngine {
     councilPenalty: boolean,
     varMultiplier: number,
     drawdownPenalty: number
-  ): EVMarket[] {
-    if (!allMarkets?.length) return [];
+  ): { markets: EVMarket[]; coverage: MarketCoverage } {
+    const coverage: MarketCoverage = { total: 0, inCatalog: 0, priceable: 0, priced: 0 };
+    if (!allMarkets?.length) return { markets: [], coverage };
     const out: EVMarket[] = [];
     for (const market of allMarkets) {
+      coverage.total++;
+      const cat = lookupMarket(market.id);
+      if (cat) coverage.inCatalog++;
+      // Skip whole families the deterministic pricer has no model for before
+      // touching outcomes — cheaper than pricing then discarding, and keeps the
+      // coverage tally honest (priceable counts only what we'd actually attempt).
+      // Uncatalogued ids fall through so a market SportyBet added since the last
+      // catalog regeneration still gets a chance via priceAllMarketOutcome.
+      if (cat && !PRICEABLE_FAMILIES.has(cat.family)) continue;
+      if (cat) coverage.priceable++;
+      const family: MarketFamily | undefined = cat?.family;
       const marketLabel = market.desc || market.name || "Market";
+      let pricedThisMarket = false;
       for (const outcome of market.outcomes ?? []) {
         const odds = parseFloat(outcome.odds ?? "");
         if (!Number.isFinite(odds) || odds <= 1) continue;
         const mp = priceAllMarketOutcome(finalMat, market, outcome);
         if (mp == null || mp <= 0 || mp >= 1) continue;
+        pricedThisMarket = true;
         const ip = 1 / odds;
         const rawEdge = mp - ip;
         const ev = adjEV(mp, odds);
@@ -965,6 +1206,7 @@ export class ExecutionEngine {
           label: `${marketLabel} — ${outcome.desc ?? ""}`.trim(),
           market: "AllMarkets Scan",
           side: outcome.desc ?? undefined,
+          family,
           mp,
           modelProb: mp,
           ip,
@@ -977,8 +1219,9 @@ export class ExecutionEngine {
           varianceMod: 1.0,
         });
       }
+      if (pricedThisMarket) coverage.priced++;
     }
-    return out.sort((a, b) => b.rankingScore - a.rankingScore).slice(0, 10);
+    return { markets: out.sort((a, b) => b.rankingScore - a.rankingScore).slice(0, 10), coverage };
   }
 
   // ── SensitivityEngine (Gaussian ensemble, K=20) ──────────────────────────
@@ -1502,6 +1745,8 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
         eHg += i * (finalMat[i]?.[j] ?? 0);
         eAg += j * (finalMat[i]?.[j] ?? 0);
       }
+    // Build half-time book from expected goals derived from the ensemble matrix
+    finalMkt.ht = extractHalfTimeMarkets(buildHalfTimeMatrix(eHg, eAg), finalMat);
 
     const mc: VarianceResult = monteCarlo(eHg, eAg, dynamicRho ?? lp.baseRho, mcRuns);
 
@@ -1868,7 +2113,8 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
         mc.varMultiplier,
         drawdownPenalty
       );
-      if (scanned.length) rawRes.evMarkets = [...rawRes.evMarkets, ...scanned];
+      if (scanned.markets.length) rawRes.evMarkets = [...rawRes.evMarkets, ...scanned.markets];
+      if (allMarkets?.length) rawRes.marketCoverage = scanned.coverage;
     }
 
     // Portfolio covariance + correlated parlay hard cap (BUG-M05 FIX)
