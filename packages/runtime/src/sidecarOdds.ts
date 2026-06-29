@@ -134,5 +134,40 @@ export function flattenSidecarOdds(detail: SportyBetEventDetail): Record<string,
     if (wehA) flat.win_either_half_a = wehA;
   }
 
+  // Combo (joint outcomes) — engine BLOCK 12 reads these flat combo_* keys.
+  // Source: tools/scrape_fixtures.py _parse_combo_markets, market ids 35/36/37.
+  const combo = o?.combo;
+  if (combo) {
+    const btts = combo["1x2_btts"];
+    const homeBttsYes = toNum(btts?.home_yes);
+    const drawBttsYes = toNum(btts?.draw_yes);
+    const awayBttsYes = toNum(btts?.away_yes);
+    const homeBttsNo = toNum(btts?.home_no);
+    const awayBttsNo = toNum(btts?.away_no);
+    if (homeBttsYes) flat.combo_home_btts_yes = homeBttsYes;
+    if (drawBttsYes) flat.combo_draw_btts_yes = drawBttsYes;
+    if (awayBttsYes) flat.combo_away_btts_yes = awayBttsYes;
+    if (homeBttsNo) flat.combo_home_btts_no = homeBttsNo;
+    if (awayBttsNo) flat.combo_away_btts_no = awayBttsNo;
+
+    const ou25Combo = combo["1x2_ou"]?.["2.5"];
+    const homeOver25 = toNum(ou25Combo?.home_over);
+    const drawUnder25 = toNum(ou25Combo?.draw_under);
+    const awayOver25 = toNum(ou25Combo?.away_over);
+    const homeUnder25 = toNum(ou25Combo?.home_under);
+    const awayUnder25 = toNum(ou25Combo?.away_under);
+    if (homeOver25) flat.combo_home_over_2_5 = homeOver25;
+    if (drawUnder25) flat.combo_draw_under_2_5 = drawUnder25;
+    if (awayOver25) flat.combo_away_over_2_5 = awayOver25;
+    if (homeUnder25) flat.combo_home_under_2_5 = homeUnder25;
+    if (awayUnder25) flat.combo_away_under_2_5 = awayUnder25;
+
+    const ouBtts25 = combo.ou_btts?.["2.5"];
+    const over25BttsYes = toNum(ouBtts25?.over_yes);
+    const under25BttsNo = toNum(ouBtts25?.under_no);
+    if (over25BttsYes) flat.combo_over_2_5_btts_yes = over25BttsYes;
+    if (under25BttsNo) flat.combo_under_2_5_btts_no = under25BttsNo;
+  }
+
   return flat;
 }

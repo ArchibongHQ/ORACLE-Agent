@@ -1,4 +1,4 @@
-import type { BatchJobResult, EVMarket, RunResult } from "@oracle/engine";
+import type { BatchJobResult, EVMarket, PickRefMarket, RunResult } from "@oracle/engine";
 import { describe, expect, it } from "vitest";
 import type { SportyBetEventDetail } from "../src/selectFixtures.js";
 import { sidecarKey } from "../src/selectFixtures.js";
@@ -11,7 +11,13 @@ import {
 
 // ── builders ────────────────────────────────────────────────────────────────
 
-function evm(label: string, mp: number, ip: number, odds = 1 / ip, cat = "Goals O/U"): EVMarket {
+function evm(
+  label: string,
+  mp: number,
+  ip: number,
+  odds = 1 / ip,
+  cat: PickRefMarket = "Goals O/U"
+): EVMarket {
   return {
     cat,
     label,
@@ -48,7 +54,7 @@ function okJob(
     kickoff,
     result: { evMarkets } as unknown as RunResult,
     decision: {
-      primaryPick: { market: "x", odds: 1 },
+      primaryPick: { market: "Goals O/U", odds: 1 },
       confidence: 0.5,
       grade: "LEAN",
       rationale: "",

@@ -211,6 +211,76 @@ describe("flattenSidecarOdds — first-half exotics", () => {
   });
 });
 
+describe("flattenSidecarOdds — combo (joint outcomes)", () => {
+  it("flattens 1x2_btts into combo_*_btts_yes/no keys", () => {
+    const flat = flattenSidecarOdds(
+      detail({
+        combo: {
+          "1x2_btts": {
+            home_yes: "4.10",
+            home_no: "2.60",
+            draw_yes: "5.20",
+            draw_no: "9.70",
+            away_yes: "11.00",
+            away_no: "8.25",
+          },
+        },
+      })
+    );
+    expect(flat.combo_home_btts_yes).toBe(4.1);
+    expect(flat.combo_draw_btts_yes).toBe(5.2);
+    expect(flat.combo_away_btts_yes).toBe(11.0);
+    expect(flat.combo_home_btts_no).toBe(2.6);
+    expect(flat.combo_away_btts_no).toBe(8.25);
+  });
+
+  it("flattens 1x2_ou line 2.5 into combo_*_over_2_5/under_2_5 keys", () => {
+    const flat = flattenSidecarOdds(
+      detail({
+        combo: {
+          "1x2_ou": {
+            "2.5": {
+              home_under: "6.40",
+              home_over: "2.10",
+              draw_under: "9.60",
+              draw_over: "5.10",
+              away_under: "12.50",
+              away_over: "7.50",
+            },
+          },
+        },
+      })
+    );
+    expect(flat.combo_home_over_2_5).toBe(2.1);
+    expect(flat.combo_draw_under_2_5).toBe(9.6);
+    expect(flat.combo_away_over_2_5).toBe(7.5);
+    expect(flat.combo_home_under_2_5).toBe(6.4);
+    expect(flat.combo_away_under_2_5).toBe(12.5);
+  });
+
+  it("flattens ou_btts line 2.5 into combo_over_2_5_btts_yes / combo_under_2_5_btts_no", () => {
+    const flat = flattenSidecarOdds(
+      detail({
+        combo: {
+          ou_btts: {
+            "2.5": { over_yes: "2.75", over_no: "3.40", under_yes: "4.20", under_no: "1.65" },
+          },
+        },
+      })
+    );
+    expect(flat.combo_over_2_5_btts_yes).toBe(2.75);
+    expect(flat.combo_under_2_5_btts_no).toBe(1.65);
+  });
+
+  it("omits combo_* keys when the line/odds are absent or invalid", () => {
+    const flat = flattenSidecarOdds(
+      detail({ combo: { "1x2_ou": { "1.5": { home_over: "1.0" } } } })
+    );
+    expect(flat.combo_home_over_2_5).toBeUndefined();
+    expect(flat.combo_home_btts_yes).toBeUndefined();
+  });
+});
+
 describe("flattenSidecarOdds — empty / null odds", () => {
   it("returns empty object when odds block is null", () => {
     const flat = flattenSidecarOdds(detail({}));

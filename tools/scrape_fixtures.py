@@ -1081,6 +1081,72 @@ def _parse_half_markets(markets_data: dict) -> dict:
     return result
 
 
+def _parse_combo_markets(markets_data: dict) -> dict:
+    """Typed accessors for the joint 1X2+BTTS / 1X2+O-U / O-U+BTTS combo markets
+    on top of the generic _parse_all_markets capture, feeding the engine's BLOCK
+    12 (packages/engine/src/execution/index.ts). IDs verified live 2026-06-29
+    against the Brazil vs Japan fixture (45 combo-group entries present):
+      35=1X2 & GG/NG (outcomes 78=Home&Yes, 80=Home&No, 82=Draw&Yes, 84=Draw&No,
+         86=Away&Yes, 88=Away&No)
+      37=1X2 & Over/Under (line in specifier "total=<line>"; outcomes 794=Home&Under,
+         796=Home&Over, 798=Draw&Under, 800=Draw&Over, 802=Away&Under, 804=Away&Over)
+      36=Over/Under & GG/NG (line in specifier; outcomes are Over&Yes/Over&No/Under&Yes/Under&No
+         — exact ids vary by line, matched by outcome desc instead of id)
+    """
+    result: dict[str, Optional[dict]] = {
+        "1x2_btts": None, "ou_btts": {}, "1x2_ou": {},
+    }
+
+    def _line_key(spec: Optional[str]) -> Optional[str]:
+        if not spec or "total=" not in spec:
+            return None
+        return spec.split("total=", 1)[-1].strip()
+
+    for market in markets_data.get("markets") or []:
+        mid = str(market.get("id", ""))
+        spec = market.get("specifier")
+        outcomes = market.get("outcomes") or []
+        by_id = {str(o.get("id", "")): o.get("odds") for o in outcomes if o.get("odds")}
+        if not by_id:
+            continue
+
+        if mid == "35":
+            result["1x2_btts"] = {
+                "home_yes": by_id.get("78"), "home_no": by_id.get("80"),
+                "draw_yes": by_id.get("82"), "draw_no": by_id.get("84"),
+                "away_yes": by_id.get("86"), "away_no": by_id.get("88"),
+            }
+        elif mid == "37":
+            line = _line_key(spec)
+            if line:
+                result["1x2_ou"][line] = {  # type: ignore[index]
+                    "home_under": by_id.get("794"), "home_over": by_id.get("796"),
+                    "draw_under": by_id.get("798"), "draw_over": by_id.get("800"),
+                    "away_under": by_id.get("802"), "away_over": by_id.get("804"),
+                }
+        elif mid == "36":
+            line = _line_key(spec)
+            if line:
+                cell: dict[str, Optional[str]] = {}
+                for o in outcomes:
+                    desc = (o.get("desc") or "").lower()
+                    odds_val = o.get("odds")
+                    if not odds_val:
+                        continue
+                    if "over" in desc and "yes" in desc:
+                        cell["over_yes"] = odds_val
+                    elif "over" in desc and "no" in desc:
+                        cell["over_no"] = odds_val
+                    elif "under" in desc and "yes" in desc:
+                        cell["under_yes"] = odds_val
+                    elif "under" in desc and "no" in desc:
+                        cell["under_no"] = odds_val
+                if cell:
+                    result["ou_btts"][line] = cell  # type: ignore[index]
+
+    return result
+
+
 def _parse_form(form_data: dict) -> Optional[dict]:
     """Extract last-5 W/D/L from stats_match_form response.
 
@@ -1629,6 +1695,7 @@ def _fetch_fixture_detail(
         markets_payload = event_data.get("data", event_data)
         odds = _parse_odds(markets_payload)
         odds["half"] = _parse_half_markets(markets_payload)
+        odds["combo"] = _parse_combo_markets(markets_payload)
         odds["allMarkets"] = _parse_all_markets(markets_payload)
 
     # 2. match_info → team IDs, seasonId, statscoverage
