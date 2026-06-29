@@ -189,7 +189,7 @@ export function goalRateNudge(
   const signals: number[] = [];
   // over25_pct and btts_rate are 0..1 rates; centre on 0.5 (≈ league-neutral) and
   // scale the deviation. A team at O2.5=0.75 → +0.25 dev → strong upward nudge.
-  if (finite(ou)) signals.push(ou - 0.5);
+  if (finiteOrZero(ou)) signals.push(ou - 0.5);
   if (finiteOrZero(btts)) signals.push(btts - 0.5);
   if (signals.length === 0) return 1.0;
   const dev = signals.reduce((s, v) => s + v, 0) / signals.length;

@@ -213,6 +213,13 @@ describe("goalRateNudge", () => {
     expect(goalRateNudge(undefined, "home")).toBe(1.0);
   });
 
+  it("treats a real 0% over25_pct as the strongest down-signal, not as missing", () => {
+    // A team with a genuine 0% O2.5 rate is the most extreme low-scoring signal
+    // possible — must clamp to the floor, not fall through to the 1.0 no-op.
+    const d = detail({ overunder: { home: { over25_pct: 0 } } });
+    expect(goalRateNudge(d, "home")).toBe(0.9);
+  });
+
   it("nudges up for a high-scoring profile and down for a low one, clamped to [0.9,1.1]", () => {
     const high = detail({
       overunder: { home: { over25_pct: 0.9 } },
