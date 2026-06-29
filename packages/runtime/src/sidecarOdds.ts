@@ -108,5 +108,31 @@ export function flattenSidecarOdds(detail: SportyBetEventDetail): Record<string,
     flat[`ah_ap${lineSuffix}`] = ahA;
   }
 
+  // First-half exotics — the scraper parses these into the nested `half` block
+  // (tools/scrape_fixtures.py _parse_half_markets), but the engine reads them as
+  // flat fh_*/win_either_half_* keys (execution/index.ts BLOCK 6). Flatten only
+  // the lines/markets with a real source; FH 1x2/draw/BTTS/DC have no scraper
+  // source and are intentionally left unset.
+  const half = o?.half;
+  if (half) {
+    for (const line of ["0.5", "1.5", "2.5"]) {
+      const cell = half.ht_ou?.[line];
+      if (!cell) continue;
+      const suffix = line.replace(".", "_");
+      const over = toNum(cell.over);
+      const under = toNum(cell.under);
+      if (over) flat[`fh_over_${suffix}`] = over;
+      if (under) flat[`fh_under_${suffix}`] = under;
+    }
+    const fhHomeO = toNum(half.ht_team_ou?.home?.["0.5"]?.over);
+    const fhAwayO = toNum(half.ht_team_ou?.away?.["0.5"]?.over);
+    if (fhHomeO) flat.fh_home_over_0_5 = fhHomeO;
+    if (fhAwayO) flat.fh_away_over_0_5 = fhAwayO;
+    const wehH = toNum(half.win_either_half?.home?.yes);
+    const wehA = toNum(half.win_either_half?.away?.yes);
+    if (wehH) flat.win_either_half_h = wehH;
+    if (wehA) flat.win_either_half_a = wehA;
+  }
+
   return flat;
 }
