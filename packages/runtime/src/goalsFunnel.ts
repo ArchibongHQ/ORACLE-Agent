@@ -101,7 +101,7 @@ export interface GoalsFunnelResult {
 
 /** Runs stages 1-2 of the goals-discovery funnel over the full raw SportyBet
  *  daily event list, returning ranked FixtureJob[] ready for stage 3
- *  (runAnalysis with enableGoalsOnlyMode). Ranking order is preserved end to
+ *  (runAnalysis with full market scope). Ranking order is preserved end to
  *  end — callers that want a bounded LLM-tier pool can simply slice the
  *  returned jobs array, same convention as selectFixtures' llmEligible cap. */
 export async function runGoalsFunnel(
