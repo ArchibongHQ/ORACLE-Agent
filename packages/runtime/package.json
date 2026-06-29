@@ -22,7 +22,8 @@
     "@oracle/storage": "workspace:*",
     "@oracle/llm": "workspace:*",
     "@oracle/notify": "workspace:*",
-    "@oracle/booking": "workspace:*"
+    "@oracle/booking": "workspace:*",
+    "exceljs": "^4.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

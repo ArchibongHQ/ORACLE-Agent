@@ -1266,6 +1266,14 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
     winner ∈ home/away/draw (relative to that match's home/away team), NOT a
     string status. We count by winner. The home/away split here is per-historical-
     match, so it reflects head-to-head dominance, not the current fixture's sides.
+
+    Besides the aggregate counters (home_wins/away_wins/draws — relied on by the
+    engine scorer and test_gismo_parsers.py), this also surfaces a `matches` list
+    of the most-recent meetings with their scoreline and date (verified live
+    2026-06-29: each match carries result{home,away,winner}, time{date,uts}, and
+    teams{home.name, away.name}). The per-match detail was previously fetched but
+    discarded; the report/spreadsheet and the LLM arbiter want the actual results
+    (e.g. "2-0; 2-2; 3-1"), not just the tally. The summary shape is unchanged.
     """
     if not versus_data:
         return None
@@ -1276,7 +1284,8 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
     # `total` is the size of the counted window (not len(matches)) so home_wins +
     # away_wins + draws always reconciles to total — otherwise the report's
     # "last N meetings, H/A/D" line never adds up.
-    summary = {"total": len(window), "home_wins": 0, "away_wins": 0, "draws": 0}
+    summary: dict = {"total": len(window), "home_wins": 0, "away_wins": 0, "draws": 0}
+    detail: list[dict] = []
     for m in window:
         res = m.get("result")
         # Defend against the legacy string-result shape: a bare string has no
@@ -1284,20 +1293,35 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
         if not isinstance(res, dict):
             continue
         winner = (res.get("winner") or "").lower()
+        h, a = res.get("home"), res.get("away")
         if winner == "home":
             summary["home_wins"] += 1
         elif winner == "away":
             summary["away_wins"] += 1
         elif winner == "draw":
             summary["draws"] += 1
-        else:
+        elif isinstance(h, (int, float)) and isinstance(a, (int, float)) and h == a:
             # Live gismo records draws as winner:null with equal home/away goals
             # (verified 2026-06-25 — e.g. {home:2,away:2,winner:null}), never the
             # literal "draw" string. Infer the draw from the scoreline so drawn
             # meetings aren't silently dropped from the H2H tally.
-            h, a = res.get("home"), res.get("away")
-            if isinstance(h, (int, float)) and isinstance(a, (int, float)) and h == a:
-                summary["draws"] += 1
+            winner = "draw"
+            summary["draws"] += 1
+
+        teams = m.get("teams") or {}
+        tm = m.get("time") or {}
+        if isinstance(h, (int, float)) and isinstance(a, (int, float)):
+            detail.append({
+                "date": tm.get("date"),
+                "uts": tm.get("uts"),
+                "home_team": (teams.get("home") or {}).get("name"),
+                "away_team": (teams.get("away") or {}).get("name"),
+                "home_goals": int(h),
+                "away_goals": int(a),
+                "winner": winner or None,
+            })
+    if detail:
+        summary["matches"] = detail
     return summary
 
 

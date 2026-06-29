@@ -183,9 +183,24 @@ class TestParseH2H:
         ]
     }
 
+    @staticmethod
+    def _summary(out):
+        # The aggregate contract the engine scorer + report line depend on. `matches`
+        # is additive per-meeting detail (verified live 2026-06-29) asserted separately
+        # — assert the summary subset here, not whole-dict equality.
+        return {k: out[k] for k in ("total", "home_wins", "away_wins", "draws")}
+
     def test_counts_by_winner_object(self):
         out = _parse_h2h(self.DATA)
-        assert out == {"total": 3, "home_wins": 1, "away_wins": 1, "draws": 1}
+        assert self._summary(out) == {"total": 3, "home_wins": 1, "away_wins": 1, "draws": 1}
+
+    def test_emits_match_by_match_detail(self):
+        # The per-match scoreline/winner behind the counters (e.g. "2-0; 1-1; 0-3").
+        out = _parse_h2h(self.DATA)
+        assert len(out["matches"]) == 3
+        assert out["matches"][0]["home_goals"] == 2
+        assert out["matches"][0]["away_goals"] == 0
+        assert out["matches"][0]["winner"] == "home"
 
     def test_none_on_empty_matches(self):
         assert _parse_h2h({"matches": []}) is None
@@ -201,7 +216,7 @@ class TestParseH2H:
             ]
         }
         out = _parse_h2h(data)
-        assert out == {"total": 2, "home_wins": 1, "away_wins": 0, "draws": 0}
+        assert self._summary(out) == {"total": 2, "home_wins": 1, "away_wins": 0, "draws": 0}
 
     def test_null_winner_equal_score_counts_as_draw(self):
         # Real live shape (verified 2026-06-25, Liverpool vs Man Utd): draws come
@@ -216,7 +231,9 @@ class TestParseH2H:
             ]
         }
         out = _parse_h2h(data)
-        assert out == {"total": 4, "home_wins": 1, "away_wins": 0, "draws": 2}
+        assert self._summary(out) == {"total": 4, "home_wins": 1, "away_wins": 0, "draws": 2}
+        # the inferred draws also surface tagged "draw" in the per-match detail
+        assert [m["winner"] for m in out["matches"]] == ["draw", "draw", "home", None]
 
     def test_total_reconciles_to_counted_window(self):
         # `total` must equal the size of the counted window (<=10), so

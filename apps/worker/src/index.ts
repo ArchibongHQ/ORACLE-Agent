@@ -16,6 +16,7 @@ import {
   buildNotifiers,
   notifyAll,
   sendTelegramDocument,
+  sendTelegramText,
   summarizeBatch,
 } from "@oracle/notify";
 import {
@@ -27,7 +28,7 @@ import {
   findSidecarDetail,
   fixturesPartitionExists,
   type GoalsSelectionResult,
-  generateAndWriteDailyFixtureReport,
+  generateAndWriteFixtureWorkbook,
   loadEnv,
   loadSportyBetIndex,
   markPrompted,
@@ -436,27 +437,57 @@ async function acquireDailyJob(): Promise<void> {
  *  after scrape and before any other thing." Best-effort: a failure here
  *  (missing token, write error) is logged but never blocks the rest of the run. */
 async function sendDailyFixtureReport(): Promise<void> {
+  const startedAt = new Date();
+  const today = startedAt.toISOString().slice(0, 10);
+  const hasCreds = Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID);
+  process.stdout.write(`[fixture-report] start ${startedAt.toISOString()} (creds=${hasCreds})\n`);
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const result = await generateAndWriteDailyFixtureReport(today, join(ROOT, ".tmp/reports"));
+    // Spreadsheet (.xlsx) replaces the old HTML report — one row per fixture with
+    // every captured field, plus a per-outcome Markets sheet.
+    const result = await generateAndWriteFixtureWorkbook(today, join(ROOT, ".tmp/reports"));
     if (!result) {
-      process.stdout.write("[fixture-report] no SportyBet fixtures available — skipping\n");
+      // No-fixtures is a real, reportable state — surface it loudly (was a silent
+      // return that made "the report never fired" indistinguishable from a crash).
+      process.stderr.write("[fixture-report] WARN no SportyBet fixtures available for today\n");
+      if (hasCreds) {
+        await sendTelegramText(
+          env.TELEGRAM_BOT_TOKEN as string,
+          env.TELEGRAM_CHAT_ID as string,
+          `ORACLE — no SportyBet fixtures found for ${today}.`
+        );
+      }
       return;
     }
     process.stdout.write(`[fixture-report] wrote ${result.path}\n`);
 
-    if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
+    if (hasCreds) {
       await sendTelegramDocument(
-        env.TELEGRAM_BOT_TOKEN,
-        env.TELEGRAM_CHAT_ID,
+        env.TELEGRAM_BOT_TOKEN as string,
+        env.TELEGRAM_CHAT_ID as string,
         result.path,
-        `ORACLE daily fixtures — ${today} (${result.fixtureCount} fixtures)`
+        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures)`
+      );
+      process.stdout.write(
+        `[fixture-report] delivered to Telegram in ${Date.now() - startedAt.getTime()}ms\n`
+      );
+    } else {
+      // Was a silent skip — now explicit so an unconfigured box is obvious in logs.
+      process.stderr.write(
+        `[fixture-report] WARN Telegram creds missing — spreadsheet on disk at ${result.path}, not delivered\n`
       );
     }
   } catch (err) {
-    process.stderr.write(
-      `[fixture-report] FAILED — ${err instanceof Error ? err.message : String(err)}\n`
-    );
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[fixture-report] FAILED — ${msg}\n`);
+    // Best-effort failure ping so a delivery failure is visible in the chat, not
+    // just buried in service logs.
+    if (hasCreds) {
+      await sendTelegramText(
+        env.TELEGRAM_BOT_TOKEN as string,
+        env.TELEGRAM_CHAT_ID as string,
+        `ORACLE — daily fixture report FAILED for ${today}: ${msg}`
+      ).catch(() => {});
+    }
   }
 }
 

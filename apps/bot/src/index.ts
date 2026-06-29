@@ -46,7 +46,7 @@ import {
   fetchTodaysFixtures,
   findSidecarDetail,
   formatPuntResult,
-  generateAndWriteDailyFixtureReport,
+  generateAndWriteFixtureWorkbook,
   loadEnv,
   loadSportyBetIndex,
   markFulfilled,
@@ -516,7 +516,7 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
     return;
   }
 
-  const fixturesPath = join(REPORTS_DIR, `oracle-fixtures-${date}.html`);
+  const fixturesPath = join(REPORTS_DIR, `oracle-fixtures-${date}.xlsx`);
   if (existsSync(fixturesPath)) {
     await sendDocumentTo(
       chatId,
@@ -528,7 +528,7 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
 
   await sendTo(chatId, `⏳ No report for ${date} yet — generating from today's scrape…`);
   try {
-    const result = await generateAndWriteDailyFixtureReport(date, REPORTS_DIR);
+    const result = await generateAndWriteFixtureWorkbook(date, REPORTS_DIR);
     if (result) {
       await sendDocumentTo(
         chatId,
@@ -557,7 +557,7 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
 async function handleFixturesReport(chatId: string, dateArg?: string): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const date = dateArg && /^\d{4}-\d{2}-\d{2}$/.test(dateArg) ? dateArg : today;
-  const reportPath = join(REPORTS_DIR, `oracle-fixtures-${date}.html`);
+  const reportPath = join(REPORTS_DIR, `oracle-fixtures-${date}.xlsx`);
 
   if (existsSync(reportPath)) {
     await sendDocumentTo(chatId, reportPath, `ORACLE daily fixtures — ${date}`);
@@ -566,7 +566,7 @@ async function handleFixturesReport(chatId: string, dateArg?: string): Promise<v
 
   await sendTo(chatId, `⏳ Generating fixtures report for ${date}…`);
   try {
-    const result = await generateAndWriteDailyFixtureReport(date, REPORTS_DIR);
+    const result = await generateAndWriteFixtureWorkbook(date, REPORTS_DIR);
     if (!result) {
       await sendTo(chatId, `ℹ️ No SportyBet fixtures found for ${date}.`);
       return;

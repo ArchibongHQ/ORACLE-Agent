@@ -14,6 +14,27 @@ import { request as httpsRequest } from "node:https";
 
 const API = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
 
+/** MIME by file extension — Telegram mislabels the attachment if the part's
+ *  Content-Type doesn't match (e.g. an .xlsx sent as text/html opens as gibberish).
+ *  Defaults to octet-stream for anything unrecognised. */
+function mimeForFile(fileName: string): string {
+  const ext = fileName.toLowerCase().split(".").pop() ?? "";
+  switch (ext) {
+    case "xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case "csv":
+      return "text/csv";
+    case "html":
+      return "text/html";
+    case "json":
+      return "application/json";
+    case "pdf":
+      return "application/pdf";
+    default:
+      return "application/octet-stream";
+  }
+}
+
 export async function sendTelegramDocument(
   botToken: string,
   chatId: string,
@@ -21,12 +42,13 @@ export async function sendTelegramDocument(
   caption: string
 ): Promise<void> {
   if (!botToken || !chatId || !existsSync(filePath)) return;
-  const fileName = filePath.split(/[\\/]/).pop() ?? "report.html";
+  const fileName = filePath.split(/[\\/]/).pop() ?? "report.bin";
   const fileBuf = readFileSync(filePath);
+  const mime = mimeForFile(fileName);
 
   try {
     const form = new FormData();
-    const blob = new Blob([fileBuf], { type: "text/html" });
+    const blob = new Blob([fileBuf], { type: mime });
     form.append("chat_id", chatId);
     form.append("caption", caption);
     form.append("document", blob, fileName);
@@ -43,7 +65,8 @@ export async function sendTelegramDocument(
         chatId,
         caption,
         fileName,
-        fileBuf
+        fileBuf,
+        mime
       );
     } catch (err) {
       // best-effort — a report-attachment failure must never block the run, but it
@@ -62,7 +85,8 @@ function postMultipartViaHttps(
   chatId: string,
   caption: string,
   fileName: string,
-  fileBuf: Buffer
+  fileBuf: Buffer,
+  mime: string
 ): Promise<void> {
   const boundary = `----oracle${Date.now().toString(16)}`;
   const textPart = (name: string, value: string): Buffer =>
@@ -71,7 +95,7 @@ function postMultipartViaHttps(
     );
   const fileHeader = Buffer.from(
     `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${fileName}"\r\n` +
-      `Content-Type: text/html\r\n\r\n`
+      `Content-Type: ${mime}\r\n\r\n`
   );
   const body = Buffer.concat([
     textPart("chat_id", chatId),
@@ -106,6 +130,69 @@ function postMultipartViaHttps(
               )
             );
           }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.on("timeout", () => req.destroy(new Error("https.request timed out")));
+    req.write(body);
+    req.end();
+  });
+}
+
+/** Send a plain text message to a chat — for short operational pings (e.g. "no
+ *  fixtures today", "report on disk but delivery failed") that don't warrant a
+ *  full BatchSummary through TelegramNotifier. Same fetch → node:https fallback as
+ *  sendTelegramDocument. Best-effort: never throws, logs to stderr on hard failure. */
+export async function sendTelegramText(
+  botToken: string,
+  chatId: string,
+  text: string
+): Promise<void> {
+  if (!botToken || !chatId || !text) return;
+  const body = JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true });
+  try {
+    await fetch(API(botToken, "sendMessage"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    try {
+      await postJsonViaHttps(API(botToken, "sendMessage"), body);
+    } catch (err) {
+      process.stderr.write(
+        `[telegram-text] send failed — ${err instanceof Error ? err.message : String(err)}\n`
+      );
+    }
+  }
+}
+
+function postJsonViaHttps(url: string, body: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const req = httpsRequest(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body),
+        },
+        timeout: 15_000,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const status = res.statusCode ?? 0;
+          if (status >= 200 && status < 300) resolve();
+          else
+            reject(
+              new Error(
+                `Telegram sendMessage failed: ${status} ${Buffer.concat(chunks).toString("utf8")}`
+              )
+            );
         });
       }
     );
