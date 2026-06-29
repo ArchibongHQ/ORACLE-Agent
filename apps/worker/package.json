@@ -11,6 +11,7 @@
     "smoke": "node --experimental-vm-modules dist/smoke.js",
     "start": "node --max-old-space-size=2048 dist/index.js",
     "start:now": "node --max-old-space-size=2048 dist/index.js --run-now",
+    "report:now": "node --max-old-space-size=2048 dist/index.js --run-report-now",
     "refresh-kaggle": "node dist/index.js --refresh-kaggle",
     "export-store": "node dist/export-store.js",
     "import-backfill": "node dist/import-backfill.js"

@@ -36,12 +36,19 @@ export async function fetchGeminiWithCascade(prompt: string, ctx: LLMCallContext
     }
   }
 
-  // Tier 2/3: OpenRouter — working free models first (GPT-OSS-120B → Nemotron
-  // Super 120B → Qwen3-Next 80B), free text, no jsonMode. Retired :free slugs
-  // (GLM-4.5-Air, DeepSeek-V4-Flash) removed — they 404 on OpenRouter now.
+  // Tier 2/3: OpenRouter — paid-first cascade then free safety net.
+  // Order per owner directive 2026-06-29: GLM-5.2 → GLM-5.1 → DeepSeek → Kimi-2.7
+  // → GPT-4o → Qwen3 → Minimax-M3 → GPT-OSS-120B → Nemotron → Qwen3-Next 80B
   const orKey = ctx.config.openrouterApiKey;
   if (orKey) {
     for (const model of [
+      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.GLM_5_1,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.KIMI_K2_7,
+      OPENROUTER_MODELS.GPT_4O,
+      OPENROUTER_MODELS.QWEN3_235B_THINKING,
+      OPENROUTER_MODELS.MINIMAX_M3,
       OPENROUTER_MODELS.GPT_OSS_120B,
       OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
       OPENROUTER_MODELS.QWEN3_NEXT_80B,

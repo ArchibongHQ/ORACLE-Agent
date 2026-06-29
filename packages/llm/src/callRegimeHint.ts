@@ -93,22 +93,30 @@ export async function callRegimeHint(
     }
   }
 
-  // Tier 3: GLM-4.5 Air (free) — advisory only
+  // Tier 2/3: OpenRouter cascade — advisory only, GLM-5.2 → DeepSeek → GPT → free nets
   if (ctx.config.openrouterApiKey) {
-    try {
-      const raw = await callOpenRouterJson(
-        REGIME_SYSTEM,
-        softContextSummary,
-        OPENROUTER_MODELS.GPT_OSS_120B,
-        ctx.config.openrouterApiKey,
-        0
-      );
-      if (raw) {
-        const parsed = parseHintResponse(raw);
-        return { ...parsed, model: OPENROUTER_MODELS.GPT_OSS_120B, advisory: true };
+    for (const model of [
+      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.GPT_4O,
+      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
+    ]) {
+      try {
+        const raw = await callOpenRouterJson(
+          REGIME_SYSTEM,
+          softContextSummary,
+          model,
+          ctx.config.openrouterApiKey,
+          0
+        );
+        if (raw) {
+          const parsed = parseHintResponse(raw);
+          return { ...parsed, model, advisory: true };
+        }
+      } catch {
+        // still advisory — try next model
       }
-    } catch {
-      // still advisory
     }
   }
 

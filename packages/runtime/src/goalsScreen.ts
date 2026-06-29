@@ -1,19 +1,16 @@
-/** LLM screening pass — stage 2 of the goals-discovery funnel (mechanical
+/** LLM screening pass — stage 2 of the full-market discovery funnel (mechanical
  *  filter → screening stage → Poisson engine → Opus arbiter → top-N cut).
  *
- *  Takes the ~100-150 fixtures preFilterGoalsCandidates() already mechanically
- *  ranked and runs a batched LLM judgment pass over compact per-fixture
- *  summaries, shortlisting by goals-opportunity strength before the costlier
- *  deterministic engine + Opus arbiter stages run on the survivors.
+ *  Takes the full daily SportyBet fixture pool (up to 1000 fixtures after pool
+ *  size increase) already mechanically ranked and runs a batched LLM judgment
+ *  pass over compact per-fixture summaries, shortlisting by overall edge
+ *  potential — goals markets first, but any positive-EV market edge counts.
  *
  *  Model: calls callClaudeCode() (local CLI transport), the same Opus pin as
- *  every other Claude call site in this pipeline — no cost-tier distinction
- *  from the rest of the pipeline despite running over a much larger fixture
- *  count than any other stage.
+ *  every other Claude call site in this pipeline.
  *
- *  Batched (not one call per fixture) to bound daily cost — ~4-6 calls for a
- *  130-fixture pool at BATCH_SIZE=25, mirroring the FrugalGPT-style cascading
- *  pattern the pre-filter stage already documents. Fails open per batch: a
+ *  Batched (not one call per fixture) to bound daily cost — ~10 calls for a
+ *  1000-fixture pool at BATCH_SIZE=100. Fails open per batch: a
  *  timeout/error/parse-failure passes that batch through unscreened, ranked by
  *  its pre-filter mechanical score — mirrors arbitrate()'s fail-open contract
  *  in packages/engine/src/decision/index.ts (never blocks the funnel). */
@@ -22,8 +19,8 @@ import type { LLMCallContext } from "@oracle/llm";
 import { callClaudeCode } from "@oracle/llm";
 import type { GoalsPreFilterResult } from "./goalsPreFilter.js";
 
-export const DEFAULT_SCREEN_BATCH_SIZE = 28;
-const REQUEST_TIMEOUT_MS = 25_000;
+export const DEFAULT_SCREEN_BATCH_SIZE = 100;
+const REQUEST_TIMEOUT_MS = 60_000; // raised from 25s: BATCH_SIZE=100 prompts are ~10x larger
 
 export interface GoalsScreenResult {
   /** Index into the input candidates array. */
@@ -58,10 +55,13 @@ function compactSummary(candidate: GoalsPreFilterResult, index: number): string 
   return parts.join(", ");
 }
 
-const SCREEN_SYSTEM = `You screen football fixtures for GOALS-MARKET betting opportunity
-(Over/Under goals, BTTS, Team Total Over) — not match-winner or handicap markets.
-You receive a numbered list of fixtures with compact stats. Rank them by how
-strong the data-backed case is for a goals-market opportunity, strongest first.
+const SCREEN_SYSTEM = `You screen football fixtures for betting edge across ALL available markets.
+Prioritise goals-market opportunities first (Over/Under goals, BTTS, Team Total Over,
+Correct Score) — then handicap/result markets (Asian Handicap, DNB, Double Chance,
+Win Either Half) — then any other market with a clear data-backed edge.
+You receive a numbered list of fixtures with compact stats. Rank them by overall
+edge potential, strongest first. A strong goals signal (high O2.5%, high avgScored,
+high shots on target) indicates goals-market edge and should rank near the top.
 Return ONLY valid JSON: {"ranked":[{"index":N,"rationale":"one short sentence"}]}
 Include every fixture index you were given, in ranked order. Do not invent stats
 not given to you. A fixture with no extra stats beyond preFilterScore should rank

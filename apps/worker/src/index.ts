@@ -60,6 +60,7 @@ const ONE_SHOT_FLAGS = [
   "--refresh-kaggle",
   "--run-resolve",
   "--run-acquire-now",
+  "--run-report-now",
 ] as const;
 const IS_ONE_SHOT = process.argv.some((a) => ONE_SHOT_FLAGS.includes(a as never));
 
@@ -993,12 +994,12 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
 
   const { batch } = await runAnalysis(
     enrichedJobs,
-    { storage, config: { ...config, enableGoalsOnlyMode: true } },
+    { storage, config },
     {
       trigger,
       writeReportToDisk: false, // this pipeline's report-equivalent is the goals-ACCA notify itself
       batchOptions: {
-        concurrency: 2, // Windows OOM guard — full-parallel (default 8) SIGKILL's the process
+        concurrency: 3, // Windows OOM guard — raised from 2 for larger fixture pool
         onProgress: ({ completed, total, current }) => {
           if (current) process.stdout.write(`[goals] ${completed}/${total}: ${current}\n`);
         },
@@ -1164,4 +1165,8 @@ if (process.argv.includes("--refresh-kaggle")) {
 
 if (process.argv.includes("--run-resolve")) {
   void runOnce("--run-resolve", () => resolveYesterdayFixtures());
+}
+
+if (process.argv.includes("--run-report-now")) {
+  void runOnce("--run-report-now", sendDailyFixtureReport);
 }
