@@ -53,6 +53,12 @@ const env = loadEnv(join(ROOT, ".env"));
 const config = buildConfig(env);
 const STORE_PATH = join(ROOT, ".tmp/oracle-store");
 
+// Max fixtures per chunk loop iteration. Priority-sorted fixtures are analyzed
+// in batches of this size; the loop stops as soon as 39 actionable picks are
+// found — avoiding analysis of hundreds of low-priority fixtures when top leagues
+// already provide enough edges. Applies to both daily batch and goals batch.
+const ANALYSIS_CHUNK_SIZE = Math.max(1, Number(env.ANALYSIS_CHUNK_SIZE ?? 50));
+
 // One-shot CLI mode: any of these flags runs a single job and exits, instead of
 // starting the cron daemon. Detected up front so the cron schedules below are
 // skipped — otherwise the registered timers keep the event loop alive forever
@@ -627,6 +633,32 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
 
 // ── Daily batch (09:35 WAT) ─────────────────────────────────────────────────
 
+/** Merge multiple BatchResult chunks (from the priority-ordered chunk loop) into a
+ *  single BatchResult so downstream summarizeBatch / selectGoalsAccumulator callers
+ *  see one unified result, identical to what a single runAnalysis call would return. */
+function mergeBatchChunks(chunks: BatchResult[]): BatchResult {
+  if (!chunks.length) throw new Error("mergeBatchChunks: no chunks to merge");
+  const first = chunks[0]!;
+  return {
+    runId: first.runId,
+    calibrationSnapshotId: first.calibrationSnapshotId,
+    date: first.date,
+    rankingMode: first.rankingMode,
+    ...(first.dryRun != null ? { dryRun: first.dryRun } : {}),
+    jobs: chunks.flatMap((c) => c.jobs),
+    completedCount: chunks.reduce((s, c) => s + c.completedCount, 0),
+    errorCount: chunks.reduce((s, c) => s + c.errorCount, 0),
+    actionableCount: chunks.reduce((s, c) => s + c.actionableCount, 0),
+    totalRecommendedStakePct: chunks.reduce((s, c) => s + c.totalRecommendedStakePct, 0),
+    cost: {
+      estimatedUsd: chunks.reduce((s, c) => s + c.cost.estimatedUsd, 0),
+      ceilingUsd: first.cost.ceilingUsd,
+      halted: chunks.some((c) => c.cost.halted),
+    },
+    errors: chunks.flatMap((c) => c.errors),
+  };
+}
+
 /** Returns the analyzed batch, or null when there were no fixtures to analyze.
  *  The goals pipeline (runGoalsBatch) is fully independent of this batch as of
  *  the 2026-06-24 rewrite — it no longer sources picks from this batch's output. */
@@ -666,18 +698,66 @@ async function runDailyBatch(
     return null;
   }
 
-  const { batch, records, reportPath } = await runAnalysis(
-    jobs,
-    { storage, config },
-    {
-      trigger,
-      batchOptions: {
-        onProgress: ({ completed, total, current }) => {
-          if (current) process.stdout.write(`[batch] ${completed}/${total}: ${current}\n`);
+  // Priority-ordered chunk loop: jobs are already sorted by selectFixtures (tier 0
+  // priority leagues first, then tier 1, then by data-completeness + score within tier).
+  // Analyze in chunks of ANALYSIS_CHUNK_SIZE; stop as soon as 39 actionable picks
+  // accumulate — avoids wasting Claude calls on low-priority fixtures when top leagues
+  // already deliver enough edges. Safety net (the 39-curation block below) trims any
+  // overshoot when a single chunk yields more than 39 actionable.
+  const batchChunks: BatchResult[] = [];
+  const allRecords: unknown[] = [];
+  let finalReportPath: string | undefined;
+
+  for (let i = 0; i < jobs.length; i += ANALYSIS_CHUNK_SIZE) {
+    const chunk = jobs.slice(i, i + ANALYSIS_CHUNK_SIZE);
+    const chunkIdx = Math.floor(i / ANALYSIS_CHUNK_SIZE) + 1;
+    const totalChunks = Math.ceil(jobs.length / ANALYSIS_CHUNK_SIZE);
+    process.stdout.write(
+      `[batch] chunk ${chunkIdx}/${totalChunks}: fixtures ${i + 1}–${i + chunk.length} of ${jobs.length}\n`
+    );
+    const analyzedSoFar = batchChunks.reduce((s, c) => s + c.completedCount, 0);
+    const {
+      batch: chunkBatch,
+      records: chunkRecords,
+      reportPath: chunkReportPath,
+    } = await runAnalysis(
+      chunk,
+      { storage, config },
+      {
+        trigger,
+        writeReportToDisk: i === 0, // only first chunk writes the HTML report
+        batchOptions: {
+          onProgress: ({ completed, current }) => {
+            if (current)
+              process.stdout.write(
+                `[batch] ${analyzedSoFar + completed}/${jobs.length}: ${current}\n`
+              );
+          },
         },
-      },
+      }
+    );
+    batchChunks.push(chunkBatch);
+    allRecords.push(...(chunkRecords as unknown[]));
+    if (chunkReportPath) finalReportPath = chunkReportPath;
+
+    const cumulativeActionable = batchChunks.reduce((s, c) => s + c.actionableCount, 0);
+    process.stdout.write(
+      `[batch] chunk ${chunkIdx} done — ${chunkBatch.completedCount} analyzed, ` +
+        `${chunkBatch.actionableCount} actionable this chunk, ${cumulativeActionable} total\n`
+    );
+
+    if (cumulativeActionable >= 39) {
+      const done = batchChunks.reduce((s, c) => s + c.completedCount, 0);
+      process.stdout.write(
+        `[batch] 39 actionable reached after ${done}/${jobs.length} fixtures — stopping early\n`
+      );
+      break;
     }
-  );
+  }
+
+  const batch = mergeBatchChunks(batchChunks);
+  const records = allRecords;
+  const reportPath = finalReportPath;
 
   if (records.length > 0) process.stdout.write(`[batch] ${records.length} records persisted\n`);
   if (reportPath) process.stdout.write(`[batch] report: ${reportPath}\n`);
@@ -1026,20 +1106,59 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
     : withH2H;
   const enrichedJobs = await enrichWithLineups(withNews);
 
-  const { batch } = await runAnalysis(
-    enrichedJobs,
-    { storage, config },
-    {
-      trigger,
-      writeReportToDisk: false, // this pipeline's report-equivalent is the goals-ACCA notify itself
-      batchOptions: {
-        concurrency: 3, // Windows OOM guard — raised from 2 for larger fixture pool
-        onProgress: ({ completed, total, current }) => {
-          if (current) process.stdout.write(`[goals] ${completed}/${total}: ${current}\n`);
-        },
-      },
-    }
+  // Hard-tier sort: priority leagues first, then others. The chunk loop below then
+  // analyzes from the top of this list and stops as soon as 39 actionable legs are
+  // found — mirrors the daily batch approach and avoids analyzing hundreds of
+  // lower-priority fixtures when priority leagues provide enough edges.
+  const sortedEnrichedJobs = [...enrichedJobs].sort(
+    (a, b) =>
+      (ORACLE_PRIORITY_LEAGUES.has(a.league) ? 0 : 1) -
+      (ORACLE_PRIORITY_LEAGUES.has(b.league) ? 0 : 1)
   );
+
+  const goalsBatchChunks: BatchResult[] = [];
+  for (let i = 0; i < sortedEnrichedJobs.length; i += ANALYSIS_CHUNK_SIZE) {
+    const chunk = sortedEnrichedJobs.slice(i, i + ANALYSIS_CHUNK_SIZE);
+    const chunkIdx = Math.floor(i / ANALYSIS_CHUNK_SIZE) + 1;
+    const totalChunks = Math.ceil(sortedEnrichedJobs.length / ANALYSIS_CHUNK_SIZE);
+    process.stdout.write(
+      `[goals] chunk ${chunkIdx}/${totalChunks}: fixtures ${i + 1}–${i + chunk.length} of ${sortedEnrichedJobs.length}\n`
+    );
+    const analyzedSoFar = goalsBatchChunks.reduce((s, c) => s + c.completedCount, 0);
+    const { batch: chunkBatch } = await runAnalysis(
+      chunk,
+      { storage, config },
+      {
+        trigger,
+        writeReportToDisk: false,
+        batchOptions: {
+          concurrency: 3,
+          onProgress: ({ completed, current }) => {
+            if (current)
+              process.stdout.write(
+                `[goals] ${analyzedSoFar + completed}/${sortedEnrichedJobs.length}: ${current}\n`
+              );
+          },
+        },
+      }
+    );
+    goalsBatchChunks.push(chunkBatch);
+
+    const cumulativeActionable = goalsBatchChunks.reduce((s, c) => s + c.actionableCount, 0);
+    process.stdout.write(
+      `[goals] chunk ${chunkIdx} done — ${chunkBatch.completedCount} analyzed, ` +
+        `${chunkBatch.actionableCount} actionable this chunk, ${cumulativeActionable} total\n`
+    );
+    if (cumulativeActionable >= 39) {
+      const done = goalsBatchChunks.reduce((s, c) => s + c.completedCount, 0);
+      process.stdout.write(
+        `[goals] 39 actionable reached after ${done}/${sortedEnrichedJobs.length} fixtures — stopping early\n`
+      );
+      break;
+    }
+  }
+
+  const batch = mergeBatchChunks(goalsBatchChunks);
 
   // Build eventId lookup so the booking agent can navigate directly to each
   // fixture's detail page instead of scanning the paginated listing DOM.

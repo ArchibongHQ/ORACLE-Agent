@@ -774,6 +774,7 @@ describe("validateSelection", () => {
       cat: "1x2",
       market: "1x2",
       label: "Home Win",
+      side: "Home Win",
       ev: 0.05,
       mp: 0.45,
       modelProb: 0.45,
@@ -845,7 +846,7 @@ describe("validateSelection", () => {
     expect(result.primaryPick.market).toBe("Goals O/U");
   });
 
-  it("downgrades grade to NO_EDGE when ML filter blocked (pick stays for reporting)", () => {
+  it("ignores mlAllowed=false and preserves pick grade (Gate 2 removed)", () => {
     const pick: DecisionOutput = {
       primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1 },
       confidence: 0.7,
@@ -854,7 +855,7 @@ describe("validateSelection", () => {
       rejectedAndWhy: [],
     };
     const result = validateSelection(pick, eligible, { mlAllowed: false, drawRisk: "LOW" });
-    expect(result.grade).toBe("NO_EDGE");
+    expect(result.grade).toBe("STRONG");
     expect(result.primaryPick.market).toBe("Goals O/U");
   });
 
@@ -870,7 +871,7 @@ describe("validateSelection", () => {
     expect(result.grade).toBe("STRONG");
   });
 
-  it("rejects 1x2 MoneyLine when drawRisk=VERY_HIGH", () => {
+  it("passes 1x2 MoneyLine through unchanged regardless of drawRisk (Gate 3 removed)", () => {
     const pick: DecisionOutput = {
       primaryPick: { market: "1x2", side: "Home Win", odds: 2.1 },
       confidence: 0.7,
@@ -879,8 +880,9 @@ describe("validateSelection", () => {
       rejectedAndWhy: [],
     };
     const result = validateSelection(pick, eligible, { mlAllowed: true, drawRisk: "VERY_HIGH" });
-    // Should fall back to non-1x2 top (Goals O/U)
-    expect(result.primaryPick.market).toBe("Goals O/U");
+    // Gate 3 removed: LLM arbiter is the quality gate; pick passes through
+    expect(result.primaryPick.market).toBe("1x2");
+    expect(result.grade).toBe("STRONG");
   });
 
   it("gradeFromEV boundary: ev=0 → NO_EDGE, ev<0 → NO_EDGE, ev=0.049 → LEAN, ev=0.05 → STRONG", () => {
@@ -891,7 +893,7 @@ describe("validateSelection", () => {
     expect(gradeFromEV(0.2)).toBe("STRONG");
   });
 
-  it("returns NO_EDGE placeholder when VERY_HIGH draw risk and only 1x2 eligible", () => {
+  it("preserves original LEAN grade when only 1x2 eligible and drawRisk=VERY_HIGH (Gate 3 removed)", () => {
     const only1x2 = [
       makeMarket({ cat: "1x2", market: "1x2", label: "Home Win", side: "Home Win" }),
     ];
@@ -903,8 +905,8 @@ describe("validateSelection", () => {
       rejectedAndWhy: [],
     };
     const result = validateSelection(pick, only1x2, { mlAllowed: true, drawRisk: "VERY_HIGH" });
-    // nonMl is empty → deterministicDecide returns placeholder NO_EDGE
-    expect(result.grade).toBe("NO_EDGE");
-    expect(typeof result.primaryPick).toBe("object");
+    // Gate 3 removed: LLM arbiter decides; pick passes through unchanged
+    expect(result.grade).toBe("LEAN");
+    expect(result.primaryPick.market).toBe("1x2");
   });
 });
