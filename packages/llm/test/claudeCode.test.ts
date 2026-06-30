@@ -164,15 +164,11 @@ describe("callClaudeCode", () => {
     child.stdout.emit("data", envelope({ type: "result", is_error: false, result: "OK" }));
     child.emit("close", 0);
     await promise;
-    expect(spawn).toHaveBeenCalledWith(expect.any(String), [
-      "-p",
-      "--output-format",
-      "json",
-      "--max-turns",
-      "1",
-      "--model",
-      "opus",
-    ]);
+    expect(spawn).toHaveBeenCalledWith(
+      expect.any(String),
+      ["-p", "--output-format", "json", "--max-turns", "1", "--model", "opus"],
+      expect.objectContaining({ env: expect.any(Object) })
+    );
     expect(child.stdin.write).toHaveBeenCalledWith("analyze this fixture");
     expect(child.stdin.end).toHaveBeenCalled();
   });
@@ -185,15 +181,11 @@ describe("callClaudeCode", () => {
     child.stdout.emit("data", envelope({ type: "result", is_error: false, result: "OK" }));
     child.emit("close", 0);
     await promise;
-    expect(spawn).toHaveBeenCalledWith(expect.any(String), [
-      "-p",
-      "--output-format",
-      "json",
-      "--max-turns",
-      "1",
-      "--model",
-      "fable",
-    ]);
+    expect(spawn).toHaveBeenCalledWith(
+      expect.any(String),
+      ["-p", "--output-format", "json", "--max-turns", "1", "--model", "fable"],
+      expect.objectContaining({ env: expect.any(Object) })
+    );
   });
 });
 
