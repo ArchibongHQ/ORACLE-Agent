@@ -295,20 +295,22 @@ describe("selectFixtures", () => {
     expect(stats.today).toBe(1);
   });
 
-  it("marks top-N by score as llmEligible, returns ALL fixtures", () => {
+  it("returns top-cap fixtures all llmEligible=true, excludes remainder", () => {
     const pool = [
       cand(job("Low", "X", "Obscure"), false),
       cand(job("High", "Y", "Premier League"), true),
       cand(job("Mid", "Z", "Obscure"), true),
     ];
     const { selected } = selectFixtures(pool, { cap: 2, sportyBet: null, now: NOW });
-    // All 3 returned — cap is routing gate only
-    expect(selected).toHaveLength(3);
-    // Top-2 by score marked llmEligible; lowest not
-    const eligible = selected.filter((c) => c.llmEligible).map((c) => c.job.home);
-    expect(eligible).toContain("High");
-    expect(eligible).toContain("Mid");
-    expect(selected.find((c) => c.job.home === "Low")?.llmEligible).toBe(false);
+    // cap=2: only top-2 by score returned; all returned are llmEligible=true
+    expect(selected).toHaveLength(2);
+    expect(selected.every((c) => c.llmEligible)).toBe(true);
+    // Top-2 scorers should be returned (High has bulk odds boost, Mid is next)
+    const homes = selected.map((c) => c.job.home);
+    expect(homes).toContain("High");
+    expect(homes).toContain("Mid");
+    // Lowest scorer not returned
+    expect(homes).not.toContain("Low");
   });
 
   it("returns the whole pool when smaller than the cap", () => {
@@ -317,11 +319,10 @@ describe("selectFixtures", () => {
     expect(selected).toHaveLength(2);
   });
 
-  it("cap=0 means no llmEligible fixtures but all are still returned", () => {
+  it("cap=0 returns zero fixtures (slice(0,0) = empty)", () => {
     const pool = [cand(job("A", "B"))];
     const { selected } = selectFixtures(pool, { cap: 0, sportyBet: null, now: NOW });
-    expect(selected).toHaveLength(1);
-    expect(selected[0]?.llmEligible).toBe(false);
+    expect(selected).toHaveLength(0);
   });
 
   it("keeps an offset-bearing kickoff that lands on today in UTC", () => {
@@ -427,11 +428,12 @@ describe("selectFixtures", () => {
       cand(job("C", "D", "Obscure"), false),
     ];
     const { stats } = selectFixtures(pool, { cap: 1, sportyBet: null, now: NOW });
-    expect(stats.selected).toBe(2); // ALL returned
-    expect(stats.analyzed).toBe(2);
-    expect(stats.bulkOdds).toBe(1);
-    expect(stats.priority).toBe(1);
-    expect(stats.llmRouted).toBe(1); // cap=1 → top-1 llmEligible
+    // cap=1: only top-1 fixture returned; all returned are llmEligible=true
+    expect(stats.selected).toBe(1);
+    expect(stats.analyzed).toBe(1);
+    expect(stats.bulkOdds).toBe(1); // A has bulk odds
+    expect(stats.priority).toBe(1); // Premier League = priority
+    expect(stats.llmRouted).toBe(1); // all returned are llmEligible
   });
 });
 

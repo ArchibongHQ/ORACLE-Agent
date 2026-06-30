@@ -655,15 +655,12 @@ export function validateSelection(
   // and forcing a deterministic placeholder here would silently erase that
   // honest "not enough evidence" verdict and replace it with a fabricated pick.
   // Side is matched with light normalization (case, whitespace, parenthetical
-  // team names stripped) and substring containment in either direction —
-  // live-confirmed 2026-06-30 that Opus and OpenRouter models alike paraphrase
-  // e.g. "DNB Home" as "Home" or "Home (Sturm Graz)" despite the eligible list
-  // showing the exact label; an exact-string match was silently discarding a
-  // correctly-reasoned LLM/arbiter verdict on every call and replacing it with
-  // the naive deterministic top pick at the wrong grade. Within one market
-  // category the candidate sides are already mutually exclusive non-overlapping
-  // tokens (Home/Away/Draw, Over X.X/Under X.X, 1X/X2/12, Yes/No), so containment
-  // matching here can't cross-match the wrong side.
+  // team names stripped). Models paraphrase e.g. "DNB Home" as "Home" or
+  // "Home (Sturm Graz)", so we allow a suffix match (one side is the tail of the
+  // other separated by a space): "dnb home" endsWith " home" → match. Plain
+  // includes() was rejected because "over 1.5".includes("over 1") is true, which
+  // would cross-match O/U 1.5 to a model pick of "Over 1" in markets that list
+  // both integer and half-ball lines (goals, corners, shots).
   const normalizeSide = (s: string) =>
     s
       .replace(/\([^)]*\)/g, "")
@@ -675,7 +672,7 @@ export function validateSelection(
     if (!m.side) return false;
     const a = normalizeSide(m.side);
     const b = normalizeSide(ref.side);
-    return a === b || a.includes(b) || b.includes(a);
+    return a === b || a.endsWith(" " + b) || b.endsWith(" " + a);
   });
   if (!found && pick.grade !== "MISSING_DATA") {
     return deterministicDecide(

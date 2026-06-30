@@ -55,6 +55,7 @@ import {
   resolvePythonBin,
   runAnalysis,
   runPuntAnalysis,
+  SLIP_LABELS,
   validateConfig,
 } from "@oracle/runtime";
 import { GBrainAdapter } from "@oracle/storage";
@@ -625,8 +626,12 @@ async function handlePunt(chatId: string, code: string): Promise<void> {
   try {
     const config = buildConfig(env);
     const result = await runPuntAnalysis(code, { storage, config });
-    if (result.oracleCode) markFulfilled(ROOT, code);
-    await sendTo(chatId, formatPuntResult(result));
+    let fulfilledNote = "";
+    if (result.oracleCode) {
+      const slipIdx = markFulfilled(ROOT, code);
+      if (slipIdx !== null) fulfilledNote = `\n\n_Logged against: ${SLIP_LABELS[slipIdx]}_`;
+    }
+    await sendTo(chatId, formatPuntResult(result) + fulfilledNote);
   } catch (err) {
     await sendTo(
       chatId,
@@ -1177,9 +1182,14 @@ async function handleMessage(chatId: string, text: string): Promise<void> {
 // Public outbound helpers (called by worker cron)
 // ══════════════════════════════════════════════════════════════════════════════
 
-export async function sendPuntPrompt(): Promise<void> {
+/** Sends the named prompt for one of the two daily punt slips (see
+ *  packages/runtime/src/puntState.ts SLIP_LABELS). Matching back to a slip is
+ *  order-based — replies have no slip identifier of their own, so whichever
+ *  slip is still pending gets closed by the next code reply, in slip order. */
+export async function sendPuntPrompt(slipIndex: number): Promise<void> {
+  const label = SLIP_LABELS[slipIndex] ?? `Slip ${slipIndex + 1}`;
   await sendMessage(
-    "🌌 *Universe, drop it here* 👇\n" +
+    `🌌 *${label}, drop it here* 👇\n` +
       "Reply with today's SportyBet booking code (or `/punt <CODE>`) and ORACLE will counter-analyse every leg."
   );
 }

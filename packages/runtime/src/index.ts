@@ -64,8 +64,14 @@ export {
   loadedSlipToJobs,
   rawLegToMarketSide,
 } from "./punt.js";
-export type { PuntDayState } from "./puntState.js";
-export { markFulfilled, markPrompted, readPuntState, shouldReprompt } from "./puntState.js";
+export type { PuntDayState, PuntSlipState } from "./puntState.js";
+export {
+  markFulfilled,
+  markPrompted,
+  readPuntState,
+  SLIP_LABELS,
+  shouldReprompt,
+} from "./puntState.js";
 export { CSS as REPORT_CSS, esc, pct, renderReport, writeReport } from "./report.js";
 export type { ResolveResult } from "./resolveFixtures.js";
 export { computeRealisedClv, formatClv, resolveRecords } from "./resolveFixtures.js";
