@@ -5,13 +5,7 @@
 import type { StoragePort } from "@oracle/storage";
 import { isotonicCalibrateFp } from "../calibration/index.js";
 import { type GbmModel, loadGbmModel, predictGbm } from "../gbm/index.js";
-import {
-  devigTwoWay,
-  FAMILY_LABEL,
-  lookupMarket,
-  type MarketFamily,
-  PRICEABLE_FAMILIES,
-} from "../markets/index.js";
+import { devigTwoWay, FAMILY_LABEL, lookupMarket, type MarketFamily } from "../markets/index.js";
 import type {
   AhPivotResult,
   MarketBook,
@@ -530,16 +524,16 @@ function priceAllMarketOutcome(
   const descLc = (outcome.desc ?? "").toLowerCase().trim();
   if (!descLc) return null;
 
-  // Catalog-driven gate: when the market is in the canonical index, trust its
-  // ORACLE family — only families we have a full-time goal-matrix model for are
-  // priced here; everything else (half, combo, specials, exotic, ...) is left to
-  // the LLM executor / left unpriced rather than mis-sniffed by name. For ids not
-  // yet in the catalog (a market SportyBet added since last regeneration) fall
-  // back to the original name-based half/in-play guard so nothing regresses.
+  // Family restriction removed (owner directive 2026-06-30): the deterministic
+  // fallback no longer drops catalogued families it lacks a dedicated full-time
+  // model for — the full 1000+ catalogue is reasoned over by the LLM market
+  // executor as the primary path, and every fallback candidate still passes
+  // validateSelection's real-odds EV/edge gates + the arbiter audit downstream.
+  // The only hard skip kept is the name-based in-play/half guard for ids not yet
+  // in the catalog (a market SportyBet added since last regeneration), which have
+  // no full-time goal-matrix model regardless of source.
   const cat = lookupMarket(market.id);
-  if (cat) {
-    if (!PRICEABLE_FAMILIES.has(cat.family)) return null;
-  } else if (/half|1st|2nd|\bht\b/.test(nameLc) || /half/.test(specLc)) {
+  if (!cat && (/half|1st|2nd|\bht\b/.test(nameLc) || /half/.test(specLc))) {
     return null;
   }
 
@@ -671,44 +665,13 @@ export class ExecutionEngine {
         rawEdge = mp - ip,
         ev = adjEV(mp, od);
       const adjHurdle = cat === "match_result" ? Math.max(0.1, hurdle(mp)) : hurdle(mp);
-      const _varMod = (() => {
-        const lb = label;
-        if (lb.includes("First Half Under 1.5") || lb.includes("FH Under 1.5")) return 1.2;
-        if (lb.includes("First Half Draw") || lb.includes("FH Draw")) return 1.15;
-        if (lb.includes("Team Away Under 1.5") || lb.includes("Away Total Under")) return 1.18;
-        if (lb.includes("Team Home Under 1.5") || lb.includes("Home Total Under")) return 1.16;
-        if (
-          lb.includes("Team Over 0.5") ||
-          lb.includes("Home Total Over 0.5") ||
-          lb.includes("Away Total Over 0.5")
-        )
-          return 1.15;
-        if (lb.includes("Over 0.5")) return 1.15;
-        if (lb.includes("Under 4.5") || lb.includes("Under 3.5")) return 1.12;
-        if (lb.includes("Win Either Half")) return 1.12;
-        if (lb.includes("Asian 2") || lb.includes("Asian Over 2") || lb.includes("Asian Under 2"))
-          return 1.1;
-        if (lb.includes("+1.5") || lb.includes("AH Away +1.5") || lb.includes("AH Home +1.5"))
-          return 1.1;
-        if (lb.includes("+1.0") || lb.includes("AH Away +1.0") || lb.includes("AH Home +1.0"))
-          return 1.09;
-        if (lb.includes("+0.5") || lb.includes("-0.25") || lb.includes("+0.25")) return 1.08;
-        if (
-          lb.includes("DNB") ||
-          lb.includes("Double Chance") ||
-          lb.includes("1X") ||
-          lb.includes("X2")
-        )
-          return 1.08;
-        if (lb.includes("Under 2.5") || (lb.includes("Asian") && lb.includes("2.0"))) return 1.05;
-        if (lb.includes("Over 1.5")) return 1.02;
-        if (lb.includes("Over 2.5")) return 0.97;
-        if (lb.includes("BTTS No")) return 1.0;
-        if (lb.includes("BTTS Yes") || lb.includes("Over 3.5") || lb.includes("Over 4.5"))
-          return 0.75;
-        if (lb.includes("Under 1.5")) return 0.82;
-        return 1.0;
-      })();
+      // Family-preference ranking ladder removed (owner directive 2026-06-30):
+      // the hand-tuned per-family multipliers (DNB/DC +8%, BTTS-Yes/big-overs
+      // -25%, low-scoring lines +10-20%) had no documented statistical basis and
+      // skewed the deterministic fallback toward thin-data DNB-underdog picks.
+      // Ranking now reflects pure ev * modelProb; market selection over the full
+      // 1000+ catalogue is delegated to the LLM market executor + arbiter.
+      const _varMod = 1.0;
 
       let isUpsetVetoed = false;
       if (upsetAlertVeto === "home" && (label.includes("Home") || label === "1X"))

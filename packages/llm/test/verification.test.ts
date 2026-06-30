@@ -97,18 +97,18 @@ describe("callVerification — OpenRouter fallback tiers, GLM-first", () => {
     expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GLM_5_2]);
   });
 
-  it("falls GLM-5.2 → GLM-5.1 → GPT-oss-120B in order", async () => {
+  it("falls GLM-5.2 → GLM-5.1 → DeepSeek-R1 in order", async () => {
     fetchMock
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(chatResponse('{"status":"VETO","rationale":"flaw"}'));
     const res = await callVerification("p", makeCtx({ openrouterApiKey: "or" }));
     expect(res.status).toBe("VETO");
-    expect(res.model).toBe(OPENROUTER_MODELS.GPT_OSS_120B);
+    expect(res.model).toBe(OPENROUTER_MODELS.DEEPSEEK_R1);
     expect(postedModels(fetchMock)).toEqual([
       OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GLM_5_1,
-      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
     ]);
   });
 });

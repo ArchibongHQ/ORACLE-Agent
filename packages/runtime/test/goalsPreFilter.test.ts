@@ -80,7 +80,9 @@ describe("preFilterGoalsCandidates", () => {
   });
 
   it("caps the pool at poolSize even when more fixtures are available", () => {
-    const events = Array.from({ length: 200 }, (_, i) =>
+    // Must generate strictly MORE fixtures than the pool size for the cap to be
+    // exercised (DEFAULT_PRE_FILTER_POOL_SIZE was raised 130→1000 in PR #19).
+    const events = Array.from({ length: DEFAULT_PRE_FILTER_POOL_SIZE + 200 }, (_, i) =>
       event(`Home${i}`, `Away${i}`, "Premier League")
     );
     const result = preFilterGoalsCandidates(events, DEFAULT_PRE_FILTER_POOL_SIZE);

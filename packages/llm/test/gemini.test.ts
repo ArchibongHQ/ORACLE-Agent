@@ -64,19 +64,23 @@ describe("fetchGeminiWithCascade", () => {
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(chatResponse("or-text"));
     expect(await fetchGeminiWithCascade("p", ctxWithOr)).toBe("or-text");
-    expect(postedModels(fetchMock)).toEqual([
-      OPENROUTER_MODELS.GPT_OSS_120B,
-      OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
-    ]);
+    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GLM_5_2, OPENROUTER_MODELS.GLM_5_1]);
   });
 
-  it("throws after Gemini + all three OpenRouter tiers fail", async () => {
+  it("throws after Gemini + all OpenRouter tiers fail", async () => {
     generateContentMock.mockRejectedValue(new Error("down"));
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
     await expect(fetchGeminiWithCascade("p", ctxWithOr)).rejects.toThrow(
       /Gemini cascade exhausted/
     );
     expect(postedModels(fetchMock)).toEqual([
+      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.GLM_5_1,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.KIMI_K2,
+      OPENROUTER_MODELS.GPT_4O,
+      OPENROUTER_MODELS.QWEN3_235B_THINKING,
+      OPENROUTER_MODELS.MINIMAX_M3,
       OPENROUTER_MODELS.GPT_OSS_120B,
       OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
       OPENROUTER_MODELS.QWEN3_NEXT_80B,

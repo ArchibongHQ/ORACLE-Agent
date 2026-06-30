@@ -459,6 +459,23 @@ async function sendDailyFixtureReport(): Promise<void> {
       }
       return;
     }
+    if (result.marketsEmpty) {
+      // Markets depth not yet enriched — the report cron raced the scrape's
+      // allMarkets pass (the historical cause of header-only "Markets" sheets).
+      // Don't silently push a marketless report; warn and skip so a later run
+      // (e.g. the 09:30 WAT trigger) ships the enriched spreadsheet instead.
+      process.stderr.write(
+        `[fixture-report] WARN allMarkets not yet enriched for ${today} (${result.fixtureCount} fixtures) — skipping push; a later run will deliver the full report\n`
+      );
+      if (hasCreds) {
+        await sendTelegramText(
+          env.TELEGRAM_BOT_TOKEN as string,
+          env.TELEGRAM_CHAT_ID as string,
+          `ORACLE — ${today} fixtures are in but market depth is still loading; the full spreadsheet will follow shortly.`
+        );
+      }
+      return;
+    }
     process.stdout.write(`[fixture-report] wrote ${result.path}\n`);
 
     if (hasCreds) {

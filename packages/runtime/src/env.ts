@@ -206,5 +206,10 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     useNegBinom: env.USE_NEG_BINOM?.toLowerCase() !== "false",
     nbDispersion: env.NB_DISPERSION ? Number(env.NB_DISPERSION) : 10,
     useMCRuin: env.USE_MC_RUIN?.toLowerCase() === "true",
+    // All-markets LLM executor: when true, decide() routes llmEligible fixtures
+    // through one Opus agent over the full raw allMarkets catalogue (no family
+    // privileged), validated against real odds + audited by the arbiter, instead
+    // of the family-gated deterministic cascade. Off → deterministic fallback.
+    enableLlmMarketExecutor: env.ENABLE_LLM_MARKET_EXECUTOR?.toLowerCase() === "true",
   };
 }

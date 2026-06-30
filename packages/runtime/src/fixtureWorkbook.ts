@@ -473,16 +473,22 @@ export async function writeFixtureWorkbook(
 export async function generateAndWriteFixtureWorkbook(
   date: string,
   outDir: string
-): Promise<{ path: string; fixtureCount: number } | null> {
+): Promise<{ path: string; fixtureCount: number; marketsEmpty: boolean } | null> {
   const index = await loadSportyBetIndex(date);
   if (!index?.events.length) return null;
+  // Coverage guard: the SportyBet scrape file is enriched with per-fixture
+  // allMarkets depth over time (the report cron can fire before that pass lands),
+  // which produced header-only "Markets" sheets in production. Surface the empty
+  // state so the caller can skip the silent auto-push and let a later run ship the
+  // enriched version, instead of silently shipping a report with no markets.
+  const marketsEmpty = !index.events.some((e) => (e.detail?.odds?.allMarkets?.length ?? 0) > 0);
   const [lineups, newsByTeam] = await Promise.all([
     loadLineupSummaries(),
     buildNewsByTeamForWorkbook(index.events, date),
   ]);
   const wb = renderFixtureWorkbook(index.events, date, { lineups, newsByTeam });
   const path = await writeFixtureWorkbook(wb, date, outDir);
-  return { path, fixtureCount: index.events.length };
+  return { path, fixtureCount: index.events.length, marketsEmpty };
 }
 
 /** Same one-pass team→news loader as the HTML report's buildNewsByTeam, kept
