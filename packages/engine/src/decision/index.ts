@@ -144,6 +144,7 @@ Treat [STATS] soft-context lines (SportyBet form/standings/H2H/season goals/over
 === REQUIRED OUTPUT (JSON only, no other text) ===
 {"primaryPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"altPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"confidence":0.0,"grade":"STRONG","rationale":"...","rejectedAndWhy":[]}
 "grade" must be one of: "STRONG", "LEAN", "NO_EDGE". Always set primaryPick to the best-ranked market.
+"market" and "side" must be copied EXACTLY (verbatim, including any prefix like "DNB") from the bracketed label in the ELIGIBLE BETS list above — e.g. "DNB Home", not "Home". Do not paraphrase or shorten it.
 "altPick" is optional.`;
 }
 
@@ -285,6 +286,9 @@ Choose exactly one of:
 {"primaryPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"altPick":{"market":"...","side":"...","odds":0.0,"stake":0.00},"confidence":0.0,"grade":"STRONG","rationale":"...","rejectedAndWhy":[]}
 "grade" must be one of: "STRONG", "LEAN", "NO_EDGE", "MISSING_DATA". Your rationale must
 state which of (a)/(b)/(c) you chose and why, referencing the specific step that drove it.
+"market" and "side" must be copied EXACTLY (verbatim, including any prefix like "DNB") from
+the bracketed label in the eligible markets list above — e.g. "DNB Home", not "Home". Do not
+paraphrase or shorten it.
 "altPick" is optional. Omit primaryPick.stake/odds details you're unsure of rather than
 guessing — 0 is the honest default, not a fabricated number.`;
 }
@@ -650,9 +654,29 @@ export function validateSelection(
   // allowed to decline to commit to a market (e.g. when eligibleBets is empty),
   // and forcing a deterministic placeholder here would silently erase that
   // honest "not enough evidence" verdict and replace it with a fabricated pick.
-  const found = eligibleBets.find(
-    (m) => m.market === ref.market && (!ref.side || m.side === ref.side)
-  );
+  // Side is matched with light normalization (case, whitespace, parenthetical
+  // team names stripped) and substring containment in either direction —
+  // live-confirmed 2026-06-30 that Opus and OpenRouter models alike paraphrase
+  // e.g. "DNB Home" as "Home" or "Home (Sturm Graz)" despite the eligible list
+  // showing the exact label; an exact-string match was silently discarding a
+  // correctly-reasoned LLM/arbiter verdict on every call and replacing it with
+  // the naive deterministic top pick at the wrong grade. Within one market
+  // category the candidate sides are already mutually exclusive non-overlapping
+  // tokens (Home/Away/Draw, Over X.X/Under X.X, 1X/X2/12, Yes/No), so containment
+  // matching here can't cross-match the wrong side.
+  const normalizeSide = (s: string) =>
+    s
+      .replace(/\([^)]*\)/g, "")
+      .trim()
+      .toLowerCase();
+  const found = eligibleBets.find((m) => {
+    if (m.market !== ref.market) return false;
+    if (!ref.side) return true;
+    if (!m.side) return false;
+    const a = normalizeSide(m.side);
+    const b = normalizeSide(ref.side);
+    return a === b || a.includes(b) || b.includes(a);
+  });
   if (!found && pick.grade !== "MISSING_DATA") {
     return deterministicDecide(
       eligibleBets,
