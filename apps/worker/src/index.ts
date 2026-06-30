@@ -475,7 +475,19 @@ async function acquireDailyJob(): Promise<void> {
  *  (goals batch, daily batch) — per owner instruction "trigger immediately
  *  after scrape and before any other thing." Best-effort: a failure here
  *  (missing token, write error) is logged but never blocks the rest of the run. */
+// Guards against the lake-stale back-online chain (acquireDailyJob ->
+// sendDailyFixtureReport) and the hourly enriched-followup retry firing this
+// concurrently — both are fire-and-forget logJob calls with no shared lock,
+// so without this they could both pass the marketsEmpty check at once and
+// double-send the Telegram document.
+let fixtureReportInFlight = false;
+
 async function sendDailyFixtureReport(): Promise<void> {
+  if (fixtureReportInFlight) {
+    process.stdout.write("[fixture-report] skip — already running\n");
+    return;
+  }
+  fixtureReportInFlight = true;
   const startedAt = new Date();
   const today = startedAt.toISOString().slice(0, 10);
   const hasCreds = Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID);
@@ -548,6 +560,8 @@ async function sendDailyFixtureReport(): Promise<void> {
         `ORACLE — daily fixture report FAILED for ${today}: ${msg}`
       ).catch(() => {});
     }
+  } finally {
+    fixtureReportInFlight = false;
   }
 }
 
