@@ -359,6 +359,57 @@ export function findSidecarDetail(
   return undefined;
 }
 
+/** The Parquet lake's odds table is flat (market/side/price rows) and has no
+ *  column for the raw allMarkets catalogue (hundreds of arbitrary market/
+ *  outcome entries per fixture — see SportyBetOdds.allMarkets), so a
+ *  lake-sourced SportyBetIndex always has allMarkets empty even right after a
+ *  fresh deep-enrichment scrape. Overlay allMarkets from the JSON sidecar
+ *  (which the scraper writes in full) onto the lake's detail objects so
+ *  report generation and the all-markets LLM executor still see the full
+ *  catalogue once it lands, without giving up the lake's faster typed-odds
+ *  path for everything else. Best-effort: any failure leaves the lake index
+ *  untouched (sidecar missing/corrupt just means no overlay, not an error). */
+async function overlayAllMarketsFromSidecar(
+  index: SportyBetIndex,
+  today: string,
+  path: string
+): Promise<SportyBetIndex> {
+  try {
+    const raw = JSON.parse(await readFile(path, "utf8")) as {
+      date?: string;
+      events?: Array<{ home?: string; away?: string; odds?: { allMarkets?: unknown } }>;
+    };
+    if (raw?.date !== today || !Array.isArray(raw.events)) return index;
+    const allMarketsByKey = new Map<string, SportyBetOdds["allMarkets"]>();
+    for (const ev of raw.events) {
+      const am = ev?.odds?.allMarkets;
+      if (
+        typeof ev?.home === "string" &&
+        typeof ev?.away === "string" &&
+        Array.isArray(am) &&
+        am.length
+      ) {
+        allMarketsByKey.set(sidecarKey(ev.home, ev.away), am as SportyBetOdds["allMarkets"]);
+      }
+    }
+    if (!allMarketsByKey.size) return index;
+    for (const e of index.events) {
+      if (!e.detail) continue;
+      if (Array.isArray(e.detail.odds?.allMarkets) && e.detail.odds.allMarkets.length) continue;
+      const am = allMarketsByKey.get(sidecarKey(e.home, e.away));
+      if (!am) continue;
+      e.detail = {
+        ...e.detail,
+        odds: { ...(e.detail.odds ?? {}), allMarkets: am } as SportyBetOdds,
+      };
+      index.detailByKey.set(sidecarKey(e.home, e.away), e.detail);
+    }
+    return index;
+  } catch {
+    return index;
+  }
+}
+
 /** Load today's SportyBet-shaped index, lake-first. Tries the Parquet daily
  *  lake (dailyStore.ts) before falling back to the legacy
  *  .tmp/fixtures/sportybet_today.json — a fresh lake skips the JSON parse
@@ -377,7 +428,7 @@ export async function loadSportyBetIndex(
   try {
     const { loadDailyFixtures } = await import("./dailyStore.js");
     const fromLake = await loadDailyFixtures(today);
-    if (fromLake) return fromLake;
+    if (fromLake) return await overlayAllMarketsFromSidecar(fromLake, today, path);
   } catch {
     // dailyStore unavailable (native DuckDB load failure, etc.) — fall through to JSON.
   }

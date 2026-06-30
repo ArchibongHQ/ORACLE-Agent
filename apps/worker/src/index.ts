@@ -175,6 +175,25 @@ function readLastAcquire(): { at?: string; date?: string } | undefined {
   }
 }
 
+// Fixture-report follow-up state: when sendDailyFixtureReport() blocks on
+// marketsEmpty it stamps fixtureReportPlaceholder so the hourly heartbeat tick
+// below knows to retry until the enriched spreadsheet ships (stamped as
+// fixtureReportDelivered) — see sendDailyFixtureReport for the send side.
+function readFixtureReportState(): { placeholderDate?: string; deliveredDate?: string } {
+  try {
+    const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
+      string,
+      { date?: string } | undefined
+    >;
+    return {
+      placeholderDate: current.fixtureReportPlaceholder?.date,
+      deliveredDate: current.fixtureReportDelivered?.date,
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** True when today's Parquet-lake partition was written by a successful
  *  acquireDailyJob run within the last LAKE_STALE_MS — gates both the 09:35
  *  WAT batch's gap-fill scrape and the back-online trigger below. */
@@ -229,6 +248,16 @@ async function checkHeartbeatFreshness(): Promise<void> {
       "[worker] daily batch stale/missing for today — triggering back-online run\n"
     );
     logJob("daily-batch@back-online", () => runDailyBatch("scheduled"));
+  }
+
+  // Fixture-report enrichment follow-up: sendDailyFixtureReport() sent today's
+  // "blocked by data depth" placeholder but hasn't yet delivered the enriched
+  // spreadsheet — retry every hour until allMarkets lands. sendDailyFixtureReport
+  // is idempotent here: still-empty re-checks just re-skip without re-pinging.
+  const reportState = readFixtureReportState();
+  const todayStr = new Date().toISOString().slice(0, 10);
+  if (reportState.placeholderDate === todayStr && reportState.deliveredDate !== todayStr) {
+    logJob("fixture-report@enriched-followup", sendDailyFixtureReport);
   }
 
   if (!lastBatchAt) return;
@@ -471,18 +500,21 @@ async function sendDailyFixtureReport(): Promise<void> {
     if (result.marketsEmpty) {
       // Markets depth not yet enriched — the report cron raced the scrape's
       // allMarkets pass (the historical cause of header-only "Markets" sheets).
-      // Don't silently push a marketless report; warn and skip so a later run
-      // (e.g. the 09:30 WAT trigger) ships the enriched spreadsheet instead.
+      // Don't silently push a marketless report; flag the block once via
+      // Telegram and let the hourly heartbeat retry (readFixtureReportState/
+      // checkHeartbeatFreshness above) send the real spreadsheet once enriched.
       process.stderr.write(
-        `[fixture-report] WARN allMarkets not yet enriched for ${today} (${result.fixtureCount} fixtures) — skipping push; a later run will deliver the full report\n`
+        `[fixture-report] WARN allMarkets not yet enriched for ${today} (${result.fixtureCount} fixtures) — skipping push; hourly retry will deliver the full report\n`
       );
-      if (hasCreds) {
+      const alreadyFlagged = readFixtureReportState().placeholderDate === today;
+      if (hasCreds && !alreadyFlagged) {
         await sendTelegramText(
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
-          `ORACLE — ${today} fixtures are in but market depth is still loading; the full spreadsheet will follow shortly.`
+          `ORACLE — ${today} full-lake report BLOCKED: market depth not yet enriched (NO accumulated enriched data). Will auto-send the full spreadsheet once ready.`
         );
       }
+      if (!alreadyFlagged) writeHeartbeat("fixtureReportPlaceholder", { date: today });
       return;
     }
     process.stdout.write(`[fixture-report] wrote ${result.path}\n`);
@@ -497,6 +529,7 @@ async function sendDailyFixtureReport(): Promise<void> {
       process.stdout.write(
         `[fixture-report] delivered to Telegram in ${Date.now() - startedAt.getTime()}ms\n`
       );
+      writeHeartbeat("fixtureReportDelivered", { date: today });
     } else {
       // Was a silent skip — now explicit so an unconfigured box is obvious in logs.
       process.stderr.write(
