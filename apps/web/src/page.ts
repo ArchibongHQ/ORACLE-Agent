@@ -157,16 +157,27 @@ function esc(s: string): string {
 }
 
 /** The /punt page — paste a SportyBet booking code; shows the awaiting-state banner and last result.
- *  `state` describes today's prompt/fulfilment; `resultHtml` is an optional rendered result block. */
+ *  `state` describes today's two named-slip prompts/fulfilment (order-based matching —
+ *  see packages/runtime/src/puntState.ts); `resultHtml` is an optional rendered result block. */
 export function renderPuntPage(
-  state: { promptedAt: string | null; fulfilled: boolean; lastCode?: string },
+  state: {
+    slips: Array<{ promptedAt: string | null; fulfilled: boolean; lastCode?: string }>;
+  },
   resultHtml = ""
 ): string {
-  const banner = state.fulfilled
-    ? `<div class="banner ok">✅ Today's code processed${state.lastCode ? ` — <code>${esc(state.lastCode)}</code>` : ""}.</div>`
-    : state.promptedAt
-      ? `<div class="banner wait">⏳ Awaiting today's booking code. Drop it below 👇</div>`
-      : `<div class="banner">Paste a SportyBet booking code to run ORACLE counter-analysis.</div>`;
+  const labels = ["39 Billion - Universe", "9z 40 ACCA"];
+  const banner = state.slips
+    .map((slip, i) => {
+      const label = labels[i] ?? `Slip ${i + 1}`;
+      if (slip.fulfilled) {
+        return `<div class="banner ok">✅ ${esc(label)} processed${slip.lastCode ? ` — <code>${esc(slip.lastCode)}</code>` : ""}.</div>`;
+      }
+      if (slip.promptedAt) {
+        return `<div class="banner wait">⏳ Awaiting ${esc(label)} booking code. Drop it below 👇</div>`;
+      }
+      return `<div class="banner">${esc(label)} — paste a SportyBet booking code to run ORACLE counter-analysis.</div>`;
+    })
+    .join("\n");
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

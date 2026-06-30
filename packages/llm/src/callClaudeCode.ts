@@ -68,8 +68,13 @@ function _spawnWithStdin(
   return new Promise((resolve) => {
     void import("node:child_process").then(({ spawn }) => {
       let child: import("node:child_process").ChildProcess;
+      // Forward USERPROFILE so the claude CLI finds its OAuth credentials when
+      // the worker runs as LocalSystem (which has no .claude/ in its own profile).
+      const env = process.env.CLAUDE_USERPROFILE
+        ? { ...process.env, USERPROFILE: process.env.CLAUDE_USERPROFILE }
+        : process.env;
       try {
-        child = spawn(command, args);
+        child = spawn(command, args, { env });
       } catch {
         resolve({ status: null, stdout: "" });
         return;

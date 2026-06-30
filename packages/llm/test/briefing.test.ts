@@ -128,19 +128,19 @@ describe("callBriefing — OpenRouter Tier 2/3, GLM-first", () => {
     expect(res.text).toBe('{"primaryPick":"Over 2.5"}');
   });
 
-  it("falls GLM-5.2 → GLM-5.1 → Qwen3 235B Thinking → GPT-oss-120B in order", async () => {
+  it("falls GLM-5.2 → GLM-5.1 → DeepSeek-R1 → Kimi-K2 in order", async () => {
     fetchMock
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(chatResponse('{"primaryPick":"X"}'));
     const res = await callBriefing("p", ctx);
-    expect(res.model).toBe(OPENROUTER_MODELS.GPT_OSS_120B);
+    expect(res.model).toBe(OPENROUTER_MODELS.KIMI_K2);
     expect(postedModels(fetchMock)).toEqual([
       OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GLM_5_1,
-      OPENROUTER_MODELS.QWEN3_235B_THINKING,
-      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.KIMI_K2,
     ]);
   });
 

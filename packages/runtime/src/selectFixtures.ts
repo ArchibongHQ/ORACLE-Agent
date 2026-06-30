@@ -578,6 +578,23 @@ export function predictabilityScore(
   return Math.max(0, Math.min(100, Math.round(raw - penalty)));
 }
 
+// ── Data completeness ─────────────────────────────────────────────────────────
+
+/** Returns 0–5: count of key signal fields present on the sidecar detail.
+ *  Used as a secondary sort key within each priority tier so data-rich fixtures
+ *  are analyzed before data-sparse ones of the same tier. */
+function dataCompletenessScore(c: SelectionCandidate): number {
+  const d = c.sportyBetDetail;
+  if (!d) return 0;
+  let n = 0;
+  if (d.stats?.form?.home && d.stats.form.away) n++;
+  if (d.stats?.goals?.home && d.stats.goals.away) n++;
+  if (d.odds?.["1x2"]?.home != null) n++;
+  if (d.stats?.xg?.home && d.stats.xg.away) n++;
+  if (d.stats?.standings?.home && d.stats.standings.away) n++;
+  return n;
+}
+
 // ── Composite scoring ─────────────────────────────────────────────────────────
 
 export interface SelectionCandidate {
@@ -689,19 +706,37 @@ export function selectFixtures(
       }
     }
   }
+  // Exclude SRL (simulated reality league) and other virtual/eSports fixtures.
+  // They carry no real match data — the engine produces artificially inflated EV
+  // on them and they consume LLM quota without delivering actionable intelligence.
+  const SRL_PATTERN = /\bSRL\b|simulated\s*reality|virtual\s*(football|soccer|sport)/i;
+  gated = gated.filter((c) => !SRL_PATTERN.test(c.job.league));
+
   const droppedBulkOdds = failOpen
     ? 0
     : todayOnly.filter((c) => c.hasBulkOdds).length - gated.filter((c) => c.hasBulkOdds).length;
 
-  // Score all gated fixtures; top-N (by cap) get llmEligible = true
+  // Score all gated fixtures; top-cap are returned for analysis (cap controls total).
+  // Sort order:
+  //   1. Hard tier — ORACLE_PRIORITY_LEAGUES first (tier 0) so chunk loops always
+  //      analyze top-flight fixtures before lower-priority ones regardless of score.
+  //   2. Data completeness within tier — more signal fields → analyzed sooner.
+  //   3. Composite predictability score (desc) as tiebreaker within tier+completeness.
   const scoredAll = gated
     .map((c) => ({ c, score: scoreFixture(c, marketCounts.get(c) ?? 0, now) }))
-    .sort(
-      (a, b) =>
+    .sort((a, b) => {
+      const tierDiff =
+        (ORACLE_PRIORITY_LEAGUES.has(a.c.job.league) ? 0 : 1) -
+        (ORACLE_PRIORITY_LEAGUES.has(b.c.job.league) ? 0 : 1);
+      if (tierDiff !== 0) return tierDiff;
+      const dcDiff = dataCompletenessScore(b.c) - dataCompletenessScore(a.c);
+      if (dcDiff !== 0) return dcDiff;
+      return (
         b.score - a.score ||
         a.c.job.kickoff.localeCompare(b.c.job.kickoff) ||
         a.c.job.home.localeCompare(b.c.job.home)
-    );
+      );
+    });
 
   // Collapse near-duplicate fixtures before the cap. Multiple sources/sweeps emit
   // the same match under name variants the canonical sidecarKey can't merge
@@ -731,9 +766,14 @@ export function selectFixtures(
   }
 
   const llmCap = Math.max(0, opts.cap);
-  const selected: SelectionCandidate[] = scored.map((s, i) => ({
+  // Cap TOTAL returned fixtures to llmCap (not just LLM routing). With the full
+  // all-markets LLM executor active and Gate 2 removed, every returned fixture
+  // spawns a local Claude call — returning hundreds of fixtures would blow the
+  // per-run quota and time budget. The top-llmCap by composite score are the
+  // highest-quality fixtures; all are marked llmEligible.
+  const selected: SelectionCandidate[] = scored.slice(0, llmCap).map((s) => ({
     ...s.c,
-    llmEligible: i < llmCap,
+    llmEligible: true,
     sportyBetDetail: details.get(s.c),
   }));
 
