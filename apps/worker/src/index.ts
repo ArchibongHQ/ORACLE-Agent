@@ -1,7 +1,8 @@
 /** ORACLE scheduled worker — thin cron shell.
- *  node-cron: acquire-daily@00:00 -> goals-batch immediately after (independent
- *  discovery funnel over the full SportyBet pool) -> daily all-markets batch
- *  @06:00 (independent) -> resolve-yesterday @14:00.
+ *  node-cron, single morning sequence (WAT = UTC+1): acquire-daily + fixture
+ *  report @09:30 WAT -> main all-markets batch @09:35 WAT -> goals-only batch
+ *  @09:40 WAT (independent discovery funnel over the full SportyBet pool) ->
+ *  resolve-yesterday + punt prompt @10:00 WAT (retries @12:00/13:00 WAT).
  *  All analysis/fixture/report logic lives in @oracle/runtime; this file only schedules. */
 
 import { execFile } from "node:child_process";
@@ -32,9 +33,11 @@ import {
   loadEnv,
   loadSportyBetIndex,
   markPrompted,
+  ORACLE_PRIORITY_LEAGUES,
   resolveDay,
   runAnalysis,
   runGoalsFunnel,
+  SLIP_LABELS,
   selectGoalsAccumulator,
   shouldReprompt,
   sidecarKey,
@@ -128,13 +131,13 @@ const HEARTBEAT_STALE_MS = 36 * 60 * 60 * 1000; // 36h — daily batch + some sl
 let lastStaleAlertSentAt = 0;
 const STALE_ALERT_REPEAT_MS = 12 * 60 * 60 * 1000; // don't re-alert more than every 12h
 
-// Daily-batch back-online trigger: the 06:00 cron slot is a single point in
-// time — if the worker process is mid-restart at exactly that minute (Servy
+// Daily-batch back-online trigger: the 09:35 WAT cron slot is a single point
+// in time — if the worker process is mid-restart at exactly that minute (Servy
 // auto-restart, machine sleep/wake, etc.) the whole day's run is silently
 // skipped with no catch-up, unlike acquireDailyJob below which retries on
 // every hourly tick until it succeeds. Confirmed in practice: 2026-06-25
-// through 06-28 all missed the 06:00 slot, leaving oracle-{date}.html and the
-// booking-eligible picks stale for days. Mirrors isLakeFreshForToday/
+// through 06-28 all missed the (then-06:00 UTC) slot, leaving oracle-{date}.html
+// and the booking-eligible picks stale for days. Mirrors isLakeFreshForToday/
 // LAKE_TRIGGER_REPEAT_MS below, but keyed off lastBatch instead of lastAcquire.
 const DAILY_BATCH_STALE_MS = 20 * 60 * 60 * 1000; // ~20h — same-day batch is always fresher than this
 let lastDailyBatchTriggerAt = 0;
@@ -148,7 +151,7 @@ function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
 
 // Lake-staleness back-online trigger: unlike the alert above, this actively
 // re-runs acquisition rather than just notifying — so a daemon that was down
-// across 00:00 catches up as soon as it restarts, instead of waiting for
+// across 09:30 WAT catches up as soon as it restarts, instead of waiting for
 // tomorrow's cron slot.
 const LAKE_STALE_MS = 20 * 60 * 60 * 1000; // ~20h — same-day acquisition is always fresher than this
 let lastLakeTriggerAt = 0;
@@ -167,8 +170,8 @@ function readLastAcquire(): { at?: string; date?: string } | undefined {
 }
 
 /** True when today's Parquet-lake partition was written by a successful
- *  acquireDailyJob run within the last LAKE_STALE_MS — gates both the 06:00
- *  batch's gap-fill scrape and the back-online trigger below. */
+ *  acquireDailyJob run within the last LAKE_STALE_MS — gates both the 09:35
+ *  WAT batch's gap-fill scrape and the back-online trigger below. */
 function isLakeFreshForToday(): boolean {
   const lastAcquire = readLastAcquire();
   if (!lastAcquire?.date || !lastAcquire.at) return false;
@@ -199,8 +202,8 @@ async function checkHeartbeatFreshness(): Promise<void> {
       "[worker] daily lake stale/missing — triggering back-online acquisition\n"
     );
     // After back-online acquisition completes, send the fixture report and fire the
-    // goals batch immediately so a machine that was off across 00:00/09:30 WAT still
-    // gets the report + picks as soon as it comes up — mirrors the 00:00 cron sequence.
+    // goals batch immediately so a machine that was off across 09:30 WAT still gets
+    // the report + picks as soon as it comes up — mirrors the 09:30 WAT cron sequence.
     logJob("acquire-daily@back-online", async () => {
       await acquireDailyJob();
       await sendDailyFixtureReport();
@@ -370,10 +373,10 @@ function fetchLineups(): Promise<void> {
 // It still writes the legacy JSON sidecar, so deleting the lake degrades back
 // to today's exact existing behavior.
 
-// Shared in-flight guard: acquireDailyJob (00:00 cron + back-online trigger)
+// Shared in-flight guard: acquireDailyJob (09:30 WAT cron + back-online trigger)
 // and runDailyBatch's gap-fill call both invoke acquireDaily() independently,
-// gated by the same isLakeFreshForToday() check — if the 00:00 run is still
-// in progress (or just failed) when the hourly/06:00 triggers fire, they'd
+// gated by the same isLakeFreshForToday() check — if the 09:30 WAT run is still
+// in progress (or just failed) when the hourly/09:35 WAT triggers fire, they'd
 // otherwise spawn a second acquire_daily.py concurrently, the exact
 // concurrent-write corruption mode (sportybet_today.json / Parquet
 // partitions) this lake was built to avoid. A second caller awaits the
@@ -418,7 +421,7 @@ function runNewsEnrichment(): Promise<void> {
   });
 }
 
-/** Full 00:00 acquisition job: scrape -> lake write -> news enrichment ->
+/** Full 09:30 WAT acquisition job: scrape -> lake write -> news enrichment ->
  *  heartbeat. Only stamps lastAcquire when fixtures were actually acquired, so
  *  a failed run leaves the lake-staleness check above free to keep retrying
  *  rather than masking the failure with a fresh timestamp. */
@@ -433,7 +436,7 @@ async function acquireDailyJob(): Promise<void> {
 /** Daily raw-fixture-data report (item #5): every SportyBet fixture for the
  *  day + its accompanying odds/stats/lineups/news — independent of engine
  *  selection or the goals funnel. Generated + sent to Telegram as a document
- *  attachment immediately after the 00:00 scrape, before anything else
+ *  attachment immediately after the 09:30 WAT scrape, before anything else
  *  (goals batch, daily batch) — per owner instruction "trigger immediately
  *  after scrape and before any other thing." Best-effort: a failure here
  *  (missing token, write error) is logged but never blocks the rest of the run. */
@@ -622,7 +625,7 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
   process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s ===\n`);
 }
 
-// ── Daily batch (06:00) ───────────────────────────────────────────────────────
+// ── Daily batch (09:35 WAT) ─────────────────────────────────────────────────
 
 /** Returns the analyzed batch, or null when there were no fixtures to analyze.
  *  The goals pipeline (runGoalsBatch) is fully independent of this batch as of
@@ -690,6 +693,20 @@ async function runDailyBatch(
       ? findSidecarDetail(sportyIndexForBooking.detailByKey, home, away)?.eventId
       : undefined
   );
+
+  // Curate the best 39 picks from the full batch results, ordered by league
+  // priority then confidence — mirrors the goals 39-leg lottery approach.
+  // Priority leagues (Tier A/B) first, then others; within tier sort by
+  // confidence descending. The full batch can analyze 300+ fixtures; the
+  // Telegram summary is intentionally capped at 39 legs.
+  if (summary.actionable.length > 39) {
+    const tierOf = (league: string) => (ORACLE_PRIORITY_LEAGUES.has(league) ? 0 : 1);
+    summary.actionable = [...summary.actionable]
+      .sort((a, b) => tierOf(a.league) - tierOf(b.league) || b.confidence - a.confidence)
+      .slice(0, 39);
+    summary.actionableCount = summary.actionable.length;
+  }
+
   if (env.ENABLE_SPORTYBET_BOOKING === "true" && summary.actionable.length > 0) {
     try {
       const { bookAccumulator } = await import("@oracle/booking");
@@ -1042,7 +1059,7 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
   await finalizeGoalsSelection(selection, batch.date, batch.errorCount, trigger);
 }
 
-// ── Resolve yesterday (14:00) ────────────────────────────────────────────────
+// ── Resolve yesterday (10:00 WAT) ───────────────────────────────────────────
 
 async function resolveYesterdayFixtures(): Promise<void> {
   // No early-exit on missing keys — CLAUDE.md §6 no-data-blocker: resolveDay's
@@ -1077,14 +1094,19 @@ async function resolveYesterdayFixtures(): Promise<void> {
   writeHeartbeat("lastResolve", { date: yesterday, candidates, resolved: resolved.length });
 }
 
-// ── Punt prompt (10:00, retry 12:00 / 13:00 until fulfilled) ──────────────────
-// At 10:00 prompt unconditionally; at 12:00/13:00 only re-prompt if the user hasn't
-// yet supplied a code (markFulfilled is called by the bot/web when a code is processed).
+// ── Punt prompts (10:00 WAT, retry 12:00 / 13:00 WAT until each slip is fulfilled) ──
+// Two named slips per day (SLIP_LABELS — "39 Billion - Universe" and "9z 40 ACCA"),
+// each prompted/retried independently. At 10:00 WAT both prompt unconditionally;
+// at 12:00/13:00 WAT a slip only re-prompts if it hasn't yet received a code
+// (order-based: markFulfilled, called by the bot/web when a code is processed,
+// closes out whichever slip is still pending).
 
 async function sendDailyPuntPrompt(retry: boolean): Promise<void> {
-  if (retry && !shouldReprompt(ROOT)) return; // already fulfilled today
-  markPrompted(ROOT);
-  await sendPuntPrompt();
+  for (let slipIndex = 0; slipIndex < SLIP_LABELS.length; slipIndex++) {
+    if (retry && !shouldReprompt(ROOT, slipIndex)) continue; // already fulfilled today
+    markPrompted(ROOT, slipIndex);
+    await sendPuntPrompt(slipIndex);
+  }
 }
 
 // Cron daemon — skipped entirely in one-shot CLI mode (see IS_ONE_SHOT above) so a
@@ -1094,32 +1116,17 @@ if (!IS_ONE_SHOT) {
   // already stale by the time this fresh process starts (see checkHeartbeatFreshness
   // comment above for the two failure modes this can and can't detect).
   void checkHeartbeatFreshness();
-  cron.schedule("0 * * * *", () => void checkHeartbeatFreshness());
-
-  // Bot heartbeat — checked far more often than the daily-batch check (every
-  // 10 min vs hourly) since its own staleness threshold is 10 min, not 36h.
   void checkBotHeartbeatFreshness();
-  cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness());
 
-  // Daily acquisition (00:00) — Parquet lake + JSON sidecar via acquire_daily.py,
-  // then news enrichment. The 06:00 batch below reads this lake first and only
-  // falls back to its own gap-fill scrape when it's missing/stale. Per owner
-  // instruction, immediately after this scrape — before anything else — the
-  // raw fixture-data report is generated+sent, THEN the goals batch runs (its
-  // own SportyBet index read, independent of the 06:00 all-markets batch).
-  cron.schedule("0 0 * * *", () =>
-    logJob("acquire-daily@00:00", async () => {
-      await acquireDailyJob();
-      await sendDailyFixtureReport();
-      await runGoalsBatch("scheduled");
-    })
-  );
-
-  // Daily SportyBet scrape — 09:30 WAT (= 08:30 UTC). Bookmakers finalise their
+  // 1. Scrape + Intel Batch — 09:30 WAT (= 08:30 UTC). Bookmakers finalise their
   // morning lines and player props by ~09:00 WAT; 09:30 hits after the morning sync
-  // completes and avoids the on-the-hour server spike. Back-online: if the machine
-  // was off at this slot, checkHeartbeatFreshness fires acquireDailyJob + goals
-  // immediately on daemon restart (see LAKE_STALE_MS trigger above).
+  // completes and avoids the on-the-hour server spike. Writes the Parquet lake +
+  // JSON sidecar (acquire_daily.py), runs news-intel enrichment, then sends the
+  // fixture spreadsheet report to Telegram. This is now the ONLY acquisition job —
+  // the old 00:00 scrape was removed so picks are sourced from one fresh morning
+  // odds snapshot instead of two. Back-online: if the machine was off at this slot,
+  // checkHeartbeatFreshness fires acquireDailyJob + goals immediately on daemon
+  // restart (see LAKE_STALE_MS trigger above).
   cron.schedule("30 8 * * *", () =>
     logJob("acquire-daily@09:30-WAT", async () => {
       await acquireDailyJob();
@@ -1127,7 +1134,18 @@ if (!IS_ONE_SHOT) {
     })
   );
 
-  // Goals-ACCA trigger — 09:40 WAT (= 08:40 UTC), 10 min after scrape starts.
+  // 2. Main Daily Batch — 09:35 WAT (= 08:35 UTC), 5 min after the scrape starts.
+  // Full LLM all-markets analysis -> HTML report + Telegram. Its internal scrape
+  // is gap-fill-only — runDailyBatch only re-acquires when the 09:30 lake is
+  // missing/stale (see isLakeFreshForToday), so this normally reuses the lake the
+  // job above just wrote.
+  cron.schedule("35 8 * * *", () =>
+    logJob("daily-batch@09:35-WAT", () => runDailyBatch("scheduled"))
+  );
+
+  // 3. Goals batch — 09:40 WAT (= 08:40 UTC), standalone after the main daily run.
+  // Independent discovery funnel (mechanical pre-filter -> Sonnet screen) over the
+  // full SportyBet pool, using the same fresh morning odds the lake above wrote.
   // runGoalsBatch reads the SportyBet index written by acquireDailyJob; if the
   // scrape is still in progress (in-flight guard) it waits for it via loadSportyBetIndex
   // fallback + scrapeFixtures() call inside runGoalsBatch itself.
@@ -1135,21 +1153,31 @@ if (!IS_ONE_SHOT) {
     logJob("goals-batch@09:40-WAT", () => runGoalsBatch("scheduled"))
   );
 
-  // Main all-markets daily batch (06:00) — independent of the goals pipeline
-  // above (no longer chained/derived). Its internal scrape is gap-fill-only —
-  // runDailyBatch only re-acquires when the 00:00 lake is missing/stale (see
-  // isLakeFreshForToday).
-  cron.schedule("0 6 * * *", () => logJob("daily-batch", () => runDailyBatch("scheduled")));
+  // 4. Resolve yesterday's results — 10:00 WAT (= 09:00 UTC).
+  cron.schedule("0 9 * * *", () => logJob("resolve-yesterday@10:00-WAT", resolveYesterdayFixtures));
 
-  cron.schedule("0 14 * * *", () => logJob("resolve-yesterday", resolveYesterdayFixtures));
+  // 5. Punt prompt — 10:00 WAT (first), 12:00 WAT + 13:00 WAT (retry only if no
+  // code received yet). Runs alongside resolve-yesterday above; independent jobs,
+  // no shared state.
+  cron.schedule("0 9 * * *", () =>
+    logJob("punt-prompt@10:00-WAT", () => sendDailyPuntPrompt(false))
+  );
+  cron.schedule("0 11 * * *", () =>
+    logJob("punt-prompt-retry@12:00-WAT", () => sendDailyPuntPrompt(true))
+  );
+  cron.schedule("0 12 * * *", () =>
+    logJob("punt-prompt-retry@13:00-WAT", () => sendDailyPuntPrompt(true))
+  );
 
-  // Weekly Kaggle refresh — Saturday 03:00 UTC
+  // 6. Weekly Kaggle refresh — Saturday 04:00 WAT (= 03:00 UTC), unchanged.
   cron.schedule("0 3 * * 6", () => logJob("kaggle-refresh", runWeeklyKaggleRefresh));
 
-  // Punt prompt — 10:00 (first), 12:00 + 13:00 (retry only if no code received yet)
-  cron.schedule("0 10 * * *", () => logJob("punt-prompt", () => sendDailyPuntPrompt(false)));
-  cron.schedule("0 12 * * *", () => logJob("punt-prompt-retry", () => sendDailyPuntPrompt(true)));
-  cron.schedule("0 13 * * *", () => logJob("punt-prompt-retry", () => sendDailyPuntPrompt(true)));
+  // 7. Heartbeat freshness check — every hour, on the hour.
+  cron.schedule("0 * * * *", () => void checkHeartbeatFreshness());
+
+  // 8. Bot heartbeat check — every 10 min (its own staleness threshold is
+  // 10 min, not the 36h daily-batch threshold, so it needs tighter polling).
+  cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness());
 }
 
 // Graceful shutdown — stop cron schedules so the daemon exits cleanly under SIGINT/SIGTERM.
