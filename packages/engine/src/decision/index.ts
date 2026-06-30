@@ -698,27 +698,12 @@ export function validateSelection(
     };
   }
 
-  // Gate 2: ML safety filter blocked — downgrade to NO_EDGE (pick stays for reporting)
-  if (mlFilter?.mlAllowed === false) {
-    return {
-      ...pick,
-      grade: "NO_EDGE",
-      confidence: 0,
-      rationale: "ML safety filter blocked all bets",
-      rejectedAndWhy: ["mlFilter.mlAllowed=false"],
-    };
-  }
-
-  // Gate 3: MoneyLine forbidden when draw risk is VERY_HIGH
-  if (
-    found &&
-    (found.cat === "1x2" || found.market === "1x2") &&
-    mlFilter?.drawRisk === "VERY_HIGH"
-  ) {
-    const nonMl = eligibleBets.filter((m) => m.cat !== "1x2" && m.market !== "1x2");
-    return deterministicDecide(nonMl, "MoneyLine rejected: VERY_HIGH draw risk").decision;
-  }
-
+  // Gate 2 (ML safety filter → NO_EDGE) and Gate 3 (MoneyLine draw-risk block)
+  // removed per owner instruction 2026-06-30: the LLM arbiter over 1000+ markets
+  // is now the quality gate. Fixtures with thin data are excluded upstream
+  // (SRL/virtual filtered at selectFixtures; league scoring controls llmEligible
+  // routing) — any fixture that reaches here has real markets and the LLM should
+  // find edge, not be silently downgraded to NO_EDGE by a deterministic heuristic.
   return pick;
 }
 

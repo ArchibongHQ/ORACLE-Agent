@@ -689,11 +689,17 @@ export function selectFixtures(
       }
     }
   }
+  // Exclude SRL (simulated reality league) and other virtual/eSports fixtures.
+  // They carry no real match data — the engine produces artificially inflated EV
+  // on them and they consume LLM quota without delivering actionable intelligence.
+  const SRL_PATTERN = /\bSRL\b|simulated\s*reality|virtual\s*(football|soccer|sport)/i;
+  gated = gated.filter((c) => !SRL_PATTERN.test(c.job.league));
+
   const droppedBulkOdds = failOpen
     ? 0
     : todayOnly.filter((c) => c.hasBulkOdds).length - gated.filter((c) => c.hasBulkOdds).length;
 
-  // Score all gated fixtures; top-N (by cap) get llmEligible = true
+  // Score all gated fixtures; top-cap are returned for analysis (cap controls total)
   const scoredAll = gated
     .map((c) => ({ c, score: scoreFixture(c, marketCounts.get(c) ?? 0, now) }))
     .sort(
@@ -731,9 +737,14 @@ export function selectFixtures(
   }
 
   const llmCap = Math.max(0, opts.cap);
-  const selected: SelectionCandidate[] = scored.map((s, i) => ({
+  // Cap TOTAL returned fixtures to llmCap (not just LLM routing). With the full
+  // all-markets LLM executor active and Gate 2 removed, every returned fixture
+  // spawns a local Claude call — returning hundreds of fixtures would blow the
+  // per-run quota and time budget. The top-llmCap by composite score are the
+  // highest-quality fixtures; all are marked llmEligible.
+  const selected: SelectionCandidate[] = scored.slice(0, llmCap).map((s) => ({
     ...s.c,
-    llmEligible: i < llmCap,
+    llmEligible: true,
     sportyBetDetail: details.get(s.c),
   }));
 
