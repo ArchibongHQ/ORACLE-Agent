@@ -114,11 +114,17 @@ function _spawnWithStdin(
         if (child.pid != null) _killTree(child.pid);
         finish(null);
       }, timeoutMs);
+      // Cap accumulation, not just the diagnostic log line's truncated display —
+      // a hung/chatty child could otherwise buffer unbounded stderr/stdout in
+      // memory for the full timeout window (up to 60s at some call sites) before
+      // any truncation kicks in. 8KB comfortably covers any real CLI error
+      // message with room to spare.
+      const MAX_BUFFER = 8192;
       child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
+        if (stdout.length < MAX_BUFFER) stdout += chunk.toString("utf8");
       });
       child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
+        if (stderr.length < MAX_BUFFER) stderr += chunk.toString("utf8");
       });
       child.on("error", (err) => finish(null, err instanceof Error ? err.message : String(err)));
       child.on("close", (code) => finish(code));
@@ -212,11 +218,37 @@ interface ClaudeCodeEnvelope {
  *  to the CLI's account default, which could silently be Sonnet on some accounts. */
 const DEFAULT_MODEL = "opus";
 
-/** Truncate a diagnostic string to keep failure logs from a 50-100-fixture
- *  batch readable — full text isn't needed to identify the failure class. */
-function _truncate(s: string, max = 300): string {
-  const t = s.trim();
-  return t.length > max ? `${t.slice(0, max)}…` : t;
+/** Redact substrings shaped like secrets (bearer tokens, API keys, JWTs)
+ *  before anything from the child process's own output reaches a log file.
+ *  The `claude` CLI's stderr/result text is not under this codebase's
+ *  control — an auth/session failure could echo back token or session-file
+ *  fragments, and this is the only place in the pipeline that logs that
+ *  output verbatim, so it's the right (and only) place to scrub it. */
+function _redact(s: string): string {
+  return s
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9]{10,}/g, "[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]");
+}
+
+/** Prepare a diagnostic string for a log line: redact secret-shaped
+ *  substrings, strip control characters (newlines, carriage returns) so a
+ *  single diagnostic write can't smuggle in fake `[callClaudeCode]`-prefixed
+ *  lines or corrupt log parsing, then truncate — full text isn't needed to
+ *  identify the failure class, and a 50-100-fixture batch needs its logs to
+ *  stay readable. */
+function _sanitizeForLog(s: string, max = 300): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0 control chars from untrusted child-process output before logging
+  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f]+/g, " ");
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** Log one diagnostic line for a callClaudeCode failure branch, then return
+ *  null — every failure path funnels through here so sanitization/redaction
+ *  is applied in exactly one place. */
+function _fail(reason: string): null {
+  process.stderr.write(`[callClaudeCode] ${reason}\n`);
+  return null;
 }
 
 /** Call the local Claude Code CLI headlessly. Returns the cleaned response
@@ -245,34 +277,25 @@ export async function callClaudeCode(
   );
 
   if (spawnError) {
-    process.stderr.write(`[callClaudeCode] spawn failed (bin=${bin}): ${spawnError}\n`);
-    return null;
+    return _fail(`spawn failed (bin=${bin}): ${_sanitizeForLog(spawnError)}`);
   }
   if (timedOut) {
-    process.stderr.write(
-      `[callClaudeCode] timed out after ${opts.timeoutMs ?? REQUEST_TIMEOUT_MS}ms (bin=${bin})\n`
-    );
-    return null;
+    return _fail(`timed out after ${opts.timeoutMs ?? REQUEST_TIMEOUT_MS}ms (bin=${bin})`);
   }
   if (status !== 0 || !stdout.trim()) {
-    process.stderr.write(
-      `[callClaudeCode] exit=${status} stdout=${stdout.trim().length}b stderr="${_truncate(stderr)}"\n`
+    return _fail(
+      `exit=${status} stdout=${stdout.trim().length}chars stderr="${_sanitizeForLog(stderr)}"`
     );
-    return null;
   }
 
   let envelope: ClaudeCodeEnvelope;
   try {
     envelope = JSON.parse(stdout) as ClaudeCodeEnvelope;
   } catch {
-    process.stderr.write(`[callClaudeCode] unparseable stdout: "${_truncate(stdout)}"\n`);
-    return null;
+    return _fail(`unparseable stdout: "${_sanitizeForLog(stdout)}"`);
   }
   if (envelope.is_error || !envelope.result) {
-    process.stderr.write(
-      `[callClaudeCode] is_error envelope: "${_truncate(envelope.result ?? "(no result field)")}"\n`
-    );
-    return null;
+    return _fail(`is_error envelope: "${_sanitizeForLog(envelope.result ?? "(no result field)")}"`);
   }
 
   return envelope.result

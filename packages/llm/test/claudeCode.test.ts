@@ -23,6 +23,7 @@ const { _resetClaudeCodeCaches, callClaudeCode, isLocalRuntime } = await import(
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
+  stderr = new EventEmitter();
   stdin = { write: vi.fn(), end: vi.fn(), on: vi.fn() };
   pid = 4242;
 }
@@ -186,6 +187,112 @@ describe("callClaudeCode", () => {
       ["-p", "--output-format", "json", "--max-turns", "1", "--model", "fable"],
       expect.objectContaining({ env: expect.any(Object) })
     );
+  });
+});
+
+describe("callClaudeCode diagnostic logging", () => {
+  it("logs the spawn error reason to stderr", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    spawn.mockImplementation(() => {
+      throw new Error("spawn ENOENT");
+    });
+    await callClaudeCode("hello");
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callClaudeCode] spawn failed"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("spawn ENOENT"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs the timeout diagnostic to stderr", async () => {
+    vi.useFakeTimers();
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const child = new FakeChild();
+      spawn.mockReturnValue(child);
+      const promise = callClaudeCode("hello", { timeoutMs: 300 });
+      await vi.advanceTimersByTimeAsync(300);
+      await promise;
+      expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("timed out after 300ms"));
+    } finally {
+      killSpy.mockRestore();
+      writeSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs exit code + stderr on non-zero exit", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stderr.emit("data", Buffer.from("auth session expired"));
+    child.emit("close", 1);
+    await promise;
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callClaudeCode] exit=1"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("auth session expired"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs unparseable stdout content", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stdout.emit("data", Buffer.from("not json"));
+    child.emit("close", 0);
+    await promise;
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("unparseable stdout"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs the is_error envelope's result text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stdout.emit(
+      "data",
+      envelope({ type: "result", is_error: true, result: "model not found" })
+    );
+    child.emit("close", 0);
+    await promise;
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("is_error envelope"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("model not found"));
+    writeSpy.mockRestore();
+  });
+
+  it("redacts bearer-token-shaped substrings from logged stderr", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stderr.emit("data", Buffer.from("auth failed: Bearer sk-abcdefghijklmnop123456"));
+    child.emit("close", 1);
+    await promise;
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-abcdefghijklmnop123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+
+  it("strips embedded newlines from logged stderr so a single write can't smuggle in a fake log line", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stderr.emit("data", Buffer.from("real error\n[callClaudeCode] fake injected line"));
+    child.emit("close", 1);
+    await promise;
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    // exactly one real diagnostic line was written — the injected text is
+    // folded into that single line's stderr= field, not a separate log entry.
+    expect(logged.match(/^\[callClaudeCode\]/gm)?.length).toBe(1);
+    writeSpy.mockRestore();
   });
 });
 
