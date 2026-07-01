@@ -117,14 +117,17 @@ function _spawnWithStdin(
       // Cap accumulation, not just the diagnostic log line's truncated display —
       // a hung/chatty child could otherwise buffer unbounded stderr/stdout in
       // memory for the full timeout window (up to 60s at some call sites) before
-      // any truncation kicks in. 8KB comfortably covers any real CLI error
-      // message with room to spare.
+      // any truncation kicks in. Slice AFTER concatenating (not a pre-append
+      // length guard) so a single large chunk can't overshoot the cap — a
+      // guard checked before the append lets one chunk push well past 8KB.
       const MAX_BUFFER = 8192;
       child.stdout?.on("data", (chunk: Buffer) => {
-        if (stdout.length < MAX_BUFFER) stdout += chunk.toString("utf8");
+        if (stdout.length < MAX_BUFFER)
+          stdout = (stdout + chunk.toString("utf8")).slice(0, MAX_BUFFER);
       });
       child.stderr?.on("data", (chunk: Buffer) => {
-        if (stderr.length < MAX_BUFFER) stderr += chunk.toString("utf8");
+        if (stderr.length < MAX_BUFFER)
+          stderr = (stderr + chunk.toString("utf8")).slice(0, MAX_BUFFER);
       });
       child.on("error", (err) => finish(null, err instanceof Error ? err.message : String(err)));
       child.on("close", (code) => finish(code));
@@ -232,14 +235,19 @@ function _redact(s: string): string {
 }
 
 /** Prepare a diagnostic string for a log line: redact secret-shaped
- *  substrings, strip control characters (newlines, carriage returns) so a
- *  single diagnostic write can't smuggle in fake `[callClaudeCode]`-prefixed
- *  lines or corrupt log parsing, then truncate — full text isn't needed to
- *  identify the failure class, and a 50-100-fixture batch needs its logs to
- *  stay readable. */
+ *  substrings, strip control characters and Unicode line-breaking code
+ *  points (U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR, U+0085 NEL —
+ *  ASCII \n/\r alone isn't enough; several downstream log/JSON consumers
+ *  treat these as line breaks too) so a single diagnostic write can't
+ *  smuggle in fake `[callClaudeCode]`-prefixed lines or corrupt log parsing,
+ *  then truncate — full text isn't needed to identify the failure class,
+ *  and a 50-100-fixture batch needs its logs to stay readable. Every value
+ *  interpolated into a _fail() reason must go through this, including
+ *  `bin` (a resolved filesystem path, not just child-process output) — the
+ *  "one place to sanitize" invariant only holds if there are no exceptions. */
 function _sanitizeForLog(s: string, max = 300): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0 control chars from untrusted child-process output before logging
-  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f]+/g, " ");
+  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f\u2028\u2029\u0085]+/g, " ");
   return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
 }
 
@@ -269,6 +277,10 @@ export async function callClaudeCode(
   opts: { timeoutMs?: number; model?: string } = {}
 ): Promise<string | null> {
   const bin = resolveClaudeBin();
+  // Every value interpolated into a _fail() reason goes through _sanitizeForLog,
+  // including bin itself — it's a resolved filesystem path, not attacker
+  // input, but the "one funnel" invariant only holds with no exceptions.
+  const safeBin = _sanitizeForLog(bin);
   const { status, stdout, stderr, timedOut, spawnError } = await _spawnWithStdin(
     bin,
     ["-p", "--output-format", "json", "--max-turns", "1", "--model", opts.model ?? DEFAULT_MODEL],
@@ -277,10 +289,10 @@ export async function callClaudeCode(
   );
 
   if (spawnError) {
-    return _fail(`spawn failed (bin=${bin}): ${_sanitizeForLog(spawnError)}`);
+    return _fail(`spawn failed (bin=${safeBin}): ${_sanitizeForLog(spawnError)}`);
   }
   if (timedOut) {
-    return _fail(`timed out after ${opts.timeoutMs ?? REQUEST_TIMEOUT_MS}ms (bin=${bin})`);
+    return _fail(`timed out after ${opts.timeoutMs ?? REQUEST_TIMEOUT_MS}ms (bin=${safeBin})`);
   }
   if (status !== 0 || !stdout.trim()) {
     return _fail(
