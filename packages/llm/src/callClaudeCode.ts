@@ -55,16 +55,30 @@ function _killTree(pid: number): void {
   }
 }
 
-/** Spawn a process, write `input` to its stdin, collect stdout. Async (not
- *  spawnSync) so this never blocks the event loop. Stdin (not argv) carries
- *  the prompt — avoids Windows' ~8K command-line length limit on long
- *  briefing/CVL prompts. */
+interface SpawnResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  spawnError?: string;
+}
+
+/** Spawn a process, write `input` to its stdin, collect stdout+stderr. Async
+ *  (not spawnSync) so this never blocks the event loop. Stdin (not argv)
+ *  carries the prompt — avoids Windows' ~8K command-line length limit on long
+ *  briefing/CVL prompts. Captures stderr and the specific failure mode
+ *  (spawn error / timeout / exit code) so callClaudeCode's caller can log a
+ *  real reason instead of a bare null — every failure used to be
+ *  indistinguishable, which made the CLI's fallback path impossible to
+ *  root-cause from the worker's own logs (confirmed live 2026-07-01: the
+ *  Windows Service fell back to "Claude local unavailable" on ~49/50
+ *  fixtures with zero diagnostic trace anywhere). */
 function _spawnWithStdin(
   command: string,
   args: string[],
   input: string,
   timeoutMs: number
-): Promise<{ status: number | null; stdout: string }> {
+): Promise<SpawnResult> {
   return new Promise((resolve) => {
     void import("node:child_process").then(({ spawn }) => {
       let child: import("node:child_process").ChildProcess;
@@ -75,26 +89,38 @@ function _spawnWithStdin(
         : process.env;
       try {
         child = spawn(command, args, { env });
-      } catch {
-        resolve({ status: null, stdout: "" });
+      } catch (err) {
+        resolve({
+          status: null,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          spawnError: err instanceof Error ? err.message : String(err),
+        });
         return;
       }
       let stdout = "";
+      let stderr = "";
+      let timedOut = false;
       let settled = false;
-      const finish = (status: number | null) => {
+      const finish = (status: number | null, spawnError?: string) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ status, stdout });
+        resolve({ status, stdout, stderr, timedOut, spawnError });
       };
       const timer = setTimeout(() => {
+        timedOut = true;
         if (child.pid != null) _killTree(child.pid);
         finish(null);
       }, timeoutMs);
       child.stdout?.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8");
       });
-      child.on("error", () => finish(null));
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.on("error", (err) => finish(null, err instanceof Error ? err.message : String(err)));
       child.on("close", (code) => finish(code));
       child.stdin?.on("error", () => {
         /* EPIPE if the process exits before stdin finishes writing — finish()
@@ -186,32 +212,68 @@ interface ClaudeCodeEnvelope {
  *  to the CLI's account default, which could silently be Sonnet on some accounts. */
 const DEFAULT_MODEL = "opus";
 
+/** Truncate a diagnostic string to keep failure logs from a 50-100-fixture
+ *  batch readable — full text isn't needed to identify the failure class. */
+function _truncate(s: string, max = 300): string {
+  const t = s.trim();
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
 /** Call the local Claude Code CLI headlessly. Returns the cleaned response
  *  text (fence-stripped, same convention as callOpenRouter.ts) or null on any
  *  failure — including an is_error envelope, which carries a human-readable
  *  error description in `result`, not decision JSON. Callers hand the
  *  returned text to the same parseDecisionResponse/fence-stripping logic the
- *  API cascade already uses. */
+ *  API cascade already uses.
+ *
+ *  Every failure branch logs one diagnostic line to stderr before returning
+ *  null. Previously all failures were silent, which made the widespread
+ *  "Claude local unavailable" fallback (confirmed live 2026-07-01: ~49/50
+ *  fixtures in a scheduled Windows Service run) impossible to root-cause —
+ *  spawn error, timeout, non-zero exit, and auth/session failure all looked
+ *  identical from the outside. */
 export async function callClaudeCode(
   prompt: string,
   opts: { timeoutMs?: number; model?: string } = {}
 ): Promise<string | null> {
   const bin = resolveClaudeBin();
-  const { status, stdout } = await _spawnWithStdin(
+  const { status, stdout, stderr, timedOut, spawnError } = await _spawnWithStdin(
     bin,
     ["-p", "--output-format", "json", "--max-turns", "1", "--model", opts.model ?? DEFAULT_MODEL],
     prompt,
     opts.timeoutMs ?? REQUEST_TIMEOUT_MS
   );
-  if (status !== 0 || !stdout.trim()) return null;
+
+  if (spawnError) {
+    process.stderr.write(`[callClaudeCode] spawn failed (bin=${bin}): ${spawnError}\n`);
+    return null;
+  }
+  if (timedOut) {
+    process.stderr.write(
+      `[callClaudeCode] timed out after ${opts.timeoutMs ?? REQUEST_TIMEOUT_MS}ms (bin=${bin})\n`
+    );
+    return null;
+  }
+  if (status !== 0 || !stdout.trim()) {
+    process.stderr.write(
+      `[callClaudeCode] exit=${status} stdout=${stdout.trim().length}b stderr="${_truncate(stderr)}"\n`
+    );
+    return null;
+  }
 
   let envelope: ClaudeCodeEnvelope;
   try {
     envelope = JSON.parse(stdout) as ClaudeCodeEnvelope;
   } catch {
+    process.stderr.write(`[callClaudeCode] unparseable stdout: "${_truncate(stdout)}"\n`);
     return null;
   }
-  if (envelope.is_error || !envelope.result) return null;
+  if (envelope.is_error || !envelope.result) {
+    process.stderr.write(
+      `[callClaudeCode] is_error envelope: "${_truncate(envelope.result ?? "(no result field)")}"\n`
+    );
+    return null;
+  }
 
   return envelope.result
     .replace(/```(?:json)?\s*/gi, "")
