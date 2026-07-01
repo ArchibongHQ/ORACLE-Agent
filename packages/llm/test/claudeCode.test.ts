@@ -23,6 +23,7 @@ const { _resetClaudeCodeCaches, callClaudeCode, isLocalRuntime } = await import(
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
+  stderr = new EventEmitter();
   stdin = { write: vi.fn(), end: vi.fn(), on: vi.fn() };
   pid = 4242;
 }
@@ -186,6 +187,164 @@ describe("callClaudeCode", () => {
       ["-p", "--output-format", "json", "--max-turns", "1", "--model", "fable"],
       expect.objectContaining({ env: expect.any(Object) })
     );
+  });
+});
+
+describe("callClaudeCode diagnostic logging", () => {
+  it("logs the spawn error reason to stderr", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    spawn.mockImplementation(() => {
+      throw new Error("spawn ENOENT");
+    });
+    await callClaudeCode("hello");
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callClaudeCode] spawn failed"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("spawn ENOENT"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs the timeout diagnostic to stderr", async () => {
+    vi.useFakeTimers();
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const child = new FakeChild();
+      spawn.mockReturnValue(child);
+      const promise = callClaudeCode("hello", { timeoutMs: 300 });
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(300);
+      await promise;
+      expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("timed out after 300ms"));
+    } finally {
+      killSpy.mockRestore();
+      writeSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs exit code + stderr on non-zero exit", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stderr.emit("data", Buffer.from("auth session expired"));
+    child.emit("close", 1);
+    await promise;
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callClaudeCode] exit=1"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("auth session expired"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs unparseable stdout content", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stdout.emit("data", Buffer.from("not json"));
+    child.emit("close", 0);
+    await promise;
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("unparseable stdout"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs the is_error envelope's result text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stdout.emit(
+      "data",
+      envelope({ type: "result", is_error: true, result: "model not found" })
+    );
+    child.emit("close", 0);
+    await promise;
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("is_error envelope"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("model not found"));
+    writeSpy.mockRestore();
+  });
+
+  it("redacts bearer-token-shaped substrings from logged stderr", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stderr.emit("data", Buffer.from("auth failed: Bearer sk-abcdefghijklmnop123456"));
+    child.emit("close", 1);
+    await promise;
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-abcdefghijklmnop123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+
+  it("redacts a bare sk-... API key not preceded by 'Bearer '", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stderr.emit("data", Buffer.from("invalid key sk-abcdefghijklmnop123456 for account"));
+    child.emit("close", 1);
+    await promise;
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-abcdefghijklmnop123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+
+  it("redacts a JWT-shaped three-segment dot-separated token", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    const fakeJwt =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+    child.stderr.emit("data", Buffer.from(`session token ${fakeJwt} expired`));
+    child.emit("close", 1);
+    await promise;
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain(fakeJwt);
+    expect(logged).toContain("[REDACTED_JWT]");
+    writeSpy.mockRestore();
+  });
+
+  it("strips Unicode line-separator code points (U+2028/U+2029/U+0085), not just ASCII newlines", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    // U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR, U+0085 NEL — several
+    // downstream log/JSON consumers treat these as line breaks too, unlike
+    // plain \n/\r which \x00-\x1f alone already covers.
+    const injected =
+      "real error\u2028[callClaudeCode] fake1\u2029[callClaudeCode] fake2\u0085[callClaudeCode] fake3";
+    child.stderr.emit("data", Buffer.from(injected, "utf8"));
+    child.emit("close", 1);
+    await promise;
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged.match(/^\[callClaudeCode\]/gm)?.length).toBe(1);
+    writeSpy.mockRestore();
+  });
+
+  it("strips embedded newlines from logged stderr so a single write can't smuggle in a fake log line", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stderr.emit("data", Buffer.from("real error\n[callClaudeCode] fake injected line"));
+    child.emit("close", 1);
+    await promise;
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    // exactly one real diagnostic line was written — the injected text is
+    // folded into that single line's stderr= field, not a separate log entry.
+    expect(logged.match(/^\[callClaudeCode\]/gm)?.length).toBe(1);
+    writeSpy.mockRestore();
   });
 });
 

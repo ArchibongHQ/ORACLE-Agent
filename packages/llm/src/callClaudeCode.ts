@@ -55,16 +55,30 @@ function _killTree(pid: number): void {
   }
 }
 
-/** Spawn a process, write `input` to its stdin, collect stdout. Async (not
- *  spawnSync) so this never blocks the event loop. Stdin (not argv) carries
- *  the prompt — avoids Windows' ~8K command-line length limit on long
- *  briefing/CVL prompts. */
+interface SpawnResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  spawnError?: string;
+}
+
+/** Spawn a process, write `input` to its stdin, collect stdout+stderr. Async
+ *  (not spawnSync) so this never blocks the event loop. Stdin (not argv)
+ *  carries the prompt — avoids Windows' ~8K command-line length limit on long
+ *  briefing/CVL prompts. Captures stderr and the specific failure mode
+ *  (spawn error / timeout / exit code) so callClaudeCode's caller can log a
+ *  real reason instead of a bare null — every failure used to be
+ *  indistinguishable, which made the CLI's fallback path impossible to
+ *  root-cause from the worker's own logs (confirmed live 2026-07-01: the
+ *  Windows Service fell back to "Claude local unavailable" on ~49/50
+ *  fixtures with zero diagnostic trace anywhere). */
 function _spawnWithStdin(
   command: string,
   args: string[],
   input: string,
   timeoutMs: number
-): Promise<{ status: number | null; stdout: string }> {
+): Promise<SpawnResult> {
   return new Promise((resolve) => {
     void import("node:child_process").then(({ spawn }) => {
       let child: import("node:child_process").ChildProcess;
@@ -75,26 +89,47 @@ function _spawnWithStdin(
         : process.env;
       try {
         child = spawn(command, args, { env });
-      } catch {
-        resolve({ status: null, stdout: "" });
+      } catch (err) {
+        resolve({
+          status: null,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          spawnError: err instanceof Error ? err.message : String(err),
+        });
         return;
       }
       let stdout = "";
+      let stderr = "";
+      let timedOut = false;
       let settled = false;
-      const finish = (status: number | null) => {
+      const finish = (status: number | null, spawnError?: string) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ status, stdout });
+        resolve({ status, stdout, stderr, timedOut, spawnError });
       };
       const timer = setTimeout(() => {
+        timedOut = true;
         if (child.pid != null) _killTree(child.pid);
         finish(null);
       }, timeoutMs);
+      // Cap accumulation, not just the diagnostic log line's truncated display —
+      // a hung/chatty child could otherwise buffer unbounded stderr/stdout in
+      // memory for the full timeout window (up to 60s at some call sites) before
+      // any truncation kicks in. Slice AFTER concatenating (not a pre-append
+      // length guard) so a single large chunk can't overshoot the cap — a
+      // guard checked before the append lets one chunk push well past 8KB.
+      const MAX_BUFFER = 8192;
       child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
+        if (stdout.length < MAX_BUFFER)
+          stdout = (stdout + chunk.toString("utf8")).slice(0, MAX_BUFFER);
       });
-      child.on("error", () => finish(null));
+      child.stderr?.on("data", (chunk: Buffer) => {
+        if (stderr.length < MAX_BUFFER)
+          stderr = (stderr + chunk.toString("utf8")).slice(0, MAX_BUFFER);
+      });
+      child.on("error", (err) => finish(null, err instanceof Error ? err.message : String(err)));
       child.on("close", (code) => finish(code));
       child.stdin?.on("error", () => {
         /* EPIPE if the process exits before stdin finishes writing — finish()
@@ -186,32 +221,94 @@ interface ClaudeCodeEnvelope {
  *  to the CLI's account default, which could silently be Sonnet on some accounts. */
 const DEFAULT_MODEL = "opus";
 
+/** Redact substrings shaped like secrets (bearer tokens, API keys, JWTs)
+ *  before anything from the child process's own output reaches a log file.
+ *  The `claude` CLI's stderr/result text is not under this codebase's
+ *  control — an auth/session failure could echo back token or session-file
+ *  fragments, and this is the only place in the pipeline that logs that
+ *  output verbatim, so it's the right (and only) place to scrub it. */
+function _redact(s: string): string {
+  return s
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9]{10,}/g, "[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]");
+}
+
+/** Prepare a diagnostic string for a log line: redact secret-shaped
+ *  substrings, strip control characters and Unicode line-breaking code
+ *  points (U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR, U+0085 NEL —
+ *  ASCII \n/\r alone isn't enough; several downstream log/JSON consumers
+ *  treat these as line breaks too) so a single diagnostic write can't
+ *  smuggle in fake `[callClaudeCode]`-prefixed lines or corrupt log parsing,
+ *  then truncate — full text isn't needed to identify the failure class,
+ *  and a 50-100-fixture batch needs its logs to stay readable. Every value
+ *  interpolated into a _fail() reason must go through this, including
+ *  `bin` (a resolved filesystem path, not just child-process output) — the
+ *  "one place to sanitize" invariant only holds if there are no exceptions. */
+function _sanitizeForLog(s: string, max = 300): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0 control chars from untrusted child-process output before logging
+  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f\u2028\u2029\u0085]+/g, " ");
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** Log one diagnostic line for a callClaudeCode failure branch, then return
+ *  null — every failure path funnels through here so sanitization/redaction
+ *  is applied in exactly one place. */
+function _fail(reason: string): null {
+  process.stderr.write(`[callClaudeCode] ${reason}\n`);
+  return null;
+}
+
 /** Call the local Claude Code CLI headlessly. Returns the cleaned response
  *  text (fence-stripped, same convention as callOpenRouter.ts) or null on any
  *  failure — including an is_error envelope, which carries a human-readable
  *  error description in `result`, not decision JSON. Callers hand the
  *  returned text to the same parseDecisionResponse/fence-stripping logic the
- *  API cascade already uses. */
+ *  API cascade already uses.
+ *
+ *  Every failure branch logs one diagnostic line to stderr before returning
+ *  null. Previously all failures were silent, which made the widespread
+ *  "Claude local unavailable" fallback (confirmed live 2026-07-01: ~49/50
+ *  fixtures in a scheduled Windows Service run) impossible to root-cause —
+ *  spawn error, timeout, non-zero exit, and auth/session failure all looked
+ *  identical from the outside. */
 export async function callClaudeCode(
   prompt: string,
   opts: { timeoutMs?: number; model?: string } = {}
 ): Promise<string | null> {
   const bin = resolveClaudeBin();
-  const { status, stdout } = await _spawnWithStdin(
+  // Every value interpolated into a _fail() reason goes through _sanitizeForLog,
+  // including bin itself — it's a resolved filesystem path, not attacker
+  // input, but the "one funnel" invariant only holds with no exceptions.
+  const safeBin = _sanitizeForLog(bin);
+  const { status, stdout, stderr, timedOut, spawnError } = await _spawnWithStdin(
     bin,
     ["-p", "--output-format", "json", "--max-turns", "1", "--model", opts.model ?? DEFAULT_MODEL],
     prompt,
     opts.timeoutMs ?? REQUEST_TIMEOUT_MS
   );
-  if (status !== 0 || !stdout.trim()) return null;
+
+  if (spawnError) {
+    return _fail(`spawn failed (bin=${safeBin}): ${_sanitizeForLog(spawnError)}`);
+  }
+  if (timedOut) {
+    return _fail(`timed out after ${opts.timeoutMs ?? REQUEST_TIMEOUT_MS}ms (bin=${safeBin})`);
+  }
+  if (status !== 0 || !stdout.trim()) {
+    return _fail(
+      `exit=${status} stdout=${stdout.trim().length}chars stderr="${_sanitizeForLog(stderr)}"`
+    );
+  }
 
   let envelope: ClaudeCodeEnvelope;
   try {
     envelope = JSON.parse(stdout) as ClaudeCodeEnvelope;
   } catch {
-    return null;
+    return _fail(`unparseable stdout: "${_sanitizeForLog(stdout)}"`);
   }
-  if (envelope.is_error || !envelope.result) return null;
+  if (envelope.is_error || !envelope.result) {
+    return _fail(`is_error envelope: "${_sanitizeForLog(envelope.result ?? "(no result field)")}"`);
+  }
 
   return envelope.result
     .replace(/```(?:json)?\s*/gi, "")
