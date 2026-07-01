@@ -63,6 +63,19 @@ export function loadEnv(path: string): Record<string, string> {
     if (!process.env.ENABLE_SPORTYBET_BOOKING) merged.ENABLE_SPORTYBET_BOOKING = "true";
   }
 
+  // Backfill process.env from the parsed .env file, like a real dotenv.config()
+  // would. A handful of call sites outside this module's reach read gating flags
+  // straight off process.env instead of the returned config object — e.g.
+  // ORACLE_LOCAL_DECISION (packages/engine/src/decision/index.ts's arbitrate()),
+  // ORACLE_RUNTIME/CLAUDE_BIN/CLAUDE_USERPROFILE (packages/llm/src/callClaudeCode.ts)
+  // — and until now silently never saw .env-only values, so the local Claude Code
+  // arbiter was unreachable however the .env file was configured. Only fills gaps;
+  // never overrides an already-set OS-level var, so the Railway-wins policy above
+  // is preserved.
+  for (const [key, value] of Object.entries(merged)) {
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
+
   return merged;
 }
 
