@@ -31,10 +31,10 @@ $lines += ""
 try {
     if (Test-Path $stderrLog) {
         $tail = Get-Content $stderrLog -Tail 500 -ErrorAction Stop
-        $matches = $tail | Select-String "\[callClaudeCode\]"
+        $callClaudeMatches = $tail | Select-String "\[callClaudeCode\]"
         $lines += "--- [callClaudeCode] lines in last 500 lines of servy_worker_stderr.log ---"
-        if ($matches) {
-            $lines += ($matches | ForEach-Object { $_.Line })
+        if ($callClaudeMatches) {
+            $lines += ($callClaudeMatches | ForEach-Object { $_.Line })
         } else {
             $lines += "(none found - either no failures occurred, or logging didn't fire)"
         }
@@ -58,5 +58,14 @@ try {
     $lines += "--- ERROR reading worker_heartbeat.json: $($_.Exception.Message) ---"
 }
 
-$lines | Out-File -FilePath $outFile -Encoding utf8
-Write-Output "Diagnostic summary written to $outFile"
+try {
+    $lines | Out-File -FilePath $outFile -Encoding utf8 -ErrorAction Stop
+    Write-Output "Diagnostic summary written to $outFile"
+} catch {
+    # Dropping $ErrorActionPreference = "Stop" (see NOTE above) means a write
+    # failure here would otherwise print a non-terminating error and still
+    # exit 0 - exactly the silent-failure mode this script exists to avoid.
+    # Force a non-zero exit so Task Scheduler's LastTaskResult reflects it.
+    Write-Error "Failed to write diagnostic output to $outFile : $($_.Exception.Message)"
+    exit 1
+}
