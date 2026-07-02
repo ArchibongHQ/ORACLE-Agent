@@ -85,6 +85,76 @@ export {
   MARKET_CATALOG,
   PRICEABLE_FAMILIES,
 } from "./markets/index.js";
+export type {
+  V3AllMarketsInput,
+  V3AllMarketsResult,
+  V3EmpiricalInputs,
+  V3MarketOutcomeAssessment,
+} from "./marketsV3/analyzeFixtureMarkets.js";
+export { analyzeFixtureMarketsV3 } from "./marketsV3/analyzeFixtureMarkets.js";
+export type { V3MarketClass } from "./marketsV3/classes.js";
+export {
+  CLASS_L_MAX_ODDS,
+  CLASS_M_MAX_ODDS,
+  CLASS_ORDER,
+  CLASS_S_MAX_ODDS,
+  classifyMarket,
+  STRUCTURAL_X_FAMILIES,
+} from "./marketsV3/classes.js";
+export { V3_FIRST_HALF_SHARE_DEFAULT } from "./marketsV3/engines/half.js";
+export { minuteShare, priceTimeWindow, V3_MINUTE_SHARE_TABLE } from "./marketsV3/engines/time.js";
+export type { V3EngineCtx, V3Price } from "./marketsV3/engines/types.js";
+export { blendEmpirical, EMPIRICAL_BLEND_W } from "./marketsV3/engines/types.js";
+export type {
+  V3AllGateOutcome,
+  V3AllMarketsAssessment,
+  V3AllMarketsPenaltyFlags,
+  V3Confidence,
+} from "./marketsV3/evGate.js";
+export {
+  allMarketsPenaltyPts,
+  CLASS_GATE,
+  gateAllMarkets,
+  impliedQ,
+  RELATIVE_CAP_ODDS_FLOOR,
+  RELATIVE_CAP_RATIO,
+  RELATIVE_CAP_RATIO_X,
+  V3_ALLMARKETS_PENALTY_PTS,
+  v3Confidence,
+} from "./marketsV3/evGate.js";
+export type {
+  RouteCoverage,
+  V3Engine,
+  V3Route,
+  V3Routing,
+  V3Skip,
+} from "./marketsV3/feedDictionary.js";
+export { isSkip, parseSpecifier, routeCoverage, routeMarket } from "./marketsV3/feedDictionary.js";
+export type { ResultProbs } from "./marketsV3/grid.js";
+export {
+  buildV3Grid,
+  buildV3HalfGrid,
+  poissonVector,
+  resultProbs,
+  sumWhere,
+  V3_GRID_MAX_GOALS,
+  winPushSplit,
+} from "./marketsV3/grid.js";
+export type { V3PriorityInput } from "./marketsV3/prioritise.js";
+export {
+  CONGESTION_MAX_DAYS,
+  chunkV3,
+  HIGH_LEAGUE_AVG_MIN,
+  HOME_FAVOURITE_MAX_ODDS,
+  MARKET_DEPTH_MIN,
+  STREAK_MIN,
+  scoreV3Priority,
+  sortByV3Priority,
+  V3_CHUNK_SIZE,
+  V3_PRIORITY_WEIGHTS,
+} from "./marketsV3/prioritise.js";
+export type { DualSplit } from "./marketsV3/split.js";
+export { deriveDualSplit, SHAPE_DISAGREEMENT_DELTA } from "./marketsV3/split.js";
 export * from "./math/index.js";
 export type { PostmortemEntry, RAGEntry, RootCause } from "./rag/index.js";
 export { PostmortemRegistry, postmortemRegistry, RAGSystem, ROOT_CAUSES } from "./rag/index.js";
