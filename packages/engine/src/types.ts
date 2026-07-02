@@ -212,6 +212,15 @@ export interface OracleConfig {
   // scales to ~1 agent per fixture on VPS, where it also ignores costCeilingUsd
   // (uncapped spend on VPS is an explicit owner choice, not an oversight).
   enableLlmMarketExecutor?: boolean;
+  // goals-market-analysis-prompt-v3 gates applied to goals-family markets
+  // (Goals O/U, Team Total, BTTS) in the MAIN batch's scanMarkets admission —
+  // the noise gate and the §4.4 implausible-edge cap, without the goals-batch
+  // penalty table (penalty inputs are sidecar/goals-specific). Default OFF;
+  // ships behind its own flag until the goals-only batch (which always runs
+  // these gates) is proven in production. Non-goals families are untouched.
+  enableV3MainGates?: boolean;
+  v3EdgeCap?: number; // default 0.12 — raw edge above this vetoes with reason "v3-cap"
+  v3NoiseGate?: number; // default 0.02 — |rawEdge| at/below this vetoes with reason "v3-noise"
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

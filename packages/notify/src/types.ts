@@ -44,6 +44,18 @@ export interface BatchSummary {
    *  model analysed the picks and, when it wasn't Claude, why Claude wasn't reached.
    *  Built by buildAnalysisModelNote() from the legs' decisionReplay.model values. */
   analysisModelNote?: string;
+  /** goals-market-analysis-prompt-v3 slate-arbiter outcome ("verified" = the local
+   *  Claude review actually ran and returned parseable verdicts; "unverified" =
+   *  fail-open, slate unchanged). Absent on the legacy (non-v3) goals path and on
+   *  main-batch summaries, which have no slate arbiter. */
+  arbiterStatus?: "verified" | "unverified";
+  /** Count of §4.4 implausible-edge-capped selections for this run (logged, never
+   *  bet) — surfaced so the slip states how many "too hot to trust" picks it
+   *  discarded. v3 goals path only. */
+  cappedCount?: number;
+  /** Responsible-gambling note (v3 §7 guardrail 8) — rendered once per summary
+   *  when the slip carries actionable picks. */
+  rgNote?: string;
 }
 
 /** Build the "which model did the final analysis" attribution line for a goals
@@ -161,6 +173,16 @@ export function formatSummaryText(s: BatchSummary): string {
     );
   }
   if (s.analysisModelNote) lines.push(`\n${s.analysisModelNote}`);
+  if (s.arbiterStatus) {
+    lines.push(
+      s.arbiterStatus === "verified"
+        ? "✅ Slate arbiter: reviewed."
+        : "⚠️ Slate arbiter: unverified (review unavailable — slate unchanged)."
+    );
+  }
+  if (s.cappedCount) {
+    lines.push(`🧢 ${s.cappedCount} selection(s) capped as implausible edge (never bet).`);
+  }
   if (s.bookingCode) {
     lines.push(`\n🎟 SportyBet Booking Code: *${s.bookingCode}*`);
     const loadUrl =
@@ -175,6 +197,7 @@ export function formatSummaryText(s: BatchSummary): string {
     lines.push(`\n⚠️ SportyBet booking unavailable: ${s.bookingError}`);
   }
   if (s.reportUrl) lines.push(`\nReport: ${s.reportUrl}`);
+  if (s.rgNote && s.actionable.length > 0) lines.push(`\n_${s.rgNote}_`);
   return lines.join("\n");
 }
 
@@ -213,5 +236,10 @@ ${
       ? `<p><em>⚠️ SportyBet booking unavailable: ${s.bookingError}</em></p>`
       : ""
 }
-${s.reportUrl ? `<p><a href="${s.reportUrl}">Full report</a></p>` : ""}`;
+${s.reportUrl ? `<p><a href="${s.reportUrl}">Full report</a></p>` : ""}
+${s.rgNote && s.actionable.length > 0 ? `<p><small>${s.rgNote}</small></p>` : ""}`;
 }
+
+/** v3 §7 guardrail 8 — responsible-gambling note text, shared by every v3 slip. */
+export const GOALS_V3_RG_NOTE =
+  "These are probability estimates, not predictions; outcomes are uncertain even when the model is right. Stake only what you can afford to lose and keep to sensible unit sizing.";

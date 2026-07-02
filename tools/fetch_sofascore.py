@@ -51,8 +51,17 @@ try:
 except ImportError:
     HAS_PLAYWRIGHT = False
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from xg_extract import best_team_xg  # noqa: E402
+
+try:
+    from scrape_fixtures import normalise
+except ImportError:  # repo root on sys.path instead of tools/
+    from tools.scrape_fixtures import normalise
+
 ROOT = Path(__file__).resolve().parent.parent
 SOFASCORE_DIR = ROOT / ".tmp" / "sofascore"
+XG_OUTPUT_PATH = ROOT / ".tmp" / "xg" / "sofascore_xg.json"
 
 _CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -272,11 +281,51 @@ async def fetch_sofascore_batch(teams: list[str], max_workers: Optional[int] = N
     return out
 
 
+async def fetch_sofascore_xg_table(teams: list[str], max_workers: Optional[int] = None) -> dict[str, dict]:
+    """goals-market-analysis-prompt-v3 gap-closure: per-team xG via Sofascore,
+    merged below FotMob in build_xg_table.py's priority order (Understat >
+    FotMob > Sofascore > FBref). Reuses fetch_sofascore_batch's captured
+    player-statistics/standings/events payloads and applies xg_extract's
+    best-effort key-walk (see xg_extract.py's docstring — no live Sofascore
+    session was available to verify the exact team-xG JSON path). A team with
+    no xG-shaped key anywhere in its captured payload is simply absent from
+    the result, never fatal."""
+    if not HAS_PLAYWRIGHT or not teams:
+        return {}
+    raw = await fetch_sofascore_batch(teams, max_workers=max_workers)
+    table: dict[str, dict] = {}
+    for team, payload in raw.items():
+        xg = best_team_xg(payload.get("stats", {}))
+        if not xg:
+            continue
+        key = normalise(team)
+        if not key:
+            continue
+        table[key] = {"xgf": xg["xgf"], "xga": xg["xga"], "n": None, "div": "", "src": "sofascore"}
+    return table
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Sofascore per-team stats fetch (Playwright, non-headless).")
-    ap.add_argument("--team", required=True, help="Team name, e.g. 'Arsenal'")
+    ap.add_argument("--team", help="Single team name, e.g. 'Arsenal' (stats fetch mode)")
     ap.add_argument("--out", help="Write JSON here instead of stdout")
+    ap.add_argument(
+        "--xg-teams", help="Comma-separated team names — xG-extraction mode instead of the stats fetch"
+    )
+    ap.add_argument("--xg-out", default=str(XG_OUTPUT_PATH), help="Output path for --xg-teams mode")
     args = ap.parse_args()
+
+    if args.xg_teams:
+        teams = [t.strip() for t in args.xg_teams.split(",") if t.strip()]
+        table = asyncio.run(fetch_sofascore_xg_table(teams))
+        out_path = Path(args.xg_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(table, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"[fetch-sofascore-xg] {len(table)}/{len(teams)} teams matched -> {out_path}")
+        return 0
+
+    if not args.team:
+        ap.error("either --team or --xg-teams is required")
 
     result = asyncio.run(fetch_sofascore_team(args.team))
     if result is None:

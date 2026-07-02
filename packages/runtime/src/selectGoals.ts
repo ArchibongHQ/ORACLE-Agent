@@ -11,7 +11,7 @@
  *  Pure functions, unit-testable, no I/O beyond reading already-loaded data.
  */
 
-import type { BatchJobResult, EVMarket } from "@oracle/engine";
+import type { BatchJobResult, EVMarket, V3EVMarket, V3Tier } from "@oracle/engine";
 import {
   copulaJointProbability,
   type PortfolioLeg,
@@ -44,8 +44,9 @@ const _EXCLUDE_RE =
  *      them via the copa substring would contradict the Tier A designation.
  *  The "euro" alternative requires "european championship" or a year so a bare
  *  /euro/i doesn't also match "Euro Friendly Cup" / "EuroLeague Youth Friendly". */
-const _INTL_TOURNAMENT_RE =
+export const INTL_TOURNAMENT_RE =
   /world\s*cup|euro(?:pean\s*championship)|uefa\s*euro\s*20\d{2}|euro\s*20\d{2}|copa\s*am[ée]rica|copa\s*chile|copa\s*venezuela|nations\s*league|africa(?:n)?\s*cup\s*of\s*nations|afcon|asian\s*cup|gold\s*cup|concacaf/i;
+const _INTL_TOURNAMENT_RE = INTL_TOURNAMENT_RE;
 
 /** Default per-leg thresholds — the single source of truth, also consumed by
  *  buildConfig() in env.ts so an .env-less run and a coded default never drift. */
@@ -78,6 +79,13 @@ export interface GoalsSelectOptions {
    *  the worker so the booking agent can navigate directly to the fixture detail
    *  page without scanning the paginated listing DOM. */
   eventIdByKey?: Map<string, string>;
+  /** goals-market-analysis-prompt-v3 mode: admission runs off the engine's v3
+   *  edge gate (tier ≥ medium, penalties already subtracted upstream) instead of
+   *  the legacy completeness-haircut edge bar; Outputs B/C rank by adjusted edge
+   *  with NO mp floor (the §4.4 cap makes odds ≥ 4.00 + mp ≥ 0.72 impossible);
+   *  the mini-ACCA applies the §6 0.85 correlation haircut and requires kickoff
+   *  separation on top of league diversity. Long/short slips keep the mp floor. */
+  v3?: boolean;
 }
 
 export interface GoalsLeg {
@@ -111,6 +119,17 @@ export interface GoalsLeg {
    *  the final analysis, and — when it wasn't Claude — implies why (no Claude tier
    *  reached for that fixture). */
   decisionModel?: string | null;
+  // ── v3 fields (populated only on the ORACLE_GOALS_V3 path) ────────────────
+  /** §4.2 adjusted edge = raw edge − data-quality penalties. */
+  adjustedEdge?: number;
+  /** §4.3 confidence tier on adjusted edge. */
+  tier?: V3Tier;
+  /** §6 one-line rationale naming data sources + limitations. */
+  rationale?: string;
+  /** Data-source names behind this leg's model inputs. */
+  sources?: string[];
+  /** Set when the slate arbiter flagged (but did not drop) this leg. */
+  arbiterFlag?: string;
 }
 
 export interface GoalsSelectionResult {
@@ -151,8 +170,9 @@ type Side = "home" | "away";
 
 /** Per-team average goals scored. Prefer an explicit goals.avg_scored; when the
  *  scraper only provides league-table standings (gf/played) — the common case for
- *  lower divisions — derive scored = gf / played. Returns null when neither exists. */
-function avgScored(detail: SportyBetEventDetail | undefined, side: Side): number | null {
+ *  lower divisions — derive scored = gf / played. Returns null when neither exists.
+ *  Exported for the v3 completeness scorer (same per-90 fallback rules). */
+export function avgScored(detail: SportyBetEventDetail | undefined, side: Side): number | null {
   const direct = detail?.stats?.goals?.[side]?.avg_scored;
   if (typeof direct === "number" && direct > 0) return direct;
   const st = detail?.stats?.standings?.[side];
@@ -163,8 +183,9 @@ function avgScored(detail: SportyBetEventDetail | undefined, side: Side): number
 }
 
 /** Per-team average goals conceded. Prefer goals.avg_conceded; otherwise derive
- *  ga / played from standings. Returns null when neither exists. */
-function avgConceded(detail: SportyBetEventDetail | undefined, side: Side): number | null {
+ *  ga / played from standings. Returns null when neither exists.
+ *  Exported for the v3 completeness scorer (same per-90 fallback rules). */
+export function avgConceded(detail: SportyBetEventDetail | undefined, side: Side): number | null {
   const direct = detail?.stats?.goals?.[side]?.avg_conceded;
   if (typeof direct === "number" && direct >= 0) return direct;
   const st = detail?.stats?.standings?.[side];
@@ -249,6 +270,83 @@ export function goalsDataGate(
   return hasAnyGoalsSignal(detail);
 }
 
+/** Convert one qualifying EVMarket into a GoalsLeg (shared by the legacy and
+ *  v3 admission paths — the paths differ only in WHICH markets qualify). */
+function toGoalsLeg(
+  job: BatchJobResult & { status: "ok" },
+  m: V3EVMarket,
+  completeness: number | undefined,
+  eventId: string | undefined
+): GoalsLeg {
+  return {
+    home: job.home,
+    away: job.away,
+    league: job.league,
+    kickoff: job.kickoff,
+    market: m.cat,
+    side: m.label,
+    odds: m.odds,
+    mp: m.mp,
+    ip: m.ip,
+    edge: m.mp - m.ip,
+    completeness,
+    ...(eventId ? { eventId } : {}),
+    decisionModel: job.decisionReplay?.model ?? null,
+    ...(m.v3
+      ? {
+          adjustedEdge: m.v3.adjustedEdge,
+          tier: m.v3.tier,
+          rationale: m.v3.rationale,
+          sources: m.v3.sources,
+        }
+      : {}),
+  };
+}
+
+/** v3 leg admission for one job: markets already carry the engine's §4 gate
+ *  verdict (only DONE-tier markets have `v3` metadata and reached evMarkets),
+ *  so admission here is: allowed market label + tiered + optional mp floor.
+ *  The legacy completeness haircut and league-regex data gate are intentionally
+ *  absent — penalties were subtracted upstream (no double-penalty) and Phase-1
+ *  eligibility owns league rules on the v3 path. */
+function v3QualifyingLegs(
+  job: BatchJobResult,
+  opts: GoalsSelectOptions,
+  applyMpFloor: boolean
+): GoalsLeg[] {
+  if (job.status !== "ok") return [];
+  const minConfidence = opts.minConfidence ?? DEFAULT_GOALS_MIN_CONFIDENCE;
+  const detail = findSidecarDetail(opts.detailByKey, job.home, job.away);
+  const eventId = detail?.eventId ?? opts.eventIdByKey?.get(sidecarKey(job.home, job.away));
+  const all = (job.result.evMarkets ?? []) as V3EVMarket[];
+  return all
+    .filter(
+      (m) =>
+        GOALS_MARKETS.has(m.label) &&
+        !m.veto &&
+        m.v3?.tier != null &&
+        (!applyMpFloor || m.mp >= minConfidence)
+    )
+    .map((m) => toGoalsLeg(job, m, m.v3?.completeness, eventId));
+}
+
+/** v3 per-fixture safest leg for the ACCA slips (mp floor applied; safest =
+ *  highest mp among tiered markets). */
+function v3PickSafestGoalsLeg(job: BatchJobResult, opts: GoalsSelectOptions): GoalsLeg | null {
+  const legs = v3QualifyingLegs(job, opts, true);
+  if (legs.length === 0) return null;
+  return legs.reduce((a, b) => (b.mp > a.mp ? b : a));
+}
+
+/** v3 per-fixture best VALUE leg for Outputs B/C: highest adjusted edge, NO mp
+ *  floor — §4.4's 12pt cap means an odds ≥ 4.00 leg necessarily has mp ≤ ~0.37,
+ *  so the slip-oriented 0.72 floor would empty Output B by construction. */
+function v3PickBestValueLeg(job: BatchJobResult, opts: GoalsSelectOptions): GoalsLeg | null {
+  const legs = v3QualifyingLegs(job, opts, false);
+  if (legs.length === 0) return null;
+  return legs.reduce((a, b) => ((b.adjustedEdge ?? 0) > (a.adjustedEdge ?? 0) ? b : a));
+}
+
 /** From a successful batch job, return the single safest qualifying goals leg
  *  (highest `mp` among the allowed markets that pass the data gate and clear the
  *  confidence + implied-prob bars). Returns null if none qualify or job errored. */
@@ -257,6 +355,7 @@ export function pickSafestGoalsLeg(
   opts: GoalsSelectOptions = {}
 ): GoalsLeg | null {
   if (job.status !== "ok") return null;
+  if (opts.v3) return v3PickSafestGoalsLeg(job, opts);
   const minConfidence = opts.minConfidence ?? DEFAULT_GOALS_MIN_CONFIDENCE;
   const minImplied = opts.minImplied ?? DEFAULT_GOALS_MIN_IMPLIED;
   const detail = findSidecarDetail(opts.detailByKey, job.home, job.away);
@@ -411,19 +510,40 @@ function buildShortSlip(ranked: GoalsLeg[], maxLegs: number): GoalsLeg[] {
 
 /** Greedily picks the highest-edge legs with no league repeat — used for the
  *  mini-ACCA where strict cross-league independence is the primary requirement.
- *  Legs must already be sorted by descending edge before calling this. */
-function forceDiverseLeaguesSlice(byEdge: GoalsLeg[], maxLegs: number): GoalsLeg[] {
+ *  Legs must already be sorted by descending edge before calling this.
+ *  `minKickoffGapMs` (v3 §6: "different kick-off windows") additionally requires
+ *  every admitted pair to kick off at least that far apart; 0 = league-only. */
+function forceDiverseLeaguesSlice(
+  byEdge: GoalsLeg[],
+  maxLegs: number,
+  minKickoffGapMs = 0
+): GoalsLeg[] {
   const seen = new Set<string>();
   const result: GoalsLeg[] = [];
   for (const leg of byEdge) {
     if (result.length >= maxLegs) break;
-    if (!seen.has(leg.league)) {
-      seen.add(leg.league);
-      result.push(leg);
+    if (seen.has(leg.league)) continue;
+    if (minKickoffGapMs > 0) {
+      const t = Date.parse(leg.kickoff);
+      const clash =
+        Number.isFinite(t) &&
+        result.some((r) => {
+          const rt = Date.parse(r.kickoff);
+          return Number.isFinite(rt) && Math.abs(rt - t) < minKickoffGapMs;
+        });
+      if (clash) continue;
     }
+    seen.add(leg.league);
+    result.push(leg);
   }
   return result;
 }
+
+/** v3 §6 mini-ACCA combined-probability haircut: Combined P ≈ (∏ leg P) × 0.85
+ *  — a flat correlation/uncertainty discount on the naive product. */
+export const V3_MINI_ACCA_HAIRCUT = 0.85;
+/** v3 §6 "different kick-off windows" — minimum kickoff separation (3h). */
+const V3_MINI_ACCA_KICKOFF_GAP_MS = 3 * 60 * 60 * 1000;
 
 const SHORT_SLIP_MIN = 4;
 const SHORT_SLIP_MAX = 9;
@@ -484,8 +604,14 @@ export function selectGoalsAccumulator(
   const shortSlipCombinedOdds = shortSlipLegs.reduce((acc, l) => acc * l.odds, 1);
 
   // ── Three derived outputs (edge-ranked) ───────────────────────────────────
-  // Sort all qualified legs by edge descending (edge = mp − ip, populated above).
-  const allByEdge = [...all].sort((a, b) => b.edge - a.edge);
+  // v3: rank by ADJUSTED edge over the un-floored value pool (one best-value leg
+  // per fixture, no mp floor — see v3PickBestValueLeg). Legacy: raw edge over
+  // the mp-floored pool.
+  const valuePool = opts.v3
+    ? jobs.map((job) => v3PickBestValueLeg(job, opts)).filter((l): l is GoalsLeg => l !== null)
+    : all;
+  const edgeOf = (l: GoalsLeg): number => (opts.v3 ? (l.adjustedEdge ?? l.edge) : l.edge);
+  const allByEdge = [...valuePool].sort((a, b) => edgeOf(b) - edgeOf(a));
 
   // Output B: high-value legs (odds ≥ 4.00), top 5 by edge.
   const outputBLegs = allByEdge.filter((l) => l.odds >= 4.0).slice(0, 5);
@@ -493,11 +619,20 @@ export function selectGoalsAccumulator(
   // Output C: mid-range legs (2.50 ≤ odds < 4.00), top 3 by edge.
   const outputCLegs = allByEdge.filter((l) => l.odds >= 2.5 && l.odds < 4.0).slice(0, 3);
 
-  // Mini-ACCA: 2–4 highest-edge legs, one per league (strict diversity).
-  const miniAccaLegs = forceDiverseLeaguesSlice(allByEdge, 4);
+  // Mini-ACCA: 2–4 highest-edge legs, one per league (strict diversity); v3 also
+  // requires ≥3h kickoff separation (§6 "different kick-off windows") and draws
+  // from the mp-floored slip pool (a mini-ACCA is a confidence product, not a
+  // value single — long-odds legs would gut its combined probability).
+  const miniAccaLegs = forceDiverseLeaguesSlice(
+    opts.v3 ? [...all].sort((a, b) => edgeOf(b) - edgeOf(a)) : allByEdge,
+    4,
+    opts.v3 ? V3_MINI_ACCA_KICKOFF_GAP_MS : 0
+  );
   // Naive joint probability (product of mp) — mini-ACCA is cross-league by
   // construction so copula correction is negligible (rho ≈ 0 between leagues).
-  const miniAccaCombinedProb = miniAccaLegs.reduce((acc, l) => acc * l.mp, 1);
+  // v3 applies the §6 flat 0.85 correlation/uncertainty haircut on top.
+  const miniAccaCombinedProb =
+    miniAccaLegs.reduce((acc, l) => acc * l.mp, 1) * (opts.v3 ? V3_MINI_ACCA_HAIRCUT : 1);
   const miniAccaCombinedOdds = miniAccaLegs.reduce((acc, l) => acc * l.odds, 1);
 
   return {

@@ -20,6 +20,9 @@ import { join } from "node:path";
 import { lookupMarket, PRICEABLE_FAMILIES } from "@oracle/engine";
 import ExcelJS from "exceljs";
 import { type DailyNewsRow, loadDailyNews, teamSlug } from "./dailyStore.js";
+import { scoreCompleteness } from "./goalsV3/completeness.js";
+import { classifyEligibility } from "./goalsV3/eligibility.js";
+import { scorePredictabilityV3 } from "./goalsV3/predictability.js";
 import { findLineupSummary, type LineupSummary, loadLineupSummaries } from "./lineups.js";
 import { loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
 import { dataCompleteness } from "./selectGoals.js";
@@ -148,6 +151,21 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
     header: "xG src",
     get: ({ event }) =>
       event.detail?.stats?.xg?.home?.src ?? event.detail?.stats?.xg?.away?.src ?? "",
+  },
+  // Venue-split xG (tools/build_xg_table.py) — the home team's xG conditioned on
+  // ITS home matches only, the away team's on ITS away matches only, rather than
+  // the season-aggregate xgf/xga above. Absent until a team has ≥1 venue-tagged
+  // match in Understat's per-match record (Phase E gap-closure).
+  { header: "xGF_H (venue)", get: ({ event }) => event.detail?.stats?.xg?.home?.venueXgf ?? null },
+  { header: "xGA_H (venue)", get: ({ event }) => event.detail?.stats?.xg?.home?.venueXga ?? null },
+  { header: "xGF_A (venue)", get: ({ event }) => event.detail?.stats?.xg?.away?.venueXgf ?? null },
+  { header: "xGA_A (venue)", get: ({ event }) => event.detail?.stats?.xg?.away?.venueXga ?? null },
+  {
+    header: "xG estimated?",
+    get: ({ event }) => {
+      const srcs = [event.detail?.stats?.xg?.home?.src, event.detail?.stats?.xg?.away?.src];
+      return srcs.some((s) => s === "google_ai") ? "yes" : "";
+    },
   },
   // ── O/U hit-rate ──────────────────────────────────────────────────────────
   {
@@ -344,6 +362,30 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
       }).soft?.text ?? "",
   },
   { header: "Data completeness", get: ({ event }) => dataCompleteness(event.detail) },
+  // ── goals-market-analysis-prompt-v3 (pre-enrichment; report-time snapshot) ──
+  {
+    header: "v3 Completeness",
+    get: ({ event }) => scoreCompleteness(event.detail).score,
+  },
+  {
+    header: "v3 Mandatory Missing",
+    width: 24,
+    get: ({ event }) => scoreCompleteness(event.detail).mandatoryMissing.join(", "),
+  },
+  {
+    header: "v3 Eligibility",
+    width: 14,
+    get: ({ event }) => classifyEligibility(event).status,
+  },
+  {
+    header: "v3 Eligibility reason",
+    width: 26,
+    get: ({ event }) => classifyEligibility(event).reasons.join("; "),
+  },
+  {
+    header: "v3 Predictability",
+    get: ({ event }) => scorePredictabilityV3(event),
+  },
   // ── Lineups ───────────────────────────────────────────────────────────────
   {
     header: "Lineup_H",

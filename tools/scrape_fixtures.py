@@ -819,9 +819,14 @@ def _load_xg_table() -> dict[str, dict]:
         return {}
 
 
-def _xg_for(table: dict[str, dict], team: str) -> Optional[dict]:
-    """Look up a team's {xgf, xga, src} prior by normalised name. None when uncovered.
+def _xg_for(table: dict[str, dict], team: str, venue: Optional[str] = None) -> Optional[dict]:
+    """Look up a team's {xgf, xga, src, venueXgf, venueXga} prior by normalised
+    name. None when uncovered.
 
+    xgf/xga are the season aggregate (as before). When `venue` ("home"|"away")
+    is given and build_xg_table.py recorded matches at that venue, venueXgf/
+    venueXga are ALSO populated — the SAME team's xG conditioned on playing at
+    this fixture's venue only (goals-market-analysis-prompt-v3 gap-closure).
     xgf is required; xga may be null for FBref-sourced records (season player
     aggregate has no team-conceded figure). The TS override consumes xGF-only
     records at medium confidence, so we pass them through with xga=None."""
@@ -832,11 +837,17 @@ def _xg_for(table: dict[str, dict], team: str) -> Optional[dict]:
     if not isinstance(xgf, (int, float)):
         return None
     src = rec.get("src") if isinstance(rec.get("src"), str) else None
-    return {
+    out = {
         "xgf": float(xgf),
         "xga": float(xga) if isinstance(xga, (int, float)) else None,
         "src": src,
     }
+    venue_rec = rec.get(venue) if venue in ("home", "away") else None
+    if isinstance(venue_rec, dict) and isinstance(venue_rec.get("xgf"), (int, float)):
+        out["venueXgf"] = float(venue_rec["xgf"])
+        vxga = venue_rec.get("xga")
+        out["venueXga"] = float(vxga) if isinstance(vxga, (int, float)) else None
+    return out
 
 
 def _sb_get(url: str) -> Optional[dict]:
@@ -1986,8 +1997,8 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
 
     def _xg_block(ev: dict) -> dict:
         return {
-            "home": _xg_for(xg_table, ev.get("home", "")),
-            "away": _xg_for(xg_table, ev.get("away", "")),
+            "home": _xg_for(xg_table, ev.get("home", ""), venue="home"),
+            "away": _xg_for(xg_table, ev.get("away", ""), venue="away"),
         }
 
     def _worker(ev: dict) -> dict:

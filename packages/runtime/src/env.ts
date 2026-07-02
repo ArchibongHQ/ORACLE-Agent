@@ -224,5 +224,50 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // privileged), validated against real odds + audited by the arbiter, instead
     // of the family-gated deterministic cascade. Off → deterministic fallback.
     enableLlmMarketExecutor: env.ENABLE_LLM_MARKET_EXECUTOR?.toLowerCase() === "true",
+    // v3 cap/noise gates on goals-family markets in the MAIN batch (see
+    // OracleConfig.enableV3MainGates docstring). Shares the same threshold env
+    // keys as the goals-only v3 batch (buildGoalsV3Config) so one number pair
+    // governs "how hot is too hot" everywhere it's applied.
+    enableV3MainGates: env.ORACLE_V3_MAIN_GATES?.toLowerCase() === "true",
+    v3EdgeCap: Number(env.GOALS_V3_EDGE_CAP ?? 0.12),
+    v3NoiseGate: Number(env.GOALS_V3_NOISE_GATE ?? 0.02),
+  };
+}
+
+/** goals-market-analysis-prompt-v3 settings scoped to the goals-only batch
+ *  (runGoalsBatch) — not part of OracleConfig because @oracle/engine's
+ *  goalsV3 modules take these as explicit call-site args, never read env
+ *  directly. Single parse point, mirrors buildConfig()'s pattern. */
+export interface GoalsV3Config {
+  /** ORACLE_GOALS_V3 — master switch for the deterministic v3 goals path.
+   *  false ⇒ legacy runGoalsFunnel/goalsScreen path, byte-identical to today. */
+  enabled: boolean;
+  /** §0.3 weighted completeness floor (0-100). Default 70 (mandatory block only). */
+  completenessMin: number;
+  /** §1.2 heightened-bar floor for youth/women/friendly/cup-final fixtures. */
+  heightenedMin: number;
+  /** §4.4 implausible-edge cap (raw edge above this ⇒ auto-discard). */
+  edgeCap: number;
+  /** §4.3 noise gate (|raw edge| at/below this ⇒ discard). */
+  noiseGate: number;
+  /** §3.1 optional 50/50 xG blend into the multiplicative lambda. */
+  xgBlend: boolean;
+  /** Slate arbiter callClaudeCode timeout (ms). */
+  arbiterTimeoutMs: number;
+  /** BTTS priced but excluded from slips until booking-agent label mapping is
+   *  verified (locked plan conflict #6) — computed either way for the report. */
+  enableBtts: boolean;
+}
+
+export function buildGoalsV3Config(env: Record<string, string>): GoalsV3Config {
+  return {
+    enabled: env.ORACLE_GOALS_V3?.toLowerCase() === "true",
+    completenessMin: Number(env.GOALS_V3_COMPLETENESS_MIN ?? 70),
+    heightenedMin: Number(env.GOALS_V3_HEIGHTENED_MIN ?? 85),
+    edgeCap: Number(env.GOALS_V3_EDGE_CAP ?? 0.12),
+    noiseGate: Number(env.GOALS_V3_NOISE_GATE ?? 0.02),
+    xgBlend: env.GOALS_V3_XG_BLEND?.toLowerCase() !== "false",
+    arbiterTimeoutMs: Number(env.GOALS_ARBITER_TIMEOUT_MS ?? 120_000),
+    enableBtts: env.GOALS_V3_ENABLE_BTTS?.toLowerCase() === "true",
   };
 }
