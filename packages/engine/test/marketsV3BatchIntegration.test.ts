@@ -6,7 +6,7 @@
  *  so these tests are deterministic regardless of the real engine's output. */
 
 import { MemoryAdapter } from "@oracle/storage";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FixtureJob, FixtureJobSuccess } from "../src/batch/index.js";
 import { runBatch } from "../src/batch/index.js";
 import { ExecutionEngine } from "../src/execution/index.js";
@@ -91,6 +91,13 @@ const baseConfig: OracleConfig = { geminiApiKey: "", claudeApiKey: "", bankroll:
 
 beforeEach(() => {
   analyzeFixtureMarketsV3Mock.mockReset();
+  // Prevent Tier-1 callClaudeCode from spawning the real claude binary when
+  // decide() runs with empty API keys — see decision.test.ts for the same guard.
+  process.env.ORACLE_RUNTIME = "ci";
+});
+
+afterEach(() => {
+  delete process.env.ORACLE_RUNTIME;
 });
 
 describe("batch/index.ts — enableMarketsV3 wiring", () => {
