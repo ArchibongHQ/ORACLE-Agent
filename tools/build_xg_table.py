@@ -16,10 +16,16 @@ season mean). Teams in neither source are absent; the TS scorer then falls back 
 the sidecar goals-average proxy.
 
 Output: .tmp/xg/team_xg_table.json
-  { "<normalised team>": { "xgf": float, "xga": float|None, "n": int,
+  { "<normalised team>": { "xgf": float, "xga": float, "n": int,
                            "div": str, "src": "understat"|"fbref",
+                           "xga_src": "estimated" | absent (real team xGA),
                            "home": {"xgf": float, "xga": float, "n": int} | absent,
                            "away": {"xgf": float, "xga": float, "n": int} | absent } }
+
+Sources without a team-conceded figure (FBref player aggregate, some FotMob/
+Sofascore records) get a league-mean estimated xga tagged "xga_src":
+"estimated" (all-markets-analysis-prompt-v3 §0.3) — consumers downgrade
+confidence on the tag instead of treating the pair as fully empirical.
 
 goals-market-analysis-prompt-v3 gap-closure: "home"/"away" are the SAME team's
 xG conditioned on playing at that venue only (Understat per-match rows already
@@ -202,6 +208,41 @@ def _load_fbref_xg() -> dict[str, dict]:
     return {k: rec for k, (_, rec) in best.items()}
 
 
+def _estimate_missing_xga(table: dict[str, dict]) -> int:
+    """all-markets-analysis-prompt-v3 §0.3 gap-closure: fill a missing team-
+    conceded figure (FBref player-aggregate and some FotMob/Sofascore records
+    carry xgf only) with a league-scaled estimate, so the TS override sees a
+    full xGF/xGA pair at reduced confidence instead of degrading to the raw
+    goals-average path and eating the harsher no-xG penalty.
+
+    Estimator, in preference order: (1) mean real xga across same-div teams in
+    this table; (2) global mean real xga; (3) 1.30 absolute fallback (cross-
+    league mean goals conceded per team-match). Records are tagged
+    "xga_src": "estimated" — the TS consumer (buildStatsOverride) and the v3
+    completeness scorer downgrade confidence on that tag; real-xga records
+    carry no tag. Returns the number of records filled."""
+    div_sums: dict[str, list[float]] = {}
+    global_vals: list[float] = []
+    for rec in table.values():
+        xga = rec.get("xga")
+        if isinstance(xga, (int, float)):
+            global_vals.append(float(xga))
+            div = rec.get("div") or ""
+            if div:
+                div_sums.setdefault(div, []).append(float(xga))
+
+    global_mean = round(sum(global_vals) / len(global_vals), 4) if global_vals else 1.30
+    filled = 0
+    for rec in table.values():
+        if rec.get("xga") is not None:
+            continue
+        div_vals = div_sums.get(rec.get("div") or "")
+        rec["xga"] = round(sum(div_vals) / len(div_vals), 4) if div_vals else global_mean
+        rec["xga_src"] = "estimated"
+        filled += 1
+    return filled
+
+
 def _load_json_xg_table(path: Path) -> dict[str, dict]:
     """Load a fetch_fotmob_xg.py / fetch_sofascore.py --xg-teams output file
     (same per-team {xgf, xga, n, div, src} shape). Missing/corrupt file →
@@ -249,12 +290,15 @@ def main() -> None:
             table[key] = rec
             added += 1
 
+    xga_filled = _estimate_missing_xga(table)
+
     if not table:
         print("[xg-table] no Understat/FotMob/Sofascore/FBref data found — writing empty table (fail-open)")
     else:
         print(
             f"[xg-table] understat={understat_n} teams, fotmob-added={fotmob_added}, "
-            f"sofascore-added={sofascore_added}, fbref-added={added} teams"
+            f"sofascore-added={sofascore_added}, fbref-added={added} teams, "
+            f"xga-estimated={xga_filled}"
         )
 
     if args.dry_run:

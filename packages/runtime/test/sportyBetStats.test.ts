@@ -269,3 +269,132 @@ describe("leaguePrior", () => {
     expect(leaguePrior("Some Unknown League", detail({}))).toEqual({ homeAvg: 1.5, awayAvg: 1.2 });
   });
 });
+
+describe("buildStatsOverride — all-markets v3 additions", () => {
+  it("prefers the venue-conditioned xG split when venueN meets the sample gate", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      xg: {
+        home: { xgf: 1.8, xga: 0.9, venueXgf: 2.2, venueXga: 0.7, venueN: 5 },
+        away: { xgf: 1.1, xga: 1.4, venueXgf: 0.8, venueXga: 1.6, venueN: 6 },
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({
+      xH: 2.2,
+      xA: 0.8,
+      xgMode: "empirical",
+      xg_confidence: "high",
+    });
+  });
+
+  it("ignores the venue split below the sample gate (falls back to season aggregate)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      xg: {
+        home: { xgf: 1.8, xga: 0.9, venueXgf: 2.2, venueXga: 0.7, venueN: 2 },
+        away: { xgf: 1.1, xga: 1.4 },
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({ xH: 1.8, xA: 1.1 });
+  });
+
+  it("downgrades league-mean-estimated xGA to estimated/medium instead of empirical/high", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      xg: {
+        home: { xgf: 1.5, xga: 1.2, xgaSrc: "estimated" },
+        away: { xgf: 1.0, xga: 1.1 },
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({
+      xH: 1.5,
+      xA: 1.0,
+      xgMode: "estimated",
+      xg_confidence: "medium",
+    });
+  });
+
+  it("types scoringConceding rates + first-half share through when the venue sample is thick enough", () => {
+    const d = detail({
+      scoringConceding: {
+        home: {
+          matches: 8,
+          scored_avg: 2.0,
+          goals_1h_avg: 0.9,
+          btts_rate: 0.62,
+          clean_sheet_rate: 0.25,
+          failed_to_score_rate: 0.12,
+        },
+        away: {
+          matches: 3, // below MIN_PLAYED_FOR_OVERRIDE → away side skipped
+          btts_rate: 0.7,
+        },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override).toMatchObject({
+      bttsPctH: 0.62,
+      csPctH: 0.25,
+      ftsPctH: 0.12,
+      fhShareH: expect.closeTo(0.45, 5),
+    });
+    expect(override?.bttsPctA).toBeUndefined();
+  });
+
+  it("clamps the first-half share to [0.2, 0.8]", () => {
+    const d = detail({
+      scoringConceding: {
+        home: { matches: 8, scored_avg: 1.0, goals_1h_avg: 0.95 },
+      },
+    });
+    expect(buildStatsOverride(d)?.fhShareH).toBe(0.8);
+  });
+
+  it("prefers recent-5 corners and carries corners-against; season fallback needs the sample gate", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      recentCorners: { home: 6.2 },
+      recentCornersAgainst: { home: 3.4, away: 5.1 },
+      possessionValue: {
+        home: { corners_avg: 4.9 }, // shadowed by recent-5
+        away: { corners_avg: 4.1 }, // fallback (no recent figure)
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({
+      cornersForH: 6.2,
+      cornersForA: 4.1,
+      cornersAgainstH: 3.4,
+      cornersAgainstA: 5.1,
+    });
+  });
+
+  it("skips the season-corners fallback and cards/O2.5 when the sample gate fails", () => {
+    const d = detail({
+      standings: { home: { played: 2 }, away: { played: 2 } },
+      possessionValue: { home: { corners_avg: 4.9 }, away: { corners_avg: 4.1 } },
+      disciplinary: { home: { yellow_avg: 2.1, red_avg: 0.1 } },
+      overunder: { home: { over25_pct: 0.7 }, away: { over25_pct: 0.6 } },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.cornersForH).toBeUndefined();
+    expect(override?.cardsAvgH).toBeUndefined();
+    expect(override?.ouO25H).toBeUndefined();
+  });
+
+  it("sums yellow+red into cardsAvg and types O2.5 hit-rates under the sample gate", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      disciplinary: {
+        home: { yellow_avg: 2.1, red_avg: 0.1 },
+        away: { yellow_avg: 1.8 }, // no red figure → yellow only
+      },
+      overunder: { home: { over25_pct: 0.7 }, away: { over25_pct: 0.55 } },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({
+      cardsAvgH: expect.closeTo(2.2, 5),
+      cardsAvgA: 1.8,
+      ouO25H: 0.7,
+      ouO25A: 0.55,
+    });
+  });
+});
