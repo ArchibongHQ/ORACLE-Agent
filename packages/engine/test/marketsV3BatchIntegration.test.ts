@@ -6,7 +6,7 @@
  *  so these tests are deterministic regardless of the real engine's output. */
 
 import { MemoryAdapter } from "@oracle/storage";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FixtureJob, FixtureJobSuccess } from "../src/batch/index.js";
 import { runBatch } from "../src/batch/index.js";
 import { ExecutionEngine } from "../src/execution/index.js";
@@ -98,6 +98,13 @@ beforeEach(() => {
   analyzeFixtureMarketsV3Mock.mockReset();
   runAllMarketsLlmExecutorMock.mockReset();
   runAllMarketsLlmExecutorMock.mockResolvedValue(null); // fail-open: Q4 declines by default
+  // Prevent Tier-1 callClaudeCode from spawning the real claude binary when
+  // decide() runs with empty API keys — see decision.test.ts for the same guard.
+  process.env.ORACLE_RUNTIME = "ci";
+});
+
+afterEach(() => {
+  delete process.env.ORACLE_RUNTIME;
 });
 
 function v3EvMarketAt(rank: number): EVMarket {
