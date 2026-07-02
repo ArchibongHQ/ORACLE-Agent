@@ -90,6 +90,16 @@ export {
   summarizeFieldPopulation,
   V3_TRACKED_FIELDS,
 } from "./marketsV3/completenessInputs.js";
+export type {
+  MarketsV3GateConfig,
+  MarketsV3GateResult,
+  MarketsV3SlateSummary,
+} from "./marketsV3/pipeline.js";
+export {
+  buildMarketsV3GateConfig,
+  gateMarketsV3Fixture,
+  gateMarketsV3Slate,
+} from "./marketsV3/pipeline.js";
 export { enrichWithNewsIntel } from "./newsIntel.js";
 export type { CounterLeg, LegVerdict, PuntLeg } from "./punt.js";
 export {

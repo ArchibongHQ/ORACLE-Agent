@@ -61,7 +61,7 @@ describe("buildStatsOverride", () => {
     });
   });
 
-  it("does NOT override when either team's sample is below MIN_PLAYED (data-quality gate)", () => {
+  it("does NOT set the legacy xH/xA override when either team's sample is below MIN_PLAYED (data-quality gate) — but the ungated v3 raw fields (§3.1) still populate", () => {
     const d = detail({
       standings: { home: { played: 2 }, away: { played: 10 } },
       goals: {
@@ -69,17 +69,36 @@ describe("buildStatsOverride", () => {
         away: { avg_scored: 0.8, avg_conceded: 1.6 },
       },
     });
-    expect(buildStatsOverride(d)).toBeNull();
+    const override = buildStatsOverride(d);
+    expect(override?.xH).toBeUndefined();
+    expect(override?.xg_confidence).toBeUndefined();
+    expect(override).toMatchObject({
+      scoredPer90H: 1.4,
+      concededPer90H: 1.0,
+      scoredPer90A: 0.8,
+      concededPer90A: 1.6,
+      nHome: 2,
+      nAway: 10,
+    });
   });
 
-  it("does NOT override when standings is missing entirely (can't verify sample size)", () => {
+  it("does NOT set the legacy xH/xA override when standings is missing entirely — v3 raw goals fields still populate (no nHome/nAway without a played count)", () => {
     const d = detail({
       goals: {
         home: { avg_scored: 1.4, avg_conceded: 1.0 },
         away: { avg_scored: 0.8, avg_conceded: 1.6 },
       },
     });
-    expect(buildStatsOverride(d)).toBeNull();
+    const override = buildStatsOverride(d);
+    expect(override?.xH).toBeUndefined();
+    expect(override?.nHome).toBeUndefined();
+    expect(override?.nAway).toBeUndefined();
+    expect(override).toMatchObject({
+      scoredPer90H: 1.4,
+      concededPer90H: 1.0,
+      scoredPer90A: 0.8,
+      concededPer90A: 1.6,
+    });
   });
 
   it("does NOT override xH/xA on a zero/sparse goals average, even with enough matches played", () => {
@@ -396,5 +415,44 @@ describe("buildStatsOverride — all-markets v3 additions", () => {
       ouO25H: 0.7,
       ouO25A: 0.55,
     });
+  });
+});
+
+describe("buildStatsOverride — v3 raw lambda inputs (§3.1, ungated by MIN_PLAYED)", () => {
+  it("populates scoredPer90/concededPer90/xgf/xga/nHome/nAway even below the legacy sample gate", () => {
+    const d = detail({
+      standings: { home: { played: 2 }, away: { played: 3 } }, // below MIN_PLAYED_FOR_OVERRIDE(4)
+      goals: {
+        home: { avg_scored: 1.4, avg_conceded: 1.0 },
+        away: { avg_scored: 0.8, avg_conceded: 1.6 },
+      },
+      xg: {
+        home: { xgf: 1.5, xga: 0.9 },
+        away: { xgf: 0.9, xga: 1.3 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    // Legacy xH/xA override skipped (sample too thin)...
+    expect(override?.xH).toBeUndefined();
+    // ...but the raw v3 inputs still flow through, ungated.
+    expect(override).toMatchObject({
+      scoredPer90H: 1.4,
+      concededPer90H: 1.0,
+      scoredPer90A: 0.8,
+      concededPer90A: 1.6,
+      xgfH: 1.5,
+      xgaH: 0.9,
+      xgfA: 0.9,
+      xgaA: 1.3,
+      nHome: 2,
+      nAway: 3,
+    });
+  });
+
+  it("omits raw fields entirely when the underlying gismo data is absent", () => {
+    const d = detail({ standings: { home: { played: 10 }, away: { played: 10 } } });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBeUndefined();
+    expect(override?.xgfH).toBeUndefined();
   });
 });

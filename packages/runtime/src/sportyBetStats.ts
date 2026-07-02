@@ -163,6 +163,18 @@ export interface StatsOverride {
    *  §2 prioritisation + §1.2 heightened trend checks. */
   ouO25H?: number;
   ouO25A?: number;
+  // ── §3.1 raw multiplicative-λ inputs (ungated by MIN_PLAYED_FOR_OVERRIDE —
+  // v3 runs its own shrinkage from these, separate from xH/xA above).
+  scoredPer90H?: number;
+  concededPer90H?: number;
+  scoredPer90A?: number;
+  concededPer90A?: number;
+  xgfH?: number;
+  xgaH?: number;
+  xgfA?: number;
+  xgaA?: number;
+  nHome?: number;
+  nAway?: number;
 }
 
 /** Resolve the credibility-shrinkage prior for a league.
@@ -257,6 +269,25 @@ export function buildStatsOverride(
   const awayPlayed = stats.standings?.away?.played ?? 0;
   const enoughSample =
     homePlayed >= MIN_PLAYED_FOR_OVERRIDE && awayPlayed >= MIN_PLAYED_FOR_OVERRIDE;
+
+  // ── all-markets-analysis-prompt-v3 §3.1 raw lambda inputs — ungated by
+  // MIN_PLAYED_FOR_OVERRIDE (v3 runs its OWN multiplicative+shrinkage from
+  // these, independent of the legacy xH/xA override above). Populated
+  // whenever the underlying gismo field exists, regardless of sample size.
+  const gScoredH = stats.goals?.home?.avg_scored;
+  const gConcededH = stats.goals?.home?.avg_conceded;
+  const gScoredA = stats.goals?.away?.avg_scored;
+  const gConcededA = stats.goals?.away?.avg_conceded;
+  if (finite(gScoredH)) override.scoredPer90H = gScoredH;
+  if (finite(gConcededH)) override.concededPer90H = gConcededH;
+  if (finite(gScoredA)) override.scoredPer90A = gScoredA;
+  if (finite(gConcededA)) override.concededPer90A = gConcededA;
+  if (finite(stats.xg?.home?.xgf)) override.xgfH = stats.xg?.home?.xgf;
+  if (finite(stats.xg?.home?.xga)) override.xgaH = stats.xg?.home?.xga;
+  if (finite(stats.xg?.away?.xgf)) override.xgfA = stats.xg?.away?.xgf;
+  if (finite(stats.xg?.away?.xga)) override.xgaA = stats.xg?.away?.xga;
+  if (homePlayed > 0) override.nHome = homePlayed;
+  if (awayPlayed > 0) override.nAway = awayPlayed;
 
   if (enoughSample) {
     // Venue-conditioned xG (the team's own home/away split, build_xg_table.py)
