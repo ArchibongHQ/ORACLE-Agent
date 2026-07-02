@@ -7,21 +7,35 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sendPuntPrompt } from "@oracle/bot";
-import type { BatchResult, RunManifest } from "@oracle/engine";
+import {
+  analyzeGoalsFixtureV3,
+  type BatchJobResult,
+  type BatchResult,
+  type RunManifest,
+  type V3AnalyzeInput,
+  type V3FixtureOdds,
+  type V3FixtureResult,
+  v3NbDispersion,
+} from "@oracle/engine";
 import type { ActionablePick, BatchSummary } from "@oracle/notify";
 import {
   buildAnalysisModelNote,
   buildNotifiers,
+  GOALS_V3_RG_NOTE,
   notifyAll,
   sendTelegramDocument,
   sendTelegramText,
   summarizeBatch,
 } from "@oracle/notify";
 import {
+  applySlateVerdicts,
   buildConfig,
+  buildGoalsV3Config,
+  classifyEligibility,
   enrichWithH2H,
   enrichWithLineups,
   enrichWithNewsIntel,
@@ -30,17 +44,26 @@ import {
   fixturesPartitionExists,
   type GoalsSelectionResult,
   generateAndWriteFixtureWorkbook,
+  generateAndWriteGoalsWorkbook,
+  heightenedTrendsAligned,
   loadEnv,
   loadSportyBetIndex,
   markPrompted,
   ORACLE_PRIORITY_LEAGUES,
   resolveDay,
+  reviewGoalsSlate,
   runAnalysis,
   runGoalsFunnel,
   SLIP_LABELS,
+  type SportyBetEvent,
+  type SportyBetEventDetail,
+  type SportyBetIndex,
+  scoreCompleteness,
+  scorePredictabilityV3,
   selectGoalsAccumulator,
   shouldReprompt,
   sidecarKey,
+  sportyEventToFixtureJob,
   writeGoalsArtifact,
 } from "@oracle/runtime";
 import { MemoryAdapter } from "@oracle/storage";
@@ -51,6 +74,7 @@ const ROOT = join(__dir, "../../..");
 
 const env = loadEnv(join(ROOT, ".env"));
 const config = buildConfig(env);
+const goalsV3Config = buildGoalsV3Config(env);
 const STORE_PATH = join(ROOT, ".tmp/oracle-store");
 
 // Max fixtures per chunk loop iteration. Priority-sorted fixtures are analyzed
@@ -99,6 +123,33 @@ function flushStdio(): Promise<void> {
   const drain = (s: NodeJS.WriteStream): Promise<void> =>
     s.writableLength === 0 ? Promise.resolve() : new Promise((r) => s.write("", () => r()));
   return Promise.all([drain(process.stdout), drain(process.stderr)]).then(() => undefined);
+}
+
+// ── WAT calendar date ────────────────────────────────────────────────────────
+// The whole schedule (cron slots, "today's" lake/report/heartbeat freshness,
+// "yesterday's" resolve target) is defined in WAT (UTC+1, no DST) terms. Every
+// "what date is it" computation in this file MUST use this — NOT
+// `new Date().toISOString().slice(0, 10)`, which is a UTC calendar date and
+// silently disagrees with the WAT one for the first hour of each WAT day
+// (00:00-00:59 WAT = still "yesterday" in UTC). That mismatch was the root
+// cause of the 2026-07-02 incident: the back-online staleness checks
+// (isLakeFreshForToday/isDailyBatchFreshForToday) compared UTC dates, so the
+// moment the UTC day rolled over at 01:00 WAT, yesterday's still-fresh
+// acquisition looked "stale for today" and fired the full scrape+analysis+
+// goals pipeline hours early — then the real 09:30 WAT slot fired again on
+// top of it. Fixed 2026-07-02; see watDateString/watYesterdayString.
+const WAT_OFFSET_MS = 60 * 60 * 1000; // UTC+1, no DST (W. Central Africa Standard Time)
+// IANA zone matching WAT (UTC+1, no DST) — passed explicitly to every
+// cron.schedule() call below so the schedule no longer depends on the host's
+// system clock (see the cron-daemon block's comment for the incident this fixes).
+const WAT_TZ = "Africa/Lagos";
+
+function watDateString(d: Date = new Date()): string {
+  return new Date(d.getTime() + WAT_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function watYesterdayString(d: Date = new Date()): string {
+  return watDateString(new Date(d.getTime() - 86_400_000));
 }
 
 // ── Job logging + heartbeat ───────────────────────────────────────────────────
@@ -151,7 +202,7 @@ const DAILY_BATCH_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a faili
 
 function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
   if (!lastBatchAt) return false;
-  if (lastBatchAt.slice(0, 10) !== new Date().toISOString().slice(0, 10)) return false;
+  if (watDateString(new Date(lastBatchAt)) !== watDateString()) return false;
   return Date.now() - new Date(lastBatchAt).getTime() < DAILY_BATCH_STALE_MS;
 }
 
@@ -200,7 +251,7 @@ function readFixtureReportState(): { placeholderDate?: string; deliveredDate?: s
 function isLakeFreshForToday(): boolean {
   const lastAcquire = readLastAcquire();
   if (!lastAcquire?.date || !lastAcquire.at) return false;
-  if (lastAcquire.date !== new Date().toISOString().slice(0, 10)) return false;
+  if (lastAcquire.date !== watDateString()) return false;
   if (Date.now() - new Date(lastAcquire.at).getTime() >= LAKE_STALE_MS) return false;
   // Heartbeat alone can lie if the lake directory was deleted/moved after a
   // successful acquisition stamped it — confirm the partition is still on disk.
@@ -255,7 +306,7 @@ async function checkHeartbeatFreshness(): Promise<void> {
   // spreadsheet — retry every hour until allMarkets lands. sendDailyFixtureReport
   // is idempotent here: still-empty re-checks just re-skip without re-pinging.
   const reportState = readFixtureReportState();
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = watDateString();
   if (reportState.placeholderDate === todayStr && reportState.deliveredDate !== todayStr) {
     logJob("fixture-report@enriched-followup", sendDailyFixtureReport);
   }
@@ -273,7 +324,7 @@ async function checkHeartbeatFreshness(): Promise<void> {
   const notifiers = buildNotifiers(env);
   if (!notifiers.length) return;
   const alertSummary: BatchSummary = {
-    date: new Date().toISOString().slice(0, 10),
+    date: watDateString(),
     analysed: 0,
     actionableCount: 0,
     errors: 0,
@@ -317,7 +368,7 @@ async function checkBotHeartbeatFreshness(): Promise<void> {
   const notifiers = buildNotifiers(env);
   if (!notifiers.length) return;
   const alertSummary: BatchSummary = {
-    date: new Date().toISOString().slice(0, 10),
+    date: watDateString(),
     analysed: 0,
     actionableCount: 0,
     errors: 0,
@@ -464,7 +515,7 @@ async function acquireDailyJob(): Promise<void> {
   const count = await acquireDaily();
   await runNewsEnrichment();
   if (count > 0) {
-    writeHeartbeat("lastAcquire", { date: new Date().toISOString().slice(0, 10), fixtures: count });
+    writeHeartbeat("lastAcquire", { date: watDateString(), fixtures: count });
   }
 }
 
@@ -489,7 +540,7 @@ async function sendDailyFixtureReport(): Promise<void> {
   }
   fixtureReportInFlight = true;
   const startedAt = new Date();
-  const today = startedAt.toISOString().slice(0, 10);
+  const today = watDateString(startedAt);
   const hasCreds = Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID);
   process.stdout.write(`[fixture-report] start ${startedAt.toISOString()} (creds=${hasCreds})\n`);
   try {
@@ -814,7 +865,7 @@ async function runDailyBatch(
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────
   // resolveEventId looks up the sidecar's eventId for each pick — without it
   // every ActionablePick.eventId is undefined and bookAccumulator skips every leg.
-  const sportyIndexForBooking = await loadSportyBetIndex(new Date().toISOString().slice(0, 10));
+  const sportyIndexForBooking = await loadSportyBetIndex(watDateString());
   const summary = summarizeBatch(batch, undefined, (home, away) =>
     sportyIndexForBooking
       ? findSidecarDetail(sportyIndexForBooking.detailByKey, home, away)?.eventId
@@ -914,8 +965,12 @@ async function sendGoalsSlip(
   errorCount: number,
   combinedProb: number,
   combinedOdds: number,
-  logPrefix: string
+  logPrefix: string,
+  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number }
 ): Promise<BatchSummary> {
+  // v3 legs carry mp = model probability (unchanged) but ActionablePick.edge is
+  // what formatSummaryText renders as the edge/tier line — feed it the ADJUSTED
+  // edge on the v3 path so the slip shows the §4 gate's edge, not the raw mp−ip.
   const actionable: ActionablePick[] = legs.map((l) => ({
     home: l.home,
     away: l.away,
@@ -926,7 +981,7 @@ async function sendGoalsSlip(
     odds: l.odds,
     stakePct: 0, // accumulator leg — no per-leg Kelly stake
     confidence: l.mp,
-    edge: l.edge,
+    edge: v3Meta ? (l.adjustedEdge ?? l.edge) : l.edge,
     ...(l.eventId ? { eventId: l.eventId } : {}),
   }));
 
@@ -941,6 +996,13 @@ async function sendGoalsSlip(
     actionable,
     ...(actionable.length > 0 ? { combinedProb, combinedOdds } : {}),
     ...(modelNote ? { analysisModelNote: modelNote } : {}),
+    ...(v3Meta
+      ? {
+          arbiterStatus: v3Meta.arbiterStatus,
+          ...(v3Meta.cappedCount > 0 ? { cappedCount: v3Meta.cappedCount } : {}),
+          rgNote: GOALS_V3_RG_NOTE,
+        }
+      : {}),
   };
 
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────
@@ -981,7 +1043,8 @@ async function finalizeGoalsSelection(
   selection: GoalsSelectionResult,
   date: string,
   errorCount: number,
-  trigger: RunManifest["trigger"]
+  trigger: RunManifest["trigger"],
+  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number }
 ): Promise<void> {
   process.stdout.write(
     `[goals] long=${selection.legs.length}/${selection.target} short=${selection.shortSlipLegs.length} ` +
@@ -999,7 +1062,8 @@ async function finalizeGoalsSelection(
     errorCount,
     selection.shortSlipCombinedProb,
     selection.shortSlipCombinedOdds,
-    "top-picks"
+    "top-picks",
+    v3Meta
   );
 
   // 2. Lottery — long slip, up to 39 legs, greedy correlation-aware.
@@ -1011,7 +1075,8 @@ async function finalizeGoalsSelection(
     errorCount,
     selection.combinedProb,
     selection.combinedOdds,
-    "lottery"
+    "lottery",
+    v3Meta
   );
 
   // 3. Mini-ACCA — 2-4 legs, one per league, highest edge (always sent; if <2
@@ -1025,7 +1090,8 @@ async function finalizeGoalsSelection(
     errorCount,
     selection.miniAccaCombinedProb,
     selection.miniAccaCombinedOdds,
-    "mini-acca"
+    "mini-acca",
+    v3Meta
   );
 
   // 4. Output B — top 5 legs with odds ≥ 4.00 (value/longshot tier).
@@ -1040,7 +1106,8 @@ async function finalizeGoalsSelection(
       errorCount,
       bProb,
       bOdds,
-      "output-b"
+      "output-b",
+      v3Meta
     );
   }
 
@@ -1056,7 +1123,8 @@ async function finalizeGoalsSelection(
       errorCount,
       cProb,
       cOdds,
-      "output-c"
+      "output-c",
+      v3Meta
     );
   }
 
@@ -1076,7 +1144,12 @@ async function finalizeGoalsSelection(
   // Persist the full selection so apps/web's /goals route can show it — the
   // pipeline was previously worker -> Telegram/email only, zero web surface.
   try {
-    await writeGoalsArtifact(selection, date, join(ROOT, ".tmp/goals"));
+    await writeGoalsArtifact(
+      selection,
+      date,
+      join(ROOT, ".tmp/goals"),
+      v3Meta ? { v3: true, ...v3Meta } : undefined
+    );
   } catch (err) {
     process.stderr.write(
       `[goals] WARN: artifact write failed (non-fatal): ${
@@ -1086,6 +1159,323 @@ async function finalizeGoalsSelection(
   }
 }
 
+// ── goals-market-analysis-prompt-v3 pipeline ────────────────────────────────
+// Deterministic replacement for the legacy funnel (mechanical filter -> Sonnet
+// screen -> runAnalysis ensemble -> per-fixture arbiter): v3's phases run as
+// pure TypeScript (eligibility, weighted completeness, multiplicative-Poisson
+// lambdas + match-shape correction, the §4 edge gate) with LLM usage cut to
+// ONE slate-level arbiter call reviewing the assembled selection. Gated by
+// ORACLE_GOALS_V3; false leaves runGoalsBatch's legacy path byte-identical.
+
+/** Extract the goals-relevant decimal odds from a sidecar detail into the
+ *  shape analyzeGoalsFixtureV3 prices. Missing markets simply stay null —
+ *  the engine's devigOU already treats a null odds field as "not priceable". */
+function buildV3Odds(detail: SportyBetEventDetail | undefined): V3FixtureOdds {
+  const o = detail?.odds;
+  return {
+    over15: o?.ou15?.over ?? null,
+    under15: o?.ou15?.under ?? null,
+    over25: o?.ou25?.over ?? null,
+    under25: o?.ou25?.under ?? null,
+    homeTotalOver05: o?.tt_home_05?.over ?? null,
+    awayTotalOver05: o?.tt_away_05?.over ?? null,
+    bttsYes: o?.btts?.yes ?? null,
+    bttsNo: o?.btts?.no ?? null,
+    home1x2: o?.["1x2"]?.home ?? null,
+    draw1x2: o?.["1x2"]?.draw ?? null,
+    away1x2: o?.["1x2"]?.away ?? null,
+  };
+}
+
+/** §3.1 sample size behind the season averages — standings.played is the
+ *  season sample; recentGoals.n (last-5 window) is the fallback when a lower
+ *  division only exposes a rolling window. */
+function v3SampleSize(
+  detail: SportyBetEventDetail | undefined,
+  side: "home" | "away"
+): number | null {
+  const played = detail?.stats?.standings?.[side]?.played;
+  if (typeof played === "number" && played > 0) return played;
+  const n = detail?.stats?.recentGoals?.[side]?.n;
+  return typeof n === "number" && n > 0 ? n : null;
+}
+
+function v3FixtureId(home: string, away: string, kickoff: string): string {
+  const slug = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_]/g, "");
+  return `${slug(home)}_vs_${slug(away)}_${kickoff.replace(/\D/g, "").slice(0, 12)}`;
+}
+
+/** Prefer the venue-conditioned xG split (tools/build_xg_table.py) over the
+ *  season aggregate when present — a strictly better prior per the type's own
+ *  docstring (SportyBetXgEntry.venueXgf/venueXga). */
+function v3TeamXg(
+  entry:
+    | { xgf?: number; xga?: number | null; venueXgf?: number | null; venueXga?: number | null }
+    | null
+    | undefined
+): { xgf?: number | null; xga?: number | null } | null {
+  if (!entry) return null;
+  return {
+    xgf: entry.venueXgf ?? entry.xgf ?? null,
+    xga: entry.venueXga ?? entry.xga ?? null,
+  };
+}
+
+/** Best-effort transparency log for §4.4 capped selections (raw edge > cap,
+ *  auto-discarded, never bet). A write failure here must never fail the run —
+ *  same convention as writeGoalsArtifact. */
+async function writeV3CappedLog(
+  capped: Array<{
+    home: string;
+    away: string;
+    league: string;
+    label: string;
+    rawEdge: number;
+    rationale: string;
+  }>,
+  date: string
+): Promise<void> {
+  if (capped.length === 0) return;
+  try {
+    const outDir = join(ROOT, ".tmp/goals");
+    await mkdir(outDir, { recursive: true });
+    await writeFile(
+      join(outDir, `v3-capped-${date}.json`),
+      JSON.stringify({ date, generatedAt: new Date().toISOString(), capped }, null, 2),
+      "utf8"
+    );
+  } catch (err) {
+    process.stderr.write(
+      `[goals-v3] WARN: capped-log write failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+}
+
+/** goals-market-analysis-prompt-v3 end-to-end: eligibility (union whitelist +
+ *  hard discards) -> enrichment (H2H/newsIntel cache-only/lineups, reused as-is
+ *  from the legacy path) -> weighted completeness gate (<70 discard) ->
+ *  predictability ordering -> deterministic per-fixture analysis (v3 lambdas +
+ *  Dixon-Coles matrix + match-shape BTTS correction + §4 edge gate, NO
+ *  per-fixture LLM) -> selectGoalsAccumulator(v3) -> ONE slate arbiter call ->
+ *  the same five Telegram slips the legacy path sends. */
+async function runGoalsBatchV3(
+  futureEvents: SportyBetEvent[],
+  index: SportyBetIndex,
+  trigger: RunManifest["trigger"]
+): Promise<void> {
+  const date = watDateString();
+
+  // ── Phase 1 — eligibility ─────────────────────────────────────────────────
+  const classified = futureEvents.map((event) => ({ event, elig: classifyEligibility(event) }));
+  const survivors = classified.filter((c) => c.elig.status !== "discard");
+  process.stdout.write(
+    `[goals-v3] eligibility: ${futureEvents.length} → ${survivors.length} survive ` +
+      `(${futureEvents.length - survivors.length} discarded)\n`
+  );
+  if (!survivors.length) {
+    process.stdout.write("[goals-v3] no eligible fixtures — skipping\n");
+    return;
+  }
+
+  // Build FixtureJobs for enrichment reuse (H2H/newsIntel/lineups all operate
+  // on FixtureJob[] — same functions the legacy path calls, unmodified).
+  const preJobs = survivors
+    .map(({ event }) => ({ event, job: sportyEventToFixtureJob(event) }))
+    .filter(
+      (
+        x
+      ): x is {
+        event: SportyBetEvent;
+        job: NonNullable<ReturnType<typeof sportyEventToFixtureJob>>;
+      } => x.job !== null
+    );
+  if (!preJobs.length) {
+    process.stdout.write("[goals-v3] no fixtures with priceable odds — skipping\n");
+    return;
+  }
+
+  const storage = new MemoryAdapter(STORE_PATH);
+  const withH2H = await enrichWithH2H(
+    preJobs.map((x) => x.job),
+    config.footballDataApiKey
+  );
+  const withNews = config.enableNewsIntel
+    ? await enrichWithNewsIntel(withH2H, { storage, cacheOnly: true })
+    : withH2H;
+  const enrichedJobs = await enrichWithLineups(withNews);
+
+  // ── Phase 0 — weighted completeness gate ─────────────────────────────────
+  const eligByKey = new Map(
+    classified.map((c) => [sidecarKey(c.event.home, c.event.away), c.elig])
+  );
+  let completenessDiscards = 0;
+  let heightenedDiscards = 0;
+  const gated: Array<{
+    event: SportyBetEvent;
+    job: (typeof preJobs)[number]["job"];
+    completeness: ReturnType<typeof scoreCompleteness>;
+  }> = [];
+  for (let i = 0; i < preJobs.length; i++) {
+    const { event } = preJobs[i]!;
+    const job = enrichedJobs[i]!;
+    const detail = event.detail;
+    const h2hEnriched =
+      typeof (job.state?.pipeline?.fetched as { stats?: { h2hN?: number } } | undefined)?.stats
+        ?.h2hN === "number";
+    const lineupsAvailable = (job.state?.telemetry?.softContext ?? []).some(
+      (item) => item.kind === "lineup"
+    );
+    const completeness = scoreCompleteness(detail, { h2hEnriched, lineupsAvailable });
+    const elig = eligByKey.get(sidecarKey(event.home, event.away));
+    const minScore =
+      elig?.status === "heightened" ? goalsV3Config.heightenedMin : goalsV3Config.completenessMin;
+    const heightenedOk = elig?.status !== "heightened" || heightenedTrendsAligned(detail);
+    if (
+      completeness.mandatoryMissing.length > 0 ||
+      completeness.score < minScore ||
+      !heightenedOk
+    ) {
+      if (elig?.status === "heightened") heightenedDiscards++;
+      else completenessDiscards++;
+      continue;
+    }
+    gated.push({ event, job, completeness });
+  }
+  process.stdout.write(
+    `[goals-v3] completeness: ${preJobs.length} → ${gated.length} survive ` +
+      `(${completenessDiscards} below floor, ${heightenedDiscards} heightened-bar failed)\n`
+  );
+  if (!gated.length) {
+    process.stdout.write("[goals-v3] no fixtures cleared the completeness gate — skipping\n");
+    return;
+  }
+
+  // ── Phase 2 — predictability ordering (cosmetic; lean path analyzes all) ──
+  gated.sort(
+    (a, b) =>
+      scorePredictabilityV3(a.event) - scorePredictabilityV3(b.event) ||
+      a.completeness.score - b.completeness.score
+  );
+  gated.reverse();
+
+  // ── Phases 3–4 — deterministic per-fixture analysis + edge gate ──────────
+  const runId = `run_v3_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  const jobs: BatchJobResult[] = [];
+  const results: V3FixtureResult[] = [];
+  const cappedLog: Array<{
+    home: string;
+    away: string;
+    league: string;
+    label: string;
+    rawEdge: number;
+    rationale: string;
+  }> = [];
+  let analysisErrors = 0;
+  for (const { event, job, completeness } of gated) {
+    const detail = event.detail;
+    const input: V3AnalyzeInput = {
+      fixtureId: v3FixtureId(job.home, job.away, job.kickoff),
+      runId,
+      home: job.home,
+      away: job.away,
+      league: job.league,
+      kickoff: job.kickoff,
+      odds: buildV3Odds(detail),
+      lambdaInput: {
+        league: job.league,
+        homeScoredPer90: detail?.stats?.goals?.home?.avg_scored ?? null,
+        homeConcededPer90: detail?.stats?.goals?.home?.avg_conceded ?? null,
+        awayScoredPer90: detail?.stats?.goals?.away?.avg_scored ?? null,
+        awayConcededPer90: detail?.stats?.goals?.away?.avg_conceded ?? null,
+        nHome: v3SampleSize(detail, "home"),
+        nAway: v3SampleSize(detail, "away"),
+        homeXg: v3TeamXg(detail?.stats?.xg?.home),
+        awayXg: v3TeamXg(detail?.stats?.xg?.away),
+      },
+      penaltyFlags: completeness.penaltyFlags,
+      completeness: completeness.score,
+      sources: completeness.sources,
+      nbDispersion: config.useNegBinom ? v3NbDispersion(config.nbDispersion) : undefined,
+      xgBlend: goalsV3Config.xgBlend,
+      edgeCap: goalsV3Config.edgeCap,
+      noiseGate: goalsV3Config.noiseGate,
+    };
+    const result = analyzeGoalsFixtureV3(input);
+    if (!result) {
+      analysisErrors++;
+      continue;
+    }
+    jobs.push(result.job);
+    results.push(result);
+    for (const c of result.capped) {
+      cappedLog.push({
+        home: job.home,
+        away: job.away,
+        league: job.league,
+        label: c.label,
+        rawEdge: c.rawEdge,
+        rationale: c.rationale,
+      });
+    }
+  }
+  process.stdout.write(
+    `[goals-v3] analyzed ${jobs.length}/${gated.length} fixtures (${analysisErrors} errors, ${cappedLog.length} capped selections)\n`
+  );
+  await writeV3CappedLog(cappedLog, date);
+
+  // ── Phase 6 — selection ───────────────────────────────────────────────────
+  const eventIdByKey = new Map<string, string>();
+  for (const ev of index.events) {
+    if (ev.eventId) eventIdByKey.set(sidecarKey(ev.home, ev.away), ev.eventId);
+  }
+  let selection = selectGoalsAccumulator(jobs, {
+    minConfidence: config.goalsMinConfidence,
+    minImplied: config.goalsMinImplied,
+    target: config.goalsTargetLegs,
+    detailByKey: index.detailByKey,
+    eventIdByKey,
+    v3: true,
+  });
+
+  // ── One slate-level LLM call ──────────────────────────────────────────────
+  const verdicts = await reviewGoalsSlate(selection, { timeoutMs: goalsV3Config.arbiterTimeoutMs });
+  process.stdout.write(
+    `[goals-v3] slate arbiter: ${verdicts.status} — ${verdicts.drops.size} dropped, ${verdicts.flags.size} flagged\n`
+  );
+  selection = applySlateVerdicts(selection, verdicts);
+
+  // LLM-readable workbook (Analysis/Slips/Capped/META_JSON) — best-effort,
+  // never blocks slip delivery. Sent alongside the five Telegram slips.
+  try {
+    const workbookPath = await generateAndWriteGoalsWorkbook(
+      { selection, results, capped: cappedLog, date, arbiterStatus: verdicts.status },
+      join(ROOT, ".tmp/reports")
+    );
+    process.stdout.write(`[goals-v3] wrote ${workbookPath}\n`);
+    if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) {
+      await sendTelegramDocument(
+        env.TELEGRAM_BOT_TOKEN,
+        env.TELEGRAM_CHAT_ID,
+        workbookPath,
+        `ORACLE goals v3 analysis (spreadsheet) — ${date} (${jobs.length} fixtures analyzed)`
+      );
+    }
+  } catch (err) {
+    process.stderr.write(
+      `[goals-v3] WARN: workbook write/send failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+
+  await finalizeGoalsSelection(selection, date, analysisErrors, trigger, {
+    arbiterStatus: verdicts.status,
+    cappedCount: cappedLog.length,
+  });
+}
+
 /** The ONLY goals pipeline (2026-06-24 rewrite): independent of the main
  *  all-markets daily batch entirely — its own SportyBet index read, its own
  *  discovery funnel (mechanical pre-filter -> Sonnet screen, goalsFunnel.ts),
@@ -1093,9 +1483,13 @@ async function finalizeGoalsSelection(
  *  the funnel scans the FULL daily SportyBet pool (potentially 1000+ fixtures)
  *  for goals-market opportunity — not whatever subset the main batch happened
  *  to analyze for all markets. Runs as its own cron slot / --run-goals-now
- *  invocation, no longer derived from or chained after the main daily batch. */
+ *  invocation, no longer derived from or chained after the main daily batch.
+ *
+ *  ORACLE_GOALS_V3=true switches to the deterministic v3 pipeline
+ *  (runGoalsBatchV3) immediately after the future-kickoff filter below —
+ *  everything from the funnel onward is legacy-only when the flag is off. */
 async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = watDateString();
   let index = await loadSportyBetIndex(today);
   if (!index) {
     const sportyBetCount = await scrapeFixtures();
@@ -1126,6 +1520,12 @@ async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"): Promis
     process.stdout.write("[goals] no future-kickoff fixtures — skipping\n");
     return;
   }
+
+  if (goalsV3Config.enabled) {
+    await runGoalsBatchV3(futureEvents, index, trigger);
+    return;
+  }
+
   const funnelResult = await runGoalsFunnel(futureEvents, {
     llmCtx: buildLlmCtx(),
   });
@@ -1232,7 +1632,7 @@ async function resolveYesterdayFixtures(): Promise<void> {
   // web-search consensus fallback (tools/scrape_match_results.py) always runs on
   // whatever the API chain can't resolve, including when both keys are absent.
   const storage = new MemoryAdapter(STORE_PATH);
-  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  const yesterday = watYesterdayString();
 
   const { candidates, resolved, unmatched } = await resolveDay(
     storage,
@@ -1284,8 +1684,17 @@ if (!IS_ONE_SHOT) {
   void checkHeartbeatFreshness();
   void checkBotHeartbeatFreshness();
 
-  // 1. Scrape + Intel Batch — 09:30 WAT (= 08:30 UTC). Bookmakers finalise their
-  // morning lines and player props by ~09:00 WAT; 09:30 hits after the morning sync
+  // Every schedule below is pinned to explicit WAT (timezone: WAT_TZ) so the
+  // fire time is correct regardless of the host's system clock — node-cron
+  // otherwise evaluates cron expressions against the process's LOCAL
+  // timezone, which silently produced a one-hour-early schedule here (this
+  // box's local clock already IS WAT, so "30 8 * * *" fired at 08:30 WAT
+  // local, not the intended 09:30 WAT the comments described as "08:30 UTC").
+  // Fixed 2026-07-02 alongside the watDateString() staleness-date fix above —
+  // see that comment for the related incident this schedule shift caused.
+
+  // 1. Scrape + Intel Batch — 09:30 WAT. Bookmakers finalise their morning
+  // lines and player props by ~09:00 WAT; 09:30 hits after the morning sync
   // completes and avoids the on-the-hour server spike. Writes the Parquet lake +
   // JSON sidecar (acquire_daily.py), runs news-intel enrichment, then sends the
   // fixture spreadsheet report to Telegram. This is now the ONLY acquisition job —
@@ -1293,57 +1702,77 @@ if (!IS_ONE_SHOT) {
   // odds snapshot instead of two. Back-online: if the machine was off at this slot,
   // checkHeartbeatFreshness fires acquireDailyJob + goals immediately on daemon
   // restart (see LAKE_STALE_MS trigger above).
-  cron.schedule("30 8 * * *", () =>
-    logJob("acquire-daily@09:30-WAT", async () => {
-      await acquireDailyJob();
-      await sendDailyFixtureReport();
-    })
+  cron.schedule(
+    "30 9 * * *",
+    () =>
+      logJob("acquire-daily@09:30-WAT", async () => {
+        await acquireDailyJob();
+        await sendDailyFixtureReport();
+      }),
+    { timezone: WAT_TZ }
   );
 
-  // 2. Main Daily Batch — 09:35 WAT (= 08:35 UTC), 5 min after the scrape starts.
-  // Full LLM all-markets analysis -> HTML report + Telegram. Its internal scrape
-  // is gap-fill-only — runDailyBatch only re-acquires when the 09:30 lake is
+  // 2. Main Daily Batch — 09:35 WAT, 5 min after the scrape starts. Full LLM
+  // all-markets analysis -> HTML report + Telegram. Its internal scrape is
+  // gap-fill-only — runDailyBatch only re-acquires when the 09:30 lake is
   // missing/stale (see isLakeFreshForToday), so this normally reuses the lake the
   // job above just wrote.
-  cron.schedule("35 8 * * *", () =>
-    logJob("daily-batch@09:35-WAT", () => runDailyBatch("scheduled"))
+  cron.schedule(
+    "35 9 * * *",
+    () => logJob("daily-batch@09:35-WAT", () => runDailyBatch("scheduled")),
+    { timezone: WAT_TZ }
   );
 
-  // 3. Goals batch — 09:40 WAT (= 08:40 UTC), standalone after the main daily run.
+  // 3. Goals batch — 09:40 WAT, standalone after the main daily run.
   // Independent discovery funnel (mechanical pre-filter -> Sonnet screen) over the
   // full SportyBet pool, using the same fresh morning odds the lake above wrote.
   // runGoalsBatch reads the SportyBet index written by acquireDailyJob; if the
   // scrape is still in progress (in-flight guard) it waits for it via loadSportyBetIndex
   // fallback + scrapeFixtures() call inside runGoalsBatch itself.
-  cron.schedule("40 8 * * *", () =>
-    logJob("goals-batch@09:40-WAT", () => runGoalsBatch("scheduled"))
+  cron.schedule(
+    "40 9 * * *",
+    () => logJob("goals-batch@09:40-WAT", () => runGoalsBatch("scheduled")),
+    { timezone: WAT_TZ }
   );
 
-  // 4. Resolve yesterday's results — 10:00 WAT (= 09:00 UTC).
-  cron.schedule("0 9 * * *", () => logJob("resolve-yesterday@10:00-WAT", resolveYesterdayFixtures));
+  // 4. Resolve yesterday's results — 10:00 WAT.
+  cron.schedule(
+    "0 10 * * *",
+    () => logJob("resolve-yesterday@10:00-WAT", resolveYesterdayFixtures),
+    { timezone: WAT_TZ }
+  );
 
   // 5. Punt prompt — 10:00 WAT (first), 12:00 WAT + 13:00 WAT (retry only if no
   // code received yet). Runs alongside resolve-yesterday above; independent jobs,
   // no shared state.
-  cron.schedule("0 9 * * *", () =>
-    logJob("punt-prompt@10:00-WAT", () => sendDailyPuntPrompt(false))
+  cron.schedule(
+    "0 10 * * *",
+    () => logJob("punt-prompt@10:00-WAT", () => sendDailyPuntPrompt(false)),
+    { timezone: WAT_TZ }
   );
-  cron.schedule("0 11 * * *", () =>
-    logJob("punt-prompt-retry@12:00-WAT", () => sendDailyPuntPrompt(true))
+  cron.schedule(
+    "0 12 * * *",
+    () => logJob("punt-prompt-retry@12:00-WAT", () => sendDailyPuntPrompt(true)),
+    { timezone: WAT_TZ }
   );
-  cron.schedule("0 12 * * *", () =>
-    logJob("punt-prompt-retry@13:00-WAT", () => sendDailyPuntPrompt(true))
+  cron.schedule(
+    "0 13 * * *",
+    () => logJob("punt-prompt-retry@13:00-WAT", () => sendDailyPuntPrompt(true)),
+    { timezone: WAT_TZ }
   );
 
-  // 6. Weekly Kaggle refresh — Saturday 04:00 WAT (= 03:00 UTC), unchanged.
-  cron.schedule("0 3 * * 6", () => logJob("kaggle-refresh", runWeeklyKaggleRefresh));
+  // 6. Weekly Kaggle refresh — Saturday 04:00 WAT.
+  cron.schedule("0 4 * * 6", () => logJob("kaggle-refresh", runWeeklyKaggleRefresh), {
+    timezone: WAT_TZ,
+  });
 
-  // 7. Heartbeat freshness check — every hour, on the hour.
-  cron.schedule("0 * * * *", () => void checkHeartbeatFreshness());
+  // 7. Heartbeat freshness check — every hour, on the hour (timezone is a
+  // no-op for an every-hour cadence, but pinned for consistency).
+  cron.schedule("0 * * * *", () => void checkHeartbeatFreshness(), { timezone: WAT_TZ });
 
   // 8. Bot heartbeat check — every 10 min (its own staleness threshold is
   // 10 min, not the 36h daily-batch threshold, so it needs tighter polling).
-  cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness());
+  cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness(), { timezone: WAT_TZ });
 }
 
 // Graceful shutdown — stop cron schedules so the daemon exits cleanly under SIGINT/SIGTERM.

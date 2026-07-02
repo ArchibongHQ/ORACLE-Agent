@@ -33,8 +33,8 @@ export {
 } from "./decision/index.js";
 export type { MarketExecutorResult, MarketExecutorRiskParams } from "./decision/marketExecutor.js";
 export { runAllMarketsLlmExecutor } from "./decision/marketExecutor.js";
-export type { ExecutionResult } from "./execution/index.js";
-export { applyRankingMode, ExecutionEngine } from "./execution/index.js";
+export type { ExecutionResult, LeagueParam } from "./execution/index.js";
+export { applyRankingMode, ExecutionEngine, getLeagueParams } from "./execution/index.js";
 export type { GbmLiveInputs, GbmModel } from "./gbm/index.js";
 export {
   blendGbmIntoFp,
@@ -43,6 +43,37 @@ export {
   loadGbmModel,
   predictGbm,
 } from "./gbm/index.js";
+export type {
+  V3AnalyzeInput,
+  V3EVMarket,
+  V3FixtureOdds,
+  V3FixtureResult,
+  V3MarketAssessment,
+  V3MarketMeta,
+} from "./goalsV3/analyzeFixture.js";
+export { analyzeGoalsFixtureV3, v3NbDispersion } from "./goalsV3/analyzeFixture.js";
+export type {
+  V3EdgeAssessment,
+  V3GateOutcome,
+  V3PenaltyFlags,
+  V3Tier,
+} from "./goalsV3/edgeGate.js";
+export {
+  devigOU,
+  gateV3Edge,
+  V3_EDGE_CAP_DEFAULT,
+  V3_NOISE_GATE_DEFAULT,
+  V3_PENALTY_PTS,
+  V3_TIER_HIGH,
+  V3_TIER_MEDIUM,
+  V3_TIER_VERY_HIGH,
+  v3PenaltyPts,
+  v3Tier,
+} from "./goalsV3/edgeGate.js";
+export type { V3LambdaInput, V3Lambdas, V3TeamXg } from "./goalsV3/lambda.js";
+export { computeV3Lambdas, V3_LEAGUE_BASELINES, v3LeaguePerTeamAvg } from "./goalsV3/lambda.js";
+export type { Devigged1x2, MatchShape } from "./goalsV3/matchShape.js";
+export { deriveMatchShape, SHAPE_LAMBDA_FLOOR } from "./goalsV3/matchShape.js";
 export type { MarketCatalogEntry, MarketFamily } from "./markets/index.js";
 export {
   devigThreeWay,

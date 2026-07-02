@@ -17,7 +17,19 @@ the sidecar goals-average proxy.
 
 Output: .tmp/xg/team_xg_table.json
   { "<normalised team>": { "xgf": float, "xga": float|None, "n": int,
-                           "div": str, "src": "understat"|"fbref" } }
+                           "div": str, "src": "understat"|"fbref",
+                           "home": {"xgf": float, "xga": float, "n": int} | absent,
+                           "away": {"xgf": float, "xga": float, "n": int} | absent } }
+
+goals-market-analysis-prompt-v3 gap-closure: "home"/"away" are the SAME team's
+xG conditioned on playing at that venue only (Understat per-match rows already
+carry venue; this was previously discarded when folding into the season
+aggregate above). A fixture consumer should read the home team's "home" block
+and the away team's "away" block — a strictly better prior than the season
+aggregate when the team has enough venue-tagged matches. Absent when a team has
+zero matches at that venue in the cached window (never a discard signal on its
+own — the season aggregate above still applies). FBref-sourced records never
+carry a venue split (season aggregate only).
 
 Fail-open: if no .tmp/xg/*.csv exist, writes an empty table and exits 0.
 
@@ -33,6 +45,7 @@ import csv
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Reuse the shared team-name normaliser (do not add a second one).
 try:
@@ -89,15 +102,19 @@ def build_table(window: int) -> dict[str, dict]:
     if not csv_paths:
         return {}
 
-    # team key → { "div": str, "matches": [(date, xgf, xga)] }
+    # team key → { "div": str, "matches": [(date, xgf, xga)],
+    #              "home_matches": [...], "away_matches": [...] }
     acc: dict[str, dict] = {}
 
-    def _record(team_raw: str, div: str, date: str, xgf: float, xga: float) -> None:
+    def _record(team_raw: str, div: str, date: str, xgf: float, xga: float, venue: str) -> None:
         key = normalise(team_raw)
         if not key:
             return
-        slot = acc.setdefault(key, {"div": div, "matches": []})
+        slot = acc.setdefault(
+            key, {"div": div, "matches": [], "home_matches": [], "away_matches": []}
+        )
         slot["matches"].append((date, xgf, xga))
+        slot[f"{venue}_matches"].append((date, xgf, xga))
 
     for path in csv_paths:
         div = _div_of(path)
@@ -105,24 +122,33 @@ def build_table(window: int) -> dict[str, dict]:
             continue
         for m in _load_rows(path):
             # Home perspective: xg_home for, xg_away against; away is the mirror.
-            _record(m["home"], div, m["date"], m["xg_home"], m["xg_away"])
-            _record(m["away"], div, m["date"], m["xg_away"], m["xg_home"])
+            _record(m["home"], div, m["date"], m["xg_home"], m["xg_away"], "home")
+            _record(m["away"], div, m["date"], m["xg_away"], m["xg_home"], "away")
+
+    def _avg(matches: list[tuple[str, float, float]]) -> Optional[dict]:
+        if not matches:
+            return None
+        recent = sorted(matches, key=lambda t: t[0], reverse=True)[:window]
+        n = len(recent)
+        return {
+            "xgf": round(sum(t[1] for t in recent) / n, 4),
+            "xga": round(sum(t[2] for t in recent) / n, 4),
+            "n": n,
+        }
 
     table: dict[str, dict] = {}
     for key, slot in acc.items():
-        matches = sorted(slot["matches"], key=lambda t: t[0], reverse=True)[:window]
-        if not matches:
+        season = _avg(slot["matches"])
+        if not season:
             continue
-        n = len(matches)
-        xgf = sum(t[1] for t in matches) / n
-        xga = sum(t[2] for t in matches) / n
-        table[key] = {
-            "xgf": round(xgf, 4),
-            "xga": round(xga, 4),
-            "n": n,
-            "div": slot["div"],
-            "src": "understat",
-        }
+        rec = {**season, "div": slot["div"], "src": "understat"}
+        home_split = _avg(slot["home_matches"])
+        away_split = _avg(slot["away_matches"])
+        if home_split:
+            rec["home"] = home_split
+        if away_split:
+            rec["away"] = away_split
+        table[key] = rec
     return table
 
 
@@ -176,8 +202,21 @@ def _load_fbref_xg() -> dict[str, dict]:
     return {k: rec for k, (_, rec) in best.items()}
 
 
+def _load_json_xg_table(path: Path) -> dict[str, dict]:
+    """Load a fetch_fotmob_xg.py / fetch_sofascore.py --xg-teams output file
+    (same per-team {xgf, xga, n, div, src} shape). Missing/corrupt file →
+    empty dict, never fatal — these tiers are optional gap-fillers."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build rolling team-xG prior table from Understat + FBref")
+    parser = argparse.ArgumentParser(
+        description="Build rolling team-xG prior table (Understat > FotMob > Sofascore > FBref)"
+    )
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW,
                         help=f"matches per team to average (default {DEFAULT_WINDOW})")
     parser.add_argument("--dry-run", action="store_true",
@@ -187,8 +226,22 @@ def main() -> None:
     table = build_table(max(1, args.window))
     understat_n = len(table)
 
-    # Merge FBref season-aggregate xG as a fallback — Understat (per-match, true
-    # xGA) wins on key collisions; FBref only fills teams Understat doesn't cover.
+    # goals-market-analysis-prompt-v3 gap-closure merge order: Understat (best —
+    # per-match, true xGA, venue split) > FotMob (1000+ competitions) > Sofascore
+    # > FBref (stale since the Jan 2026 Opta licence loss, season-aggregate only).
+    # Each tier only fills teams the tiers above it don't already cover.
+    fotmob_added = 0
+    for key, rec in _load_json_xg_table(XG_DIR / "fotmob_xg.json").items():
+        if key not in table:
+            table[key] = rec
+            fotmob_added += 1
+
+    sofascore_added = 0
+    for key, rec in _load_json_xg_table(XG_DIR / "sofascore_xg.json").items():
+        if key not in table:
+            table[key] = rec
+            sofascore_added += 1
+
     fbref = _load_fbref_xg()
     added = 0
     for key, rec in fbref.items():
@@ -197,9 +250,12 @@ def main() -> None:
             added += 1
 
     if not table:
-        print("[xg-table] no Understat CSVs or FBref table found — writing empty table (fail-open)")
+        print("[xg-table] no Understat/FotMob/Sofascore/FBref data found — writing empty table (fail-open)")
     else:
-        print(f"[xg-table] understat={understat_n} teams, fbref-added={added} teams")
+        print(
+            f"[xg-table] understat={understat_n} teams, fotmob-added={fotmob_added}, "
+            f"sofascore-added={sofascore_added}, fbref-added={added} teams"
+        )
 
     if args.dry_run:
         print(f"[xg-table] {len(table)} teams (dry-run, not written)")

@@ -11,6 +11,15 @@ export interface GoalsArtifact {
   date: string;
   generatedAt: string;
   selection: GoalsSelectionResult;
+  /** True when `selection` came from the goals-market-analysis-prompt-v3
+   *  pipeline (ORACLE_GOALS_V3=true) rather than the legacy funnel — lets
+   *  apps/web's /goals route distinguish the two without inspecting
+   *  per-leg fields. Absent/false on legacy-path artifacts. */
+  v3?: boolean;
+  /** v3 slate-arbiter outcome for this run (see BatchSummary.arbiterStatus). */
+  arbiterStatus?: "verified" | "unverified";
+  /** v3 §4.4 count of implausible-edge-capped selections (never bet). */
+  cappedCount?: number;
 }
 
 /** Rejects anything but a strict YYYY-MM-DD date before it reaches a path
@@ -30,11 +39,17 @@ function artifactPath(date: string, outDir: string): string {
 export async function writeGoalsArtifact(
   selection: GoalsSelectionResult,
   date: string,
-  outDir = ".tmp/goals"
+  outDir = ".tmp/goals",
+  meta?: Pick<GoalsArtifact, "v3" | "arbiterStatus" | "cappedCount">
 ): Promise<string> {
   await mkdir(outDir, { recursive: true });
   const path = artifactPath(date, outDir);
-  const artifact: GoalsArtifact = { date, generatedAt: new Date().toISOString(), selection };
+  const artifact: GoalsArtifact = {
+    date,
+    generatedAt: new Date().toISOString(),
+    selection,
+    ...meta,
+  };
   await writeFile(path, JSON.stringify(artifact, null, 2), "utf8");
   return path;
 }

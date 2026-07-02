@@ -164,6 +164,19 @@ export interface SportyBetOdds {
   }> | null;
 }
 
+/** One team's xG prior — season aggregate plus the optional venue-conditioned
+ *  split (goals-market-analysis-prompt-v3 gap-closure). */
+export interface SportyBetXgEntry {
+  xgf?: number;
+  xga?: number | null;
+  src?: string;
+  /** Venue-conditioned xG-for/against (this team's home matches when it's the
+   *  home side here, its away matches when it's the away side) — absent until
+   *  build_xg_table.py has ≥1 venue-tagged match for the team. */
+  venueXgf?: number | null;
+  venueXga?: number | null;
+}
+
 /** Stats block from Sportradar gismo (sidecar v2). All sub-fields optional. */
 export interface SportyBetStats {
   form?: {
@@ -214,10 +227,15 @@ export interface SportyBetStats {
   } | null;
   /** Rolling xG prior. Understat (top-5, per-match, true xGA) preferred; FBref
    *  season-aggregate (World Cup, Brazil, wider leagues — xGF only, xga null)
-   *  merged in as a medium-confidence fallback. `src` records the origin. */
+   *  merged in as a medium-confidence fallback. `src` records the origin.
+   *  `venueXgf`/`venueXga` (goals-market-analysis-prompt-v3 gap-closure,
+   *  tools/build_xg_table.py) are the SAME team's xG conditioned on playing at
+   *  this fixture's venue only (home team's home matches / away team's away
+   *  matches) — a strictly better prior than the season aggregate above when
+   *  present, absent for teams below Understat's per-match venue coverage. */
   xg?: {
-    home?: { xgf?: number; xga?: number | null; src?: string } | null;
-    away?: { xgf?: number; xga?: number | null; src?: string } | null;
+    home?: SportyBetXgEntry | null;
+    away?: SportyBetXgEntry | null;
   } | null;
   /** Season over-line hit rate per team (stats_season_overunder), both venues combined. */
   overunder?: {
@@ -456,8 +474,8 @@ export async function loadSportyBetIndex(
           const baseStats = (ev.stats as SportyBetStats | null) ?? null;
           const xgBlock = ev.xg as
             | {
-                home?: { xgf?: number; xga?: number | null; src?: string } | null;
-                away?: { xgf?: number; xga?: number | null; src?: string } | null;
+                home?: SportyBetXgEntry | null;
+                away?: SportyBetXgEntry | null;
               }
             | null
             | undefined;

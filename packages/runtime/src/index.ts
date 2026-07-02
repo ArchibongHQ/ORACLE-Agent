@@ -19,7 +19,8 @@ export {
 } from "./dailyFixtureReport.js";
 export type { DailyNewsRow } from "./dailyStore.js";
 export { fixturesPartitionExists, loadDailyNews, teamSlug } from "./dailyStore.js";
-export { buildConfig, loadEnv, validateConfig } from "./env.js";
+export type { GoalsV3Config } from "./env.js";
+export { buildConfig, buildGoalsV3Config, loadEnv, validateConfig } from "./env.js";
 export type { FetchResult } from "./fixtures.js";
 export {
   fetchFixtureByName,
@@ -51,6 +52,32 @@ export {
   mergeScreenedCandidates,
   screenGoalsCandidates,
 } from "./goalsScreen.js";
+export type {
+  V3Completeness,
+  V3EnrichmentState,
+  V3MandatoryField,
+} from "./goalsV3/completeness.js";
+export {
+  heightenedTrendsAligned,
+  scoreCompleteness,
+  V3_COMPLETENESS_WEIGHTS,
+} from "./goalsV3/completeness.js";
+export type { V3Eligibility, V3EligibilityStatus } from "./goalsV3/eligibility.js";
+export { classifyEligibility, GOALS_V3_WHITELIST } from "./goalsV3/eligibility.js";
+export { byPredictabilityV3, scorePredictabilityV3 } from "./goalsV3/predictability.js";
+export type { SlateArbiterVerdicts } from "./goalsV3/slateArbiter.js";
+export {
+  applySlateVerdicts,
+  DEFAULT_GOALS_ARBITER_TIMEOUT_MS,
+  reviewGoalsSlate,
+  slateLegKey,
+} from "./goalsV3/slateArbiter.js";
+export type { CappedLogEntry, GoalsWorkbookInput } from "./goalsWorkbook.js";
+export {
+  generateAndWriteGoalsWorkbook,
+  renderGoalsWorkbook,
+  writeGoalsWorkbook,
+} from "./goalsWorkbook.js";
 export { enrichWithH2H } from "./h2h.js";
 export type { HardwareCapabilities } from "./hardware.js";
 export { detectHardware, isGpuCapable } from "./hardware.js";
@@ -81,6 +108,7 @@ export type {
   SelectionCandidate,
   SelectionResult,
   SelectionStats,
+  SportyBetEvent,
   SportyBetEventDetail,
   SportyBetIndex,
 } from "./selectFixtures.js";
@@ -95,11 +123,15 @@ export {
 } from "./selectFixtures.js";
 export type { GoalsLeg, GoalsSelectionResult, GoalsSelectOptions } from "./selectGoals.js";
 export {
+  avgConceded,
+  avgScored,
   DEFAULT_GOALS_MIN_CONFIDENCE,
   DEFAULT_GOALS_MIN_IMPLIED,
   DEFAULT_GOALS_TARGET_LEGS,
   GOALS_MARKETS,
   goalsDataGate,
+  INTL_TOURNAMENT_RE,
   pickSafestGoalsLeg,
   selectGoalsAccumulator,
+  V3_MINI_ACCA_HAIRCUT,
 } from "./selectGoals.js";

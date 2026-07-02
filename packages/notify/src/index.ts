@@ -12,6 +12,7 @@ export {
   buildAnalysisModelNote,
   formatSummaryHtml,
   formatSummaryText,
+  GOALS_V3_RG_NOTE,
   summarizeBatch,
 } from "./types.js";
 

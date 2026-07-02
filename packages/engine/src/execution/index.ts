@@ -321,6 +321,15 @@ const LEAGUE_PARAMS: Record<string, LeagueParam> = {
   },
 };
 
+/** Read-only accessor for the league parameter table (falls back to Default).
+ *  Exported for the goalsV3 modules, which need baseRho and the homeAvg/awayAvg
+ *  league totals without duplicating this table. */
+export function getLeagueParams(league: string): LeagueParam {
+  return LEAGUE_PARAMS[league] ?? (LEAGUE_PARAMS.Default as LeagueParam);
+}
+
+export type { LeagueParam };
+
 // ── Popular teams — forward substring matching (BUG-M08 FIX) ─────────────────
 
 const POPULAR_TEAMS = new Set([
@@ -685,7 +694,26 @@ export class ExecutionEngine {
       const mVarMult = varMultiplier < 1.0 && isVolLoving ? 1.0 : varMultiplier;
       const isElasticMesVeto = mes < 0.85 && rawEdge < 0.08;
 
-      if (ev > 0 && rawEdge >= adjHurdle && !sentinelVeto && !isElasticMesVeto) {
+      // goals-market-analysis-prompt-v3 §4.3/§4.4 gates, applied ONLY to
+      // goals-family markets (Goals O/U, Team Total, BTTS) and only when
+      // enableV3MainGates is on — the goals-only batch (analyzeGoalsFixtureV3)
+      // always runs these; this hook extends the same "too hot to trust"/
+      // "within noise of the market" protection to the main all-markets batch
+      // without touching hurdle() or any non-goals family. Veto-with-reason
+      // (not a silent drop) so the report/Q4 executor still see the candidate.
+      const isGoalsFamilyV3 = cat === "goals_ou" || cat === "team_total" || cat === "btts";
+      const v3GatesOn = cfg.enableV3MainGates === true && isGoalsFamilyV3;
+      const v3CapVeto = v3GatesOn && rawEdge > (cfg.v3EdgeCap ?? 0.12);
+      const v3NoiseVeto = v3GatesOn && !v3CapVeto && Math.abs(rawEdge) <= (cfg.v3NoiseGate ?? 0.02);
+
+      if (
+        ev > 0 &&
+        rawEdge >= adjHurdle &&
+        !sentinelVeto &&
+        !isElasticMesVeto &&
+        !v3CapVeto &&
+        !v3NoiseVeto
+      ) {
         let stake = optimizedKelly(
           rawEdge,
           od,
@@ -758,6 +786,25 @@ export class ExecutionEngine {
           rankingScore: -100,
           varianceMod: _varMod,
           veto: isUpsetVetoed ? "UPSET ALERT VETO" : "PROXIMATE SHADING VETO",
+        });
+      } else if ((v3CapVeto || v3NoiseVeto) && ev > 0) {
+        evs.push({
+          cat: FAMILY_LABEL[cat],
+          label,
+          market: FAMILY_LABEL[cat],
+          family: cat,
+          side: label,
+          mp,
+          modelProb: mp,
+          ip,
+          rawEdge,
+          ev,
+          odds: od,
+          stake: 0,
+          stakeAmt: 0,
+          rankingScore: -100,
+          varianceMod: _varMod,
+          veto: v3CapVeto ? "v3-cap" : "v3-noise",
         });
       }
     };
