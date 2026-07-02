@@ -6,7 +6,7 @@
  *  so these tests are deterministic regardless of the real engine's output. */
 
 import { MemoryAdapter } from "@oracle/storage";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FixtureJob, FixtureJobSuccess } from "../src/batch/index.js";
 import { runBatch } from "../src/batch/index.js";
 import { ExecutionEngine } from "../src/execution/index.js";
@@ -15,6 +15,21 @@ import type { AllMarketEntry, EVMarket, OracleConfig, RunResult } from "../src/t
 const analyzeFixtureMarketsV3Mock = vi.fn();
 vi.mock("../src/marketsV3/analyzeFixtureMarkets.js", () => ({
   analyzeFixtureMarketsV3: (...args: unknown[]) => analyzeFixtureMarketsV3Mock(...args),
+}));
+
+// decide() dynamically imports @oracle/llm at every cascade tier — leaving it
+// unmocked means each test pays a real transform/load cost for that whole
+// package graph (callBriefing/callGemini/callKimi/callOpenRouter/...), which
+// is slow and CI-runner-dependent enough to blow past vitest's 5s default
+// timeout under parallel turbo load. Same convention as decision.test.ts.
+vi.mock("@oracle/llm", () => ({
+  isLocalRuntime: () => false,
+  callClaudeCode: vi.fn().mockResolvedValue(null),
+  callOpenRouterJson: vi.fn().mockResolvedValue(null),
+  callGeminiDecision: vi.fn().mockResolvedValue(null),
+  MODELS: { CLAUDE_OPUS: "claude-opus" },
+  OPENROUTER_MODELS: { GLM_5_2: "glm-5.2", GLM_5_1: "glm-5.1" },
+  _resetClaudeCodeCaches: vi.fn(),
 }));
 
 const storage = new MemoryAdapter(`.tmp/marketsv3-batch-test-${Date.now().toString(36)}`);
@@ -91,13 +106,6 @@ const baseConfig: OracleConfig = { geminiApiKey: "", claudeApiKey: "", bankroll:
 
 beforeEach(() => {
   analyzeFixtureMarketsV3Mock.mockReset();
-  // Prevent Tier-1 callClaudeCode from spawning the real claude binary when
-  // decide() runs with empty API keys — see decision.test.ts for the same guard.
-  process.env.ORACLE_RUNTIME = "ci";
-});
-
-afterEach(() => {
-  delete process.env.ORACLE_RUNTIME;
 });
 
 describe("batch/index.ts — enableMarketsV3 wiring", () => {
