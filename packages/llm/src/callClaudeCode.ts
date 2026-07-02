@@ -294,17 +294,31 @@ export async function callClaudeCode(
   if (timedOut) {
     return _fail(`timed out after ${opts.timeoutMs ?? REQUEST_TIMEOUT_MS}ms (bin=${safeBin})`);
   }
-  if (status !== 0 || !stdout.trim()) {
-    return _fail(
-      `exit=${status} stdout=${stdout.trim().length}chars stderr="${_sanitizeForLog(stderr)}"`
-    );
+  if (!stdout.trim()) {
+    return _fail(`exit=${status} stdout=0chars stderr="${_sanitizeForLog(stderr)}"`);
   }
 
   let envelope: ClaudeCodeEnvelope;
   try {
     envelope = JSON.parse(stdout) as ClaudeCodeEnvelope;
   } catch {
+    // Non-zero exit with unparseable stdout: no envelope to report, fall back
+    // to the byte-count diagnostic — same as the pre-fix behavior.
+    if (status !== 0) {
+      return _fail(
+        `exit=${status} stdout=${stdout.trim().length}chars stderr="${_sanitizeForLog(stderr)}"`
+      );
+    }
     return _fail(`unparseable stdout: "${_sanitizeForLog(stdout)}"`);
+  }
+
+  // Non-zero exit but stdout parsed as a real envelope (the common case live:
+  // exit=1 with a 773-byte JSON body) — log the actual is_error/result content
+  // instead of just a length, so the failure is root-causable from logs alone.
+  if (status !== 0) {
+    return _fail(
+      `exit=${status} is_error=${envelope.is_error ?? "?"} result="${_sanitizeForLog(envelope.result ?? "(no result field)")}"`
+    );
   }
   if (envelope.is_error || !envelope.result) {
     return _fail(`is_error envelope: "${_sanitizeForLog(envelope.result ?? "(no result field)")}"`);

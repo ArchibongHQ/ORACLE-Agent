@@ -235,6 +235,24 @@ describe("callClaudeCode diagnostic logging", () => {
     writeSpy.mockRestore();
   });
 
+  it("logs the parsed envelope's is_error/result on non-zero exit with a parseable stdout body — the live 75%-of-failures case", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = new FakeChild();
+    spawn.mockReturnValue(child);
+    const promise = callClaudeCode("hello");
+    await flushMicrotasks();
+    child.stdout.emit(
+      "data",
+      envelope({ type: "result", is_error: true, result: "credit balance too low" })
+    );
+    child.emit("close", 1);
+    await promise;
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callClaudeCode] exit=1"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("is_error=true"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("credit balance too low"));
+    writeSpy.mockRestore();
+  });
+
   it("logs unparseable stdout content", async () => {
     const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const child = new FakeChild();
