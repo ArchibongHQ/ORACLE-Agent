@@ -101,6 +101,21 @@ export {
   classifyMarket,
   STRUCTURAL_X_FAMILIES,
 } from "./marketsV3/classes.js";
+export type { V3CardsInput, V3CardsMeans } from "./marketsV3/engines/cards.js";
+export { cardsMeans, priceCardsOutcome } from "./marketsV3/engines/cards.js";
+export type { V3CornersInput, V3CornersMeans } from "./marketsV3/engines/corners.js";
+export {
+  CORNERS_R_DEFAULT,
+  CORNERS_R_MAX,
+  CORNERS_R_MIN,
+  clampCornersDispersion,
+  cornersMeans,
+  nbCDF,
+  nbPMF,
+  nbTailOver,
+  nbTailUnder,
+  priceCornersOutcome,
+} from "./marketsV3/engines/corners.js";
 export { V3_FIRST_HALF_SHARE_DEFAULT } from "./marketsV3/engines/half.js";
 export { minuteShare, priceTimeWindow, V3_MINUTE_SHARE_TABLE } from "./marketsV3/engines/time.js";
 export type { V3EngineCtx, V3Price } from "./marketsV3/engines/types.js";
