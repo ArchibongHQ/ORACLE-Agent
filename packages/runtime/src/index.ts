@@ -90,6 +90,12 @@ export {
   summarizeFieldPopulation,
   V3_TRACKED_FIELDS,
 } from "./marketsV3/completenessInputs.js";
+export type { CrossCheckResult, CrossCheckVerdict } from "./marketsV3/goalsCrossCheck.js";
+export {
+  CROSSCHECK_DISAGREE_PENALTY,
+  crossCheckGoalsPick,
+  GOALS_CROSSCHECK_FAMILIES,
+} from "./marketsV3/goalsCrossCheck.js";
 export type {
   MarketsV3GateConfig,
   MarketsV3GateResult,
