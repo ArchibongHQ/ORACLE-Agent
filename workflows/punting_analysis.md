@@ -7,6 +7,14 @@ WAT framework. This workflow is the manual-route fallback when the live engine p
 (odds API + LLM credits) is unavailable. It applies the same decision logic as
 `packages/engine/src/decision/index.ts` but executed by Claude rather than code.
 
+**Note:** `/punt`'s live (non-fallback) route — `runPuntAnalysis()` in
+`packages/runtime/src/runPuntAnalysis.ts` — calls the exact same `runAnalysis` →
+`runBatch` → `decide()` chain the daily batch uses, so it automatically inherits
+the all-markets v3 engine (`ORACLE_MARKETS_V3`, default `on`) with no punt-specific
+wiring. See `workflows/markets_v3.md` for the engine's spec-to-code map. This
+manual-route SOP below mirrors the LEGACY decision logic by hand and does not
+reflect v3's math — treat it as a fallback description only, not a v3 reference.
+
 ## When to use
 
 - Live odds API quota or Anthropic credits are exhausted (check `.env` / worker logs first)
