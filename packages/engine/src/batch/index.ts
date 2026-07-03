@@ -11,6 +11,11 @@ import {
 } from "../decision/index.js";
 import type { MarketExecutorRiskParams } from "../decision/marketExecutor.js";
 import { ExecutionEngine } from "../execution/index.js";
+import { devigThreeWay } from "../markets/index.js";
+import {
+  analyzeFixtureMarketsV3,
+  type V3AllMarketsInput,
+} from "../marketsV3/analyzeFixtureMarkets.js";
 import type {
   AgentError,
   AgentErrorCode,
@@ -26,6 +31,73 @@ import type {
   SoftContextItem,
 } from "../types.js";
 import { computeMarketExecutorConcurrency } from "./marketExecutorConcurrency.js";
+
+/** Build v3's per-fixture input from RunState.telemetry (populated by the
+ *  runtime layer's buildStatsOverride — see sportyBetStats.ts) + the raw
+ *  allMarkets catalogue already extracted for the Q4 executor. Returns null
+ *  when there's nothing to analyze (no catalogue) — the caller fails open to
+ *  the legacy eligible list in that case, same as every other soft-fail path
+ *  in this pipeline. */
+function buildV3Input(
+  job: { home: string; away: string; league: string; kickoff: string },
+  state: RunState,
+  allMarkets: AllMarketEntry[] | undefined
+): V3AllMarketsInput | null {
+  if (!allMarkets?.length) return null;
+  const t = state.telemetry ?? {};
+
+  const devigged1x2 =
+    t.hOdds && t.dOdds && t.aOdds
+      ? (() => {
+          const d = devigThreeWay(t.hOdds, t.dOdds, t.aOdds);
+          return d ? { pHome: d[0], pDraw: d[1], pAway: d[2] } : null;
+        })()
+      : null;
+
+  const h2hBlock = (t.rawStatsBlock as { h2h?: { total?: number } } | undefined)?.h2h;
+  const hasLineups = (t.softContext ?? []).some((s) => s.kind === "lineup");
+
+  return {
+    fixtureId: `${job.home}::${job.away}::${job.kickoff}`,
+    runId: "batch",
+    home: job.home,
+    away: job.away,
+    league: job.league,
+    kickoff: job.kickoff,
+    lambdaInput: {
+      league: job.league,
+      homeScoredPer90: t.scoredPer90H ?? null,
+      homeConcededPer90: t.concededPer90H ?? null,
+      awayScoredPer90: t.scoredPer90A ?? null,
+      awayConcededPer90: t.concededPer90A ?? null,
+      nHome: t.nHome ?? null,
+      nAway: t.nAway ?? null,
+      homeXg: t.xgfH != null ? { xgf: t.xgfH, xga: t.xgaH } : null,
+      awayXg: t.xgfA != null ? { xgf: t.xgfA, xga: t.xgaA } : null,
+    },
+    devigged1x2,
+    allMarkets,
+    fhShareH: t.fhShareH,
+    fhShareA: t.fhShareA,
+    empirical: {
+      bttsPctH: t.bttsPctH,
+      bttsPctA: t.bttsPctA,
+      csPctH: t.csPctH,
+      csPctA: t.csPctA,
+      ftsPctH: t.ftsPctH,
+      ftsPctA: t.ftsPctA,
+    },
+    penaltyFlags: {
+      xgMissing: t.xgMode == null,
+      xgEstimated: t.xgMode === "estimated",
+      h2hMissing: !((h2hBlock?.total ?? 0) > 0),
+      lineupsUnconfirmed: !hasLineups,
+      restEstimated: t.restH == null || t.restA == null,
+      smallSample: (t.nHome ?? 99) < 5 || (t.nAway ?? 99) < 5,
+    },
+  };
+}
+
 import { AtomicCostTracker, runPool } from "./pool.js";
 
 export interface FixtureJob {
@@ -295,7 +367,7 @@ export async function runBatch(
           }
 
           const filteredResult: RunResult = { ...runResult, evMarkets };
-          const eligible = buildEligibleBets(evMarkets);
+          let eligible = buildEligibleBets(evMarkets);
 
           // Build context for LLM decision layer
           const convResult = runResult.convergence as Record<string, unknown> | undefined;
@@ -323,6 +395,21 @@ export async function runBatch(
             rawStatsBlock: state.telemetry?.rawStatsBlock as Record<string, unknown> | undefined,
             allMarkets,
           };
+
+          // all-markets-analysis-prompt-v3 deterministic engine (config.
+          // enableMarketsV3). "on": replaces `eligible` with v3's gate-surviving
+          // candidates for THIS fixture — fails open to the legacy list on any
+          // v3 error/empty-result (missing data is never a blocker). "shadow":
+          // v3 runs but its output is discarded, legacy `eligible` is used
+          // unchanged (comparison instrumentation only). "off": skipped
+          // entirely — zero overhead, byte-identical to pre-v3 behavior.
+          if (config.enableMarketsV3 && config.enableMarketsV3 !== "off") {
+            const v3Input = buildV3Input(job, state, allMarkets);
+            const v3Result = v3Input ? analyzeFixtureMarketsV3(v3Input) : null;
+            if (config.enableMarketsV3 === "on" && v3Result?.evMarkets.length) {
+              eligible = v3Result.evMarkets;
+            }
+          }
 
           // Risk multipliers the engine already computed for THIS fixture, reused
           // so the all-markets LLM executor tier's Kelly stake (Q4b) is consistent

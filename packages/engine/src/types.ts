@@ -221,6 +221,15 @@ export interface OracleConfig {
   enableV3MainGates?: boolean;
   v3EdgeCap?: number; // default 0.12 — raw edge above this vetoes with reason "v3-cap"
   v3NoiseGate?: number; // default 0.02 — |rawEdge| at/below this vetoes with reason "v3-noise"
+  // all-markets-analysis-prompt-v3 — deterministic all-markets engine
+  // (marketsV3/analyzeFixtureMarketsV3). "on": replaces the legacy scanMarkets
+  // eligibleBets with v3's gate-surviving candidates for this fixture (fails
+  // open to legacy eligible on any v3 error/null — a missing/thin data point
+  // never blocks the batch). "shadow": v3 still runs (for future comparison
+  // instrumentation) but its output is discarded; legacy eligible is used
+  // unchanged. "off"/undefined: v3 doesn't run at all — zero overhead,
+  // byte-identical to pre-v3 behavior. Default "on" (owner decision).
+  enableMarketsV3?: "on" | "shadow" | "off";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
@@ -279,6 +288,21 @@ export interface RunState {
     /** Raw structured per-category stats passthrough (see DecisionContext.rawStatsBlock) —
      *  same loose-passthrough convention as rawOddsPayload. */
     rawStatsBlock?: Record<string, unknown>;
+    // ── all-markets-analysis-prompt-v3 §3.1 raw multiplicative-λ inputs.
+    // Deliberately separate from xH/xA (the legacy Alpha-model's already-
+    // blended output) — v3 runs its OWN multiplicative+shrinkage+xG-blend from
+    // these raw per-90 rates, independent of and ungated by the legacy
+    // override's MIN_PLAYED threshold (v3 has its own shrinkage/sample logic).
+    scoredPer90H?: number;
+    concededPer90H?: number;
+    scoredPer90A?: number;
+    concededPer90A?: number;
+    xgfH?: number;
+    xgaH?: number;
+    xgfA?: number;
+    xgaA?: number;
+    nHome?: number;
+    nAway?: number;
     [key: string]: unknown;
   };
   pipeline?: {

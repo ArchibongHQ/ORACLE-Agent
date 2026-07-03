@@ -231,7 +231,19 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     enableV3MainGates: env.ORACLE_V3_MAIN_GATES?.toLowerCase() === "true",
     v3EdgeCap: Number(env.GOALS_V3_EDGE_CAP ?? 0.12),
     v3NoiseGate: Number(env.GOALS_V3_NOISE_GATE ?? 0.02),
+    // all-markets-analysis-prompt-v3 deterministic engine (OracleConfig.
+    // enableMarketsV3 docstring). Default ON per owner decision — v3 replaces
+    // the legacy scanMarkets candidate set for every fixture, fail-open to
+    // legacy on any v3 error/null. Set ORACLE_MARKETS_V3=off to roll back, or
+    // =shadow to run v3 alongside legacy without acting on its output.
+    enableMarketsV3: parseMarketsV3Mode(env.ORACLE_MARKETS_V3),
   };
+}
+
+function parseMarketsV3Mode(raw: string | undefined): "on" | "shadow" | "off" {
+  const v = raw?.toLowerCase().trim();
+  if (v === "off" || v === "shadow") return v;
+  return "on";
 }
 
 /** goals-market-analysis-prompt-v3 settings scoped to the goals-only batch
