@@ -16,7 +16,11 @@
  *  the sidecar detail is already in memory (no extra fetch). */
 
 import { applyTemporalDecay, type RecentMatch, type SoftContextItem } from "@oracle/engine";
-import type { SportyBetEventDetail } from "./selectFixtures.js";
+import type {
+  ScoringConcedingProfile,
+  SportyBetEventDetail,
+  SportyBetXgEntry,
+} from "./selectFixtures.js";
 
 /** Season matches required before a goals/xG average is trusted enough to
  *  override the engine's xH/xA outright — below this, season averages are
@@ -121,12 +125,44 @@ function formToRecentMatches(
 export interface StatsOverride {
   xH?: number;
   xA?: number;
-  xgMode?: "empirical";
+  /** "estimated" when the xGA half of the pair is a league-mean fill
+   *  (build_xg_table.py xgaSrc tag) — engines apply the softer estimated-xG
+   *  penalty instead of treating the pair as fully empirical. */
+  xgMode?: "empirical" | "estimated";
   xg_confidence?: "high" | "medium";
   oppGA_H?: number;
   oppGA_A?: number;
   restH?: number;
   restA?: number;
+  // ── all-markets-analysis-prompt-v3 typed market-specific stats (previously
+  // rawStatsBlock prose only — §0.3 market-specific tier + §3.5/§3.6/§3.9
+  // engine inputs). Per-side venue splits where the source provides them.
+  /** Season BTTS rate (0..1), venue split (scoringConceding). */
+  bttsPctH?: number;
+  bttsPctA?: number;
+  /** Season clean-sheet rate (0..1), venue split (scoringConceding). */
+  csPctH?: number;
+  csPctA?: number;
+  /** Season failed-to-score rate (0..1), venue split (scoringConceding). */
+  ftsPctH?: number;
+  ftsPctA?: number;
+  /** First-half share of the team's goals (0..1) = goals_1h_avg / scored_avg,
+   *  clamped to [0.2, 0.8] — feeds the §3.6 half engine's ρ. */
+  fhShareH?: number;
+  fhShareA?: number;
+  /** Corners for/against per game — recent-5 (lastxextended) preferred, season
+   *  aggregate (uniqueteamstats corners_avg, for-only) as fallback. §3.9. */
+  cornersForH?: number;
+  cornersForA?: number;
+  cornersAgainstH?: number;
+  cornersAgainstA?: number;
+  /** Total cards per game (yellow + red), venue split (teamdisciplinary). §3.9. */
+  cardsAvgH?: number;
+  cardsAvgA?: number;
+  /** Season Over 2.5 hit-rate (0..1), both venues (stats_season_overunder) —
+   *  §2 prioritisation + §1.2 heightened trend checks. */
+  ouO25H?: number;
+  ouO25A?: number;
 }
 
 /** Resolve the credibility-shrinkage prior for a league.
@@ -223,24 +259,39 @@ export function buildStatsOverride(
     homePlayed >= MIN_PLAYED_FOR_OVERRIDE && awayPlayed >= MIN_PLAYED_FOR_OVERRIDE;
 
   if (enoughSample) {
-    const xgHome = stats.xg?.home?.xgf;
-    const xgAway = stats.xg?.away?.xgf;
-    const xgaHome = stats.xg?.home?.xga;
-    const xgaAway = stats.xg?.away?.xga;
+    // Venue-conditioned xG (the team's own home/away split, build_xg_table.py)
+    // is a strictly better prior than the season aggregate when its sample is
+    // thick enough — same MIN_PLAYED gate as the override itself (v3 §0.1
+    // "xG/xGA home & away splits" gap-closure).
+    const pickXg = (entry: SportyBetXgEntry | null | undefined) => {
+      const useVenue = finite(entry?.venueXgf) && (entry?.venueN ?? 0) >= MIN_PLAYED_FOR_OVERRIDE;
+      return {
+        xgf: useVenue ? entry?.venueXgf : entry?.xgf,
+        xga: useVenue && finite(entry?.venueXga) ? entry?.venueXga : entry?.xga,
+      };
+    };
+    const xgH = pickXg(stats.xg?.home);
+    const xgA = pickXg(stats.xg?.away);
+    // League-mean-estimated xGA (build_xg_table.py xga_src tag) completes the
+    // pair but must not claim empirical/high confidence.
+    const xgaEstimated =
+      stats.xg?.home?.xgaSrc === "estimated" || stats.xg?.away?.xgaSrc === "estimated";
     const goalsHome = stats.goals?.home?.avg_scored;
     const goalsAway = stats.goals?.away?.avg_scored;
-    // Full xG (xGF + true xGA, i.e. Understat per-match) → highest confidence.
-    if (finite(xgHome) && finite(xgAway) && finite(xgaHome) && finite(xgaAway)) {
-      override.xH = xgHome;
-      override.xA = xgAway;
-      override.xgMode = "empirical";
-      override.xg_confidence = "high";
-      // xGF-only (FBref season aggregate — no team-conceded figure) → still
+    // Full xG (xGF + xGA both sides) → highest confidence, unless the xGA half
+    // is a league-mean estimate (then medium + "estimated" mode → softer §4.2
+    // penalty downstream instead of the harsher no-xG one).
+    if (finite(xgH.xgf) && finite(xgA.xgf) && finite(xgH.xga) && finite(xgA.xga)) {
+      override.xH = xgH.xgf;
+      override.xA = xgA.xgf;
+      override.xgMode = xgaEstimated ? "estimated" : "empirical";
+      override.xg_confidence = xgaEstimated ? "medium" : "high";
+      // xGF-only (pre-fill FBref tables — no team-conceded figure) → still
       // preferred over raw goals-avg since xG is more predictive, but capped at
       // medium confidence to acknowledge the season-mean granularity.
-    } else if (finite(xgHome) && finite(xgAway)) {
-      override.xH = xgHome;
-      override.xA = xgAway;
+    } else if (finite(xgH.xgf) && finite(xgA.xgf)) {
+      override.xH = xgH.xgf;
+      override.xA = xgA.xgf;
       override.xgMode = "empirical";
       override.xg_confidence = "medium";
     } else if (finite(goalsHome) && finite(goalsAway)) {
@@ -321,6 +372,83 @@ export function buildStatsOverride(
   const awayRest = stats.congestion?.away?.rest_days;
   if (finiteOrZero(homeRest)) override.restH = homeRest;
   if (finiteOrZero(awayRest)) override.restA = awayRest;
+
+  // ── all-markets v3 typed market-specific stats (§0.3 market-specific tier).
+  // Each family gates on its own sample: scoringConceding rates on the
+  // profile's own venue match count, season aggregates on enoughSample,
+  // recent-5 corners on their built-in ≥1-match floor.
+  const scOk = (p: ScoringConcedingProfile | null | undefined) =>
+    (p?.matches ?? 0) >= MIN_PLAYED_FOR_OVERRIDE;
+  const fhShare = (p: ScoringConcedingProfile | null | undefined): number | undefined => {
+    const fh = p?.goals_1h_avg;
+    const total = p?.scored_avg;
+    if (!finite(fh) || !finite(total)) return undefined;
+    return Math.min(0.8, Math.max(0.2, fh / total));
+  };
+  const applyScoring = (
+    p: ScoringConcedingProfile | null | undefined,
+    set: {
+      btts: "bttsPctH" | "bttsPctA";
+      cs: "csPctH" | "csPctA";
+      fts: "ftsPctH" | "ftsPctA";
+      fh: "fhShareH" | "fhShareA";
+    }
+  ) => {
+    if (!scOk(p)) return;
+    const btts = p?.btts_rate;
+    const cs = p?.clean_sheet_rate;
+    const fts = p?.failed_to_score_rate;
+    if (finiteOrZero(btts)) override[set.btts] = btts;
+    if (finiteOrZero(cs)) override[set.cs] = cs;
+    if (finiteOrZero(fts)) override[set.fts] = fts;
+    const fh = fhShare(p);
+    if (fh !== undefined) override[set.fh] = fh;
+  };
+  applyScoring(stats.scoringConceding?.home, {
+    btts: "bttsPctH",
+    cs: "csPctH",
+    fts: "ftsPctH",
+    fh: "fhShareH",
+  });
+  applyScoring(stats.scoringConceding?.away, {
+    btts: "bttsPctA",
+    cs: "csPctA",
+    fts: "ftsPctA",
+    fh: "fhShareA",
+  });
+
+  // Corners: recent-5 (lastxextended) preferred; season corners_avg (for-only)
+  // as fallback under the same season-sample gate as other aggregates.
+  const cornersForH =
+    stats.recentCorners?.home ??
+    (enoughSample ? stats.possessionValue?.home?.corners_avg : undefined);
+  const cornersForA =
+    stats.recentCorners?.away ??
+    (enoughSample ? stats.possessionValue?.away?.corners_avg : undefined);
+  const cornersAgH = stats.recentCornersAgainst?.home;
+  const cornersAgA = stats.recentCornersAgainst?.away;
+  if (finite(cornersForH)) override.cornersForH = cornersForH;
+  if (finite(cornersForA)) override.cornersForA = cornersForA;
+  if (finite(cornersAgH)) override.cornersAgainstH = cornersAgH;
+  if (finite(cornersAgA)) override.cornersAgainstA = cornersAgA;
+
+  if (enoughSample) {
+    const cards = (d: { yellow_avg?: number; red_avg?: number } | null | undefined) => {
+      const yellow = d?.yellow_avg;
+      if (!finite(yellow)) return undefined;
+      const red = d?.red_avg;
+      return yellow + (finiteOrZero(red) ? red : 0);
+    };
+    const cardsH = cards(stats.disciplinary?.home);
+    const cardsA = cards(stats.disciplinary?.away);
+    if (cardsH !== undefined) override.cardsAvgH = cardsH;
+    if (cardsA !== undefined) override.cardsAvgA = cardsA;
+
+    const o25H = stats.overunder?.home?.over25_pct;
+    const o25A = stats.overunder?.away?.over25_pct;
+    if (finiteOrZero(o25H)) override.ouO25H = o25H;
+    if (finiteOrZero(o25A)) override.ouO25A = o25A;
+  }
 
   return Object.keys(override).length > 0 ? override : null;
 }

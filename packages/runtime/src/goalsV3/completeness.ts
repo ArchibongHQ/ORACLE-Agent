@@ -112,7 +112,13 @@ export function scoreCompleteness(
   const xgA = stats?.xg?.away;
   const hasXg = xgH?.xgf != null && xgA?.xgf != null;
   const xgSrcs = [xgH?.src, xgA?.src].filter((s): s is string => typeof s === "string");
-  const xgEstimated = hasXg && xgSrcs.some((s) => s === "google_ai");
+  // Estimated when AI-Mode-sourced OR when the xGA half is a league-mean fill
+  // (build_xg_table.py xgaSrc tag) — either way the softer §4.2 penalty applies.
+  const xgEstimated =
+    hasXg &&
+    (xgSrcs.some((s) => s === "google_ai") ||
+      xgH?.xgaSrc === "estimated" ||
+      xgA?.xgaSrc === "estimated");
   if (hasXg) {
     score += V3_COMPLETENESS_WEIGHTS.xg;
     for (const s of new Set(xgSrcs)) sources.push(`${s}-xg`);

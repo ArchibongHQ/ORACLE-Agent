@@ -252,6 +252,29 @@ export interface RunState {
     rawOddsPayload?: Record<string, unknown>;
     oppGA_H?: number;
     oppGA_A?: number;
+    // ── all-markets-analysis-prompt-v3 typed market-specific stats, populated
+    // by the runtime's buildStatsOverride (previously rawStatsBlock prose only).
+    // §3.5 shape-engine empirical blend inputs (0..1 season rates, venue split):
+    bttsPctH?: number;
+    bttsPctA?: number;
+    csPctH?: number;
+    csPctA?: number;
+    ftsPctH?: number;
+    ftsPctA?: number;
+    /** §3.6 half-engine ρ inputs: first-half share of each team's goals (0..1). */
+    fhShareH?: number;
+    fhShareA?: number;
+    /** §3.9 corners module (Negative Binomial) inputs, per game. */
+    cornersForH?: number;
+    cornersForA?: number;
+    cornersAgainstH?: number;
+    cornersAgainstA?: number;
+    /** §3.9 cards module (Poisson) inputs: total cards per game. */
+    cardsAvgH?: number;
+    cardsAvgA?: number;
+    /** §2 prioritisation / §1.2 heightened-trend inputs: season O2.5 hit-rate. */
+    ouO25H?: number;
+    ouO25A?: number;
     softContext?: SoftContextItem[];
     /** Raw structured per-category stats passthrough (see DecisionContext.rawStatsBlock) —
      *  same loose-passthrough convention as rawOddsPayload. */

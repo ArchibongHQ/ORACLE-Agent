@@ -170,11 +170,17 @@ export interface SportyBetXgEntry {
   xgf?: number;
   xga?: number | null;
   src?: string;
+  /** "estimated" when xga is a league-mean fill (build_xg_table.py, all-markets
+   *  v3 §0.3) rather than a real team-conceded figure — consumers downgrade
+   *  confidence on the tag. Absent for real xGA. */
+  xgaSrc?: "estimated";
   /** Venue-conditioned xG-for/against (this team's home matches when it's the
    *  home side here, its away matches when it's the away side) — absent until
-   *  build_xg_table.py has ≥1 venue-tagged match for the team. */
+   *  build_xg_table.py has ≥1 venue-tagged match for the team. venueN is the
+   *  match count behind the split so consumers can gate on sample size. */
   venueXgf?: number | null;
   venueXga?: number | null;
+  venueN?: number;
 }
 
 /** Stats block from Sportradar gismo (sidecar v2). All sub-fields optional. */
@@ -274,6 +280,10 @@ export interface SportyBetStats {
   /** Recency-weighted complement to possessionValue.corners_avg: average corners
    *  won across each team's last 5 matches (stats_team_lastxextended). */
   recentCorners?: { home?: number; away?: number } | null;
+  /** Opponents' corners in the same last-5 matches (corners against) — the other
+   *  half of the v3 §3.9 Negative-Binomial corners model; uniqueteamstats only
+   *  carries corners-for. Same lastxextended docs, no extra fetch. */
+  recentCornersAgainst?: { home?: number; away?: number } | null;
   /** Recency-weighted complement to goals.avg_scored/avg_conceded: average goals
    *  scored/conceded across each team's last 5 matches (stats_team_lastxextended,
    *  same docs as recentCorners — no extra fetch). The strongest recency signal

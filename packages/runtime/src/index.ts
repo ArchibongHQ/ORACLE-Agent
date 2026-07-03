@@ -83,6 +83,13 @@ export type { HardwareCapabilities } from "./hardware.js";
 export { detectHardware, isGpuCapable } from "./hardware.js";
 export type { LineupSummary } from "./lineups.js";
 export { enrichWithLineups, findLineupSummary, loadLineupSummaries } from "./lineups.js";
+export type { V3FieldPopulation, V3TrackedField } from "./marketsV3/completenessInputs.js";
+export {
+  formatPopulationLog,
+  inspectEvent,
+  summarizeFieldPopulation,
+  V3_TRACKED_FIELDS,
+} from "./marketsV3/completenessInputs.js";
 export { enrichWithNewsIntel } from "./newsIntel.js";
 export type { CounterLeg, LegVerdict, PuntLeg } from "./punt.js";
 export {

@@ -826,10 +826,11 @@ def _xg_for(table: dict[str, dict], team: str, venue: Optional[str] = None) -> O
     xgf/xga are the season aggregate (as before). When `venue` ("home"|"away")
     is given and build_xg_table.py recorded matches at that venue, venueXgf/
     venueXga are ALSO populated — the SAME team's xG conditioned on playing at
-    this fixture's venue only (goals-market-analysis-prompt-v3 gap-closure).
-    xgf is required; xga may be null for FBref-sourced records (season player
-    aggregate has no team-conceded figure). The TS override consumes xGF-only
-    records at medium confidence, so we pass them through with xga=None."""
+    this fixture's venue only (goals-market-analysis-prompt-v3 gap-closure) —
+    along with venueN (match count) so the TS override can gate on sample size.
+    xgf is required; xga may be null on tables built before build_xg_table.py's
+    estimated-xGA fill, or carry xgaSrc="estimated" after it (all-markets v3
+    §0.3) — the TS override downgrades confidence on that tag."""
     rec = table.get(normalise(team))
     if not rec:
         return None
@@ -842,11 +843,16 @@ def _xg_for(table: dict[str, dict], team: str, venue: Optional[str] = None) -> O
         "xga": float(xga) if isinstance(xga, (int, float)) else None,
         "src": src,
     }
+    if rec.get("xga_src") == "estimated":
+        out["xgaSrc"] = "estimated"
     venue_rec = rec.get(venue) if venue in ("home", "away") else None
     if isinstance(venue_rec, dict) and isinstance(venue_rec.get("xgf"), (int, float)):
         out["venueXgf"] = float(venue_rec["xgf"])
         vxga = venue_rec.get("xga")
         out["venueXga"] = float(vxga) if isinstance(vxga, (int, float)) else None
+        vn = venue_rec.get("n")
+        if isinstance(vn, (int, float)):
+            out["venueN"] = int(vn)
     return out
 
 
@@ -1460,11 +1466,13 @@ def _parse_possession_value(
 
 
 def _parse_recent_form_corners(
-    lastx_data: dict, side: str, n: int = 5
+    lastx_data: dict, side: str, n: int = 5, conceded: bool = False
 ) -> Optional[float]:
     """Average corners won (for the queried team) across its last N matches from
     stats_team_lastxextended — recency-weighted complement to the season-aggregate
-    corners_avg above.
+    corners_avg above. With conceded=True, returns the OPPONENTS' corners in those
+    same matches instead (corners against — the missing half of the v3 §3.9
+    Negative-Binomial corners model; uniqueteamstats only carries corners-for).
 
     Live gismo shape: matches[] is ordered most-recent-first; each match's
     `corners` is {home, away} keyed by venue, not by which side is the queried
@@ -1486,9 +1494,9 @@ def _parse_recent_form_corners(
         if not isinstance(corners, dict):
             continue
         if (teams.get("home") or {}).get("_id") == team_id:
-            v = corners.get("home")
+            v = corners.get("away" if conceded else "home")
         elif (teams.get("away") or {}).get("_id") == team_id:
-            v = corners.get("away")
+            v = corners.get("home" if conceded else "away")
         else:
             continue
         if isinstance(v, (int, float)):
@@ -1854,6 +1862,16 @@ def _fetch_fixture_detail(
     if a_corners is not None:
         recent_corners["away"] = a_corners
 
+    # 11a. Corners AGAINST (opponents' corners in the same last-5 matches) — the
+    # other half of the v3 §3.9 corners model; reuses the lastxextended docs.
+    recent_corners_against: dict[str, float] = {}
+    h_corners_ag = _parse_recent_form_corners(home_lastx, "home", conceded=True)
+    a_corners_ag = _parse_recent_form_corners(away_lastx, "away", conceded=True)
+    if h_corners_ag is not None:
+        recent_corners_against["home"] = h_corners_ag
+    if a_corners_ag is not None:
+        recent_corners_against["away"] = a_corners_ag
+
     # 11b. Recent-form goals (last 5 scored/conceded per team) — reuses the SAME
     # lastxextended docs above (no extra fetch). The strongest recency signal for a
     # goals model; previously the per-match scoreline in lastxextended was fetched
@@ -1948,6 +1966,8 @@ def _fetch_fixture_detail(
         stats["possessionValue"] = possession_value
     if recent_corners:
         stats["recentCorners"] = recent_corners
+    if recent_corners_against:
+        stats["recentCornersAgainst"] = recent_corners_against
     if recent_goals:
         stats["recentGoals"] = recent_goals
     if scoring_conceding:
