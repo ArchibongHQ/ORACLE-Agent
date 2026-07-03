@@ -11,6 +11,7 @@ import {
   extractMarkets,
   gateV3Edge,
   poissonPMF,
+  V3_TIER_HEIGHTENED_FLOOR,
   type V3AnalyzeInput,
   v3NbDispersion,
   v3PenaltyPts,
@@ -228,6 +229,44 @@ describe("devigOU + v3PenaltyPts + gateV3Edge (§4)", () => {
     expect(gate.adjustedEdge).toBeCloseTo(0.06, 5);
     expect(gate.tier).toBe("medium");
   });
+
+  describe("heightened floor (v4 PR-3: 8pt pass bar under HFA/hit-rate uncertainty)", () => {
+    it("raises the pass floor from 5pt to 8pt — a 6pt edge that would normally be 'medium' now fails", () => {
+      const nonHeightened = gateV3Edge(0.06, { q: 0, devigged: true }, {}, {});
+      expect(nonHeightened.outcome).toBe("done");
+      expect(nonHeightened.tier).toBe("medium");
+
+      const heightened = gateV3Edge(0.06, { q: 0, devigged: true }, {}, { heightened: true });
+      expect(heightened.outcome).toBe("below_edge");
+      expect(heightened.tier).toBeNull();
+    });
+
+    it("passes at exactly the 8pt heightened floor with tier 'high' (0.08 ≥ V3_TIER_HIGH)", () => {
+      const gate = gateV3Edge(
+        V3_TIER_HEIGHTENED_FLOOR,
+        { q: 0, devigged: true },
+        {},
+        { heightened: true }
+      );
+      expect(gate.outcome).toBe("done");
+      expect(gate.tier).toBe("high");
+    });
+
+    it("still respects the noise gate and absolute cap ahead of the heightened floor", () => {
+      const noise = gateV3Edge(0.005, { q: 0, devigged: true }, {}, { heightened: true });
+      expect(noise.outcome).toBe("noise");
+
+      const capped = gateV3Edge(0.7, { q: 0.5, devigged: true }, {}, { heightened: true });
+      expect(capped.outcome).toBe("capped");
+    });
+
+    it("defaults to the standard 5pt floor when heightened is omitted or false", () => {
+      expect(gateV3Edge(0.06, { q: 0, devigged: true }, {}).outcome).toBe("done");
+      expect(gateV3Edge(0.06, { q: 0, devigged: true }, {}, { heightened: false }).outcome).toBe(
+        "done"
+      );
+    });
+  });
 });
 
 describe("v3NbDispersion (§3.2 guard)", () => {
@@ -343,5 +382,15 @@ describe("analyzeGoalsFixtureV3 (full pipeline)", () => {
     const positiveRawEdgeCount = tight!.assessments.filter((a) => a.rawEdge > 0).length;
     expect(positiveRawEdgeCount).toBeGreaterThan(0);
     expect(tight!.capped.length).toBe(positiveRawEdgeCount);
+  });
+
+  it("threads heightened through the full pipeline — fewer (or equal) DONE markets survive than non-heightened", () => {
+    const normal = analyzeGoalsFixtureV3(baseInput());
+    const heightened = analyzeGoalsFixtureV3(baseInput({ heightened: true }));
+    expect(normal).not.toBeNull();
+    expect(heightened).not.toBeNull();
+    const normalDone = normal!.assessments.filter((a) => a.outcome === "done").length;
+    const heightenedDone = heightened!.assessments.filter((a) => a.outcome === "done").length;
+    expect(heightenedDone).toBeLessThanOrEqual(normalDone);
   });
 });

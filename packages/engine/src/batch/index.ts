@@ -42,7 +42,7 @@ function buildV3Input(
   job: { home: string; away: string; league: string; kickoff: string },
   state: RunState,
   allMarkets: AllMarketEntry[] | undefined,
-  config?: { v3Hfa?: number; v3VenueSplitUsed?: boolean }
+  config?: { v3Hfa?: number; v3VenueSplitUsed?: boolean; v3GatesV4?: boolean }
 ): V3AllMarketsInput | null {
   if (!allMarkets?.length) return null;
   const t = state.telemetry ?? {};
@@ -87,6 +87,8 @@ function buildV3Input(
       csPctA: t.csPctA,
       ftsPctH: t.ftsPctH,
       ftsPctA: t.ftsPctA,
+      nH: t.formNH,
+      nA: t.formNA,
     },
     penaltyFlags: {
       xgMissing: t.xgMode == null,
@@ -98,6 +100,7 @@ function buildV3Input(
     },
     hfa: config?.v3Hfa,
     venueSplitUsed: config?.v3VenueSplitUsed,
+    heightened: config?.v3GatesV4 !== false,
   };
 }
 

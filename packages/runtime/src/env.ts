@@ -244,6 +244,9 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // field advantage via true home/away splits (suppress HFA multiplier).
     // ORACLE_V3_VENUE_SPLIT=on to enable (default off = team-overall stats).
     v3VenueSplitUsed: env.ORACLE_V3_VENUE_SPLIT?.toLowerCase() === "on",
+    // v4 gate deltas: heightened EV bars, exact-goals/multigoals routing, sanity checks.
+    // ORACLE_V3_GATES_V4=off to restore v3 semantics (default on).
+    v3GatesV4: env.ORACLE_V3_GATES_V4?.toLowerCase() !== "off",
   };
 }
 

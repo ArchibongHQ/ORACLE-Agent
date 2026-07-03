@@ -343,6 +343,35 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
   });
 
+  it("threads config.v3GatesV4 through to v3Input.heightened (PR-3) — defaults true when unset", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+
+    await runBatch([job], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
+    expect(analyzeFixtureMarketsV3Mock.mock.calls[0]![0].heightened).toBe(true);
+
+    analyzeFixtureMarketsV3Mock.mockClear();
+    await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3GatesV4: false },
+    });
+    expect(analyzeFixtureMarketsV3Mock.mock.calls[0]![0].heightened).toBe(false);
+  });
+
   it("leaves the Q4 executor enabled in 'shadow' mode (v3 never suppresses the legacy LLM tier there)", async () => {
     vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
     analyzeFixtureMarketsV3Mock.mockReturnValue({

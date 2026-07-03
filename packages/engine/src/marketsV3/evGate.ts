@@ -67,6 +67,18 @@ export const CLASS_GATE: Record<
   X: { minAdjEdge: 0.06, minAdjEvPct: 0.2, maxOdds: 15 },
 };
 
+/** v4 heightened gates (§5.2 delta): stricter bars under HFA/hit-rate uncertainty.
+ *  X excluded entirely; S/M/L gates raised; S/M drop EV% requirements. */
+export const CLASS_GATE_HEIGHTENED: Record<
+  V3MarketClass,
+  { minAdjEdge: number; minAdjEvPct: number | null; maxOdds: number | null } | null
+> = {
+  S: { minAdjEdge: 0.05, minAdjEvPct: 0.07, maxOdds: null },
+  M: { minAdjEdge: 0.08, minAdjEvPct: null, maxOdds: null },
+  L: { minAdjEdge: 0.09, minAdjEvPct: 0.2, maxOdds: null },
+  X: null, // X excluded in v4 heightened mode
+};
+
 /** §5.4 relative cap: odds > 3.00 and Raw/q above this ⇒ capped. */
 export const RELATIVE_CAP_ODDS_FLOOR = 3.0;
 export const RELATIVE_CAP_RATIO = 0.4;
@@ -110,17 +122,19 @@ export function v3Confidence(
 }
 
 /** Run the full Phase-5 gate for one selection. `modelP` must already be the
- *  conditional p′ where the market can push. */
+ *  conditional p′ where the market can push. When `heightened` is true, use v4
+ *  heightened gates (stricter bars, X excluded). */
 export function gateAllMarkets(
   modelP: number,
   q: { q: number; devigged: boolean },
   odds: number,
   cls: V3MarketClass,
   flags: V3AllMarketsPenaltyFlags,
-  opts: { edgeCap?: number; noiseGate?: number } = {}
+  opts: { edgeCap?: number; noiseGate?: number; heightened?: boolean } = {}
 ): V3AllMarketsAssessment {
   const edgeCap = opts.edgeCap ?? V3_EDGE_CAP_DEFAULT;
   const noiseGate = opts.noiseGate ?? V3_NOISE_GATE_DEFAULT;
+  const heightened = opts.heightened ?? false;
 
   const rawEdge = modelP - q.q;
   const penaltyPts = allMarketsPenaltyPts(flags);
@@ -128,6 +142,11 @@ export function gateAllMarkets(
   const adjEvPct = q.q > 0 ? adjustedEdge / q.q : 0;
 
   const base = { q: q.q, devigged: q.devigged, rawEdge, penaltyPts, adjustedEdge, adjEvPct, cls };
+
+  // v4 heightened: X excluded entirely
+  if (heightened && cls === "X") {
+    return { ...base, outcome: "below_gate", confidence: null };
+  }
 
   if (rawEdge > edgeCap) {
     return { ...base, outcome: "capped", confidence: null, capReason: "absolute" };
@@ -140,7 +159,9 @@ export function gateAllMarkets(
     return { ...base, outcome: "noise", confidence: null };
   }
 
-  const gate = CLASS_GATE[cls];
+  const gateTable = heightened ? CLASS_GATE_HEIGHTENED : CLASS_GATE;
+  const gate = gateTable[cls];
+  if (gate === null) return { ...base, outcome: "below_gate", confidence: null };
   const passes =
     adjustedEdge >= gate.minAdjEdge &&
     (gate.minAdjEvPct === null || adjEvPct >= gate.minAdjEvPct) &&

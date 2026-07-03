@@ -28,6 +28,11 @@ export interface V3EngineCtx {
     csPctA?: number;
     ftsPctH?: number;
     ftsPctA?: number;
+    /** Sample size (match count, capped at 5 by the recentGoals source) behind
+     *  each side's empirical rates above — feeds blendEmpirical's sample-scaled
+     *  weight (PR-3). */
+    nH?: number;
+    nA?: number;
   };
 }
 
@@ -42,11 +47,21 @@ export interface V3Price {
   resultClass?: boolean;
 }
 
-/** §3.5 empirical blend: P_final = 0.7·model + 0.3·empirical. */
+/** §3.5 empirical blend: P_final = (1-w)·model + w·empirical.
+ *  w = EMPIRICAL_BLEND_W by default; when a sample size `n` is supplied
+ *  (PR-3, sample-scaled), w = EMPIRICAL_BLEND_W × min(n,5)/5 — a thin recent
+ *  sample earns less trust. n omitted or ≥5 (the common case — recentGoals is
+ *  a last-5 window) reproduces the original flat 0.3 weight exactly. */
 export const EMPIRICAL_BLEND_W = 0.3;
+export const EMPIRICAL_BLEND_N_CAP = 5;
 
-export function blendEmpirical(model: number, empirical: number | undefined): number {
+export function blendEmpirical(model: number, empirical: number | undefined, n?: number): number {
   if (empirical === undefined || !Number.isFinite(empirical)) return model;
   const e = Math.min(1, Math.max(0, empirical));
-  return model * (1 - EMPIRICAL_BLEND_W) + e * EMPIRICAL_BLEND_W;
+  const w =
+    n !== undefined && Number.isFinite(n)
+      ? EMPIRICAL_BLEND_W *
+        (Math.min(Math.max(n, 0), EMPIRICAL_BLEND_N_CAP) / EMPIRICAL_BLEND_N_CAP)
+      : EMPIRICAL_BLEND_W;
+  return model * (1 - w) + e * w;
 }

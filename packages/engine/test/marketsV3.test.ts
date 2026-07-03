@@ -4,21 +4,29 @@
 
 import {
   type AllMarketEntry,
+  blendEmpirical,
   buildV3Grid,
   buildV3HalfGrid,
   CLASS_GATE,
+  CLASS_GATE_HEIGHTENED,
   classifyMarket,
   deriveDualSplit,
+  EMPIRICAL_BLEND_W,
   gateAllMarkets,
+  goalsSlateSanityChecks,
   impliedQ,
   minuteShare,
   poissonPMF,
+  priceExoticsOutcome,
+  priceShapeOutcome,
   priceTimeWindow,
   resultProbs,
   routeCoverage,
   routeMarket,
+  slateSanityChecks,
   sumWhere,
   V3_MINUTE_SHARE_TABLE,
+  type V3EngineCtx,
   v3Confidence,
   winPushSplit,
 } from "@oracle/engine";
@@ -142,6 +150,334 @@ describe("evGate — spec §5 worked examples", () => {
     expect(CLASS_GATE.M).toMatchObject({ minAdjEdge: 0.05, minAdjEvPct: null });
     expect(CLASS_GATE.L).toMatchObject({ minAdjEdge: 0.06, minAdjEvPct: 0.15 });
     expect(CLASS_GATE.X).toMatchObject({ minAdjEdge: 0.06, minAdjEvPct: 0.2, maxOdds: 15 });
+  });
+});
+
+// ── v4 heightened gates (PR-3) ──────────────────────────────────────────────
+
+describe("gateAllMarkets — v4 heightened bars (PR-3)", () => {
+  it("CLASS_GATE_HEIGHTENED thresholds match the spec table, X is null (excluded)", () => {
+    expect(CLASS_GATE_HEIGHTENED.S).toMatchObject({ minAdjEdge: 0.05, minAdjEvPct: 0.07 });
+    expect(CLASS_GATE_HEIGHTENED.M).toMatchObject({ minAdjEdge: 0.08, minAdjEvPct: null });
+    expect(CLASS_GATE_HEIGHTENED.L).toMatchObject({ minAdjEdge: 0.09, minAdjEvPct: 0.2 });
+    expect(CLASS_GATE_HEIGHTENED.X).toBeNull();
+  });
+
+  it("excludes class X entirely under heightened, regardless of how strong the edge is", () => {
+    const q = { q: 0.1, devigged: true };
+    const gate = gateAllMarkets(0.5, q, 5, "X", {}, { heightened: true });
+    expect(gate.outcome).toBe("below_gate");
+    expect(gate.confidence).toBeNull();
+  });
+
+  it("a Class M edge of 6pts passes non-heightened but fails heightened (8pt bar)", () => {
+    const q = { q: 0.4, devigged: true };
+    const normal = gateAllMarkets(0.46, q, 2.2, "M", {}, {});
+    expect(normal.outcome).toBe("done");
+
+    const heightened = gateAllMarkets(0.46, q, 2.2, "M", {}, { heightened: true });
+    expect(heightened.outcome).toBe("below_gate");
+  });
+
+  it("Class S needs both 5pt edge AND 7% EV% under heightened (vs 3pt/4% non-heightened)", () => {
+    const q = { q: 0.5, devigged: true };
+    // 4pt edge, 8% EV% — clears non-heightened (3pt/4%) but fails heightened's 5pt floor.
+    const gate = gateAllMarkets(0.54, q, 2.0, "S", {}, { heightened: true });
+    expect(gate.adjustedEdge).toBeCloseTo(0.04, 5);
+    expect(gate.outcome).toBe("below_gate");
+  });
+
+  it("Class L clears the heightened bar (9pt edge, 20% EV%) with odds fixed to avoid a relative cap", () => {
+    // 11pt edge / 50% q clears both the 9pt heightened floor and the 20% EV%
+    // bar with margin — deliberately not pinned to either threshold exactly,
+    // since 0.6-0.5 !== 0.1 in IEEE-754 float (lands just under 0.2 EV%).
+    const q = { q: 0.5, devigged: true };
+    const gate = gateAllMarkets(0.61, q, 2.0, "L", {}, { heightened: true });
+    expect(gate.adjustedEdge).toBeCloseTo(0.11, 5);
+    expect(gate.outcome).toBe("done");
+  });
+
+  it("defaults to standard (non-heightened) gates when the opt is omitted", () => {
+    const q = { q: 0.4, devigged: true };
+    const gate = gateAllMarkets(0.46, q, 2.2, "M", {});
+    expect(gate.outcome).toBe("done");
+  });
+});
+
+// ── exotics engine (§3.8) — exact-goals / multigoals routing + pricing ─────
+
+describe("priceExoticsOutcome — exact-goals & multigoals (PR-3)", () => {
+  const ctx: V3EngineCtx = (() => {
+    const statsGrid = buildV3Grid(1.5, 1.2, 0.08);
+    const half = buildV3HalfGrid(0.75, 0.6);
+    return {
+      statsGrid,
+      shapeGrid: statsGrid,
+      mu: 2.7,
+      split: {} as V3EngineCtx["split"],
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      halfStats: [half, half],
+      halfShape: [half, half],
+      empirical: {},
+    };
+  })();
+
+  it('prices exact_goals "2" as the sum of every cell where i+j===2', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h + a === 2);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals" },
+      "Exact Goals",
+      "2"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it('prices exact_goals "2-3 goals" as the sum of cells where i+j in [2,3]', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h + a >= 2 && h + a <= 3);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals" },
+      "Exact Goals",
+      "2-3 goals"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it("prices multigoals from a structured from/to route specifier (not desc text)", () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h + a >= 2 && h + a <= 4);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "multigoals", from: 2, to: 4 },
+      "Multigoals",
+      "anything" // ignored — multigoals reads route.from/to, not desc
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it("returns null for multigoals with neither from nor to specified", () => {
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "multigoals" },
+      "Multigoals",
+      "anything"
+    );
+    expect(price).toBeNull();
+  });
+
+  it("prices a correct score cell exactly", () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h === 2 && a === 1);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "correct_score" },
+      "Correct Score",
+      "2-1"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+});
+
+// ── engines/types.ts — sample-scaled empirical blend (PR-3) ────────────────
+
+describe("blendEmpirical — sample-scaled weight (PR-3)", () => {
+  it("falls back to a flat 0.3 weight when n is omitted (unchanged pre-PR-3 behavior)", () => {
+    const blended = blendEmpirical(0.5, 0.7);
+    expect(blended).toBeCloseTo(0.5 * (1 - EMPIRICAL_BLEND_W) + 0.7 * EMPIRICAL_BLEND_W, 10);
+  });
+
+  it("reproduces the flat 0.3 weight exactly at n=5 (the common full-sample case)", () => {
+    const flat = blendEmpirical(0.5, 0.7);
+    const atFive = blendEmpirical(0.5, 0.7, 5);
+    expect(atFive).toBeCloseTo(flat, 10);
+  });
+
+  it("scales the weight down for a thin sample: n=1 → w=0.06 instead of 0.3", () => {
+    const model = 0.5;
+    const empirical = 0.7;
+    const blended = blendEmpirical(model, empirical, 1);
+    const expectedW = 0.3 * (1 / 5);
+    expect(blended).toBeCloseTo(model * (1 - expectedW) + empirical * expectedW, 10);
+    // A thinner sample pulls less toward the empirical rate than the flat blend.
+    expect(Math.abs(blended - model)).toBeLessThan(
+      Math.abs(blendEmpirical(model, empirical) - model)
+    );
+  });
+
+  it("n=0 means zero blend weight — model-only", () => {
+    expect(blendEmpirical(0.5, 0.7, 0)).toBeCloseTo(0.5, 10);
+  });
+
+  it("returns model unchanged when empirical is undefined, regardless of n", () => {
+    expect(blendEmpirical(0.42, undefined, 5)).toBe(0.42);
+  });
+});
+
+// ── shape engine — FTS% wired into team-total blends (PR-3) ────────────────
+
+describe("priceShapeOutcome — FTS% team-total blend (PR-3)", () => {
+  const shapeCtx = (empirical: V3EngineCtx["empirical"]): V3EngineCtx => {
+    const grid = buildV3Grid(1.4, 1.1, 0.08);
+    const half = buildV3HalfGrid(0.7, 0.55);
+    return {
+      statsGrid: grid,
+      shapeGrid: grid,
+      mu: 2.5,
+      split: {} as V3EngineCtx["split"],
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      halfStats: [half, half],
+      halfShape: [half, half],
+      empirical,
+    };
+  };
+
+  it("blends FTS% into Team Total Under 0.5 (the line FTS% actually measures) and flags nothing missing", () => {
+    const ctx = shapeCtx({ ftsPctH: 0.4, nH: 5 });
+    const modelOnly = priceShapeOutcome(
+      shapeCtx({}),
+      { engine: "shape", family: "team_total" },
+      "Home Total",
+      "under 0.5"
+    );
+    const blended = priceShapeOutcome(
+      ctx,
+      { engine: "shape", family: "team_total" },
+      "Home Total",
+      "under 0.5"
+    );
+    expect(blended?.marketStatMissing).toBe(false);
+    expect(modelOnly?.marketStatMissing).toBe(true);
+    // n=5 (full sample) reproduces the flat 0.3 weight exactly: 0.7·model + 0.3·FTS%.
+    expect(blended?.p).toBeCloseTo(modelOnly!.p * 0.7 + 0.4 * 0.3, 5);
+  });
+
+  it("derives the Over 0.5 empirical rate as 1 - FTS% (complementary side of the same line)", () => {
+    const ctx = shapeCtx({ ftsPctH: 0.4, nH: 5 });
+    const modelOnly = priceShapeOutcome(
+      shapeCtx({}),
+      { engine: "shape", family: "team_total" },
+      "Home Total",
+      "over 0.5"
+    );
+    const blended = priceShapeOutcome(
+      ctx,
+      { engine: "shape", family: "team_total" },
+      "Home Total",
+      "over 0.5"
+    );
+    expect(blended?.p).toBeCloseTo(modelOnly!.p * 0.7 + 0.6 * 0.3, 5);
+  });
+
+  it("leaves non-0.5 team-total lines model-only (FTS% doesn't map to those thresholds)", () => {
+    const ctx = shapeCtx({ ftsPctH: 0.3, nH: 5 });
+    const price = priceShapeOutcome(
+      ctx,
+      { engine: "shape", family: "team_total" },
+      "Home Total",
+      "over 1.5"
+    );
+    expect(price?.marketStatMissing).toBeUndefined();
+  });
+
+  it("a thin recent-form sample (nH=1) pulls the blend less toward FTS% than a full sample (nH=5)", () => {
+    const thin = priceShapeOutcome(
+      shapeCtx({ ftsPctH: 0.9, nH: 1 }),
+      { engine: "shape", family: "team_total" },
+      "Home Total",
+      "under 0.5"
+    );
+    const full = priceShapeOutcome(
+      shapeCtx({ ftsPctH: 0.9, nH: 5 }),
+      { engine: "shape", family: "team_total" },
+      "Home Total",
+      "under 0.5"
+    );
+    const modelOnly = priceShapeOutcome(
+      shapeCtx({}),
+      { engine: "shape", family: "team_total" },
+      "Home Total",
+      "under 0.5"
+    );
+    expect(Math.abs(thin!.p - modelOnly!.p)).toBeLessThan(Math.abs(full!.p - modelOnly!.p));
+  });
+});
+
+// ── sanity.ts — slate-level sanity checks (PR-3) ────────────────────────────
+
+describe("slateSanityChecks / goalsSlateSanityChecks (PR-3)", () => {
+  it("a slate with zero >5pt signals and zero capped reports no flags, no NaN", () => {
+    const assessments = [
+      { outcome: "noise" as const, rawEdge: 0.01, family: "goals_ou", desc: "Over 2.5" },
+      { outcome: "below_gate" as const, rawEdge: 0.02, family: "dnb", desc: "Home" },
+    ];
+    const result = slateSanityChecks(assessments);
+    expect(result.flags).toEqual([]);
+    expect(result.capRate).toBeNull();
+    expect(Number.isNaN(result.capRate as unknown as number)).toBe(false);
+  });
+
+  it("flags model_miscalibration when capped/(capped+hotDone) exceeds 25%", () => {
+    const assessments = [
+      { outcome: "capped" as const, rawEdge: 0.15, family: "goals_ou", desc: "Over 2.5" },
+      { outcome: "capped" as const, rawEdge: 0.14, family: "goals_ou", desc: "Under 2.5" },
+      { outcome: "done" as const, rawEdge: 0.06, family: "goals_ou", desc: "Over 1.5" },
+    ];
+    const result = slateSanityChecks(assessments);
+    expect(result.capRate).toBeCloseTo(2 / 3, 5);
+    expect(result.flags).toContain("model_miscalibration");
+  });
+
+  it("flags result_skew_home when ≥70% of DONE result-family picks are Home", () => {
+    const assessments = [
+      { outcome: "done" as const, rawEdge: 0.06, family: "dnb", desc: "Home" },
+      { outcome: "done" as const, rawEdge: 0.06, family: "double_chance", desc: "Home or Draw" },
+      { outcome: "done" as const, rawEdge: 0.06, family: "handicap", desc: "Home -1" },
+      { outcome: "done" as const, rawEdge: 0.06, family: "dnb", desc: "Away" },
+    ];
+    const result = slateSanityChecks(assessments);
+    expect(result.resultHomeShare).toBeCloseTo(0.75, 5);
+    expect(result.flags).toContain("result_skew_home");
+  });
+
+  it("flags totals_skew_over when ≥70% of DONE totals-family picks are Over", () => {
+    const assessments = [
+      { outcome: "done" as const, rawEdge: 0.06, family: "goals_ou", desc: "Over 2.5" },
+      { outcome: "done" as const, rawEdge: 0.06, family: "goals_ou", desc: "Over 1.5" },
+      {
+        outcome: "done" as const,
+        rawEdge: 0.06,
+        family: "team_total",
+        desc: "Home Total Over 0.5",
+      },
+      { outcome: "done" as const, rawEdge: 0.06, family: "goals_ou", desc: "Under 3.5" },
+    ];
+    const result = slateSanityChecks(assessments);
+    expect(result.totalsOverShare).toBeCloseTo(0.75, 5);
+    expect(result.flags).toContain("totals_skew_over");
+  });
+
+  it("goalsSlateSanityChecks never reports result-family flags (no b-check on the lean goals path)", () => {
+    const assessments = [
+      { outcome: "done" as const, rawEdge: 0.06, cat: "Goals O/U", label: "Over 2.5" },
+      { outcome: "done" as const, rawEdge: 0.06, cat: "Goals O/U", label: "Over 1.5" },
+      { outcome: "done" as const, rawEdge: 0.06, cat: "Team Total", label: "Home Total Over 0.5" },
+    ];
+    const result = goalsSlateSanityChecks(assessments);
+    expect(result.resultHomeShare).toBeNull();
+    expect(result.resultAwayShare).toBeNull();
+    expect(result.totalsOverShare).toBeCloseTo(1, 5);
+    expect(result.flags).toContain("totals_skew_over");
+  });
+
+  it("a heightened fixture whose only candidates are X reports zero survivors cleanly (valid outcome)", () => {
+    const assessments = [
+      { outcome: "below_gate" as const, rawEdge: 0.08, family: "correct_score", desc: "2-1" },
+      { outcome: "below_gate" as const, rawEdge: 0.09, family: "ht_ft", desc: "Home/Home" },
+    ];
+    const result = slateSanityChecks(assessments);
+    expect(result.flags).toEqual([]);
+    expect(result.capRate).toBeNull();
   });
 });
 
@@ -433,5 +769,40 @@ describe("analyzeFixtureMarketsV3 (orchestrator)", () => {
     });
     expect(result!.fhShareIsDefault).toBe(false);
     expect(result!.fhShare).toBeCloseTo(0.45, 5);
+  });
+
+  it("threads heightened through the full pipeline — fewer (or equal) DONE candidates survive than non-heightened", async () => {
+    const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+    const allMarkets: AllMarketEntry[] = [
+      {
+        id: "18",
+        name: "Over/Under",
+        specifier: "total=2.5",
+        outcomes: [
+          { id: "1", desc: "Over 2.5", odds: "1.85" },
+          { id: "2", desc: "Under 2.5", odds: "1.95" },
+        ],
+      },
+      {
+        id: "10",
+        name: "Double Chance",
+        outcomes: [
+          { id: "1", desc: "Home or Draw", odds: "1.25" },
+          { id: "2", desc: "Home or Away", odds: "1.10" },
+          { id: "3", desc: "Draw or Away", odds: "2.10" },
+        ],
+      },
+    ];
+    const normal = analyzeFixtureMarketsV3({ ...baseInput, allMarkets });
+    const heightened = analyzeFixtureMarketsV3({ ...baseInput, allMarkets, heightened: true });
+    expect(normal).not.toBeNull();
+    expect(heightened).not.toBeNull();
+    const normalDone = normal!.assessments.filter((a) => a.outcome === "done").length;
+    const heightenedDone = heightened!.assessments.filter((a) => a.outcome === "done").length;
+    expect(heightenedDone).toBeLessThanOrEqual(normalDone);
+    // Every heightened survivor must be Class S/M/L — X is excluded entirely.
+    for (const a of heightened!.assessments) {
+      if (a.outcome === "done") expect(a.cls).not.toBe("X");
+    }
   });
 });

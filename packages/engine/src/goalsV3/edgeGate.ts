@@ -54,6 +54,11 @@ export const V3_NOISE_GATE_DEFAULT = 0.02;
 export const V3_TIER_MEDIUM = 0.05;
 export const V3_TIER_HIGH = 0.07;
 export const V3_TIER_VERY_HIGH = 0.1;
+/** v4 heightened pass floor (PR-3): under HFA/hit-rate uncertainty, the goals
+ *  path requires 8pts adjusted edge to pass at all — raised from the 5pt
+ *  medium floor. Tier labels (very_high/high/medium) are unchanged; this only
+ *  raises the bar for "medium" to actually pass the gate. */
+export const V3_TIER_HEIGHTENED_FLOOR = 0.08;
 
 export type V3Tier = "very_high" | "high" | "medium";
 export type V3GateOutcome = "done" | "capped" | "noise" | "below_edge";
@@ -98,15 +103,19 @@ export function v3Tier(adjustedEdge: number): V3Tier | null {
   return null;
 }
 
-/** Run the full Phase-4 gate for one selection. */
+/** Run the full Phase-4 gate for one selection. `heightened` (v4 PR-3): raises
+ *  the pass floor to 8pts under HFA/hit-rate uncertainty — tier labels
+ *  (very_high/high/medium) are unchanged, but an edge below the heightened
+ *  floor now fails the gate even if it would normally tier as "medium". */
 export function gateV3Edge(
   modelP: number,
   q: { q: number; devigged: boolean },
   flags: V3PenaltyFlags,
-  opts: { edgeCap?: number; noiseGate?: number } = {}
+  opts: { edgeCap?: number; noiseGate?: number; heightened?: boolean } = {}
 ): V3EdgeAssessment {
   const edgeCap = opts.edgeCap ?? V3_EDGE_CAP_DEFAULT;
   const noiseGate = opts.noiseGate ?? V3_NOISE_GATE_DEFAULT;
+  const floor = opts.heightened ? V3_TIER_HEIGHTENED_FLOOR : V3_TIER_MEDIUM;
 
   const rawEdge = modelP - q.q;
   const penaltyPts = v3PenaltyPts(flags);
@@ -119,7 +128,7 @@ export function gateV3Edge(
   } else if (Math.abs(rawEdge) <= noiseGate) {
     outcome = "noise"; // §4.3 — within noise of the market, not edge
   } else {
-    tier = v3Tier(adjustedEdge);
+    tier = adjustedEdge >= floor ? v3Tier(adjustedEdge) : null;
     outcome = tier ? "done" : "below_edge";
   }
   return { q: q.q, devigged: q.devigged, rawEdge, penaltyPts, adjustedEdge, tier, outcome };

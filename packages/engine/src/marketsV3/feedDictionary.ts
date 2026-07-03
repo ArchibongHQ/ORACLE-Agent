@@ -33,6 +33,10 @@ export interface V3Route {
   hcpNum?: number;
   /** Parsed European handicap head start (`hcp=<h>:<a>`). */
   hcpScore?: [number, number];
+  /** Parsed `from=` minimum goals for multigoals (exotics engine). */
+  from?: number;
+  /** Parsed `to=` maximum goals for multigoals (exotics engine). */
+  to?: number;
 }
 
 export interface V3Skip {
@@ -149,7 +153,12 @@ export function routeMarket(entry: AllMarketEntry): V3Routing {
         ? { engine: "totals", family, total }
         : { engine: "totals", family }; // line may live in the outcome desc
     }
-    case "multigoals":
+    case "multigoals": {
+      const from = num(spec.get("from"));
+      const to = num(spec.get("to"));
+      if (isHalf) return { engine: "half", family, half: name.startsWith("2nd") ? 2 : 1 };
+      return { engine: "exotics", family, from, to };
+    }
     case "exact_goals":
     case "odd_even":
       if (isHalf) return { engine: "half", family, half: name.startsWith("2nd") ? 2 : 1 };

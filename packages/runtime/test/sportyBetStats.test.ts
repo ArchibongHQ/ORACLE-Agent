@@ -360,6 +360,24 @@ describe("buildStatsOverride — all-markets v3 additions", () => {
     expect(override?.bttsPctA).toBeUndefined();
   });
 
+  it("types formNH/formNA from recentGoals' own match count (PR-3 sample-scaled blend)", () => {
+    const d = detail({
+      recentGoals: {
+        home: { scored_avg: 1.4, conceded_avg: 0.8, n: 5 },
+        away: { scored_avg: 0.9, conceded_avg: 1.2, n: 2 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override).toMatchObject({ formNH: 5, formNA: 2 });
+  });
+
+  it("omits formNH/formNA when recentGoals is absent", () => {
+    const d = detail({ standings: { home: { played: 10 }, away: { played: 10 } } });
+    const override = buildStatsOverride(d);
+    expect(override?.formNH).toBeUndefined();
+    expect(override?.formNA).toBeUndefined();
+  });
+
   it("clamps the first-half share to [0.2, 0.8]", () => {
     const d = detail({
       scoringConceding: {

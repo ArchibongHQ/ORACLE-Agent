@@ -1403,6 +1403,7 @@ async function runGoalsBatchV3(
       xgBlend: goalsV3Config.xgBlend,
       edgeCap: goalsV3Config.edgeCap,
       noiseGate: goalsV3Config.noiseGate,
+      heightened: config.v3GatesV4,
     };
     const result = analyzeGoalsFixtureV3(input);
     if (!result) {
