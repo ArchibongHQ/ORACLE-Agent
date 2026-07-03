@@ -211,6 +211,12 @@ export function parseFixtureList(input: string): FixtureJob[] {
 // Conservative per-call cost for claude-opus-4-8 (~1K input + 200 output tokens)
 const LLM_COST_ESTIMATE_USD_PER_CALL = 0.05;
 
+// Max v3 candidates handed to the arbiter per fixture (evMarkets is already
+// ranked best-first by adjusted edge) — see the enableMarketsV3 wiring in
+// processOne. Small enough to keep the arbiter prompt trivial, generous
+// enough that a real close-call second-best market is never silently dropped.
+const V3_ARBITER_CANDIDATE_LIMIT = 5;
+
 function classifyError(msg: string): AgentErrorCode {
   if (/429|rate.?limit/i.test(msg)) return "RATE_LIMITED";
   if (/no.?data|not.?found|no fixture/i.test(msg)) return "NO_DATA";
@@ -403,13 +409,30 @@ export async function runBatch(
           // v3 runs but its output is discarded, legacy `eligible` is used
           // unchanged (comparison instrumentation only). "off": skipped
           // entirely — zero overhead, byte-identical to pre-v3 behavior.
+          //
+          // Cap at V3_ARBITER_CANDIDATE_LIMIT (top-ranked first — evMarkets is
+          // already sorted best-first by adjusted edge): the arbiter reads
+          // whatever lands in `eligible`, and a handful of gate-survivors keeps
+          // its prompt a token-cost rounding error next to the Q4 catalogue
+          // dump this replaces, without losing any real candidate (spec §7
+          // Output A only ever keeps ONE selection per fixture anyway).
+          let usedV3 = false;
           if (config.enableMarketsV3 && config.enableMarketsV3 !== "off") {
             const v3Input = buildV3Input(job, state, allMarkets);
             const v3Result = v3Input ? analyzeFixtureMarketsV3(v3Input) : null;
             if (config.enableMarketsV3 === "on" && v3Result?.evMarkets.length) {
-              eligible = v3Result.evMarkets;
+              eligible = v3Result.evMarkets.slice(0, V3_ARBITER_CANDIDATE_LIMIT);
+              usedV3 = true;
             }
           }
+          // Demote the Q4 all-markets LLM catalogue-dump executor when v3
+          // supplied this fixture's candidates — v3 IS the deterministic
+          // all-markets answer (Rule 0: script math, not LLM probability
+          // estimation), so paying for a second full-catalogue LLM pass over
+          // the same fixture would be pure waste. Legacy behavior (including
+          // an operator-enabled Q4 executor) is untouched when v3 is off,
+          // shadow, or produced nothing for this fixture.
+          const decideConfig = usedV3 ? { ...config, enableLlmMarketExecutor: false } : config;
 
           // Risk multipliers the engine already computed for THIS fixture, reused
           // so the all-markets LLM executor tier's Kelly stake (Q4b) is consistent
@@ -523,7 +546,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           } = await decide(
             eligible,
             decisionCtx,
-            config,
+            decideConfig,
             !llmEligible, // force deterministic for fixtures outside the top-N
             marketExecutorRisk
           );

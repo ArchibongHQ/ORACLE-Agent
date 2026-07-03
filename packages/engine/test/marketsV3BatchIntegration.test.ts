@@ -17,6 +17,11 @@ vi.mock("../src/marketsV3/analyzeFixtureMarkets.js", () => ({
   analyzeFixtureMarketsV3: (...args: unknown[]) => analyzeFixtureMarketsV3Mock(...args),
 }));
 
+const runAllMarketsLlmExecutorMock = vi.fn();
+vi.mock("../src/decision/marketExecutor.js", () => ({
+  runAllMarketsLlmExecutor: (...args: unknown[]) => runAllMarketsLlmExecutorMock(...args),
+}));
+
 // decide() dynamically imports @oracle/llm at every cascade tier — leaving it
 // unmocked means each test pays a real transform/load cost for that whole
 // package graph (callBriefing/callGemini/callKimi/callOpenRouter/...), which
@@ -106,7 +111,29 @@ const baseConfig: OracleConfig = { geminiApiKey: "", claudeApiKey: "", bankroll:
 
 beforeEach(() => {
   analyzeFixtureMarketsV3Mock.mockReset();
+  runAllMarketsLlmExecutorMock.mockReset();
+  runAllMarketsLlmExecutorMock.mockResolvedValue(null); // fail-open: Q4 declines by default
 });
+
+function v3EvMarketAt(rank: number): EVMarket {
+  return {
+    cat: "Goals O/U",
+    label: `Candidate ${rank}`,
+    market: "Goals O/U",
+    side: `Candidate ${rank}`,
+    family: "goals_ou",
+    mp: 0.6,
+    modelProb: 0.6,
+    ip: 0.5,
+    rawEdge: 0.1 - rank * 0.01, // descending, matches evMarkets' own sort order
+    ev: 0.05,
+    odds: 2.0,
+    stake: 0,
+    stakeAmt: 0,
+    rankingScore: 0.1 - rank * 0.01,
+    varianceMod: 1,
+  };
+}
 
 describe("batch/index.ts — enableMarketsV3 wiring", () => {
   it("never calls analyzeFixtureMarketsV3 when enableMarketsV3 is unset (default off at the OracleConfig level)", async () => {
@@ -234,5 +261,111 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     await runBatch([job], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
 
     expect(analyzeFixtureMarketsV3Mock).not.toHaveBeenCalled();
+  });
+
+  it("caps eligible at the top V3_ARBITER_CANDIDATE_LIMIT(5) candidates when v3 returns more", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const many = Array.from({ length: 8 }, (_, i) => v3EvMarketAt(i));
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [],
+      capped: [],
+      evMarkets: many,
+      best: many[0],
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.eligibleBets).toHaveLength(5);
+    expect(success.eligibleBets?.map((m) => m.label)).toEqual([
+      "Candidate 0",
+      "Candidate 1",
+      "Candidate 2",
+      "Candidate 3",
+      "Candidate 4",
+    ]);
+  });
+
+  it("demotes the Q4 all-markets LLM executor when v3 supplies this fixture's candidates, even if enableLlmMarketExecutor=true", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", enableLlmMarketExecutor: true },
+    });
+
+    expect(runAllMarketsLlmExecutorMock).not.toHaveBeenCalled();
+  });
+
+  it("leaves the Q4 executor enabled when v3 produced nothing for this fixture (fail-open, not a blanket suppression)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue(null); // v3 declines
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", enableLlmMarketExecutor: true },
+    });
+
+    // decideConfig falls back to the unmodified config (usedV3=false), so the
+    // Q4 branch's own gate (config.enableLlmMarketExecutor) still applies —
+    // it's exercised here (called), independent of whatever it itself returns.
+    expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the Q4 executor enabled in 'shadow' mode (v3 never suppresses the legacy LLM tier there)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "shadow", enableLlmMarketExecutor: true },
+    });
+
+    expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
   });
 });
