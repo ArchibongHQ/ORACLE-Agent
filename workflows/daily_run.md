@@ -3,6 +3,9 @@
 ## Objective
 Run ORACLE's analysis engine against today's fixtures, produce a self-contained HTML report, and persist analysis records for post-match scoring.
 
+## All-markets v3 engine (2026-07-02+)
+Candidate generation now runs through the deterministic all-markets v3 engine by default (`ORACLE_MARKETS_V3=on`) instead of the legacy `scanMarkets` cascade — see `workflows/markets_v3.md` for the full spec-to-code map, env flags, and rollback (`ORACLE_MARKETS_V3=off`). Cron timing below reflects this worker's actual schedule (`apps/worker/src/index.ts`), not the 06:00 figure in the original text of this doc — see `apps/worker/src/index.ts`'s `node-cron` registrations for the current source of truth if this drifts again.
+
 ## Required inputs
 - `.tmp/fixtures/today.txt` — newline-delimited fixture list (see format below)
 - `.env` — API keys (Gemini, Claude, etc.) at repo root
