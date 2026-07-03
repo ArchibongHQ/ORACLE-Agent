@@ -1,9 +1,9 @@
 /** v4 worked examples and parity checks — ensure HFA multiplier, venue-split
  *  suppression, and exact specs are respected. */
 
-import { describe, it, expect } from "vitest";
-import { buildMatrix } from "../src/math/index.js";
+import { describe, expect, it } from "vitest";
 import { computeV3Lambdas, type V3LambdaInput } from "../src/goalsV3/lambda.js";
+import { buildMatrix } from "../src/math/index.js";
 
 describe("v4 HFA (home-field advantage) worked examples", () => {
   describe("DNB example — HFA applied to team-overall stats", () => {
