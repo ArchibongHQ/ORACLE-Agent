@@ -83,6 +83,8 @@ export interface V3Lambdas {
   xgBlended: boolean;
   /** Per-team L used (league goals per team per game). */
   leaguePerTeamAvg: number;
+  /** True when HFA (home-field advantage) was applied to λ. */
+  hfaApplied?: boolean;
 }
 
 const SHRINK_N = 8;
@@ -132,7 +134,7 @@ function shrink(lambda: number, n: number | null | undefined, L: number): number
  *  discarded such fixtures already. */
 export function computeV3Lambdas(
   input: V3LambdaInput,
-  opts: { xgBlend?: boolean } = {}
+  opts: { xgBlend?: boolean; venueSplitUsed?: boolean; hfa?: number } = {}
 ): V3Lambdas | null {
   const L = v3LeaguePerTeamAvg(input.league);
 
@@ -165,6 +167,16 @@ export function computeV3Lambdas(
     }
   }
 
+  // Home-field-advantage adjustment (§3.1a v4 delta): apply HFA multiplier only
+  // when the input data is team-overall stats, not true venue-split data.
+  let hfaApplied = false;
+  const hfaMult = opts.hfa && !Number.isNaN(opts.hfa) ? opts.hfa : 1.0;
+  if (hfaMult !== 1.0 && opts.venueSplitUsed !== true) {
+    lH *= hfaMult;
+    lA /= hfaMult;
+    hfaApplied = true;
+  }
+
   lH = clamp(lH, LAMBDA_MIN, LAMBDA_MAX);
   lA = clamp(lA, LAMBDA_MIN, LAMBDA_MAX);
   return {
@@ -175,5 +187,6 @@ export function computeV3Lambdas(
     shrunk,
     xgBlended,
     leaguePerTeamAvg: L,
+    hfaApplied,
   };
 }

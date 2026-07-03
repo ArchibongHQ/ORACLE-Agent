@@ -21,7 +21,8 @@ import { devigTwoWay } from "../markets/index.js";
 
 /** §4.2 data-quality penalty flags. All penalties are expressed in probability
  *  points (0.01 = 1 pt). `xgEstimated` is the plan-adopted extension for
- *  AI-Mode-sourced xG: −1 pt, between "have real xG" (0) and "missing" (−2). */
+ *  AI-Mode-sourced xG: −1 pt, between "have real xG" (0) and "missing" (−2).
+ *  PR-2 v4 deltas: `hfaDefaultUsed` and `hitRateMissing`. */
 export interface V3PenaltyFlags {
   xgMissing?: boolean;
   xgEstimated?: boolean;
@@ -30,6 +31,10 @@ export interface V3PenaltyFlags {
   restEstimated?: boolean;
   /** Model built on < 5 games of data. */
   smallSample?: boolean;
+  /** HFA default (1.10) used instead of venue-split data (PR-2 v4). */
+  hfaDefaultUsed?: boolean;
+  /** Hit-rate missing for the evaluated line (PR-4 v4 wiring, applied PR-4). */
+  hitRateMissing?: boolean;
 }
 
 export const V3_PENALTY_PTS: Record<keyof V3PenaltyFlags, number> = {
@@ -39,6 +44,8 @@ export const V3_PENALTY_PTS: Record<keyof V3PenaltyFlags, number> = {
   lineupsUnconfirmed: 0.01,
   restEstimated: 0.01,
   smallSample: 0.02,
+  hfaDefaultUsed: 0.01,
+  hitRateMissing: 0.01,
 };
 
 export const V3_EDGE_CAP_DEFAULT = 0.12;

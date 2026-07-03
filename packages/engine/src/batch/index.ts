@@ -41,7 +41,8 @@ import { computeMarketExecutorConcurrency } from "./marketExecutorConcurrency.js
 function buildV3Input(
   job: { home: string; away: string; league: string; kickoff: string },
   state: RunState,
-  allMarkets: AllMarketEntry[] | undefined
+  allMarkets: AllMarketEntry[] | undefined,
+  config?: { v3Hfa?: number; v3VenueSplitUsed?: boolean }
 ): V3AllMarketsInput | null {
   if (!allMarkets?.length) return null;
   const t = state.telemetry ?? {};
@@ -95,6 +96,8 @@ function buildV3Input(
       restEstimated: t.restH == null || t.restA == null,
       smallSample: (t.nHome ?? 99) < 5 || (t.nAway ?? 99) < 5,
     },
+    hfa: config?.v3Hfa,
+    venueSplitUsed: config?.v3VenueSplitUsed,
   };
 }
 
@@ -418,7 +421,7 @@ export async function runBatch(
           // Output A only ever keeps ONE selection per fixture anyway).
           let usedV3 = false;
           if (config.enableMarketsV3 && config.enableMarketsV3 !== "off") {
-            const v3Input = buildV3Input(job, state, allMarkets);
+            const v3Input = buildV3Input(job, state, allMarkets, config);
             const v3Result = v3Input ? analyzeFixtureMarketsV3(v3Input) : null;
             if (config.enableMarketsV3 === "on" && v3Result?.evMarkets.length) {
               eligible = v3Result.evMarkets.slice(0, V3_ARBITER_CANDIDATE_LIMIT);

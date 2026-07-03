@@ -64,6 +64,10 @@ export interface V3AllMarketsInput {
   edgeCap?: number;
   noiseGate?: number;
   xgBlend?: boolean;
+  /** v3 HFA multiplier (§3.1a). Default 1.10. */
+  hfa?: number;
+  /** True when λ input uses venue-split data (suppress HFA). */
+  venueSplitUsed?: boolean;
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -155,7 +159,11 @@ function impliedQFor(
 }
 
 export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsResult | null {
-  const lambdas = computeV3Lambdas(input.lambdaInput, { xgBlend: input.xgBlend });
+  const lambdas = computeV3Lambdas(input.lambdaInput, {
+    xgBlend: input.xgBlend,
+    hfa: input.hfa,
+    venueSplitUsed: input.venueSplitUsed,
+  });
   if (!lambdas) return null;
 
   const rho = getLeagueParams(input.league).baseRho;

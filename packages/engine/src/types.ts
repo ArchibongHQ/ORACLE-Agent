@@ -230,6 +230,15 @@ export interface OracleConfig {
   // unchanged. "off"/undefined: v3 doesn't run at all — zero overhead,
   // byte-identical to pre-v3 behavior. Default "on" (owner decision).
   enableMarketsV3?: "on" | "shadow" | "off";
+  // v4 HFA (home-field advantage) term — applied to λ multiplicatively when
+  // venueSplitUsed is false (data is team-overall, not true home/away split).
+  // Default 1.10 (10% home advantage per §3.1a). Set to 1.0 to disable.
+  v3Hfa?: number;
+  // True when λ input comes from venue-split data (home team's home rate, away
+  // team's away rate), which already incorporates field advantage; false when
+  // input is season-aggregate stats and HFA multiplier should be applied.
+  // Default false (most sources provide team-overall stats, not splits).
+  v3VenueSplitUsed?: boolean;
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
