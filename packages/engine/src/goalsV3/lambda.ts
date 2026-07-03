@@ -27,9 +27,18 @@ export const V3_LEAGUE_BASELINES: Record<string, number> = {
   Eredivisie: 3.2,
   Championship: 2.55,
   "Brazilian Serie B": 2.4,
+  "Brazil Série A": 2.7,
   "Botola Pro": 2.3,
   "USL League Two": 3.0,
+  "USL League One": 2.8,
   "Copa Chile": 2.6,
+  "Liga MX": 2.65,
+  MLS: 2.8,
+  "A-League": 2.75,
+  J1: 2.65,
+  "Saudi Pro League": 2.6,
+  "South Africa PL": 2.3,
+  "Egypt PL": 2.35,
 };
 
 /** Default league total (goals per game) when neither the v3 table nor the
