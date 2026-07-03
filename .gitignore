@@ -5,6 +5,7 @@ token.json
 
 # Machine-local Claude settings (may contain keys in permission rules)
 .claude/settings.local.json
+CLAUDE.local.md
 
 # Build artifacts
 dist/
