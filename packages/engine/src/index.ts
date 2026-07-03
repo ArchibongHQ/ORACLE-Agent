@@ -140,6 +140,34 @@ export {
   V3_GRID_MAX_GOALS,
   winPushSplit,
 } from "./marketsV3/grid.js";
+export type {
+  V3ChunkStatus,
+  V3ClassMix,
+  V3FinalSummaryInput,
+  V3OutputB,
+  V3OutputRow,
+  V3SlateFixture,
+} from "./marketsV3/outputs.js";
+export {
+  BEST_SINGLES_MAX,
+  buildGateSurvivingPool,
+  buildOutputA,
+  buildOutputB,
+  buildOutputC,
+  buildOutputD,
+  computeClassMix,
+  formatChunkStatus,
+  formatFinalSummary,
+  MINI_ACCA_HAIRCUT,
+  MINI_ACCA_MAX_LEGS,
+  MINI_ACCA_MIN_LEGS,
+  OUTPUT_A_MAX,
+  OUTPUT_C_MAX,
+  OUTPUT_C_MIN_ODDS,
+  OUTPUT_D_MAX,
+  OUTPUT_D_MIN_ODDS,
+  RESPONSIBLE_GAMBLING_NOTE,
+} from "./marketsV3/outputs.js";
 export type { V3PriorityInput } from "./marketsV3/prioritise.js";
 export {
   CONGESTION_MAX_DAYS,
