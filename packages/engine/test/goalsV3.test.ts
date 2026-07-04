@@ -427,4 +427,29 @@ describe("analyzeGoalsFixtureV3 (full pipeline)", () => {
       }
     });
   });
+
+  describe("rationale limits text", () => {
+    it("surfaces every active penalty flag, including hfaDefaultUsed and hitRateMissing", () => {
+      const result = analyzeGoalsFixtureV3(
+        baseInput({
+          penaltyFlags: { hfaDefaultUsed: true, hitRateMissing: true, smallSample: true },
+        })
+      );
+      expect(result).not.toBeNull();
+      for (const a of result!.assessments) {
+        expect(a.rationale).toContain("limits: ");
+        expect(a.rationale).toContain("default HFA");
+        expect(a.rationale).toContain("no hit-rate");
+        expect(a.rationale).toContain("<5 games sample");
+      }
+    });
+
+    it("omits the limits segment entirely when no penalty flag is set", () => {
+      const result = analyzeGoalsFixtureV3(baseInput());
+      expect(result).not.toBeNull();
+      for (const a of result!.assessments) {
+        expect(a.rationale).not.toContain("limits:");
+      }
+    });
+  });
 });

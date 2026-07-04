@@ -142,6 +142,19 @@ function round3(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
+/** Limits text per penalty flag — exhaustive over V3PenaltyFlags so a flag
+ *  that penalizes the edge can never silently skip the rationale. */
+const LIMIT_TEXT: Record<keyof V3PenaltyFlags, string> = {
+  xgMissing: "no xG",
+  xgEstimated: "xG estimated (AI-Mode)",
+  h2hMissing: "no H2H",
+  lineupsUnconfirmed: "lineups unconfirmed",
+  restEstimated: "rest estimated",
+  smallSample: "<5 games sample",
+  hfaDefaultUsed: "default HFA",
+  hitRateMissing: "no hit-rate",
+};
+
 /** Build the one-line §6 rationale: market view vs price, with data limits. */
 function buildRationale(
   label: string,
@@ -151,12 +164,9 @@ function buildRationale(
   sources: string[]
 ): string {
   const limits: string[] = [];
-  if (flags.xgMissing) limits.push("no xG");
-  if (flags.xgEstimated) limits.push("xG estimated (AI-Mode)");
-  if (flags.h2hMissing) limits.push("no H2H");
-  if (flags.lineupsUnconfirmed) limits.push("lineups unconfirmed");
-  if (flags.restEstimated) limits.push("rest estimated");
-  if (flags.smallSample) limits.push("<5 games sample");
+  for (const key of Object.keys(LIMIT_TEXT) as Array<keyof V3PenaltyFlags>) {
+    if (flags[key]) limits.push(LIMIT_TEXT[key]);
+  }
   const src = sources.length ? sources.join("+") : "sidecar";
   const lim = limits.length ? `; limits: ${limits.join(", ")}` : "";
   return (
