@@ -251,6 +251,12 @@ export interface OracleConfig {
   // sidecar-mapped fixtures before the daily chunk loop (fail-open). Default
   // true. Set ORACLE_MARKETS_V3_GATE=off to analyze the ungated slate.
   marketsV3Gate?: boolean;
+  // PR-5b: Outputs A–D + sanity assembly for the all-markets daily batch —
+  // replaces the legacy ad-hoc 39-cap trim (league-tier+confidence) with the
+  // §7 tie-break ranking sourced from each fixture's v3Best. Only acts when
+  // enableMarketsV3 === "on". Default true. Set ORACLE_MARKETS_V3_OUTPUTS=off
+  // to keep the exact legacy trim (regression pin).
+  marketsV3Outputs?: boolean;
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

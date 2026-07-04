@@ -10,9 +10,27 @@
  *
  *  Pure, synchronous, no I/O. */
 
-import type { V3MarketOutcomeAssessment } from "./analyzeFixtureMarkets.js";
 import { CLASS_ORDER, type V3MarketClass } from "./classes.js";
 import type { V3Confidence } from "./evGate.js";
+
+/** The subset of V3MarketOutcomeAssessment the output builders actually read.
+ *  Narrower than the full assessment so callers that only carry a compact
+ *  per-fixture projection through BatchResult (the daily batch, which can't
+ *  cheaply retain every raw assessment for a whole day's fixtures) don't need
+ *  to reconstruct fields (family/marketId/outcomeId) nothing here uses. */
+export interface V3OutputCandidate {
+  marketName: string;
+  desc: string;
+  cls: V3MarketClass;
+  mp: number;
+  odds: number;
+  q: number;
+  rawEdge: number;
+  penaltyPts: number;
+  adjustedEdge: number;
+  adjEvPct: number;
+  confidence: V3Confidence | null;
+}
 
 export interface V3SlateFixture {
   fixtureId: string;
@@ -23,7 +41,7 @@ export interface V3SlateFixture {
   kickoff: string;
   /** This fixture's single best surviving selection (§4.3), or null when
    *  nothing cleared the gate for this fixture — a valid, common outcome. */
-  best: V3MarketOutcomeAssessment | null;
+  best: V3OutputCandidate | null;
 }
 
 export interface V3OutputRow {
@@ -45,7 +63,7 @@ export interface V3OutputRow {
   confidence: V3Confidence | null;
 }
 
-function toRow(fixture: V3SlateFixture, a: V3MarketOutcomeAssessment): V3OutputRow {
+function toRow(fixture: V3SlateFixture, a: V3OutputCandidate): V3OutputRow {
   return {
     fixtureId: fixture.fixtureId,
     home: fixture.home,
@@ -81,7 +99,7 @@ function compareRows(a: V3OutputRow, b: V3OutputRow): number {
  *  row per fixture, sorted best-first by the §7 tie-break. */
 export function buildGateSurvivingPool(fixtures: V3SlateFixture[]): V3OutputRow[] {
   const rows = fixtures
-    .filter((f): f is V3SlateFixture & { best: V3MarketOutcomeAssessment } => f.best !== null)
+    .filter((f): f is V3SlateFixture & { best: V3OutputCandidate } => f.best !== null)
     .map((f) => toRow(f, f.best));
   return rows.sort(compareRows);
 }

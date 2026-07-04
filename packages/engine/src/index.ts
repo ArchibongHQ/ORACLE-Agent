@@ -171,6 +171,7 @@ export type {
   V3ClassMix,
   V3FinalSummaryInput,
   V3OutputB,
+  V3OutputCandidate,
   V3OutputRow,
   V3SlateFixture,
 } from "./marketsV3/outputs.js";

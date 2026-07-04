@@ -110,6 +110,11 @@ export {
 } from "./marketsV3/pipeline.js";
 export type { SlateGateOutcome, SlateGateSummary } from "./marketsV3/slateGate.js";
 export { formatSlateGateLog, prefilterMarketsV3Jobs } from "./marketsV3/slateGate.js";
+export type { MarketsV3SlateOutputs } from "./marketsV3/slateOutputs.js";
+export {
+  buildMarketsV3SlateOutputs,
+  curateActionableByV3Outputs,
+} from "./marketsV3/slateOutputs.js";
 export { enrichWithNewsIntel } from "./newsIntel.js";
 export type { CounterLeg, LegVerdict, PuntLeg } from "./punt.js";
 export {
