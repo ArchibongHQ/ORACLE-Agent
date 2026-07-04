@@ -446,17 +446,28 @@ export async function decide(
     "claudeApiKey" | "geminiApiKey" | "openrouterApiKey" | "enableLlmMarketExecutor"
   >,
   forceDeterministic = false,
-  marketExecutorRisk?: MarketExecutorRiskParams
+  marketExecutorRisk?: MarketExecutorRiskParams,
+  // PR-8 LLM demote/gate (posture A):
+  //   skipDraftLlm — v3 already supplied deterministic candidates, so skip the paid
+  //     draft LLM cascade (and the market-executor tier) and use the deterministic
+  //     draft; the arbiter still reviews it on eligible fixtures. Inert when v3 off.
+  //   skipArbiter — this fixture is outside the top-N, so skip the per-fixture
+  //     arbiter entirely (today it runs for EVERY fixture with candidates).
+  opts: { skipDraftLlm?: boolean; skipArbiter?: boolean } = {}
 ): Promise<DecisionResult> {
   let effectiveEligible = eligibleBets;
   let draft: DecisionResult | undefined;
+  // A deterministic draft is forced either by the caller's top-N gate
+  // (forceDeterministic) or by posture A skipping the draft cascade when v3 supplied
+  // the candidate set.
+  const useDeterministicDraft = forceDeterministic || opts.skipDraftLlm === true;
 
   // Q4 (owner-directed): when on, REPLACES the eligibleBets-constrained cascade
   // below for this fixture — an LLM agent reasons over the full allMarkets
   // catalogue instead of being limited to the ~9 priced families. Fail-open: any
   // missing data/call/parse/validation failure leaves draft unset and falls
   // through to the normal cascade exactly as if the flag were off.
-  if (config?.enableLlmMarketExecutor && ctx && !forceDeterministic && marketExecutorRisk) {
+  if (config?.enableLlmMarketExecutor && ctx && !useDeterministicDraft && marketExecutorRisk) {
     const executed = await runAllMarketsLlmExecutor(ctx, marketExecutorRisk);
     if (executed) {
       // Splice the executor's pick into the eligible set so the arbiter (which
@@ -474,10 +485,13 @@ export async function decide(
     }
   }
 
-  if (!draft) draft = await decideInner(effectiveEligible, ctx, config, forceDeterministic);
+  if (!draft) draft = await decideInner(effectiveEligible, ctx, config, useDeterministicDraft);
 
   let result = draft;
-  if (ctx && effectiveEligible.length) {
+  // PR-8: the per-fixture arbiter now respects the top-N cap — skipArbiter is set
+  // for fixtures outside the llmEligible set, so only top-N picks still pay the
+  // arbiter LLM cost (previously every fixture with candidates did).
+  if (!opts.skipArbiter && ctx && effectiveEligible.length) {
     result = await arbitrate(effectiveEligible, ctx, draft);
   }
 

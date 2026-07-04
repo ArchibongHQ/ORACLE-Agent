@@ -95,6 +95,54 @@ describe("enrichWithNewsIntel — lake-first read", () => {
     ]);
   });
 
+  it("[PR-8] surfaces an unrecognised lake source generically as news (closes the 7th-source gap)", async () => {
+    vi.mocked(loadDailyNews).mockImplementation(async (_dt: string, slug: string) => {
+      if (slug === "germany") {
+        return [
+          {
+            source: "brand_new_scraper", // a source with no explicit branch in lakeRowToSoftContext
+            summary: "Germany confirm a full-strength squad for the friendly.",
+            rawJson: "{}",
+            scrapedAt: "2026-06-21T00:00:00Z",
+          },
+        ];
+      }
+      return [];
+    });
+
+    const jobs = [job("Germany", "Ivory Coast")];
+    const result = await enrichWithNewsIntel(jobs, {});
+    const soft = result[0]?.state?.telemetry?.softContext as Array<{ kind: string; text: string }>;
+    expect(soft).toEqual([
+      {
+        kind: "news",
+        text: "Germany confirm a full-strength squad for the friendly.",
+        source: "brand_new_scraper-lake",
+        observedAt: "2026-06-21T00:00:00Z",
+      },
+    ]);
+  });
+
+  it("[PR-8] drops an unrecognised lake row with an empty summary", async () => {
+    vi.mocked(loadDailyNews).mockImplementation(async (_dt: string, slug: string) => {
+      if (slug === "germany") {
+        return [
+          {
+            source: "brand_new_scraper",
+            summary: "",
+            rawJson: "{}",
+            scrapedAt: "2026-06-21T00:00:00Z",
+          },
+        ];
+      }
+      return [];
+    });
+    const jobs = [job("Germany", "Ivory Coast")];
+    const result = await enrichWithNewsIntel(jobs, {});
+    // Empty-summary generic rows contribute nothing → jobs unchanged.
+    expect(result).toEqual(jobs);
+  });
+
   it("does not call the live ensemble path when the lake already has data", async () => {
     // Returns the same row for every call — loadLakeNews queries home AND
     // away, so 2 merged items (one per team) confirms both lookups ran and

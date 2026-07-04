@@ -198,6 +198,16 @@ function lakeRowToSoftContext(row: {
       { kind: "stats", text: row.summary, source: `${row.source}-lake`, observedAt: row.scrapedAt },
     ];
   }
+  // PR-8 generic default: any lake writer with a non-empty summary and an
+  // unrecognised source is surfaced as news, tagged "<source>-lake". This
+  // permanently closes the "7th source" gap class — a new Python lake writer is
+  // visible to the decision layer with zero TS changes here. Empty-summary rows
+  // still drop.
+  if (row.summary) {
+    return [
+      { kind: "news", text: row.summary, source: `${row.source}-lake`, observedAt: row.scrapedAt },
+    ];
+  }
   return [];
 }
 

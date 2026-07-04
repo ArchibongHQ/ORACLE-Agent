@@ -141,6 +141,21 @@ describe("evGate — spec §5 worked examples", () => {
     expect(withPenalty.adjustedEdge).toBeLessThan(withoutPenalty.adjustedEdge);
   });
 
+  it("[PR-8 xG pin] estimated-xG costs exactly −1pt and is never discarded by the gate", () => {
+    // A fixture whose xG was estimated (AI-Mode-sourced) reaches the gate with the
+    // xgEstimated penalty flag. The −1pt must not turn a healthy candidate into a
+    // discard — estimated xG is a soft penalty, not a hard reject condition.
+    const q = { q: 0.5, devigged: true };
+    const clean = gateAllMarkets(0.62, q, 2.0, "M", {});
+    const estimated = gateAllMarkets(0.62, q, 2.0, "M", { xgEstimated: true });
+    // Exactly one point of penalty relative to the clean case.
+    expect(estimated.penaltyPts - clean.penaltyPts).toBeCloseTo(0.01, 10);
+    expect(estimated.adjustedEdge).toBeCloseTo(clean.adjustedEdge - 0.01, 10);
+    // Still a live candidate — not discarded (capped/noise/below_gate) by the flag.
+    expect(estimated.outcome).toBe("done");
+    expect(estimated.confidence).not.toBeNull();
+  });
+
   it("v3Confidence: Class S reads EV%, other classes read adjusted edge", () => {
     expect(v3Confidence("S", 0.02, 0.11)).toBe("very_high"); // EV% 11% ≥10
     expect(v3Confidence("S", 0.02, 0.02)).toBeNull(); // below the 4% EV floor
