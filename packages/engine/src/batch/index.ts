@@ -106,7 +106,10 @@ function buildV3Input(
     },
     hfa: config?.v3Hfa,
     venueSplitUsed: config?.v3VenueSplitUsed,
-    heightened: config?.v3GatesV4 !== false,
+    // Heightened bars are per-fixture (§1.2 youth/women/friendly/cup-final),
+    // stamped as telemetry.v3Heightened by the PR-5a slate pre-filter — the
+    // gates-v4 flag only enables the mechanism, it never heightens the slate.
+    heightened: config?.v3GatesV4 !== false && t.v3Heightened === true,
   };
 }
 

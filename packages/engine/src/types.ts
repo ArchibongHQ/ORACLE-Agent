@@ -247,6 +247,10 @@ export interface OracleConfig {
   // per-selection line hit-rates. Default true. Set ORACLE_V3_COMPLETENESS_V4=off to
   // restore hit-rate to the mandatory (discard-on-missing) set.
   v3CompletenessV4?: boolean;
+  // PR-5a slate pre-filter: gateMarketsV3Slate eligibility+completeness over
+  // sidecar-mapped fixtures before the daily chunk loop (fail-open). Default
+  // true. Set ORACLE_MARKETS_V3_GATE=off to analyze the ungated slate.
+  marketsV3Gate?: boolean;
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
@@ -311,6 +315,10 @@ export interface RunState {
     ouO25A?: number;
     ouO35H?: number;
     ouO35A?: number;
+    /** §1.2 heightened eligibility (youth/women/friendly/cup-final), stamped by
+     *  the PR-5a slate pre-filter — gates this fixture with the stricter v4
+     *  heightened bars. Absent ⇒ normal bars. */
+    v3Heightened?: boolean;
     softContext?: SoftContextItem[];
     /** Raw structured per-category stats passthrough (see DecisionContext.rawStatsBlock) —
      *  same loose-passthrough convention as rawOddsPayload. */

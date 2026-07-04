@@ -35,6 +35,7 @@ import {
   applySlateVerdicts,
   buildConfig,
   buildGoalsV3Config,
+  buildMarketsV3GateConfig,
   classifyEligibility,
   deriveLineHitRates,
   enrichWithH2H,
@@ -43,6 +44,7 @@ import {
   fetchTodaysFixtures,
   findSidecarDetail,
   fixturesPartitionExists,
+  formatSlateGateLog,
   type GoalsSelectionResult,
   generateAndWriteFixtureWorkbook,
   generateAndWriteGoalsWorkbook,
@@ -51,6 +53,7 @@ import {
   loadSportyBetIndex,
   markPrompted,
   ORACLE_PRIORITY_LEAGUES,
+  prefilterMarketsV3Jobs,
   resolveDay,
   reviewGoalsSlate,
   runAnalysis,
@@ -797,6 +800,33 @@ async function runDailyBatch(
     return null;
   }
 
+  // ── PR-5a: v3 slate pre-filter (eligibility + completeness, fail-open) ────
+  // Drops fixtures the v3 gate would discard anyway BEFORE any engine/LLM
+  // spend. Only acts when v3 is live ("on") AND ORACLE_MARKETS_V3_GATE is on;
+  // sidecar-unmapped fixtures always pass through, and an all-drop fails open
+  // to the ungated slate (more likely an upstream league-name/schema
+  // regression than a genuinely empty slate). Survivors carry the per-fixture
+  // telemetry.v3Heightened stamp the heightened EV bars key off.
+  // The index is loaded here (not at the booking block) so both uses share one read.
+  const sportyIndex = await loadSportyBetIndex(watDateString());
+  let gatedJobs = jobs;
+  if (config.enableMarketsV3 === "on" && config.marketsV3Gate !== false) {
+    const { jobs: survivors, summary } = prefilterMarketsV3Jobs(
+      jobs,
+      sportyIndex?.detailByKey,
+      buildMarketsV3GateConfig(env),
+      { completenessV4: config.v3CompletenessV4 }
+    );
+    if (summary) process.stdout.write(`[markets-v3] ${formatSlateGateLog(summary)}\n`);
+    if (survivors.length > 0) {
+      gatedJobs = survivors;
+    } else {
+      process.stderr.write(
+        "[markets-v3] gate dropped every fixture — failing open to the ungated slate\n"
+      );
+    }
+  }
+
   // Priority-ordered chunk loop: jobs are already sorted by selectFixtures (tier 0
   // priority leagues first, then tier 1, then by data-completeness + score within tier).
   // Analyze in chunks of ANALYSIS_CHUNK_SIZE; stop as soon as 39 actionable picks
@@ -807,12 +837,12 @@ async function runDailyBatch(
   const allRecords: unknown[] = [];
   let finalReportPath: string | undefined;
 
-  for (let i = 0; i < jobs.length; i += ANALYSIS_CHUNK_SIZE) {
-    const chunk = jobs.slice(i, i + ANALYSIS_CHUNK_SIZE);
+  for (let i = 0; i < gatedJobs.length; i += ANALYSIS_CHUNK_SIZE) {
+    const chunk = gatedJobs.slice(i, i + ANALYSIS_CHUNK_SIZE);
     const chunkIdx = Math.floor(i / ANALYSIS_CHUNK_SIZE) + 1;
-    const totalChunks = Math.ceil(jobs.length / ANALYSIS_CHUNK_SIZE);
+    const totalChunks = Math.ceil(gatedJobs.length / ANALYSIS_CHUNK_SIZE);
     process.stdout.write(
-      `[batch] chunk ${chunkIdx}/${totalChunks}: fixtures ${i + 1}–${i + chunk.length} of ${jobs.length}\n`
+      `[batch] chunk ${chunkIdx}/${totalChunks}: fixtures ${i + 1}–${i + chunk.length} of ${gatedJobs.length}\n`
     );
     const analyzedSoFar = batchChunks.reduce((s, c) => s + c.completedCount, 0);
     const {
@@ -829,7 +859,7 @@ async function runDailyBatch(
           onProgress: ({ completed, current }) => {
             if (current)
               process.stdout.write(
-                `[batch] ${analyzedSoFar + completed}/${jobs.length}: ${current}\n`
+                `[batch] ${analyzedSoFar + completed}/${gatedJobs.length}: ${current}\n`
               );
           },
         },
@@ -848,7 +878,7 @@ async function runDailyBatch(
     if (cumulativeActionable >= 39) {
       const done = batchChunks.reduce((s, c) => s + c.completedCount, 0);
       process.stdout.write(
-        `[batch] 39 actionable reached after ${done}/${jobs.length} fixtures — stopping early\n`
+        `[batch] 39 actionable reached after ${done}/${gatedJobs.length} fixtures — stopping early\n`
       );
       break;
     }
@@ -866,11 +896,9 @@ async function runDailyBatch(
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────
   // resolveEventId looks up the sidecar's eventId for each pick — without it
   // every ActionablePick.eventId is undefined and bookAccumulator skips every leg.
-  const sportyIndexForBooking = await loadSportyBetIndex(watDateString());
+  // sportyIndex was loaded once before the pre-filter; reused here.
   const summary = summarizeBatch(batch, undefined, (home, away) =>
-    sportyIndexForBooking
-      ? findSidecarDetail(sportyIndexForBooking.detailByKey, home, away)?.eventId
-      : undefined
+    sportyIndex ? findSidecarDetail(sportyIndex.detailByKey, home, away)?.eventId : undefined
   );
 
   // Curate the best 39 picks from the full batch results, ordered by league
@@ -1319,6 +1347,8 @@ async function runGoalsBatchV3(
     event: SportyBetEvent;
     job: (typeof preJobs)[number]["job"];
     completeness: ReturnType<typeof scoreCompleteness>;
+    /** §1.2 heightened eligibility — per-fixture input to the v4 8pt pass floor. */
+    heightened: boolean;
   }> = [];
   for (let i = 0; i < preJobs.length; i++) {
     const { event } = preJobs[i]!;
@@ -1348,7 +1378,7 @@ async function runGoalsBatchV3(
       else completenessDiscards++;
       continue;
     }
-    gated.push({ event, job, completeness });
+    gated.push({ event, job, completeness, heightened: elig?.status === "heightened" });
   }
   process.stdout.write(
     `[goals-v3] completeness: ${preJobs.length} → ${gated.length} survive ` +
@@ -1380,7 +1410,7 @@ async function runGoalsBatchV3(
     rationale: string;
   }> = [];
   let analysisErrors = 0;
-  for (const { event, job, completeness } of gated) {
+  for (const { event, job, completeness, heightened } of gated) {
     const detail = event.detail;
     const input: V3AnalyzeInput = {
       fixtureId: v3FixtureId(job.home, job.away, job.kickoff),
@@ -1408,7 +1438,9 @@ async function runGoalsBatchV3(
       xgBlend: goalsV3Config.xgBlend,
       edgeCap: goalsV3Config.edgeCap,
       noiseGate: goalsV3Config.noiseGate,
-      heightened: config.v3GatesV4 !== false,
+      // Per-fixture (§1.2 eligibility class), not slate-wide: the gates-v4 flag
+      // enables the heightened mechanism, eligibility decides who it applies to.
+      heightened: config.v3GatesV4 !== false && heightened,
       lineHitRates: deriveLineHitRates(detail),
     };
     const result = analyzeGoalsFixtureV3(input);
