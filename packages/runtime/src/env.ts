@@ -252,6 +252,11 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // volume — ORACLE_V3_COMPLETENESS_V4=off restores hit-rate to the mandatory set
     // (default on).
     v3CompletenessV4: env.ORACLE_V3_COMPLETENESS_V4?.toLowerCase() !== "off",
+    // PR-5a slate pre-filter: v3 eligibility+completeness gate over sidecar-mapped
+    // fixtures before the daily chunk loop (fail-open). Only acts when
+    // ORACLE_MARKETS_V3=on. ORACLE_MARKETS_V3_GATE=off analyzes the ungated slate
+    // (default on).
+    marketsV3Gate: env.ORACLE_MARKETS_V3_GATE?.toLowerCase() !== "off",
   };
 }
 

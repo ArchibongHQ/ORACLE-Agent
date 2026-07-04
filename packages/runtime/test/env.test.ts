@@ -66,3 +66,14 @@ describe("buildConfig v3CompletenessV4", () => {
     expect(buildConfig({ ORACLE_V3_COMPLETENESS_V4: "banana" }).v3CompletenessV4).toBe(true);
   });
 });
+
+describe("buildConfig marketsV3Gate", () => {
+  it("defaults to true (PR-5a slate pre-filter on)", () => {
+    expect(buildConfig({}).marketsV3Gate).toBe(true);
+  });
+
+  it("respects ORACLE_MARKETS_V3_GATE=off (case-insensitive) as the ungated-slate rollback", () => {
+    expect(buildConfig({ ORACLE_MARKETS_V3_GATE: "off" }).marketsV3Gate).toBe(false);
+    expect(buildConfig({ ORACLE_MARKETS_V3_GATE: "OFF" }).marketsV3Gate).toBe(false);
+  });
+});

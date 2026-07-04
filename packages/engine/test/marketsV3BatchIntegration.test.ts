@@ -343,7 +343,7 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
   });
 
-  it("threads config.v3GatesV4 through to v3Input.heightened (PR-3) — defaults true when unset", async () => {
+  it("heightened is per-fixture: telemetry.v3Heightened stamp AND v3GatesV4 (PR-5a)", async () => {
     vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
     analyzeFixtureMarketsV3Mock.mockReturnValue({
       lambdas: {},
@@ -356,16 +356,28 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
       evMarkets: [v3EvMarket],
       best: v3EvMarket,
     });
-    const job = makeJob({
+    const stamped = makeJob({
+      telemetry: { scoredPer90H: 1.7, v3Heightened: true },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const unstamped = makeJob({
       telemetry: { scoredPer90H: 1.7 },
       pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
     });
 
-    await runBatch([job], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
+    // Stamped fixture + gates-v4 default (unset) ⇒ heightened bars apply.
+    await runBatch([stamped], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
     expect(analyzeFixtureMarketsV3Mock.mock.calls[0]![0].heightened).toBe(true);
 
+    // No stamp ⇒ normal bars even with gates v4 on (the flag enables the
+    // mechanism; §1.2 eligibility decides which fixtures it applies to).
     analyzeFixtureMarketsV3Mock.mockClear();
-    await runBatch([job], {
+    await runBatch([unstamped], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
+    expect(analyzeFixtureMarketsV3Mock.mock.calls[0]![0].heightened).toBe(false);
+
+    // Rollback flag wins over the stamp.
+    analyzeFixtureMarketsV3Mock.mockClear();
+    await runBatch([stamped], {
       storage,
       config: { ...baseConfig, enableMarketsV3: "on", v3GatesV4: false },
     });
