@@ -257,6 +257,17 @@ export interface OracleConfig {
   // enableMarketsV3 === "on". Default true. Set ORACLE_MARKETS_V3_OUTPUTS=off
   // to keep the exact legacy trim (regression pin).
   marketsV3Outputs?: boolean;
+  // PR-6: corners/cards routing — Over/Under total-line markets priced via the
+  // NB (corners) / Poisson (cards) modules when both odds and season stats
+  // exist. Default true. ORACLE_V3_CORNERS_CARDS=off withholds the raw stats
+  // from buildV3Input so ctx.corners/.cards stay null (dormant, byte-identical
+  // to pre-PR-6 — routing itself is unconditional, only ctx population is gated).
+  v3CornersCards?: boolean;
+  // PR-6: R10 cross-check — re-verify the fixture's best goals-family v3 pick
+  // against the independent goals-only engine (in-process, zero extra LLM
+  // cost). Default true. ORACLE_V3_GOALS_CROSSCHECK=off skips the hook
+  // entirely even when one is supplied (byte-identical to pre-PR-6).
+  v3GoalsCrossCheck?: boolean;
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

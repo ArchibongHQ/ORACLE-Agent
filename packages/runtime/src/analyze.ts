@@ -11,6 +11,7 @@ import type {
   DecisionShadow,
   FixtureJob,
   FixtureOutcome,
+  GoalsCrossCheckFn,
   OracleConfig,
   PickRef,
   RunManifest,
@@ -122,7 +123,7 @@ async function writeDecisionShadows(
 /** Run the full analysis pipeline over a set of fixture jobs. */
 export async function runAnalysis(
   jobs: FixtureJob[],
-  deps: { storage: StoragePort; config: OracleConfig },
+  deps: { storage: StoragePort; config: OracleConfig; goalsCrossCheck?: GoalsCrossCheckFn },
   opts: AnalyzeOptions = {}
 ): Promise<AnalyzeResult> {
   const { storage, config } = deps;
@@ -131,7 +132,11 @@ export async function runAnalysis(
   const writeToDisk = opts.writeReportToDisk ?? true;
 
   const startedAt = new Date().toISOString();
-  const batch = await runBatch(jobs, { storage, config }, opts.batchOptions ?? {});
+  const batch = await runBatch(
+    jobs,
+    { storage, config, goalsCrossCheck: deps.goalsCrossCheck },
+    opts.batchOptions ?? {}
+  );
 
   // Build analysis records from successful jobs
   const records: AnalysisRecord[] = batch.jobs.flatMap((j) => {

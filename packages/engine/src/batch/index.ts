@@ -11,11 +11,13 @@ import {
 } from "../decision/index.js";
 import type { MarketExecutorRiskParams } from "../decision/marketExecutor.js";
 import { ExecutionEngine } from "../execution/index.js";
-import { devigThreeWay } from "../markets/index.js";
+import { devigThreeWay, FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import {
   analyzeFixtureMarketsV3,
   type V3AllMarketsInput,
+  type V3MarketOutcomeAssessment,
 } from "../marketsV3/analyzeFixtureMarkets.js";
+import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
 import type { V3OutputCandidate } from "../marketsV3/outputs.js";
 import type {
   AgentError,
@@ -43,7 +45,12 @@ function buildV3Input(
   job: { home: string; away: string; league: string; kickoff: string },
   state: RunState,
   allMarkets: AllMarketEntry[] | undefined,
-  config?: { v3Hfa?: number; v3VenueSplitUsed?: boolean; v3GatesV4?: boolean }
+  config?: {
+    v3Hfa?: number;
+    v3VenueSplitUsed?: boolean;
+    v3GatesV4?: boolean;
+    v3CornersCards?: boolean;
+  }
 ): V3AllMarketsInput | null {
   if (!allMarkets?.length) return null;
   const t = state.telemetry ?? {};
@@ -97,6 +104,18 @@ function buildV3Input(
       ou35PctH: t.ouO35H,
       ou35PctA: t.ouO35A,
     },
+    // §3.9 corners/cards stats — withheld when ORACLE_V3_CORNERS_CARDS=off so
+    // the modules stay dormant (the rollback surface; routing is unconditional).
+    ...(config?.v3CornersCards !== false
+      ? {
+          cornersForH: t.cornersForH,
+          cornersForA: t.cornersForA,
+          cornersAgainstH: t.cornersAgainstH,
+          cornersAgainstA: t.cornersAgainstA,
+          cardsAvgH: t.cardsAvgH,
+          cardsAvgA: t.cardsAvgA,
+        }
+      : {}),
     penaltyFlags: {
       xgMissing: t.xgMode == null,
       xgEstimated: t.xgMode === "estimated",
@@ -112,6 +131,97 @@ function buildV3Input(
     // gates-v4 flag only enables the mechanism, it never heightens the slate.
     heightened: config?.v3GatesV4 !== false && t.v3Heightened === true,
   };
+}
+
+/** Goals-family MarketFamily values the R10 cross-check hook applies to.
+ *  Mirrors packages/runtime/src/marketsV3/goalsCrossCheck.ts's
+ *  GOALS_CROSSCHECK_FAMILIES — duplicated here (not imported) because engine
+ *  never imports runtime; keep both in sync by hand if this set changes. */
+const GOALS_CROSSCHECK_FAMILIES: ReadonlySet<MarketFamily> = new Set<MarketFamily>([
+  "goals_ou",
+  "team_total",
+  "btts",
+]);
+
+/** Structurally identical to runtime's CrossCheckResult (goalsCrossCheck.ts) —
+ *  defined fresh here since engine can't import that type from runtime.
+ *  Runtime's crossCheckGoalsPick() return value satisfies this by duck typing. */
+export interface V3CrossCheckOutcome {
+  verdict: "agree" | "disagree" | "no_data";
+  assessment: V3AllMarketsAssessment;
+  survives: boolean;
+  annotation: string;
+}
+
+/** DI hook (R10): given the fixture's top-ranked "done" goals-family pick
+ *  (label/odds identify the exact market), the caller (runtime/worker layer,
+ *  which alone has sidecar access to build a goals-engine input) returns a
+ *  cross-check verdict, or null when it has no independent opinion (e.g. no
+ *  sidecar mapping for this fixture) — null means "leave the pick untouched",
+ *  same as a "no_data" verdict. */
+export type GoalsCrossCheckFn = (
+  pick: V3AllMarketsAssessment,
+  label: string,
+  odds: number,
+  fixture: { home: string; away: string; league: string; kickoff: string }
+) => V3CrossCheckOutcome | null;
+
+/** R10 cross-check: re-verify the fixture's best goals-family v3 pick against
+ *  the independent goals-only engine, mutating v3Result's assessments/
+ *  evMarkets IN PLACE before anything downstream reads them — so usedV3's
+ *  eligible slice and the v3Best/v3AssessmentStats projection (PR-5b) both see
+ *  the corrected state with no extra wiring at either call site. */
+function applyGoalsCrossCheck(
+  v3Result: { assessments: V3MarketOutcomeAssessment[]; evMarkets: EVMarket[] },
+  hook: GoalsCrossCheckFn,
+  fixture: { home: string; away: string; league: string; kickoff: string }
+): void {
+  const topGoalsFamily = v3Result.assessments
+    .filter((a) => a.outcome === "done" && GOALS_CROSSCHECK_FAMILIES.has(a.family))
+    .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
+  if (!topGoalsFamily) return;
+
+  const outcome = hook(topGoalsFamily, topGoalsFamily.desc, topGoalsFamily.odds, fixture);
+  if (!outcome || outcome.verdict !== "disagree") return;
+
+  const idx = v3Result.assessments.findIndex(
+    (a) => a.marketId === topGoalsFamily.marketId && a.outcomeId === topGoalsFamily.outcomeId
+  );
+  if (idx < 0) return;
+  const original = v3Result.assessments[idx]!;
+  // The hook's re-gated assessment carries the downgraded gate math; identity
+  // fields stay the original's (the hook only knows the gate-shape subset).
+  const merged: V3MarketOutcomeAssessment = {
+    ...original,
+    ...outcome.assessment,
+    family: original.family,
+    marketId: original.marketId,
+    marketName: original.marketName,
+    outcomeId: original.outcomeId,
+    desc: original.desc,
+    odds: original.odds,
+    mp: original.mp,
+  };
+  v3Result.assessments[idx] = merged;
+
+  const emIdx = v3Result.evMarkets.findIndex(
+    (m) => m.label === original.desc && m.market === FAMILY_LABEL[original.family]
+  );
+  if (!outcome.survives) {
+    // §4.4 re-pick semantics: remove the failed candidate; the next-best
+    // surviving market (already ranked) naturally takes its place downstream.
+    if (emIdx >= 0) v3Result.evMarkets.splice(emIdx, 1);
+    return;
+  }
+  if (emIdx >= 0) {
+    const em = v3Result.evMarkets[emIdx]!;
+    v3Result.evMarkets[emIdx] = {
+      ...em,
+      rawEdge: merged.rawEdge,
+      rankingScore: merged.adjustedEdge,
+    };
+    v3Result.evMarkets.sort((a, b) => b.rankingScore - a.rankingScore);
+  }
 }
 
 import { AtomicCostTracker, runPool } from "./pool.js";
@@ -298,7 +408,7 @@ async function withRetry<T>(
  *  One job failing never aborts the batch — it produces { status: 'error' } instead. */
 export async function runBatch(
   jobs: FixtureJob[],
-  deps: { storage: StoragePort; config: OracleConfig },
+  deps: { storage: StoragePort; config: OracleConfig; goalsCrossCheck?: GoalsCrossCheckFn },
   options: BatchOptions = {}
 ): Promise<BatchResult> {
   const { onProgress, marketWhitelist, rankingMode = "CONFIDENCE_WEIGHTED" } = options;
@@ -450,6 +560,16 @@ export async function runBatch(
           if (config.enableMarketsV3 && config.enableMarketsV3 !== "off") {
             const v3Input = buildV3Input(job, state, allMarkets, config);
             const v3Result = v3Input ? analyzeFixtureMarketsV3(v3Input) : null;
+            // R10 cross-check (PR-6): mutate BEFORE the eligible slice and the
+            // v3Best derivation below so both see the corrected state.
+            if (v3Result && config.v3GoalsCrossCheck !== false && deps.goalsCrossCheck) {
+              applyGoalsCrossCheck(v3Result, deps.goalsCrossCheck, {
+                home: job.home,
+                away: job.away,
+                league: job.league,
+                kickoff: job.kickoff,
+              });
+            }
             if (config.enableMarketsV3 === "on" && v3Result?.evMarkets.length) {
               eligible = v3Result.evMarkets.slice(0, V3_ARBITER_CANDIDATE_LIMIT);
               usedV3 = true;

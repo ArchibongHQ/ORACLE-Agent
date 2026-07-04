@@ -5,6 +5,9 @@ export type {
   FixtureJob,
   FixtureJobError,
   FixtureJobSuccess,
+  GoalsCrossCheckFn,
+  V3AssessmentStat,
+  V3CrossCheckOutcome,
 } from "./batch/index.js";
 export { parseFixtureList, runBatch } from "./batch/index.js";
 export { runPool } from "./batch/pool.js";

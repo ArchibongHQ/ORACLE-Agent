@@ -3,6 +3,8 @@
 
 import type { Matrix } from "../../types.js";
 import type { DualSplit } from "../split.js";
+import type { V3CardsMeans } from "./cards.js";
+import type { V3CornersMeans } from "./corners.js";
 
 export interface V3EngineCtx {
   /** Full-time grid on the STATS split (§3.2) — result-class + totals (totals
@@ -42,6 +44,10 @@ export interface V3EngineCtx {
     ou35PctH?: number;
     ou35PctA?: number;
   };
+  /** §3.9 conditional modules (PR-6) — null is the explicit dormant state
+   *  (stats missing, or ORACLE_V3_CORNERS_CARDS=off withheld them upstream). */
+  corners: V3CornersMeans | null;
+  cards: V3CardsMeans | null;
 }
 
 export interface V3Price {

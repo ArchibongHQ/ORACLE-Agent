@@ -549,3 +549,222 @@ describe("batch/index.ts — v3Best/v3AssessmentStats projection (PR-5b)", () =>
     expect(success.v3AssessmentStats).toBeUndefined();
   });
 });
+
+describe("batch/index.ts — R10 goals cross-check (PR-6)", () => {
+  // biome-ignore lint/suspicious/noExplicitAny: test-only synthetic assessment
+  function goalsAssessment(over: Record<string, any> = {}): any {
+    return {
+      family: "goals_ou",
+      marketId: "m1",
+      marketName: "Goals O/U",
+      outcomeId: "o1",
+      desc: "Over 2.5",
+      odds: 2.0,
+      mp: 0.6,
+      q: 0.5,
+      devigged: true,
+      rawEdge: 0.09,
+      penaltyPts: 0.01,
+      adjustedEdge: 0.08,
+      adjEvPct: 0.16,
+      cls: "M",
+      outcome: "done",
+      confidence: "high",
+      ...over,
+    };
+  }
+
+  function goalsEvMarket(desc: string, rankingScore: number, rawEdge: number): EVMarket {
+    return {
+      cat: "Goals O/U",
+      label: desc,
+      market: "Goals O/U",
+      side: desc,
+      family: "goals_ou",
+      mp: 0.6,
+      modelProb: 0.6,
+      ip: 0.5,
+      rawEdge,
+      ev: 0.05,
+      odds: 2.0,
+      stake: 0,
+      stakeAmt: 0,
+      rankingScore,
+      varianceMod: 1,
+    };
+  }
+
+  // biome-ignore lint/suspicious/noExplicitAny: test-only synthetic v3 result
+  function mockV3(assessments: any[], evMarkets: EVMarket[]): void {
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments,
+      capped: [],
+      evMarkets,
+      best: evMarkets[0] ?? null,
+    });
+  }
+
+  const crossCheckJob = () =>
+    makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+
+  it("drops the top goals pick and re-picks the next-best surviving market on disagree+!survives", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const top = goalsAssessment({ desc: "Over 2.5", adjustedEdge: 0.08, outcomeId: "o-top" });
+    const next = goalsAssessment({ desc: "Over 1.5", adjustedEdge: 0.05, outcomeId: "o-next" });
+    mockV3(
+      [top, next],
+      [goalsEvMarket("Over 2.5", 0.08, 0.09), goalsEvMarket("Over 1.5", 0.05, 0.06)]
+    );
+    const hook = vi.fn().mockReturnValue({
+      verdict: "disagree",
+      survives: false,
+      assessment: { ...top, outcome: "below_gate", adjustedEdge: 0.06, confidence: null },
+      annotation: "dropped",
+    });
+
+    const result = await runBatch([crossCheckJob()], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+      goalsCrossCheck: hook,
+    });
+
+    // Hook saw the top goals-family candidate (highest adjustedEdge), by label+odds.
+    expect(hook).toHaveBeenCalledTimes(1);
+    expect(hook.mock.calls[0]![1]).toBe("Over 2.5");
+    expect(hook.mock.calls[0]![2]).toBe(2.0);
+    const success = result.jobs[0] as FixtureJobSuccess;
+    // Over 2.5 removed from eligible; the already-ranked Over 1.5 takes its place.
+    expect(success.eligibleBets?.some((m) => m.label === "Over 2.5")).toBe(false);
+    expect(success.eligibleBets?.[0]?.label).toBe("Over 1.5");
+    // v3Best (derived from done assessments) is now Over 1.5, since the dropped
+    // pick's assessment outcome was rewritten to below_gate.
+    expect(success.v3Best?.desc).toBe("Over 1.5");
+  });
+
+  it("downgrades in place (edge + ranking) on disagree+survives, keeping the pick", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const top = goalsAssessment({ desc: "Over 2.5", adjustedEdge: 0.08 });
+    mockV3([top], [goalsEvMarket("Over 2.5", 0.08, 0.09)]);
+    const hook = vi.fn().mockReturnValue({
+      verdict: "disagree",
+      survives: true,
+      assessment: { ...top, adjustedEdge: 0.06, rawEdge: 0.07, penaltyPts: 0.03 },
+      annotation: "downgraded",
+    });
+
+    const result = await runBatch([crossCheckJob()], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+      goalsCrossCheck: hook,
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.eligibleBets?.[0]?.label).toBe("Over 2.5"); // survives, still eligible
+    expect(success.v3Best?.desc).toBe("Over 2.5");
+    expect(success.v3Best?.adjustedEdge).toBeCloseTo(0.06); // downgraded edge, not 0.08
+  });
+
+  it("leaves the pick untouched on agree", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const top = goalsAssessment({ desc: "Over 2.5", adjustedEdge: 0.08 });
+    mockV3([top], [goalsEvMarket("Over 2.5", 0.08, 0.09)]);
+    const hook = vi.fn().mockReturnValue({
+      verdict: "agree",
+      survives: true,
+      assessment: top,
+      annotation: "goals-verified",
+    });
+
+    const result = await runBatch([crossCheckJob()], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+      goalsCrossCheck: hook,
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Best?.adjustedEdge).toBeCloseTo(0.08); // unchanged
+    expect(success.eligibleBets?.[0]?.label).toBe("Over 2.5");
+  });
+
+  it("leaves the pick untouched when the hook returns null (no independent opinion)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const top = goalsAssessment({ desc: "Over 2.5", adjustedEdge: 0.08 });
+    mockV3([top], [goalsEvMarket("Over 2.5", 0.08, 0.09)]);
+    const hook = vi.fn().mockReturnValue(null);
+
+    const result = await runBatch([crossCheckJob()], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+      goalsCrossCheck: hook,
+    });
+
+    expect(hook).toHaveBeenCalledTimes(1);
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Best?.adjustedEdge).toBeCloseTo(0.08);
+  });
+
+  it("skips the cross-check entirely when ORACLE_V3_GOALS_CROSSCHECK is off (v3GoalsCrossCheck=false)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const top = goalsAssessment({ desc: "Over 2.5", adjustedEdge: 0.08 });
+    mockV3([top], [goalsEvMarket("Over 2.5", 0.08, 0.09)]);
+    const hook = vi.fn();
+
+    await runBatch([crossCheckJob()], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3GoalsCrossCheck: false },
+      goalsCrossCheck: hook,
+    });
+
+    expect(hook).not.toHaveBeenCalled();
+  });
+
+  it("never fires for a non-goals-family top pick (double_chance)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const dc = goalsAssessment({
+      family: "double_chance",
+      marketName: "Double Chance",
+      desc: "Home or Draw",
+      odds: 1.25,
+      adjustedEdge: 0.08,
+    });
+    mockV3(
+      [dc],
+      [
+        {
+          cat: "Double Chance",
+          label: "Home or Draw",
+          market: "Double Chance",
+          side: "Home or Draw",
+          family: "double_chance",
+          mp: 0.82,
+          modelProb: 0.82,
+          ip: 0.76,
+          rawEdge: 0.06,
+          ev: 0.08,
+          odds: 1.25,
+          stake: 0,
+          stakeAmt: 0,
+          rankingScore: 0.08,
+          varianceMod: 1,
+        },
+      ]
+    );
+    const hook = vi.fn();
+
+    await runBatch([crossCheckJob()], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+      goalsCrossCheck: hook,
+    });
+
+    expect(hook).not.toHaveBeenCalled();
+  });
+});

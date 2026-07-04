@@ -17,7 +17,15 @@
 import { familyOf, type MarketFamily } from "../markets/index.js";
 import type { AllMarketEntry } from "../types.js";
 
-export type V3Engine = "totals" | "result" | "shape" | "half" | "time" | "exotics";
+export type V3Engine =
+  | "totals"
+  | "result"
+  | "shape"
+  | "half"
+  | "time"
+  | "exotics"
+  | "corners"
+  | "cards";
 
 export interface V3Route {
   engine: V3Engine;
@@ -102,8 +110,27 @@ export function routeMarket(entry: AllMarketEntry): V3Routing {
 
   // Metric guards run before family routing — they trump the catalogue tag.
   if (PLAYER_RE.test(name)) return { skip: true, reason: "player-market" };
-  if (CORNERS_RE.test(name)) return { skip: true, reason: "corners-dormant" };
-  if (CARDS_RE.test(name)) return { skip: true, reason: "cards-dormant" };
+  // Corners/cards: only the plain match-total Over/Under shape (catalog ids
+  // 166/139) is priceable via the §3.9 NB/Poisson modules — everything else
+  // under these groups (1X2, handicap, range buckets, Xth corner/booking, all
+  // 1st-half variants) has no parseable "Over X.5" line and stays dormant. The
+  // catalog tags these "specials" (a forced-X family); assign the dedicated
+  // "corners"/"cards" family here so they class by odds band like a normal
+  // single-event market instead.
+  if (CORNERS_RE.test(name)) {
+    const total = num(spec.get("total"));
+    if (!HALF_RE.test(name) && name.includes("over/under") && total !== undefined) {
+      return { engine: "corners", family: "corners", total };
+    }
+    return { skip: true, reason: "corners-dormant" };
+  }
+  if (CARDS_RE.test(name)) {
+    const total = num(spec.get("total"));
+    if (!HALF_RE.test(name) && name.includes("over/under") && total !== undefined) {
+      return { engine: "cards", family: "cards", total };
+    }
+    return { skip: true, reason: "cards-dormant" };
+  }
   if (OTHER_METRIC_RE.test(name)) return { skip: true, reason: "non-goal-metric" };
   if (SETTLEMENT_RE.test(name)) return { skip: true, reason: "settlement-variant" };
 
@@ -217,6 +244,8 @@ export function routeCoverage(entries: AllMarketEntry[]): RouteCoverage {
     half: 0,
     time: 0,
     exotics: 0,
+    corners: 0,
+    cards: 0,
   };
   const skipped: Record<V3Skip["reason"], number> = {
     "player-market": 0,
