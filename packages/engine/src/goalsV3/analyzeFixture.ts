@@ -38,6 +38,18 @@ export interface V3FixtureOdds {
   away1x2?: number | null;
 }
 
+/** v4 §0.3 per-selection hit-rate availability (PR-4) — structurally matches
+ *  runtime's `V3LineHitRates` (deriveLineHitRates), not imported directly since
+ *  the engine package never depends on runtime. Undefined entries mean
+ *  "unknown for this line" — the candidate falls back to the fixture-wide
+ *  `penaltyFlags.hitRateMissing`. */
+export interface V3LineHitRates {
+  over15?: boolean;
+  over25?: boolean;
+  over35?: boolean;
+  btts?: boolean;
+}
+
 export interface V3AnalyzeInput {
   fixtureId: string;
   runId: string;
@@ -64,6 +76,9 @@ export interface V3AnalyzeInput {
   venueSplitUsed?: boolean;
   /** v4 heightened gates: 8pt pass floor under HFA/hit-rate uncertainty (PR-3). */
   heightened?: boolean;
+  /** v4 §0.3 per-selection hit-rates (PR-4) — overrides `penaltyFlags.hitRateMissing`
+   *  per candidate line when the matching entry is defined. */
+  lineHitRates?: V3LineHitRates;
 }
 
 /** One market's full v3 assessment — kept for every priced market including
@@ -113,6 +128,15 @@ export function v3NbDispersion(r: number | undefined): number | undefined {
 const GOALS_OU_LABEL = FAMILY_LABEL.goals_ou;
 const TEAM_TOTAL_LABEL = FAMILY_LABEL.team_total;
 const BTTS_LABEL = FAMILY_LABEL.btts;
+
+/** v4 §0.3 (PR-4): maps a candidate's label to its `V3LineHitRates` key. Team
+ *  Total 0.5 lines are deliberately absent — they have their own FTS%/CS%
+ *  sample-scaled empirical weighting (PR-3), not an O/U hit-rate concept. */
+const LINE_HIT_RATE_KEY: Record<string, keyof V3LineHitRates> = {
+  "Over 1.5": "over15",
+  "Over 2.5": "over25",
+  "BTTS Yes": "btts",
+};
 
 function round3(v: number): number {
   return Math.round(v * 1000) / 1000;
@@ -229,12 +253,21 @@ export function analyzeGoalsFixtureV3(input: V3AnalyzeInput): V3FixtureResult | 
   for (const c of candidates) {
     const q = devigOU(c.odds, c.oppositeOdds);
     if (!q) continue;
-    const gate = gateV3Edge(c.mp, q, input.penaltyFlags, {
+    // v4 §0.3 (PR-4): a defined per-line entry overrides the fixture-wide
+    // hitRateMissing flag for THIS candidate only — a fixture missing its O1.5
+    // hit-rate but not its O2.5 one shouldn't penalize the O2.5 pick.
+    const lineKey = LINE_HIT_RATE_KEY[c.label];
+    const lineHasRate = lineKey ? input.lineHitRates?.[lineKey] : undefined;
+    const flags: V3PenaltyFlags =
+      lineHasRate === undefined
+        ? input.penaltyFlags
+        : { ...input.penaltyFlags, hitRateMissing: !lineHasRate };
+    const gate = gateV3Edge(c.mp, q, flags, {
       edgeCap: input.edgeCap,
       noiseGate: input.noiseGate,
       heightened: input.heightened,
     });
-    const rationale = buildRationale(c.label, gate, c.mp, input.penaltyFlags, input.sources);
+    const rationale = buildRationale(c.label, gate, c.mp, flags, input.sources);
     const assessment: V3MarketAssessment = {
       ...gate,
       cat: c.cat,

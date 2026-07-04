@@ -33,6 +33,14 @@ export interface V3EngineCtx {
      *  weight (PR-3). */
     nH?: number;
     nA?: number;
+    /** Season O/U hit-rates (0..1), venue split — feeds the totals engine's
+     *  per-line marketStatMissing flag (PR-4), not blended into pricing. */
+    ou15PctH?: number;
+    ou15PctA?: number;
+    ou25PctH?: number;
+    ou25PctA?: number;
+    ou35PctH?: number;
+    ou35PctA?: number;
   };
 }
 

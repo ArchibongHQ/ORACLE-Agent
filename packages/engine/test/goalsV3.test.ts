@@ -393,4 +393,38 @@ describe("analyzeGoalsFixtureV3 (full pipeline)", () => {
     const heightenedDone = heightened!.assessments.filter((a) => a.outcome === "done").length;
     expect(heightenedDone).toBeLessThanOrEqual(normalDone);
   });
+
+  describe("lineHitRates (v4 §0.3 per-selection completeness, PR-4)", () => {
+    it("applies hitRateMissing to only the candidate whose line lacks a hit-rate", () => {
+      const result = analyzeGoalsFixtureV3(
+        baseInput({ lineHitRates: { over15: false, over25: true } })
+      );
+      expect(result).not.toBeNull();
+      const over15 = result!.assessments.find((a) => a.label === "Over 1.5");
+      const over25 = result!.assessments.find((a) => a.label === "Over 2.5");
+      expect(over15).toBeDefined();
+      expect(over25).toBeDefined();
+      expect(over15!.penaltyPts).toBeCloseTo(0.01, 5);
+      expect(over25!.penaltyPts).toBeCloseTo(0, 5);
+    });
+
+    it("falls back to the fixture-wide hitRateMissing flag when a line has no entry", () => {
+      const withFixtureWide = analyzeGoalsFixtureV3(
+        baseInput({ penaltyFlags: { hitRateMissing: true }, lineHitRates: { over15: false } })
+      );
+      expect(withFixtureWide).not.toBeNull();
+      // Over 1.5 has an explicit per-line entry (false ⇒ missing) — same result either way here,
+      // but Home/Away Total and BTTS have NO lineHitRates entry, so they inherit the fixture-wide flag.
+      const homeTotal = withFixtureWide!.assessments.find((a) => a.label === "Home Total Over 0.5");
+      expect(homeTotal!.penaltyPts).toBeCloseTo(0.01, 5);
+    });
+
+    it("omitting lineHitRates entirely behaves exactly as before PR-4 (fixture-wide flag applies uniformly)", () => {
+      const result = analyzeGoalsFixtureV3(baseInput({ penaltyFlags: { hitRateMissing: true } }));
+      expect(result).not.toBeNull();
+      for (const a of result!.assessments) {
+        expect(a.penaltyPts).toBeCloseTo(0.01, 5);
+      }
+    });
+  });
 });

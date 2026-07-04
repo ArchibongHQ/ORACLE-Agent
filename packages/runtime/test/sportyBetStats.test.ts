@@ -405,33 +405,45 @@ describe("buildStatsOverride — all-markets v3 additions", () => {
     });
   });
 
-  it("skips the season-corners fallback and cards/O2.5 when the sample gate fails", () => {
+  it("skips the season-corners fallback and cards/O1.5/O2.5/O3.5 when the sample gate fails", () => {
     const d = detail({
       standings: { home: { played: 2 }, away: { played: 2 } },
       possessionValue: { home: { corners_avg: 4.9 }, away: { corners_avg: 4.1 } },
       disciplinary: { home: { yellow_avg: 2.1, red_avg: 0.1 } },
-      overunder: { home: { over25_pct: 0.7 }, away: { over25_pct: 0.6 } },
+      overunder: {
+        home: { over15_pct: 0.85, over25_pct: 0.7, over35_pct: 0.3 },
+        away: { over15_pct: 0.8, over25_pct: 0.6, over35_pct: 0.25 },
+      },
     });
     const override = buildStatsOverride(d);
     expect(override?.cornersForH).toBeUndefined();
     expect(override?.cardsAvgH).toBeUndefined();
+    expect(override?.ouO15H).toBeUndefined();
     expect(override?.ouO25H).toBeUndefined();
+    expect(override?.ouO35H).toBeUndefined();
   });
 
-  it("sums yellow+red into cardsAvg and types O2.5 hit-rates under the sample gate", () => {
+  it("sums yellow+red into cardsAvg and types O1.5/O2.5/O3.5 hit-rates under the sample gate (PR-4)", () => {
     const d = detail({
       standings: { home: { played: 10 }, away: { played: 10 } },
       disciplinary: {
         home: { yellow_avg: 2.1, red_avg: 0.1 },
         away: { yellow_avg: 1.8 }, // no red figure → yellow only
       },
-      overunder: { home: { over25_pct: 0.7 }, away: { over25_pct: 0.55 } },
+      overunder: {
+        home: { over15_pct: 0.85, over25_pct: 0.7, over35_pct: 0.3 },
+        away: { over15_pct: 0.8, over25_pct: 0.55, over35_pct: 0.25 },
+      },
     });
     expect(buildStatsOverride(d)).toMatchObject({
       cardsAvgH: expect.closeTo(2.2, 5),
       cardsAvgA: 1.8,
+      ouO15H: 0.85,
+      ouO15A: 0.8,
       ouO25H: 0.7,
       ouO25A: 0.55,
+      ouO35H: 0.3,
+      ouO35A: 0.25,
     });
   });
 });

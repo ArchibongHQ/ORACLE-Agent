@@ -55,9 +55,11 @@ export {
 export type {
   V3Completeness,
   V3EnrichmentState,
+  V3LineHitRates,
   V3MandatoryField,
 } from "./goalsV3/completeness.js";
 export {
+  deriveLineHitRates,
   heightenedTrendsAligned,
   scoreCompleteness,
   V3_COMPLETENESS_WEIGHTS,

@@ -165,10 +165,15 @@ export interface StatsOverride {
   /** Total cards per game (yellow + red), venue split (teamdisciplinary). §3.9. */
   cardsAvgH?: number;
   cardsAvgA?: number;
-  /** Season Over 2.5 hit-rate (0..1), both venues (stats_season_overunder) —
-   *  §2 prioritisation + §1.2 heightened trend checks. */
+  /** Season O/U hit-rates (0..1), both venues (stats_season_overunder) — §2
+   *  prioritisation + §1.2 heightened trend checks; ou25 also feeds the v4
+   *  all-markets totals engine's per-line marketStatMissing flag (PR-4). */
+  ouO15H?: number;
+  ouO15A?: number;
   ouO25H?: number;
   ouO25A?: number;
+  ouO35H?: number;
+  ouO35A?: number;
   // ── §3.1 raw multiplicative-λ inputs (ungated by MIN_PLAYED_FOR_OVERRIDE —
   // v3 runs its own shrinkage from these, separate from xH/xA above).
   scoredPer90H?: number;
@@ -488,10 +493,20 @@ export function buildStatsOverride(
     if (cardsH !== undefined) override.cardsAvgH = cardsH;
     if (cardsA !== undefined) override.cardsAvgA = cardsA;
 
+    const o15H = stats.overunder?.home?.over15_pct;
+    const o15A = stats.overunder?.away?.over15_pct;
+    if (finiteOrZero(o15H)) override.ouO15H = o15H;
+    if (finiteOrZero(o15A)) override.ouO15A = o15A;
+
     const o25H = stats.overunder?.home?.over25_pct;
     const o25A = stats.overunder?.away?.over25_pct;
     if (finiteOrZero(o25H)) override.ouO25H = o25H;
     if (finiteOrZero(o25A)) override.ouO25A = o25A;
+
+    const o35H = stats.overunder?.home?.over35_pct;
+    const o35A = stats.overunder?.away?.over35_pct;
+    if (finiteOrZero(o35H)) override.ouO35H = o35H;
+    if (finiteOrZero(o35A)) override.ouO35A = o35A;
   }
 
   return Object.keys(override).length > 0 ? override : null;

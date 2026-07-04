@@ -12,7 +12,7 @@ vi.mock("@oracle/llm", () => ({
 const { callClaudeCode } = await import("@oracle/llm");
 
 const { classifyEligibility } = await import("../src/goalsV3/eligibility.js");
-const { scoreCompleteness } = await import("../src/goalsV3/completeness.js");
+const { deriveLineHitRates, scoreCompleteness } = await import("../src/goalsV3/completeness.js");
 const { scorePredictabilityV3 } = await import("../src/goalsV3/predictability.js");
 const { reviewGoalsSlate, applySlateVerdicts, slateLegKey } = await import(
   "../src/goalsV3/slateArbiter.js"
@@ -109,10 +109,32 @@ describe("scoreCompleteness (§0.3)", () => {
       // no stats block at all — form/scored/conceded/hitRate all missing
     };
     const c = scoreCompleteness(detail);
-    expect(c.mandatoryMissing).toEqual(
-      expect.arrayContaining(["form", "scored", "conceded", "hitRate"])
-    );
+    // v4 default: hitRate is demoted out of the mandatory set (PR-4) — only
+    // form/scored/conceded (the true v4 mandatory block) trigger the discard list.
+    expect(c.mandatoryMissing).toEqual(expect.arrayContaining(["form", "scored", "conceded"]));
+    expect(c.mandatoryMissing).not.toContain("hitRate");
     expect(c.score).toBeLessThan(70);
+  });
+
+  it("v4 (PR-4): a mandatory-only fixture (odds/form/scored/conceded, no hitRate) scores 60 and is discarded by the score floor, not by mandatoryMissing", () => {
+    const detail: SportyBetEventDetail = {
+      ...event().detail,
+      stats: { ...event().detail!.stats, overunder: undefined },
+    } as SportyBetEventDetail;
+    const c = scoreCompleteness(detail);
+    expect(c.mandatoryMissing).toEqual([]);
+    expect(c.score).toBe(60);
+    expect(c.penaltyFlags.hitRateMissing).toBe(true);
+  });
+
+  it("rollback flag: completenessV4=false restores hitRate to the mandatory (discard) set", () => {
+    const detail: SportyBetEventDetail = {
+      ...event().detail,
+      stats: { ...event().detail!.stats, overunder: undefined },
+    } as SportyBetEventDetail;
+    const c = scoreCompleteness(detail, { completenessV4: false });
+    expect(c.mandatoryMissing).toEqual(["hitRate"]);
+    expect(c.score).toBe(60);
   });
 
   it("adds optional-tier points for xG, H2H, lineups, rest on top of the 70 base", () => {
@@ -144,6 +166,36 @@ describe("scoreCompleteness (§0.3)", () => {
   it("flags xgMissing when no xG block is present at all", () => {
     const c = scoreCompleteness(event().detail);
     expect(c.penaltyFlags.xgMissing).toBe(true);
+  });
+});
+
+describe("deriveLineHitRates (§0.3 per-selection, PR-4)", () => {
+  it("reports each line's hit-rate availability independently", () => {
+    const detail: SportyBetEventDetail = {
+      ...event().detail,
+      stats: {
+        ...event().detail!.stats,
+        overunder: {
+          home: { over15_pct: 0.8, over25_pct: 0.55 },
+          away: { over15_pct: 0.75 }, // over25_pct missing on the away side only
+        },
+        scoringConceding: {
+          home: { btts_rate: 0.5 },
+          away: { btts_rate: 0.4 },
+        },
+      },
+    } as SportyBetEventDetail;
+    const rates = deriveLineHitRates(detail);
+    expect(rates.over15).toBe(true);
+    expect(rates.over25).toBe(false); // one side missing ⇒ not available
+    expect(rates.over35).toBe(false); // neither side has it
+    expect(rates.btts).toBe(true);
+  });
+
+  it("returns all-false when no overunder/scoringConceding stats exist", () => {
+    const detail: SportyBetEventDetail = { eventId: "x" };
+    const rates = deriveLineHitRates(detail);
+    expect(rates).toEqual({ over15: false, over25: false, over35: false, btts: false });
   });
 });
 

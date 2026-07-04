@@ -247,6 +247,11 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // v4 gate deltas: heightened EV bars, exact-goals/multigoals routing, sanity checks.
     // ORACLE_V3_GATES_V4=off to restore v3 semantics (default on).
     v3GatesV4: env.ORACLE_V3_GATES_V4?.toLowerCase() !== "off",
+    // v4 completeness: demotes O/U hit-rate out of the mandatory block (critical-tier
+    // penalty instead of discard) + per-selection line hit-rates. Increases live pick
+    // volume — ORACLE_V3_COMPLETENESS_V4=off restores hit-rate to the mandatory set
+    // (default on).
+    v3CompletenessV4: env.ORACLE_V3_COMPLETENESS_V4?.toLowerCase() !== "off",
   };
 }
 

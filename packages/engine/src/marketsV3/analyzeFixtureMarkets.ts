@@ -49,6 +49,15 @@ export interface V3EmpiricalInputs {
    *  empirical blend (PR-3). */
   nH?: number;
   nA?: number;
+  /** Season O/U hit-rates (0..1), venue split — feeds the totals engine's
+   *  per-line marketStatMissing flag (PR-4). Not blended into totals pricing
+   *  (totals stay model-only per §3.3), only a data-quality flag. */
+  ou15PctH?: number;
+  ou15PctA?: number;
+  ou25PctH?: number;
+  ou25PctA?: number;
+  ou35PctH?: number;
+  ou35PctA?: number;
 }
 
 export interface V3AllMarketsInput {

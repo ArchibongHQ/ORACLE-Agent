@@ -89,6 +89,12 @@ function buildV3Input(
       ftsPctA: t.ftsPctA,
       nH: t.formNH,
       nA: t.formNA,
+      ou15PctH: t.ouO15H,
+      ou15PctA: t.ouO15A,
+      ou25PctH: t.ouO25H,
+      ou25PctA: t.ouO25A,
+      ou35PctH: t.ouO35H,
+      ou35PctA: t.ouO35A,
     },
     penaltyFlags: {
       xgMissing: t.xgMode == null,
