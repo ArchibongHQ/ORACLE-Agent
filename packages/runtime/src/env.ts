@@ -237,6 +237,13 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // legacy on any v3 error/null. Set ORACLE_MARKETS_V3=off to roll back, or
     // =shadow to run v3 alongside legacy without acting on its output.
     enableMarketsV3: parseMarketsV3Mode(env.ORACLE_MARKETS_V3),
+    // v4 HFA multiplier (§3.1a) — defaults 1.10 (10% home advantage). Set
+    // ORACLE_V3_HFA=1.0 to disable during cold deploy.
+    v3Hfa: env.ORACLE_V3_HFA ? Number(env.ORACLE_V3_HFA) : 1.1,
+    // Venue-split data provenance flag — when true, input λ already incorporates
+    // field advantage via true home/away splits (suppress HFA multiplier).
+    // ORACLE_V3_VENUE_SPLIT=on to enable (default off = team-overall stats).
+    v3VenueSplitUsed: env.ORACLE_V3_VENUE_SPLIT?.toLowerCase() === "on",
   };
 }
 

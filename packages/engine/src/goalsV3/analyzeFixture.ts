@@ -58,6 +58,10 @@ export interface V3AnalyzeInput {
   xgBlend?: boolean;
   edgeCap?: number;
   noiseGate?: number;
+  /** v3 HFA multiplier (§3.1a). Default 1.10 (10% home advantage). */
+  hfa?: number;
+  /** True when λ input uses venue-split data (suppress HFA multiplier). */
+  venueSplitUsed?: boolean;
 }
 
 /** One market's full v3 assessment — kept for every priced market including
@@ -149,7 +153,11 @@ interface Candidate {
  *  when no λ model can be built (should not happen behind the completeness
  *  gate, which requires season averages). */
 export function analyzeGoalsFixtureV3(input: V3AnalyzeInput): V3FixtureResult | null {
-  const lambdas = computeV3Lambdas(input.lambdaInput, { xgBlend: input.xgBlend });
+  const lambdas = computeV3Lambdas(input.lambdaInput, {
+    xgBlend: input.xgBlend,
+    hfa: input.hfa,
+    venueSplitUsed: input.venueSplitUsed,
+  });
   if (!lambdas) return null;
 
   const rho = getLeagueParams(input.league).baseRho;
