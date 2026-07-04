@@ -77,3 +77,21 @@ The engine went live immediately (owner decision — no shadow-mode gate before 
 4. If v3 underperforms legacy on any class, the fastest safe lever is `ORACLE_MARKETS_V3=shadow` (keeps v3 running for continued data collection without affecting live picks) rather than a full rollback.
 
 This is a recommendation, not something this session could execute — it requires real elapsed time and resolved match outcomes that don't exist yet.
+
+## v4 deltas (planned)
+
+The v3 engine above already implements ~80% of the v4 specs (`docs/prompts/goals-market-analysis-prompt-v4.md`, `docs/prompts/all-markets-analysis-prompt-v4.md`; root-cause audit in `docs/prompts/v4-audit-report.md`). Headline finding: **no home-field-advantage (HFA) term in the core λ engine**, producing a systematic Under-skew (83/17 Under/Over among >5pt signals) and, via the dual-split rule, underrating home favourites across the DNB/DC/handicap "insurance mandate" markets. Tracked as a 9-PR stacked train (PR-1 through PR-8, PR-7 parallel); each row below flips from "planned" to "shipped" as its PR lands.
+
+| PR | Delta vs current v3 | Status |
+|---|---|---|
+| PR-1 | Docs: v4 specs + audit report copied in; PR #14 / `fix/llm-arbiter-full-market-decisioning` audited and closed (no cherry-pick — collides with PR-7) | shipped |
+| PR-2 | HFA term in `lambda.ts` (`ORACLE_V3_HFA`, default 1.10) + venue-split provenance (`ORACLE_V3_VENUE_SPLIT`) + expanded league baselines + worked-example parity tests | planned |
+| PR-3 | Heightened EV bars for §1.3 youth/friendly fixtures, S/M-only mini-ACCA (excludes L/X), exact-goals/multigoals pricing, sample-scaled empirical blend, new `sanity.ts` slate sanity-check module | planned |
+| PR-4 | Completeness v4 — hit-rate demoted mandatory→critical, per-selection line hit-rates (not just per-fixture) | planned |
+| PR-5a | Slate-level fixture pre-filter (`pipeline.ts`) wired into `runDailyBatch` (`ORACLE_MARKETS_V3_GATE`) — closes Known Gap 1 above | planned |
+| PR-5b | Outputs A–D + Phase 8 status lines wired into delivery (`ORACLE_MARKETS_V3_OUTPUTS`) + slate sanity checks in final summary — closes Known Gap 2 above | planned |
+| PR-6 | R10 goals cross-check (`goalsCrossCheck.ts`) wired live (`ORACLE_V3_GOALS_CROSSCHECK`) + corners/cards routed instead of dormant-skipped (`ORACLE_V3_CORNERS_CARDS`) — closes Known Gaps 3 and 4 above | planned |
+| PR-7 | Revive dead calibration feedback loop — `resolveDay` → ledger → `calibFactor`/isotonic activation + accuracy metrics (hit-rate/Brier/ECE/CLV) (`ORACLE_CALIBRATION_LEDGER=off\|shadow\|on`, default shadow). Independent lane, any time after PR-1. | planned |
+| PR-8 | LLM demote/gate posture A — skip draft cascade when v3 supplies candidates, arbiter respects top-N cap (today runs for every fixture) — plus news/data gap closes and final doc pass | planned |
+
+Full plan, decision log, and worked-example test additions: see the approved eng-review plan (owner-held; not checked into this repo). Rollback flags for each PR are additive — `ORACLE_MARKETS_V3=off` still restores pre-v3 behavior wholesale, as it does today.
