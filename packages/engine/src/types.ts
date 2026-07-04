@@ -243,6 +243,10 @@ export interface OracleConfig {
   // exact-goals/multigoals routing + odds-band classing, sample-scaled empirical blend,
   // sanity checks. Default true. Set ORACLE_V3_GATES_V4=off to restore v3 semantics.
   v3GatesV4?: boolean;
+  // v4 completeness: O/U hit-rate demoted from mandatory to critical-tier penalty +
+  // per-selection line hit-rates. Default true. Set ORACLE_V3_COMPLETENESS_V4=off to
+  // restore hit-rate to the mandatory (discard-on-missing) set.
+  v3CompletenessV4?: boolean;
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
@@ -298,9 +302,15 @@ export interface RunState {
     /** §3.9 cards module (Poisson) inputs: total cards per game. */
     cardsAvgH?: number;
     cardsAvgA?: number;
-    /** §2 prioritisation / §1.2 heightened-trend inputs: season O2.5 hit-rate. */
+    /** §2 prioritisation / §1.2 heightened-trend inputs: season O/U hit-rates,
+     *  venue split (stats_season_overunder). ou25 also feeds the totals engine's
+     *  per-line marketStatMissing flag (PR-4). */
+    ouO15H?: number;
+    ouO15A?: number;
     ouO25H?: number;
     ouO25A?: number;
+    ouO35H?: number;
+    ouO35A?: number;
     softContext?: SoftContextItem[];
     /** Raw structured per-category stats passthrough (see DecisionContext.rawStatsBlock) —
      *  same loose-passthrough convention as rawOddsPayload. */

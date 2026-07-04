@@ -48,3 +48,21 @@ describe("buildConfig enableMarketsV3", () => {
     expect(buildConfig({ ORACLE_MARKETS_V3: "OFF" }).enableMarketsV3).toBe("off");
   });
 });
+
+describe("buildConfig v3CompletenessV4", () => {
+  it("defaults to true (v4 completeness — hit-rate demoted from mandatory)", () => {
+    expect(buildConfig({}).v3CompletenessV4).toBe(true);
+  });
+
+  it("respects ORACLE_V3_COMPLETENESS_V4=off as an explicit rollback to v3 semantics", () => {
+    expect(buildConfig({ ORACLE_V3_COMPLETENESS_V4: "off" }).v3CompletenessV4).toBe(false);
+  });
+
+  it("is case-insensitive", () => {
+    expect(buildConfig({ ORACLE_V3_COMPLETENESS_V4: "OFF" }).v3CompletenessV4).toBe(false);
+  });
+
+  it("treats any other value as on (fail-open toward the new default)", () => {
+    expect(buildConfig({ ORACLE_V3_COMPLETENESS_V4: "banana" }).v3CompletenessV4).toBe(true);
+  });
+});

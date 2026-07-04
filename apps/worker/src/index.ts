@@ -36,6 +36,7 @@ import {
   buildConfig,
   buildGoalsV3Config,
   classifyEligibility,
+  deriveLineHitRates,
   enrichWithH2H,
   enrichWithLineups,
   enrichWithNewsIntel,
@@ -1329,7 +1330,11 @@ async function runGoalsBatchV3(
     const lineupsAvailable = (job.state?.telemetry?.softContext ?? []).some(
       (item) => item.kind === "lineup"
     );
-    const completeness = scoreCompleteness(detail, { h2hEnriched, lineupsAvailable });
+    const completeness = scoreCompleteness(detail, {
+      h2hEnriched,
+      lineupsAvailable,
+      completenessV4: config.v3CompletenessV4,
+    });
     const elig = eligByKey.get(sidecarKey(event.home, event.away));
     const minScore =
       elig?.status === "heightened" ? goalsV3Config.heightenedMin : goalsV3Config.completenessMin;
@@ -1404,6 +1409,7 @@ async function runGoalsBatchV3(
       edgeCap: goalsV3Config.edgeCap,
       noiseGate: goalsV3Config.noiseGate,
       heightened: config.v3GatesV4 !== false,
+      lineHitRates: deriveLineHitRates(detail),
     };
     const result = analyzeGoalsFixtureV3(input);
     if (!result) {

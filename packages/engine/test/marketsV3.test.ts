@@ -16,10 +16,13 @@ import {
   goalsSlateSanityChecks,
   impliedQ,
   minuteShare,
+  parseOUDesc,
   poissonPMF,
   priceExoticsOutcome,
+  priceOU,
   priceShapeOutcome,
   priceTimeWindow,
+  priceTotalsOutcome,
   resultProbs,
   routeCoverage,
   routeMarket,
@@ -804,5 +807,71 @@ describe("analyzeFixtureMarketsV3 (orchestrator)", () => {
     for (const a of heightened!.assessments) {
       if (a.outcome === "done") expect(a.cls).not.toBe("X");
     }
+  });
+});
+
+// ── totals engine — per-line marketStatMissing flag (PR-4 §0.3) ────────────
+
+describe("priceOU / priceTotalsOutcome — per-line O/U hit-rate flag (PR-4)", () => {
+  const totalsCtx = (empirical: V3EngineCtx["empirical"]): V3EngineCtx => {
+    const grid = buildV3Grid(1.5, 1.2, 0.08);
+    const half = buildV3HalfGrid(0.75, 0.6);
+    return {
+      statsGrid: grid,
+      shapeGrid: grid,
+      mu: 2.7,
+      split: {} as V3EngineCtx["split"],
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      halfStats: [half, half],
+      halfShape: [half, half],
+      empirical,
+    };
+  };
+
+  it("flags marketStatMissing on a tracked line (2.5) when the hit-rate is absent", () => {
+    const ctx = totalsCtx({});
+    const price = priceOU(ctx, parseOUDesc("over 2.5")!);
+    expect(price.marketStatMissing).toBe(true);
+  });
+
+  it("does not flag a tracked line when both sides' hit-rates are present", () => {
+    const ctx = totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55 });
+    const price = priceOU(ctx, parseOUDesc("over 2.5")!);
+    expect(price.marketStatMissing).toBe(false);
+  });
+
+  it("still flags missing when only one side's hit-rate is present", () => {
+    const ctx = totalsCtx({ ou25PctH: 0.6 });
+    const price = priceOU(ctx, parseOUDesc("over 2.5")!);
+    expect(price.marketStatMissing).toBe(true);
+  });
+
+  it("never flags an untracked line (e.g. 0.5) — it never had this stat to begin with", () => {
+    const ctx = totalsCtx({});
+    const price = priceOU(ctx, parseOUDesc("over 0.5")!);
+    expect(price.marketStatMissing).toBe(false);
+  });
+
+  it("checks each of 1.5/2.5/3.5 against its own matching pair independently", () => {
+    const ctx = totalsCtx({ ou15PctH: 0.8, ou15PctA: 0.75, ou35PctH: 0.3, ou35PctA: 0.25 });
+    expect(priceOU(ctx, parseOUDesc("over 1.5")!).marketStatMissing).toBe(false);
+    expect(priceOU(ctx, parseOUDesc("over 2.5")!).marketStatMissing).toBe(true); // no ou25 entry
+    expect(priceOU(ctx, parseOUDesc("over 3.5")!).marketStatMissing).toBe(false);
+  });
+
+  it("wires the flag through priceTotalsOutcome (the routed entry point)", () => {
+    const ctx = totalsCtx({});
+    const price = priceTotalsOutcome(ctx, { engine: "totals", family: "goals_ou" }, "Over 2.5");
+    expect(price?.marketStatMissing).toBe(true);
+  });
+
+  it("totals pricing itself is unaffected by hit-rate presence (model-only, not blended)", () => {
+    const withRate = priceOU(
+      totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55 }),
+      parseOUDesc("over 2.5")!
+    );
+    const withoutRate = priceOU(totalsCtx({}), parseOUDesc("over 2.5")!);
+    expect(withRate.p).toBeCloseTo(withoutRate.p, 10);
   });
 });

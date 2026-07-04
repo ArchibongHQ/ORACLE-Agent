@@ -48,6 +48,7 @@ export type {
   V3EVMarket,
   V3FixtureOdds,
   V3FixtureResult,
+  V3LineHitRates,
   V3MarketAssessment,
   V3MarketMeta,
 } from "./goalsV3/analyzeFixture.js";
@@ -121,6 +122,8 @@ export { priceExoticsOutcome } from "./marketsV3/engines/exotics.js";
 export { V3_FIRST_HALF_SHARE_DEFAULT } from "./marketsV3/engines/half.js";
 export { priceShapeOutcome } from "./marketsV3/engines/shape.js";
 export { minuteShare, priceTimeWindow, V3_MINUTE_SHARE_TABLE } from "./marketsV3/engines/time.js";
+export type { ParsedOU } from "./marketsV3/engines/totals.js";
+export { parseOUDesc, priceOU, priceTotalsOutcome } from "./marketsV3/engines/totals.js";
 export type { V3EngineCtx, V3Price } from "./marketsV3/engines/types.js";
 export {
   blendEmpirical,

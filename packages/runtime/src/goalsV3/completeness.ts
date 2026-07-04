@@ -2,12 +2,23 @@
  *  and the weighted completeness gate.
  *
  *  Weights (sum 100): O/U 2.5 odds 15 · last-5 form 15 · scored/90 15 ·
- *  conceded/90 15 · O/U hit-rate 10 (mandatory block = 70) + xG 10 · H2H 10 ·
- *  lineups 5 · rest 5. ANY mandatory element missing ⇒ DISCARD regardless of
- *  score; score < 70 ⇒ DISCARD. A fixture with all five mandatory elements and
- *  nothing else scores exactly 70 and PASSES (resolved default: ≥70) — so a
- *  no-xG lower-division fixture survives by design and pays the §4.2 penalty
- *  instead.
+ *  conceded/90 15 · O/U hit-rate 10 · xG 10 · H2H 10 · lineups 5 · rest 5.
+ *
+ *  v4 (PR-4, default on via `enrich.completenessV4`): the mandatory block is
+ *  odds/form/scored/conceded only (60) — O/U hit-rate is demoted to a
+ *  critical-tier element (§4.2 `hitRateMissing` −1 penalty on missing, NOT a
+ *  discard). A mandatory-only fixture now scores 60 < 70 and is legitimately
+ *  discarded by the general score floor, not by an explicit mandatory-missing
+ *  entry — no re-weighting invented, weights stay v4-verbatim. Set
+ *  `enrich.completenessV4: false` (or `ORACLE_V3_COMPLETENESS_V4=off`) to
+ *  restore the v3 behavior: hit-rate back in the mandatory (discard-on-missing)
+ *  set.
+ *
+ *  ANY mandatory element missing ⇒ DISCARD regardless of score; score < 70 ⇒
+ *  DISCARD. A fixture with all mandatory elements and nothing else scores
+ *  exactly at the mandatory-block total and PASSES only if that total ≥ 70 —
+ *  under v4 (60) it does not; under legacy v3 (70) it does, by design, so a
+ *  no-xG lower-division fixture survives and pays the §4.2 penalty instead.
  *
  *  Also derives the §4.2 penalty flags and the source list for the §6
  *  source-citing rationale, so completeness is computed in exactly one place.
@@ -30,13 +41,45 @@ export const V3_COMPLETENESS_WEIGHTS = {
   rest: 5,
 } as const;
 
+/** v3 legacy: hitRate is mandatory. v4 (default): demoted — see module docstring. */
 export type V3MandatoryField = "odds" | "form" | "scored" | "conceded" | "hitRate";
+
+/** v4 §0.3 per-selection hit-rate availability, one flag per priced line —
+ *  lets a fixture with e.g. a missing O1.5 hit-rate but a present O2.5 one
+ *  apply `hitRateMissing` only to the O1.5 candidate (PR-4). Undefined entries
+ *  mean "unknown" — callers fall back to the fixture-wide flag below. */
+export interface V3LineHitRates {
+  over15?: boolean;
+  over25?: boolean;
+  over35?: boolean;
+  btts?: boolean;
+}
 
 export interface V3EnrichmentState {
   /** True when enrichWithH2H (football-data.org) supplied H2H for this fixture. */
   h2hEnriched?: boolean;
   /** True when a confirmed or predicted lineup summary exists for this fixture. */
   lineupsAvailable?: boolean;
+  /** v4 completeness gate (PR-4). Default true (config.v3CompletenessV4 !== false
+   *  at the call site) — set false to restore hit-rate to the mandatory set. */
+  completenessV4?: boolean;
+}
+
+/** Per-line hit-rate presence for the goals path's §0.3 per-selection penalty
+ *  (PR-4) — both sides required, matching the fixture-wide `hasHitRate` check
+ *  below. Exported so the worker's goals loop can build `V3AnalyzeInput.lineHitRates`
+ *  without re-deriving the same field paths. */
+export function deriveLineHitRates(detail: SportyBetEventDetail | undefined): V3LineHitRates {
+  const ou = detail?.stats?.overunder;
+  const btts = detail?.stats?.scoringConceding;
+  const bothSides = (h: unknown, a: unknown): boolean =>
+    typeof h === "number" && typeof a === "number";
+  return {
+    over15: bothSides(ou?.home?.over15_pct, ou?.away?.over15_pct),
+    over25: bothSides(ou?.home?.over25_pct, ou?.away?.over25_pct),
+    over35: bothSides(ou?.home?.over35_pct, ou?.away?.over35_pct),
+    btts: bothSides(btts?.home?.btts_rate, btts?.away?.btts_rate),
+  };
 }
 
 export interface V3Completeness {
@@ -100,8 +143,9 @@ export function scoreCompleteness(
   const ou = stats?.overunder;
   const hasHitRate =
     typeof ou?.home?.over25_pct === "number" && typeof ou?.away?.over25_pct === "number";
+  const completenessV4 = enrich.completenessV4 !== false;
   if (hasHitRate) score += V3_COMPLETENESS_WEIGHTS.hitRate;
-  else mandatoryMissing.push("hitRate");
+  else if (!completenessV4) mandatoryMissing.push("hitRate");
 
   if (hasOdds || hasForm || hasScored || hasConceded || hasHitRate) {
     sources.push("sportybet-gismo");
@@ -159,6 +203,7 @@ export function scoreCompleteness(
     lineupsUnconfirmed: !enrich.lineupsAvailable,
     restEstimated: !hasRest,
     smallSample,
+    hitRateMissing: !hasHitRate,
   };
 
   return { score, mandatoryMissing, penaltyFlags, sources };
