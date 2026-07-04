@@ -114,3 +114,18 @@ describe("buildConfig v3GoalsCrossCheck (PR-6)", () => {
     expect(buildConfig({ ORACLE_V3_GOALS_CROSSCHECK: "OFF" }).v3GoalsCrossCheck).toBe(false);
   });
 });
+
+describe("buildConfig calibrationLedger (PR-7)", () => {
+  it("defaults to shadow (write-only, no live behaviour change)", () => {
+    expect(buildConfig({}).calibrationLedger).toBe("shadow");
+  });
+
+  it("respects off/on (case-insensitive)", () => {
+    expect(buildConfig({ ORACLE_CALIBRATION_LEDGER: "off" }).calibrationLedger).toBe("off");
+    expect(buildConfig({ ORACLE_CALIBRATION_LEDGER: "ON" }).calibrationLedger).toBe("on");
+  });
+
+  it("falls back to shadow on unknown values", () => {
+    expect(buildConfig({ ORACLE_CALIBRATION_LEDGER: "banana" }).calibrationLedger).toBe("shadow");
+  });
+});

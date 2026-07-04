@@ -8,6 +8,7 @@ import type {
   AnalysisRecord,
   BatchOptions,
   BatchResult,
+  CalibrationMetrics,
   DecisionShadow,
   FixtureJob,
   FixtureOutcome,
@@ -19,6 +20,11 @@ import type {
 import { ANALYSIS_SCHEMA_VERSION, RUN_MANIFEST_SCHEMA_VERSION, runBatch } from "@oracle/engine";
 import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS } from "@oracle/storage";
+import {
+  appendResolvedToLedger,
+  formatCalibrationMetrics,
+  loadLedgerState,
+} from "./calibrationFeed.js";
 import { findFixtureEnrichmentHtml, loadFixtureEnrichmentContext } from "./dailyFixtureReport.js";
 import { renderReport, writeReport } from "./report.js";
 import type { ResolveResult } from "./resolveFixtures.js";
@@ -130,6 +136,30 @@ export async function runAnalysis(
   const trigger = opts.trigger ?? "manual";
   const persist = opts.persist ?? true;
   const writeToDisk = opts.writeReportToDisk ?? true;
+
+  // PR-7 read side: load the calibration ledger once per run. In "on" mode stamp
+  // each job's state.ledger so the engine's calibFactor + isotonic 1x2 calibration
+  // (execution/index.ts:1709/1813) activate live; in "shadow" mode only log the
+  // would-be metrics without applying (no behaviour change); "off" skips entirely.
+  // Fail-open: loadLedgerState returns null on any read/parse error → calibFactor 1.0.
+  const calibMode = config.calibrationLedger ?? "shadow";
+  if (calibMode !== "off") {
+    const ledgerState = await loadLedgerState(storage);
+    if (ledgerState && ledgerState.metrics.resolvedCount > 0) {
+      const summary = formatCalibrationMetrics(ledgerState.metrics);
+      if (calibMode === "on") {
+        for (const job of jobs) {
+          job.state = {
+            ...(job.state ?? {}),
+            ledger: ledgerState as unknown as NonNullable<FixtureJob["state"]>["ledger"],
+          };
+        }
+        process.stdout.write(`[calibration] ledger active — ${summary}\n`);
+      } else {
+        process.stdout.write(`[calibration] shadow (not applied) — ${summary}\n`);
+      }
+    }
+  }
 
   const startedAt = new Date().toISOString();
   const batch = await runBatch(
@@ -324,6 +354,11 @@ export async function runAnalysis(
 export interface ResolveDayResult extends ResolveResult {
   date: string;
   candidates: number;
+  /** PR-7: number of resolved picks settled into the calibration ledger this run
+   *  (undefined when calibrationMode="off" or nothing resolved). */
+  ledgerAppended?: number;
+  /** PR-7: post-append calibration metrics for the resolve report / Telegram. */
+  calibrationMetrics?: CalibrationMetrics;
 }
 
 /** Resolve all analysis records whose kickoff falls on `date` (YYYY-MM-DD).
@@ -340,7 +375,8 @@ export async function resolveDay(
     apiFootballKey?: string;
   },
   date: string,
-  webSearchFallback: { enabled?: boolean; minConsensus?: number } = {}
+  webSearchFallback: { enabled?: boolean; minConsensus?: number } = {},
+  calibration: { mode?: "off" | "shadow" | "on"; maxLedger?: number } = {}
 ): Promise<ResolveDayResult> {
   const allRecords = (await storage.get<AnalysisRecord[]>(STORAGE_KEYS.analysisRecords)) ?? [];
   const dayRecords = allRecords.filter((r) => r.kickoff.startsWith(date));
@@ -383,6 +419,28 @@ export async function resolveDay(
 
   if (resolved.length) {
     await storage.bulkWrite(STORAGE_KEYS.resolutionRecords, resolved);
+  }
+
+  // PR-7 write side: settle each resolved pick into the calibration ledger. Active
+  // in shadow+on (only explicit "off" disables the write). Non-fatal — a ledger
+  // failure must never abort the resolve run.
+  let ledgerAppended: number | undefined;
+  let calibrationMetrics: CalibrationMetrics | undefined;
+  const calibMode = calibration.mode ?? "shadow";
+  if (calibMode !== "off" && resolved.length) {
+    try {
+      const r = await appendResolvedToLedger(storage, resolved, dayRecords, {
+        maxLedger: calibration.maxLedger,
+      });
+      ledgerAppended = r.appended;
+      calibrationMetrics = r.metrics;
+    } catch (err) {
+      process.stderr.write(
+        `[calibration] WARN: ledger append failed (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`
+      );
+    }
   }
 
   // B5: postmortem synthesis for losses (advisory, non-fatal)
@@ -431,5 +489,12 @@ export async function resolveDay(
     }
   }
 
-  return { date, candidates: dayRecords.length, resolved, unmatched };
+  return {
+    date,
+    candidates: dayRecords.length,
+    resolved,
+    unmatched,
+    ledgerAppended,
+    calibrationMetrics,
+  };
 }

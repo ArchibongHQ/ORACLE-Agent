@@ -44,6 +44,7 @@ import {
   classifyEligibility,
   crossCheckGoalsPick,
   curateActionableByV3Outputs,
+  DEFAULT_LEDGER_MAX,
   deriveLineHitRates,
   enrichWithH2H,
   enrichWithLineups,
@@ -51,6 +52,7 @@ import {
   fetchTodaysFixtures,
   findSidecarDetail,
   fixturesPartitionExists,
+  formatCalibrationMetrics,
   formatSlateGateLog,
   type GoalsSelectionResult,
   generateAndWriteFixtureWorkbook,
@@ -1760,7 +1762,7 @@ async function resolveYesterdayFixtures(): Promise<void> {
   const storage = new MemoryAdapter(STORE_PATH);
   const yesterday = watYesterdayString();
 
-  const { candidates, resolved, unmatched } = await resolveDay(
+  const { candidates, resolved, unmatched, ledgerAppended, calibrationMetrics } = await resolveDay(
     storage,
     {
       footballDataApiKey: config.footballDataApiKey,
@@ -1772,6 +1774,10 @@ async function resolveYesterdayFixtures(): Promise<void> {
     {
       enabled: config.enableWebSearchResultsFallback,
       minConsensus: config.webResultsMinConsensus,
+    },
+    {
+      mode: config.calibrationLedger,
+      maxLedger: Number(process.env.ORACLE_LEDGER_MAX ?? DEFAULT_LEDGER_MAX),
     }
   );
 
@@ -1783,7 +1789,20 @@ async function resolveYesterdayFixtures(): Promise<void> {
     );
   }
 
-  writeHeartbeat("lastResolve", { date: yesterday, candidates, resolved: resolved.length });
+  // PR-7: surface the calibration ledger update + accuracy metrics on the resolve run.
+  if (calibrationMetrics) {
+    process.stdout.write(
+      `[calibration] ${config.calibrationLedger ?? "shadow"}: +${ledgerAppended ?? 0} settled — ${formatCalibrationMetrics(calibrationMetrics)}\n`
+    );
+  }
+
+  writeHeartbeat("lastResolve", {
+    date: yesterday,
+    candidates,
+    resolved: resolved.length,
+    ledgerAppended: ledgerAppended ?? 0,
+    calibResolvedCount: calibrationMetrics?.resolvedCount ?? 0,
+  });
 }
 
 // ── Punt prompts (10:00 WAT, retry 12:00 / 13:00 WAT until each slip is fulfilled) ──
