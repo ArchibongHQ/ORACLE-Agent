@@ -64,6 +64,7 @@ export {
   V3_EDGE_CAP_DEFAULT,
   V3_NOISE_GATE_DEFAULT,
   V3_PENALTY_PTS,
+  V3_TIER_HEIGHTENED_FLOOR,
   V3_TIER_HIGH,
   V3_TIER_MEDIUM,
   V3_TIER_VERY_HIGH,
@@ -116,10 +117,16 @@ export {
   nbTailUnder,
   priceCornersOutcome,
 } from "./marketsV3/engines/corners.js";
+export { priceExoticsOutcome } from "./marketsV3/engines/exotics.js";
 export { V3_FIRST_HALF_SHARE_DEFAULT } from "./marketsV3/engines/half.js";
+export { priceShapeOutcome } from "./marketsV3/engines/shape.js";
 export { minuteShare, priceTimeWindow, V3_MINUTE_SHARE_TABLE } from "./marketsV3/engines/time.js";
 export type { V3EngineCtx, V3Price } from "./marketsV3/engines/types.js";
-export { blendEmpirical, EMPIRICAL_BLEND_W } from "./marketsV3/engines/types.js";
+export {
+  blendEmpirical,
+  EMPIRICAL_BLEND_N_CAP,
+  EMPIRICAL_BLEND_W,
+} from "./marketsV3/engines/types.js";
 export type {
   V3AllGateOutcome,
   V3AllMarketsAssessment,
@@ -129,6 +136,7 @@ export type {
 export {
   allMarketsPenaltyPts,
   CLASS_GATE,
+  CLASS_GATE_HEIGHTENED,
   gateAllMarkets,
   impliedQ,
   RELATIVE_CAP_ODDS_FLOOR,
@@ -196,6 +204,17 @@ export {
   V3_CHUNK_SIZE,
   V3_PRIORITY_WEIGHTS,
 } from "./marketsV3/prioritise.js";
+export type {
+  AllMarketsSanityInput,
+  GoalsSanityInput,
+  V3SanityFlag,
+  V3SanityResult,
+} from "./marketsV3/sanity.js";
+export {
+  formatSanityFlags,
+  goalsSlateSanityChecks,
+  slateSanityChecks,
+} from "./marketsV3/sanity.js";
 export type { DualSplit } from "./marketsV3/split.js";
 export { deriveDualSplit, SHAPE_DISAGREEMENT_DELTA } from "./marketsV3/split.js";
 export * from "./math/index.js";

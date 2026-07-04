@@ -45,6 +45,10 @@ export interface V3EmpiricalInputs {
   csPctA?: number;
   ftsPctH?: number;
   ftsPctA?: number;
+  /** Sample size (match count) behind the rates above — feeds the sample-scaled
+   *  empirical blend (PR-3). */
+  nH?: number;
+  nA?: number;
 }
 
 export interface V3AllMarketsInput {
@@ -68,6 +72,8 @@ export interface V3AllMarketsInput {
   hfa?: number;
   /** True when λ input uses venue-split data (suppress HFA). */
   venueSplitUsed?: boolean;
+  /** v4 heightened gates: stricter bars, X excluded (PR-3). */
+  heightened?: boolean;
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -220,6 +226,7 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
       const gate = gateAllMarkets(price.p, q, odds, marketClass, flags, {
         edgeCap: input.edgeCap,
         noiseGate: input.noiseGate,
+        heightened: input.heightened,
       });
 
       const assessment: V3MarketOutcomeAssessment = {

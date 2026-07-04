@@ -146,6 +146,12 @@ export interface StatsOverride {
   /** Season failed-to-score rate (0..1), venue split (scoringConceding). */
   ftsPctH?: number;
   ftsPctA?: number;
+  /** Recent-form sample size (match count, recentGoals last-5 window) behind
+   *  the empirical rates above — feeds the engine's sample-scaled blend (§3.5
+   *  PR-3): a team with only 1-2 recent matches earns less blend weight than
+   *  one with a full 5-match window. */
+  formNH?: number;
+  formNA?: number;
   /** First-half share of the team's goals (0..1) = goals_1h_avg / scored_avg,
    *  clamped to [0.2, 0.8] — feeds the §3.6 half engine's ρ. */
   fhShareH?: number;
@@ -288,6 +294,13 @@ export function buildStatsOverride(
   if (finite(stats.xg?.away?.xga)) override.xgaA = stats.xg?.away?.xga;
   if (homePlayed > 0) override.nHome = homePlayed;
   if (awayPlayed > 0) override.nAway = awayPlayed;
+  // §3.5 empirical-blend sample size (PR-3) — recentGoals is a last-5 window,
+  // so its own match count is the right "how much to trust this rate" signal,
+  // independent of the season-long enoughSample gate below.
+  const formNH = stats.recentGoals?.home?.n;
+  const formNA = stats.recentGoals?.away?.n;
+  if (finite(formNH)) override.formNH = formNH;
+  if (finite(formNA)) override.formNA = formNA;
 
   if (enoughSample) {
     // Venue-conditioned xG (the team's own home/away split, build_xg_table.py)

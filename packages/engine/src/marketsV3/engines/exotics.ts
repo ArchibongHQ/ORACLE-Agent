@@ -57,6 +57,30 @@ function priceHtFt(ctx: V3EngineCtx, d: string): V3Price | null {
   return { p };
 }
 
+/** Exact goals (e.g., "2", "2-3 goals"). Match desc against grid cell counts or ranges. */
+function priceExactGoals(mat: Matrix, d: string): V3Price | null {
+  // "2" → sum of all cells where i + j === 2
+  // "2-3 goals" or "2-3" → sum of cells where i + j in [2, 3]
+  const m = d.match(/^(\d+)(?:\s*-\s*(\d+))?/);
+  if (!m) return null;
+  const minGoals = Number.parseInt(m[1] ?? "0", 10);
+  const maxGoals = m[2] ? Number.parseInt(m[2], 10) : minGoals;
+  return { p: sumWhere(mat, (i, j) => i + j >= minGoals && i + j <= maxGoals) };
+}
+
+/** Multi-goals (e.g., "from=2|to=4" specifier). Same logic as exactGoals,
+ *  but parsed from structured specifier rather than desc text. */
+function priceMultigoals(
+  mat: Matrix,
+  from: number | undefined,
+  to: number | undefined
+): V3Price | null {
+  if (from === undefined && to === undefined) return null;
+  const minGoals = from ?? 0;
+  const maxGoals = to ?? 20; // reasonable upper bound
+  return { p: sumWhere(mat, (i, j) => i + j >= minGoals && i + j <= maxGoals) };
+}
+
 /** "1X2 & O/U" combos ("Home & Over 1.5"), "1X2 & GG/NG" ("Home & yes"),
  *  "O/U & GG/NG" ("Over 2.5 & Yes") — joint cell sums on the SAME grid so the
  *  correlation between result and goals is preserved. */
@@ -115,6 +139,10 @@ export function priceExoticsOutcome(
       return priceCorrectScore(ctx.statsGrid, d);
     case "ht_ft":
       return priceHtFt(ctx, d);
+    case "exact_goals":
+      return priceExactGoals(ctx.statsGrid, d);
+    case "multigoals":
+      return priceMultigoals(ctx.statsGrid, route.from, route.to);
     case "combo":
       return priceCombo(ctx.statsGrid, marketName, d);
     default:

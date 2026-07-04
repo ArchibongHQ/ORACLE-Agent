@@ -239,6 +239,10 @@ export interface OracleConfig {
   // input is season-aggregate stats and HFA multiplier should be applied.
   // Default false (most sources provide team-overall stats, not splits).
   v3VenueSplitUsed?: boolean;
+  // v4 gate deltas: heightened EV bars (S {5%,7%}, M {8%}, L {9%,20%}, X excluded),
+  // exact-goals/multigoals routing + odds-band classing, sample-scaled empirical blend,
+  // sanity checks. Default true. Set ORACLE_V3_GATES_V4=off to restore v3 semantics.
+  v3GatesV4?: boolean;
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
@@ -279,6 +283,10 @@ export interface RunState {
     csPctA?: number;
     ftsPctH?: number;
     ftsPctA?: number;
+    /** §3.5 empirical-blend sample size (match count, recentGoals last-5 window)
+     *  behind bttsPct/csPct/ftsPct above (PR-3). */
+    formNH?: number;
+    formNA?: number;
     /** §3.6 half-engine ρ inputs: first-half share of each team's goals (0..1). */
     fhShareH?: number;
     fhShareA?: number;

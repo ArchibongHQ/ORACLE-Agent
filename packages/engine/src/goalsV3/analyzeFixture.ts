@@ -62,6 +62,8 @@ export interface V3AnalyzeInput {
   hfa?: number;
   /** True when λ input uses venue-split data (suppress HFA multiplier). */
   venueSplitUsed?: boolean;
+  /** v4 heightened gates: 8pt pass floor under HFA/hit-rate uncertainty (PR-3). */
+  heightened?: boolean;
 }
 
 /** One market's full v3 assessment — kept for every priced market including
@@ -230,6 +232,7 @@ export function analyzeGoalsFixtureV3(input: V3AnalyzeInput): V3FixtureResult | 
     const gate = gateV3Edge(c.mp, q, input.penaltyFlags, {
       edgeCap: input.edgeCap,
       noiseGate: input.noiseGate,
+      heightened: input.heightened,
     });
     const rationale = buildRationale(c.label, gate, c.mp, input.penaltyFlags, input.sources);
     const assessment: V3MarketAssessment = {

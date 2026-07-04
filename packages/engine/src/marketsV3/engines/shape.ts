@@ -2,28 +2,32 @@
  *  win-to-nil) — ODDS-ANCHORED split.
  *
  *  Empirical blend where the sheet provides season BTTS%/CS%/FTS% hit-rates:
- *  P_final = 0.7·P_model + 0.3·P_empirical (§3.5 enhancement). Absent hit-rate
- *  ⇒ model-only, flagged marketStatMissing (§5.3 −1). */
+ *  P_final = (1-w)·P_model + w·P_empirical (§3.5 enhancement), w sample-scaled
+ *  by each side's recent-form match count (PR-3). Absent hit-rate ⇒
+ *  model-only, flagged marketStatMissing (§5.3 −1). FTS% ("failed to score")
+ *  is the empirical rate for a team's Total Under 0.5 — the only team-total
+ *  line whose definition (scored zero) matches FTS% directly, so the blend
+ *  only applies there; other lines (1.5, 2.5…) stay model-only. */
 
 import type { V3Route } from "../feedDictionary.js";
 import { sumWhere } from "../grid.js";
 import { blendEmpirical, type V3EngineCtx, type V3Price } from "./types.js";
 
-function withBlend(model: number, empirical: number | undefined): V3Price {
+function withBlend(model: number, empirical: number | undefined, n?: number): V3Price {
   return {
-    p: blendEmpirical(model, empirical),
+    p: blendEmpirical(model, empirical, n),
     marketStatMissing: empirical === undefined,
   };
 }
 
 function priceBtts(ctx: V3EngineCtx, d: string): V3Price | null {
   const model = sumWhere(ctx.shapeGrid, (h, a) => h > 0 && a > 0);
+  const { bttsPctH, bttsPctA, nH, nA } = ctx.empirical;
   const empBoth =
-    ctx.empirical.bttsPctH !== undefined && ctx.empirical.bttsPctA !== undefined
-      ? (ctx.empirical.bttsPctH + ctx.empirical.bttsPctA) / 2
-      : undefined;
-  if (d === "yes") return withBlend(model, empBoth);
-  if (d === "no") return withBlend(1 - model, empBoth === undefined ? undefined : 1 - empBoth);
+    bttsPctH !== undefined && bttsPctA !== undefined ? (bttsPctH + bttsPctA) / 2 : undefined;
+  const n = nH !== undefined && nA !== undefined ? Math.min(nH, nA) : (nH ?? nA);
+  if (d === "yes") return withBlend(model, empBoth, n);
+  if (d === "no") return withBlend(1 - model, empBoth === undefined ? undefined : 1 - empBoth, n);
   return null;
 }
 
@@ -36,7 +40,18 @@ function priceTeamTotal(ctx: V3EngineCtx, side: "home" | "away", d: string): V3P
   const pick = (h: number, a: number) => (side === "home" ? h : a);
   const isWholeLine = Number.isInteger(line);
   const pWin = sumWhere(ctx.shapeGrid, (h, a) => (isOver ? pick(h, a) > line : pick(h, a) < line));
-  if (!isWholeLine) return { p: pWin };
+  if (!isWholeLine) {
+    // FTS% (failed-to-score rate) = empirical Under 0.5 rate — the only line
+    // that maps onto FTS%'s definition (team scored zero goals).
+    if (line === 0.5) {
+      const fts = side === "home" ? ctx.empirical.ftsPctH : ctx.empirical.ftsPctA;
+      const n = side === "home" ? ctx.empirical.nH : ctx.empirical.nA;
+      const empUnder = fts;
+      const emp = isOver ? (empUnder === undefined ? undefined : 1 - empUnder) : empUnder;
+      return withBlend(pWin, emp, n);
+    }
+    return { p: pWin };
+  }
   const pPush = sumWhere(ctx.shapeGrid, (h, a) => pick(h, a) === line);
   const denom = 1 - pPush;
   return { p: denom > 0 ? pWin / denom : 0, conditional: true };
@@ -45,8 +60,9 @@ function priceTeamTotal(ctx: V3EngineCtx, side: "home" | "away", d: string): V3P
 function priceCleanSheet(ctx: V3EngineCtx, side: "home" | "away", d: string): V3Price | null {
   const model = sumWhere(ctx.shapeGrid, (h, a) => (side === "home" ? a === 0 : h === 0));
   const emp = side === "home" ? ctx.empirical.csPctH : ctx.empirical.csPctA;
-  if (d === "yes") return withBlend(model, emp);
-  if (d === "no") return withBlend(1 - model, emp === undefined ? undefined : 1 - emp);
+  const n = side === "home" ? ctx.empirical.nH : ctx.empirical.nA;
+  if (d === "yes") return withBlend(model, emp, n);
+  if (d === "no") return withBlend(1 - model, emp === undefined ? undefined : 1 - emp, n);
   return null;
 }
 
