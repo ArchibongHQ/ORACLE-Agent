@@ -31,6 +31,8 @@ export type MarketFamily =
   | "handicap"
   | "correct_score"
   | "exact_goals"
+  | "corners"
+  | "cards"
   | "odd_even"
   | "clean_sheet"
   | "win_to_nil"
@@ -116,6 +118,8 @@ export type FamilyLabel =
   | "Handicap"
   | "Correct Score"
   | "Exact Goals"
+  | "Corners"
+  | "Cards"
   | "Odd/Even"
   | "Clean Sheet"
   | "Win to Nil"
@@ -142,6 +146,8 @@ export const FAMILY_LABEL: Record<MarketFamily, FamilyLabel> = {
   handicap: "Handicap",
   correct_score: "Correct Score",
   exact_goals: "Exact Goals",
+  corners: "Corners",
+  cards: "Cards",
   odd_even: "Odd/Even",
   clean_sheet: "Clean Sheet",
   win_to_nil: "Win to Nil",

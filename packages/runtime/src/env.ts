@@ -260,6 +260,11 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // PR-5b: outputs assembly — off keeps the exact legacy 39-cap trim untouched
     // (regression pin). Only relevant when enableMarketsV3 === "on".
     marketsV3Outputs: env.ORACLE_MARKETS_V3_OUTPUTS?.toLowerCase() !== "off",
+    // PR-6: corners/cards O/U pricing — off withholds the stats so the modules
+    // stay dormant (byte-identical to pre-PR-6).
+    v3CornersCards: env.ORACLE_V3_CORNERS_CARDS?.toLowerCase() !== "off",
+    // PR-6: R10 goals cross-check on the all-markets batch — off skips the hook.
+    v3GoalsCrossCheck: env.ORACLE_V3_GOALS_CROSSCHECK?.toLowerCase() !== "off",
   };
 }
 

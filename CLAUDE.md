@@ -62,6 +62,11 @@ Before making ANY plan or decision, carry out proper real-time research via web 
 - **Pin key files.** Reference critical files explicitly in prompts using `@path/to/file` (e.g., `@packages/runtime/src/index.ts`) to anchor reasoning to real code, not memory.
 - **Mandatory verification.** Every code change must be followed by running the project's test and lint commands to confirm zero regressions.
 - **Context compaction.** Alert the user to run `/clear` when the conversation hits 15–20 messages to prevent token bloat.
+- **Model selection for coding subagents.**
+  - **Tiering (skip when overhead beats benefit):** a trivial, single-file/single-line fix is handled inline — a subagent's cold-start context re-derivation costs more than it saves. Bounded standard feature/bugfix work delegates to Sonnet. Mechanical bulk/boilerplate edits (repeated renames, scaffolding) delegate to Haiku. Architecture-level decisions, high-ambiguity tasks, or high-stakes review passes delegate to Opus.
+  - **Parallelize:** independent subtasks (separate files/modules, no shared state) are dispatched as parallel subagent calls in one batch, never sequential turns.
+  - **Self-contained prompts:** subagents start cold with no memory of this conversation — every delegation must state the objective, exact files/line numbers, constraints already in force (surgical edits only, no drive-by refactors), and the verification step expected on return.
+  - **Verification still applies:** a subagent's diff isn't done until it clears the Verification Loop below (typecheck → test → build); escalate to an Opus `/gstack-review` pass if a "standard" diff grows past ~50 lines or spans more than 2–3 files.
 
 ---
 

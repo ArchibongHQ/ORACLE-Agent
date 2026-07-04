@@ -15,6 +15,8 @@ import type { Devigged1x2 } from "../goalsV3/matchShape.js";
 import { FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import type { AllMarketEntry, EVMarket, Matrix } from "../types.js";
 import { classifyMarket } from "./classes.js";
+import { cardsMeans, priceCardsOutcome } from "./engines/cards.js";
+import { cornersMeans, priceCornersOutcome } from "./engines/corners.js";
 import { priceExoticsOutcome } from "./engines/exotics.js";
 import { priceHalfOutcome, V3_FIRST_HALF_SHARE_DEFAULT } from "./engines/half.js";
 import { priceResultOutcome } from "./engines/result.js";
@@ -73,6 +75,15 @@ export interface V3AllMarketsInput {
   fhShareH?: number;
   fhShareA?: number;
   empirical?: V3EmpiricalInputs;
+  /** §3.9 conditional-module stats (PR-6) — feed V3EngineCtx.corners/.cards.
+   *  The ORACLE_V3_CORNERS_CARDS rollback surface: buildV3Input forwards these
+   *  only when the flag is on, so off ⇒ ctx stays null ⇒ dormant. */
+  cornersForH?: number;
+  cornersForA?: number;
+  cornersAgainstH?: number;
+  cornersAgainstA?: number;
+  cardsAvgH?: number;
+  cardsAvgA?: number;
   penaltyFlags: V3PenaltyFlags;
   edgeCap?: number;
   noiseGate?: number;
@@ -145,6 +156,16 @@ function priceOutcome(
       return route.minute !== undefined ? priceTimeWindow(ctx.mu, route.minute, desc) : null;
     case "exotics":
       return priceExoticsOutcome(ctx, route, marketName, desc);
+    case "corners": {
+      if (!ctx.corners) return null;
+      const p = priceCornersOutcome(ctx.corners, desc);
+      return p !== null ? { p } : null;
+    }
+    case "cards": {
+      if (!ctx.cards) return null;
+      const p = priceCardsOutcome(ctx.cards, desc);
+      return p !== null ? { p } : null;
+    }
     default:
       return null;
   }
@@ -202,6 +223,13 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     halfStats: halfPair(split.stats.lambdaHome, split.stats.lambdaAway),
     halfShape: halfPair(split.odds.lambdaHome, split.odds.lambdaAway),
     empirical: input.empirical ?? {},
+    corners: cornersMeans({
+      cornersForH: input.cornersForH,
+      cornersForA: input.cornersForA,
+      cornersAgainstH: input.cornersAgainstH,
+      cornersAgainstA: input.cornersAgainstA,
+    }),
+    cards: cardsMeans({ cardsAvgH: input.cardsAvgH, cardsAvgA: input.cardsAvgA }),
   };
 
   const coverage = routeCoverage(input.allMarkets);

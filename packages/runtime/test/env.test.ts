@@ -88,3 +88,29 @@ describe("buildConfig marketsV3Outputs", () => {
     expect(buildConfig({ ORACLE_MARKETS_V3_OUTPUTS: "OFF" }).marketsV3Outputs).toBe(false);
   });
 });
+
+describe("buildConfig v3CornersCards (PR-6)", () => {
+  it("defaults to true (corners/cards O/U pricing on)", () => {
+    expect(buildConfig({}).v3CornersCards).toBe(true);
+  });
+
+  it("respects ORACLE_V3_CORNERS_CARDS=off (case-insensitive) — withholds stats, modules dormant", () => {
+    expect(buildConfig({ ORACLE_V3_CORNERS_CARDS: "off" }).v3CornersCards).toBe(false);
+    expect(buildConfig({ ORACLE_V3_CORNERS_CARDS: "OFF" }).v3CornersCards).toBe(false);
+  });
+
+  it("treats any non-off value as on", () => {
+    expect(buildConfig({ ORACLE_V3_CORNERS_CARDS: "banana" }).v3CornersCards).toBe(true);
+  });
+});
+
+describe("buildConfig v3GoalsCrossCheck (PR-6)", () => {
+  it("defaults to true (R10 cross-check on)", () => {
+    expect(buildConfig({}).v3GoalsCrossCheck).toBe(true);
+  });
+
+  it("respects ORACLE_V3_GOALS_CROSSCHECK=off (case-insensitive)", () => {
+    expect(buildConfig({ ORACLE_V3_GOALS_CROSSCHECK: "off" }).v3GoalsCrossCheck).toBe(false);
+    expect(buildConfig({ ORACLE_V3_GOALS_CROSSCHECK: "OFF" }).v3GoalsCrossCheck).toBe(false);
+  });
+});

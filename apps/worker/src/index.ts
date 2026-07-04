@@ -17,6 +17,7 @@ import {
   type BatchResult,
   type FixtureJobSuccess,
   formatSanityFlags,
+  type GoalsCrossCheckFn,
   goalsSlateSanityChecks,
   type RunManifest,
   type V3AnalyzeInput,
@@ -41,6 +42,7 @@ import {
   buildMarketsV3GateConfig,
   buildMarketsV3SlateOutputs,
   classifyEligibility,
+  crossCheckGoalsPick,
   curateActionableByV3Outputs,
   deriveLineHitRates,
   enrichWithH2H,
@@ -842,6 +844,11 @@ async function runDailyBatch(
   const allRecords: unknown[] = [];
   let finalReportPath: string | undefined;
 
+  // PR-6 R10: cross-check hook (goals-family picks re-verified against the
+  // independent goals engine). Built once over the shared sidecar index;
+  // undefined when the flag is off or no index loaded (⇒ engine skips it).
+  const goalsCrossCheck = buildGoalsCrossCheckHook(sportyIndex?.detailByKey);
+
   for (let i = 0; i < gatedJobs.length; i += ANALYSIS_CHUNK_SIZE) {
     const chunk = gatedJobs.slice(i, i + ANALYSIS_CHUNK_SIZE);
     const chunkIdx = Math.floor(i / ANALYSIS_CHUNK_SIZE) + 1;
@@ -856,7 +863,7 @@ async function runDailyBatch(
       reportPath: chunkReportPath,
     } = await runAnalysis(
       chunk,
-      { storage, config },
+      { storage, config, goalsCrossCheck },
       {
         trigger,
         writeReportToDisk: i === 0, // only first chunk writes the HTML report
@@ -1275,6 +1282,82 @@ function v3TeamXg(
   };
 }
 
+/** Assemble the goals-only v3 engine's per-fixture input from a sidecar detail.
+ *  Shared by the goals-v3 batch AND the daily all-markets R10 cross-check hook
+ *  (PR-6), so the cross-check re-prices each candidate against the byte-
+ *  identical input the goals engine would have used on its own. `gating`
+ *  carries the completeness-scorer outputs the caller already computed. */
+function buildGoalsV3Input(
+  detail: SportyBetEventDetail | undefined,
+  fixture: { home: string; away: string; league: string; kickoff: string },
+  runId: string,
+  gating: {
+    penaltyFlags: V3AnalyzeInput["penaltyFlags"];
+    completeness: number;
+    sources: string[];
+    heightened: boolean;
+  }
+): V3AnalyzeInput {
+  return {
+    fixtureId: v3FixtureId(fixture.home, fixture.away, fixture.kickoff),
+    runId,
+    home: fixture.home,
+    away: fixture.away,
+    league: fixture.league,
+    kickoff: fixture.kickoff,
+    odds: buildV3Odds(detail),
+    lambdaInput: {
+      league: fixture.league,
+      homeScoredPer90: detail?.stats?.goals?.home?.avg_scored ?? null,
+      homeConcededPer90: detail?.stats?.goals?.home?.avg_conceded ?? null,
+      awayScoredPer90: detail?.stats?.goals?.away?.avg_scored ?? null,
+      awayConcededPer90: detail?.stats?.goals?.away?.avg_conceded ?? null,
+      nHome: v3SampleSize(detail, "home"),
+      nAway: v3SampleSize(detail, "away"),
+      homeXg: v3TeamXg(detail?.stats?.xg?.home),
+      awayXg: v3TeamXg(detail?.stats?.xg?.away),
+    },
+    penaltyFlags: gating.penaltyFlags,
+    completeness: gating.completeness,
+    sources: gating.sources,
+    nbDispersion: config.useNegBinom ? v3NbDispersion(config.nbDispersion) : undefined,
+    xgBlend: goalsV3Config.xgBlend,
+    edgeCap: goalsV3Config.edgeCap,
+    noiseGate: goalsV3Config.noiseGate,
+    heightened: gating.heightened,
+    lineHitRates: deriveLineHitRates(detail),
+  };
+}
+
+/** Build the R10 goals cross-check hook (PR-6) for the daily all-markets batch.
+ *  Returns undefined (⇒ cross-check disabled) when the flag is off or no
+ *  sidecar index is available. The hook rebuilds each fixture's goals-only
+ *  input from its sidecar detail and defers to crossCheckGoalsPick; a fixture
+ *  with no sidecar mapping yields null (no independent opinion). Standard
+ *  (non-heightened) goals bars are used — the more lenient floor, which
+ *  agrees more and over-drops less, matching the plan's "no hard veto" intent. */
+function buildGoalsCrossCheckHook(
+  detailByKey: Map<string, SportyBetEventDetail> | undefined
+): GoalsCrossCheckFn | undefined {
+  if (config.v3GoalsCrossCheck === false || !detailByKey) return undefined;
+  return (pick, label, odds, fixture) => {
+    const detail = findSidecarDetail(detailByKey, fixture.home, fixture.away);
+    if (!detail) return null;
+    const lineupsAvailable = false; // daily hook has no per-fixture job.state here
+    const completeness = scoreCompleteness(detail, {
+      lineupsAvailable,
+      completenessV4: config.v3CompletenessV4,
+    });
+    const goalsInput = buildGoalsV3Input(detail, fixture, "crosscheck", {
+      penaltyFlags: completeness.penaltyFlags,
+      completeness: completeness.score,
+      sources: completeness.sources,
+      heightened: false,
+    });
+    return crossCheckGoalsPick(pick, label, odds, goalsInput);
+  };
+}
+
 /** Best-effort transparency log for §4.4 capped selections (raw edge > cap,
  *  auto-discarded, never bet). A write failure here must never fail the run —
  *  same convention as writeGoalsArtifact. */
@@ -1433,37 +1516,14 @@ async function runGoalsBatchV3(
   let analysisErrors = 0;
   for (const { event, job, completeness, heightened } of gated) {
     const detail = event.detail;
-    const input: V3AnalyzeInput = {
-      fixtureId: v3FixtureId(job.home, job.away, job.kickoff),
-      runId,
-      home: job.home,
-      away: job.away,
-      league: job.league,
-      kickoff: job.kickoff,
-      odds: buildV3Odds(detail),
-      lambdaInput: {
-        league: job.league,
-        homeScoredPer90: detail?.stats?.goals?.home?.avg_scored ?? null,
-        homeConcededPer90: detail?.stats?.goals?.home?.avg_conceded ?? null,
-        awayScoredPer90: detail?.stats?.goals?.away?.avg_scored ?? null,
-        awayConcededPer90: detail?.stats?.goals?.away?.avg_conceded ?? null,
-        nHome: v3SampleSize(detail, "home"),
-        nAway: v3SampleSize(detail, "away"),
-        homeXg: v3TeamXg(detail?.stats?.xg?.home),
-        awayXg: v3TeamXg(detail?.stats?.xg?.away),
-      },
+    const input = buildGoalsV3Input(detail, job, runId, {
       penaltyFlags: completeness.penaltyFlags,
       completeness: completeness.score,
       sources: completeness.sources,
-      nbDispersion: config.useNegBinom ? v3NbDispersion(config.nbDispersion) : undefined,
-      xgBlend: goalsV3Config.xgBlend,
-      edgeCap: goalsV3Config.edgeCap,
-      noiseGate: goalsV3Config.noiseGate,
       // Per-fixture (§1.2 eligibility class), not slate-wide: the gates-v4 flag
       // enables the heightened mechanism, eligibility decides who it applies to.
       heightened: config.v3GatesV4 !== false && heightened,
-      lineHitRates: deriveLineHitRates(detail),
-    };
+    });
     const result = analyzeGoalsFixtureV3(input);
     if (!result) {
       analysisErrors++;

@@ -621,14 +621,37 @@ describe("feedDictionary routing (§0.2)", () => {
     expect(r).toMatchObject({ engine: "result", family: "handicap", hcpScore: [0, 1] });
   });
 
-  it("skips player-market and dormant corners/cards families", () => {
+  it("skips player-market and routes plain corners/cards O/U to their §3.9 engines (PR-6)", () => {
     expect(routeMarket(entry({ id: "40", name: "Anytime Goalscorer" }))).toMatchObject({
       skip: true,
       reason: "player-market",
     });
+    // PR-6: the plain match-total Over/Under corners line is now priceable.
     expect(
-      routeMarket(entry({ id: "900999", name: "Total Corners Over/Under", specifier: "total=9.5" }))
+      routeMarket(entry({ id: "166", name: "Total Corners Over/Under", specifier: "total=9.5" }))
+    ).toMatchObject({ engine: "corners", family: "corners", total: 9.5 });
+    // PR-6: cards match-total O/U → cards engine.
+    expect(
+      routeMarket(entry({ id: "139", name: "Total Cards Over/Under", specifier: "total=5.5" }))
+    ).toMatchObject({ engine: "cards", family: "cards", total: 5.5 });
+  });
+
+  it("keeps non-O/U and 1st-half corners/cards variants dormant (PR-6 — only the plain total is priced)", () => {
+    // No over/under shape (a corners handicap/1X2) → still dormant.
+    expect(
+      routeMarket(entry({ id: "900999", name: "Corners Handicap", specifier: "hcp=0:2" }))
     ).toMatchObject({ skip: true, reason: "corners-dormant" });
+    // 1st-half corners O/U has no half-calibrated corners model → dormant.
+    expect(
+      routeMarket(
+        entry({ id: "900998", name: "1st Half Corners Over/Under", specifier: "total=4.5" })
+      )
+    ).toMatchObject({ skip: true, reason: "corners-dormant" });
+    // Cards O/U missing its total specifier → dormant (unparseable line).
+    expect(routeMarket(entry({ id: "900997", name: "Total Bookings Over/Under" }))).toMatchObject({
+      skip: true,
+      reason: "cards-dormant",
+    });
   });
 
   it("routeCoverage tallies routed-vs-skipped across a fixture's catalogue", () => {
@@ -753,6 +776,60 @@ describe("analyzeFixtureMarketsV3 (orchestrator)", () => {
       );
     }
     expect(result!.best).toEqual(result!.evMarkets[0] ?? null);
+  });
+
+  it("prices corners/cards O/U when §3.9 stats are present, stays dormant-by-data when absent (PR-6)", async () => {
+    const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+    const allMarkets: AllMarketEntry[] = [
+      {
+        id: "166",
+        name: "Total Corners Over/Under",
+        specifier: "total=9.5",
+        outcomes: [
+          { id: "1", desc: "Over 9.5", odds: "1.90" },
+          { id: "2", desc: "Under 9.5", odds: "1.90" },
+        ],
+      },
+      {
+        id: "139",
+        name: "Total Cards Over/Under",
+        specifier: "total=4.5",
+        outcomes: [
+          { id: "1", desc: "Over 4.5", odds: "2.00" },
+          { id: "2", desc: "Under 4.5", odds: "1.80" },
+        ],
+      },
+    ];
+
+    // Routing is unconditional — both land on their §3.9 engines regardless of stats.
+    const noStats = analyzeFixtureMarketsV3({ ...baseInput, allMarkets });
+    expect(noStats!.coverage.byEngine.corners).toBe(1);
+    expect(noStats!.coverage.byEngine.cards).toBe(1);
+    // But with ctx.corners/.cards null (no stats), pricing yields nothing.
+    expect(noStats!.assessments.some((a) => a.family === "corners" || a.family === "cards")).toBe(
+      false
+    );
+
+    // Stats present → the modules price the lines and emit assessments.
+    const withStats = analyzeFixtureMarketsV3({
+      ...baseInput,
+      allMarkets,
+      cornersForH: 5.5,
+      cornersForA: 5.0,
+      cornersAgainstH: 4.5,
+      cornersAgainstA: 4.0,
+      cardsAvgH: 2.2,
+      cardsAvgA: 2.0,
+    });
+    expect(withStats!.assessments.some((a) => a.family === "corners")).toBe(true);
+    expect(withStats!.assessments.some((a) => a.family === "cards")).toBe(true);
+    // Every corners/cards mp is a valid probability in (0,1).
+    for (const a of withStats!.assessments) {
+      if (a.family === "corners" || a.family === "cards") {
+        expect(a.mp).toBeGreaterThan(0);
+        expect(a.mp).toBeLessThan(1);
+      }
+    }
   });
 
   it("marks half-share as default (0.44) when fhShareH/A are not supplied", async () => {
