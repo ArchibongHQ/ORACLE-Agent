@@ -910,3 +910,107 @@ describe("validateSelection", () => {
     expect(result.primaryPick.market).toBe("1x2");
   });
 });
+
+// ── PR-8 LLM demote/gate (posture A): skipArbiter + skipDraftLlm opts ──────────
+
+describe("decide — PR-8 demote/gate opts", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.ORACLE_LOCAL_DECISION;
+  });
+  afterEach(() => {
+    delete process.env.ORACLE_LOCAL_DECISION;
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("[CRITICAL] top-N fixtures STILL invoke the arbiter (skipArbiter=false)", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const arbiterResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.72,
+      grade: "STRONG",
+      rationale: "(a) RATIFY",
+      rejectedAndWhy: [],
+    };
+    const callClaudeCode = vi.fn().mockResolvedValue(JSON.stringify(arbiterResponse));
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    // forceDeterministic=true isolates the arbiter (no draft LLM call); skipArbiter=false.
+    const { decision } = await decide(
+      [makeMarket()],
+      BASE_CTX,
+      { claudeApiKey: "" },
+      true,
+      undefined,
+      {
+        skipArbiter: false,
+      }
+    );
+    expect(callClaudeCode).toHaveBeenCalledTimes(1); // arbiter only
+    expect(decision.arbiterStatus).toBe("verified");
+  });
+
+  it("[CRITICAL] non-eligible fixtures skip the arbiter (skipArbiter=true)", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const callClaudeCode = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    const { decision } = await decide(
+      [makeMarket()],
+      BASE_CTX,
+      { claudeApiKey: "" },
+      true,
+      undefined,
+      {
+        skipArbiter: true,
+      }
+    );
+    expect(callClaudeCode).toHaveBeenCalledTimes(0); // deterministic draft + arbiter skipped
+    expect(decision.arbiterStatus).toBeUndefined();
+  });
+
+  it("skipDraftLlm skips the paid draft cascade (deterministic draft used)", async () => {
+    // No ORACLE_LOCAL_DECISION → arbiter short-circuits; isolates the draft tier.
+    const callClaudeCode = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    const { decision } = await decide(
+      [makeMarket()],
+      BASE_CTX,
+      { claudeApiKey: "" },
+      false,
+      undefined,
+      {
+        skipDraftLlm: true,
+        skipArbiter: true,
+      }
+    );
+    expect(callClaudeCode).toHaveBeenCalledTimes(0); // draft cascade skipped
+    expect(decision.rationale).toMatch(/deterministic fallback|Deterministic/i);
+  });
+
+  it("runs the draft cascade normally when skipDraftLlm is false (inert-when-v3-off control)", async () => {
+    const callClaudeCode = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    // skipDraftLlm=false mirrors processOne when v3 supplied no candidates (usedV3=false):
+    // the Tier-1 local draft is still attempted.
+    await decide([makeMarket()], BASE_CTX, { claudeApiKey: "" }, false, undefined, {
+      skipDraftLlm: false,
+      skipArbiter: true,
+    });
+    expect(callClaudeCode).toHaveBeenCalledTimes(1); // Tier-1 draft attempted
+  });
+});

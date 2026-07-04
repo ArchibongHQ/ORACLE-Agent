@@ -115,6 +115,27 @@ describe("buildConfig v3GoalsCrossCheck (PR-6)", () => {
   });
 });
 
+describe("buildConfig PR-8 demote/gate flags", () => {
+  it("v3DeterministicDraft defaults on, ORACLE_V3_DETERMINISTIC_DRAFT=off restores LLM draft", () => {
+    expect(buildConfig({}).v3DeterministicDraft).toBe(true);
+    expect(buildConfig({ ORACLE_V3_DETERMINISTIC_DRAFT: "off" }).v3DeterministicDraft).toBe(false);
+    expect(buildConfig({ ORACLE_V3_DETERMINISTIC_DRAFT: "OFF" }).v3DeterministicDraft).toBe(false);
+  });
+
+  it("llmExtrasTiers defaults apex, =all opts into the route's own tier scope", () => {
+    expect(buildConfig({}).llmExtrasTiers).toBe("apex");
+    expect(buildConfig({ ORACLE_LLM_EXTRAS_TIERS: "all" }).llmExtrasTiers).toBe("all");
+    expect(buildConfig({ ORACLE_LLM_EXTRAS_TIERS: "banana" }).llmExtrasTiers).toBe("apex");
+  });
+
+  it("enableBriefing/enableCVL default off (explicit), opt-in via env", () => {
+    expect(buildConfig({}).enableBriefing).toBe(false);
+    expect(buildConfig({}).enableCVL).toBe(false);
+    expect(buildConfig({ ENABLE_BRIEFING: "true" }).enableBriefing).toBe(true);
+    expect(buildConfig({ ENABLE_CVL: "true" }).enableCVL).toBe(true);
+  });
+});
+
 describe("buildConfig calibrationLedger (PR-7)", () => {
   it("defaults to shadow (write-only, no live behaviour change)", () => {
     expect(buildConfig({}).calibrationLedger).toBe("shadow");

@@ -269,6 +269,17 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // settles resolved picks into the ledger in shadow+on; read side only applies
     // calibFactor/isotonic when "on".
     calibrationLedger: parseCalibrationMode(env.ORACLE_CALIBRATION_LEDGER),
+    // PR-8 posture A: skip the paid draft LLM cascade when v3 supplied candidates
+    // (arbiter still reviews top-N). Default on — ORACLE_V3_DETERMINISTIC_DRAFT=off
+    // restores the full LLM draft cascade.
+    v3DeterministicDraft: env.ORACLE_V3_DETERMINISTIC_DRAFT?.toLowerCase() !== "off",
+    // PR-8: optional LLM extras (briefing/swarm/CVL) tier scope. Default "apex".
+    llmExtrasTiers: env.ORACLE_LLM_EXTRAS_TIERS?.toLowerCase() === "all" ? "all" : "apex",
+    // PR-8: make the previously-dead B1 briefing / B2 CVL layers explicit + opt-in
+    // (they were never set in buildConfig, so always undefined = off). Default off —
+    // posture A keeps the paid extras gated; ENABLE_BRIEFING/ENABLE_CVL=true opts in.
+    enableBriefing: env.ENABLE_BRIEFING?.toLowerCase() === "true",
+    enableCVL: env.ENABLE_CVL?.toLowerCase() === "true",
   };
 }
 

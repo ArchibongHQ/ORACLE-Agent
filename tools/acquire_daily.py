@@ -18,6 +18,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -26,6 +28,29 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import daily_store as ds
 import scrape_fixtures as sf
+
+
+def _maybe_fetch_injuries(quiet: bool = False) -> None:
+    """PR-8: refresh per-team season injury features (fetch_injuries.py) when
+    ORACLE_FETCH_INJURIES=on. This is distinct from fetch_squad_availability.py —
+    that derives a match-day squad-value availability ratio from Transfermarkt,
+    whereas this aggregates historical injury burden (days/count) from the Kaggle
+    injuries dataset; both are real, non-overlapping signals. Best-effort: a
+    missing dataset or non-zero exit must never break daily acquisition."""
+    if os.environ.get("ORACLE_FETCH_INJURIES", "").strip().lower() != "on":
+        return
+    script = Path(__file__).resolve().parent / "fetch_injuries.py"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True, text=True, timeout=180, check=False,
+        )
+        if not quiet:
+            status = "ok" if proc.returncode == 0 else f"exit={proc.returncode}"
+            print(f"[acquire_daily] fetch_injuries {status}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
+        if not quiet:
+            print(f"[acquire_daily] fetch_injuries skipped: {exc}", flush=True)
 
 
 def _flatten_odds(event_id: str, date_str: str, odds: Optional[dict], scraped_at: str) -> list[dict]:
@@ -106,6 +131,7 @@ def acquire(date_str: str, quiet: bool = False, no_playwright: bool = False) -> 
     ds.write_table("fixtures", date_str, rows["fixtures"])
     ds.write_table("odds", date_str, rows["odds"])
     ds.write_table("stats", date_str, rows["stats"])
+    _maybe_fetch_injuries(quiet=quiet)
     if not quiet:
         print(
             f"[acquire_daily] lake write — fixtures:{len(rows['fixtures'])} "

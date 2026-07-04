@@ -268,6 +268,16 @@ export interface OracleConfig {
   // cost). Default true. ORACLE_V3_GOALS_CROSSCHECK=off skips the hook
   // entirely even when one is supplied (byte-identical to pre-PR-6).
   v3GoalsCrossCheck?: boolean;
+  // PR-8 posture A: skip the paid draft LLM cascade for fixtures whose candidate
+  // set came from the deterministic v3 engine — the arbiter still reviews the top-N.
+  // Default true (ORACLE_V3_DETERMINISTIC_DRAFT=off to restore the LLM draft cascade).
+  // Inert on any fixture where v3 did not supply candidates.
+  v3DeterministicDraft?: boolean;
+  // PR-8: which convergence tiers may spend on the optional LLM extras
+  // (briefing / swarm / CVL). "apex" = APEX only (default, most demoted); "all" =
+  // the route's own tier decisions (APEX+PRIME briefing/CVL, +VIABLE swarm).
+  // Only matters when enableBriefing/enableCVL/enableSwarm are set.
+  llmExtrasTiers?: "apex" | "all";
   // PR-7: calibration feedback loop. Three-state:
   //   "off"    — write side inert, read side never loads the ledger (calibFactor=1.0)
   //   "shadow" — write side settles resolved picks into the ledger, but the read

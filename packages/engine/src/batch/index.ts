@@ -406,6 +406,13 @@ async function withRetry<T>(
 
 /** Run a batch of fixture jobs sequentially.
  *  One job failing never aborts the batch — it produces { status: 'error' } instead. */
+/** PR-8: whether a fixture's convergence tier may spend on the optional LLM extras
+ *  (briefing / swarm / CVL). "apex" restricts extras to APEX-tier fixtures only;
+ *  "all" (or unset legacy) defers to the route's own per-tier decisions. */
+function extrasTierAllowed(tier: string, mode: "apex" | "all" | undefined): boolean {
+  return mode === "all" ? true : tier === "APEX";
+}
+
 export async function runBatch(
   jobs: FixtureJob[],
   deps: { storage: StoragePort; config: OracleConfig; goalsCrossCheck?: GoalsCrossCheckFn },
@@ -647,6 +654,7 @@ export async function runBatch(
               llmEligible &&
               route.useBriefing &&
               config.enableBriefing &&
+              extrasTierAllowed(route.tier, config.llmExtrasTiers) &&
               (config.claudeApiKey || config.geminiApiKey || config.openrouterApiKey)
             ) {
               try {
@@ -689,6 +697,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
               llmEligible &&
               route.swarmWorkers > 0 &&
               config.enableSwarm &&
+              extrasTierAllowed(route.tier, config.llmExtrasTiers) &&
               (config.kimiApiKey || config.openrouterApiKey)
             ) {
               try {
@@ -727,7 +736,14 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             decisionCtx,
             decideConfig,
             !llmEligible, // force deterministic for fixtures outside the top-N
-            marketExecutorRisk
+            marketExecutorRisk,
+            {
+              // PR-8 posture A: skip the paid draft cascade when v3 already priced
+              // the candidate set (inert when v3 off — usedV3 is false); skip the
+              // per-fixture arbiter for fixtures outside the top-N.
+              skipDraftLlm: usedV3 && config.v3DeterministicDraft === true,
+              skipArbiter: !llmEligible,
+            }
           );
           // Widened by one synthetic EVMarket only when the Q4 all-markets LLM
           // executor tier supplied the draft — identical to `eligible` otherwise.
@@ -741,7 +757,10 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             const { routeFixture } = await import("@oracle/llm");
             const route = routeFixture(String(convResult?.tier ?? "VIABLE"));
             // Swarm high-divergence escalates to a CVL pass even on lower tiers.
-            const cvlTriggered = (route.useCVL || swarmDivergence) && config.enableCVL;
+            const cvlTriggered =
+              (route.useCVL || swarmDivergence) &&
+              config.enableCVL &&
+              extrasTierAllowed(route.tier, config.llmExtrasTiers);
             if (
               llmEligible &&
               cvlTriggered &&
