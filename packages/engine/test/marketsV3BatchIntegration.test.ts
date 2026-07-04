@@ -410,3 +410,142 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("batch/index.ts — v3Best/v3AssessmentStats projection (PR-5b)", () => {
+  function makeAssessment(overrides: {
+    marketName: string;
+    desc: string;
+    family: string;
+    outcome: string;
+    rawEdge: number;
+    adjustedEdge: number;
+  }) {
+    return {
+      family: overrides.family,
+      marketId: "m1",
+      marketName: overrides.marketName,
+      outcomeId: "o1",
+      desc: overrides.desc,
+      odds: 2.0,
+      mp: 0.6,
+      q: 0.5,
+      devigged: true,
+      rawEdge: overrides.rawEdge,
+      penaltyPts: 0.01,
+      adjustedEdge: overrides.adjustedEdge,
+      adjEvPct: 0.1,
+      cls: "M",
+      outcome: overrides.outcome,
+      confidence: "medium",
+    };
+  }
+
+  it("picks the highest-adjustedEdge 'done' assessment as v3Best, and carries one compact v3AssessmentStats entry per assessment (done+capped alike)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const doneLow = makeAssessment({
+      marketName: "Goals O/U",
+      desc: "Over 2.5",
+      family: "goals_ou",
+      outcome: "done",
+      rawEdge: 0.06,
+      adjustedEdge: 0.05,
+    });
+    const doneHigh = makeAssessment({
+      marketName: "Double Chance",
+      desc: "Home or Draw",
+      family: "double_chance",
+      outcome: "done",
+      rawEdge: 0.09,
+      adjustedEdge: 0.08,
+    });
+    const capped = makeAssessment({
+      marketName: "Asian Handicap",
+      desc: "Home -1",
+      family: "asian_handicap",
+      outcome: "capped",
+      rawEdge: 0.2,
+      adjustedEdge: 0.18,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [doneLow, doneHigh, capped],
+      capped: [capped],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Best?.desc).toBe("Home or Draw");
+    expect(success.v3Best?.adjustedEdge).toBeCloseTo(0.08);
+    expect(success.v3AssessmentStats).toHaveLength(3);
+    expect(success.v3AssessmentStats?.map((a) => a.outcome)).toEqual(["done", "done", "capped"]);
+    expect(success.v3AssessmentStats?.map((a) => a.family)).toEqual([
+      "goals_ou",
+      "double_chance",
+      "asian_handicap",
+    ]);
+  });
+
+  it("populates v3Best/v3AssessmentStats in 'shadow' mode too (not gated on usedV3, which stays false there)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const done = makeAssessment({
+      marketName: "Goals O/U",
+      desc: "Over 2.5",
+      family: "goals_ou",
+      outcome: "done",
+      rawEdge: 0.06,
+      adjustedEdge: 0.05,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [done],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "shadow" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    // shadow mode never sets usedV3/eligible from v3 — but the projection is
+    // still populated, since it's free transparency, not an act-on-it decision.
+    expect(success.eligibleBets?.[0]?.label).toBe("Over 2.5"); // legacy path, unchanged
+    expect(success.v3Best?.desc).toBe("Over 2.5");
+    expect(success.v3AssessmentStats).toHaveLength(1);
+  });
+
+  it("leaves v3Best/v3AssessmentStats undefined when v3 doesn't run (enableMarketsV3 off/unset, or no allMarkets catalogue)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const job = makeJob({ pipeline: { fetched: { sportyBetOdds: { allMarkets } } } });
+
+    const result = await runBatch([job], { storage, config: baseConfig });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Best).toBeUndefined();
+    expect(success.v3AssessmentStats).toBeUndefined();
+  });
+});

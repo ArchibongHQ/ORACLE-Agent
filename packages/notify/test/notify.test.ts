@@ -167,6 +167,26 @@ describe("formatSummaryText analysisModelNote", () => {
   });
 });
 
+describe("formatSummaryText/formatSummaryHtml sanityNote (PR-5b)", () => {
+  it("renders without throwing and omits the note when sanityNote is absent", () => {
+    expect(() => formatSummaryText(sampleSummary)).not.toThrow();
+    expect(() => formatSummaryHtml(sampleSummary)).not.toThrow();
+    expect(formatSummaryText(sampleSummary)).not.toMatch(/Sanity checks/);
+    expect(formatSummaryHtml(sampleSummary)).not.toMatch(/Sanity checks/);
+  });
+
+  it("renders the sanity note text when present, in both text and HTML output", () => {
+    const withSanity: BatchSummary = {
+      ...sampleSummary,
+      sanityNote: "Sanity checks: clean (no flags)",
+    };
+    expect(() => formatSummaryText(withSanity)).not.toThrow();
+    expect(() => formatSummaryHtml(withSanity)).not.toThrow();
+    expect(formatSummaryText(withSanity)).toMatch(/Sanity checks: clean \(no flags\)/);
+    expect(formatSummaryHtml(withSanity)).toMatch(/Sanity checks: clean \(no flags\)/);
+  });
+});
+
 describe("buildNotifiers", () => {
   it("empty env → no notifiers", () => {
     expect(buildNotifiers({})).toHaveLength(0);

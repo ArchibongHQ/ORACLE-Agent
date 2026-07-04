@@ -77,3 +77,14 @@ describe("buildConfig marketsV3Gate", () => {
     expect(buildConfig({ ORACLE_MARKETS_V3_GATE: "OFF" }).marketsV3Gate).toBe(false);
   });
 });
+
+describe("buildConfig marketsV3Outputs", () => {
+  it("defaults to true (PR-5b Outputs A–D + sanity assembly on)", () => {
+    expect(buildConfig({}).marketsV3Outputs).toBe(true);
+  });
+
+  it("respects ORACLE_MARKETS_V3_OUTPUTS=off (case-insensitive) as the legacy-trim rollback", () => {
+    expect(buildConfig({ ORACLE_MARKETS_V3_OUTPUTS: "off" }).marketsV3Outputs).toBe(false);
+    expect(buildConfig({ ORACLE_MARKETS_V3_OUTPUTS: "OFF" }).marketsV3Outputs).toBe(false);
+  });
+});

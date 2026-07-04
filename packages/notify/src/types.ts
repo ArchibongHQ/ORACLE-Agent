@@ -56,6 +56,11 @@ export interface BatchSummary {
   /** Responsible-gambling note (v3 §7 guardrail 8) — rendered once per summary
    *  when the slip carries actionable picks. */
   rgNote?: string;
+  /** One-line v3 slate sanity-check summary (packages/engine's
+   *  slateSanityChecks/goalsSlateSanityChecks via formatSanityFlags) — reports,
+   *  never suppresses picks. Present on main-batch and goals-lottery summaries
+   *  only when v3 outputs/sanity ran for that batch. */
+  sanityNote?: string;
 }
 
 /** Build the "which model did the final analysis" attribution line for a goals
@@ -173,6 +178,7 @@ export function formatSummaryText(s: BatchSummary): string {
     );
   }
   if (s.analysisModelNote) lines.push(`\n${s.analysisModelNote}`);
+  if (s.sanityNote) lines.push(`\n${s.sanityNote}`);
   if (s.arbiterStatus) {
     lines.push(
       s.arbiterStatus === "verified"
@@ -224,6 +230,7 @@ ${
     : ""
 }
 ${s.analysisModelNote ? `<p><em>${s.analysisModelNote}</em></p>` : ""}
+${s.sanityNote ? `<p><em>${s.sanityNote}</em></p>` : ""}
 ${
   s.bookingCode
     ? `<p><strong>🎟 SportyBet Booking Code: <code>${s.bookingCode}</code></strong><br>

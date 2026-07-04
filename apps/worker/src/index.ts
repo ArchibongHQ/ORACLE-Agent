@@ -15,6 +15,9 @@ import {
   analyzeGoalsFixtureV3,
   type BatchJobResult,
   type BatchResult,
+  type FixtureJobSuccess,
+  formatSanityFlags,
+  goalsSlateSanityChecks,
   type RunManifest,
   type V3AnalyzeInput,
   type V3FixtureOdds,
@@ -36,7 +39,9 @@ import {
   buildConfig,
   buildGoalsV3Config,
   buildMarketsV3GateConfig,
+  buildMarketsV3SlateOutputs,
   classifyEligibility,
+  curateActionableByV3Outputs,
   deriveLineHitRates,
   enrichWithH2H,
   enrichWithLineups,
@@ -901,12 +906,23 @@ async function runDailyBatch(
     sportyIndex ? findSidecarDetail(sportyIndex.detailByKey, home, away)?.eventId : undefined
   );
 
-  // Curate the best 39 picks from the full batch results, ordered by league
-  // priority then confidence — mirrors the goals 39-leg lottery approach.
-  // Priority leagues (Tier A/B) first, then others; within tier sort by
-  // confidence descending. The full batch can analyze 300+ fixtures; the
-  // Telegram summary is intentionally capped at 39 legs.
-  if (summary.actionable.length > 39) {
+  // ── PR-5b: v3 slate outputs A–D + sanity (fail-open to the legacy trim) ──
+  if (config.enableMarketsV3 === "on" && config.marketsV3Outputs !== false) {
+    const successJobs = batch.jobs.filter((j): j is FixtureJobSuccess => j.status === "ok");
+    const v3Outputs = buildMarketsV3SlateOutputs(successJobs);
+    process.stdout.write(
+      `[markets-v3] ALL-MARKETS OUTPUT A:${v3Outputs.outputA.length} ` +
+        `B:${v3Outputs.outputB.miniAcca.length}legs C:${v3Outputs.outputC.length} ` +
+        `D:${v3Outputs.outputD.length} — ${v3Outputs.sanityLine}\n`
+    );
+    if (summary.actionable.length > 39) {
+      summary.actionable = curateActionableByV3Outputs(summary.actionable, v3Outputs.outputA, 39);
+      summary.actionableCount = summary.actionable.length;
+    }
+    summary.sanityNote = v3Outputs.sanityLine;
+  } else if (summary.actionable.length > 39) {
+    // Legacy trim — BYTE-IDENTICAL to pre-PR-5b. Only path when v3 outputs
+    // are off or v3 isn't live ("on") — this is the regression pin.
     const tierOf = (league: string) => (ORACLE_PRIORITY_LEAGUES.has(league) ? 0 : 1);
     summary.actionable = [...summary.actionable]
       .sort((a, b) => tierOf(a.league) - tierOf(b.league) || b.confidence - a.confidence)
@@ -995,7 +1011,8 @@ async function sendGoalsSlip(
   combinedProb: number,
   combinedOdds: number,
   logPrefix: string,
-  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number }
+  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number },
+  sanityNote?: string
 ): Promise<BatchSummary> {
   // v3 legs carry mp = model probability (unchanged) but ActionablePick.edge is
   // what formatSummaryText renders as the edge/tier line — feed it the ADJUSTED
@@ -1032,6 +1049,7 @@ async function sendGoalsSlip(
           rgNote: GOALS_V3_RG_NOTE,
         }
       : {}),
+    ...(sanityNote ? { sanityNote } : {}),
   };
 
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────
@@ -1073,7 +1091,7 @@ async function finalizeGoalsSelection(
   date: string,
   errorCount: number,
   trigger: RunManifest["trigger"],
-  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number }
+  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number; sanityLine?: string }
 ): Promise<void> {
   process.stdout.write(
     `[goals] long=${selection.legs.length}/${selection.target} short=${selection.shortSlipLegs.length} ` +
@@ -1095,7 +1113,9 @@ async function finalizeGoalsSelection(
     v3Meta
   );
 
-  // 2. Lottery — long slip, up to 39 legs, greedy correlation-aware.
+  // 2. Lottery — long slip, up to 39 legs, greedy correlation-aware. The fullest
+  // slate view, so the sanity note (slate-wide, would just repeat on every
+  // other filtered subset) rides this send only.
   const lottery = await sendGoalsSlip(
     selection.legs,
     LOTTERY_TAG,
@@ -1105,7 +1125,8 @@ async function finalizeGoalsSelection(
     selection.combinedProb,
     selection.combinedOdds,
     "lottery",
-    v3Meta
+    v3Meta,
+    v3Meta?.sanityLine
   );
 
   // 3. Mini-ACCA — 2-4 legs, one per league, highest edge (always sent; if <2
@@ -1466,6 +1487,11 @@ async function runGoalsBatchV3(
   );
   await writeV3CappedLog(cappedLog, date);
 
+  const goalsSanityLine = formatSanityFlags(
+    goalsSlateSanityChecks(results.flatMap((r) => r.assessments))
+  );
+  process.stdout.write(`[goals-v3] ${goalsSanityLine}\n`);
+
   // ── Phase 6 — selection ───────────────────────────────────────────────────
   const eventIdByKey = new Map<string, string>();
   for (const ev of index.events) {
@@ -1512,6 +1538,7 @@ async function runGoalsBatchV3(
   await finalizeGoalsSelection(selection, date, analysisErrors, trigger, {
     arbiterStatus: verdicts.status,
     cappedCount: cappedLog.length,
+    sanityLine: goalsSanityLine,
   });
 }
 

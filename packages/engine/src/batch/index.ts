@@ -16,6 +16,7 @@ import {
   analyzeFixtureMarketsV3,
   type V3AllMarketsInput,
 } from "../marketsV3/analyzeFixtureMarkets.js";
+import type { V3OutputCandidate } from "../marketsV3/outputs.js";
 import type {
   AgentError,
   AgentErrorCode,
@@ -123,6 +124,8 @@ export interface FixtureJob {
   state?: RunState; // optional pre-populated telemetry / odds
 }
 
+export type V3AssessmentStat = { family: string; desc: string; outcome: string; rawEdge: number };
+
 export interface FixtureJobSuccess {
   status: "ok";
   analysisId: string; // deterministic idempotency key
@@ -149,6 +152,16 @@ export interface FixtureJobSuccess {
   swarmDivergence?: number; // 0–1; high = workers disagreed
   decisionShadow?: DecisionShadow; // GLM-5.2 shadow comparison, observability only
   agentVerification?: RunResult["agentVerification"]; // ORACLE_AGENT_VERIFY local-CLI check, observability only
+  /** PR-5b: this fixture's single best v3 gate-surviving assessment (§4.3 — one
+   *  per fixture), present only when v3 ran for this fixture and something
+   *  survived with outcome "done". Feeds the slate-level Output A–D assembly
+   *  (packages/runtime/src/marketsV3/slateOutputs.ts) without requiring the
+   *  batch to retain every raw per-market assessment for the whole day. */
+  v3Best?: V3OutputCandidate;
+  /** PR-5b: compact projection (family/desc/outcome/rawEdge only) of EVERY v3
+   *  assessment for this fixture (done/capped/discarded alike) — slate sanity
+   *  check input (packages/marketsV3/sanity.ts's slateSanityChecks). */
+  v3AssessmentStats?: V3AssessmentStat[];
 }
 
 export interface FixtureJobError {
@@ -432,12 +445,43 @@ export async function runBatch(
           // dump this replaces, without losing any real candidate (spec §7
           // Output A only ever keeps ONE selection per fixture anyway).
           let usedV3 = false;
+          let v3Best: V3OutputCandidate | undefined;
+          let v3AssessmentStats: V3AssessmentStat[] | undefined;
           if (config.enableMarketsV3 && config.enableMarketsV3 !== "off") {
             const v3Input = buildV3Input(job, state, allMarkets, config);
             const v3Result = v3Input ? analyzeFixtureMarketsV3(v3Input) : null;
             if (config.enableMarketsV3 === "on" && v3Result?.evMarkets.length) {
               eligible = v3Result.evMarkets.slice(0, V3_ARBITER_CANDIDATE_LIMIT);
               usedV3 = true;
+            }
+            // Populated whenever v3 ran ("on" OR "shadow") — shadow-mode
+            // transparency is free; the WORKER decides whether to ACT on
+            // v3Best/v3AssessmentStats (gated there on enableMarketsV3 === "on").
+            if (v3Result) {
+              const bestAssessment = v3Result.assessments
+                .filter((a) => a.outcome === "done")
+                .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
+              if (bestAssessment) {
+                v3Best = {
+                  marketName: bestAssessment.marketName,
+                  desc: bestAssessment.desc,
+                  cls: bestAssessment.cls,
+                  mp: bestAssessment.mp,
+                  odds: bestAssessment.odds,
+                  q: bestAssessment.q,
+                  rawEdge: bestAssessment.rawEdge,
+                  penaltyPts: bestAssessment.penaltyPts,
+                  adjustedEdge: bestAssessment.adjustedEdge,
+                  adjEvPct: bestAssessment.adjEvPct,
+                  confidence: bestAssessment.confidence,
+                };
+              }
+              v3AssessmentStats = v3Result.assessments.map((a) => ({
+                family: a.family,
+                desc: a.desc,
+                outcome: a.outcome,
+                rawEdge: a.rawEdge,
+              }));
             }
           }
           // Demote the Q4 all-markets LLM catalogue-dump executor when v3
@@ -639,6 +683,8 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             swarmConsensus,
             swarmDivergence: swarmDivergenceVal,
             agentVerification: filteredResult.agentVerification,
+            v3Best,
+            v3AssessmentStats,
           };
         },
         maxRetries,

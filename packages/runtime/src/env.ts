@@ -257,6 +257,9 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // ORACLE_MARKETS_V3=on. ORACLE_MARKETS_V3_GATE=off analyzes the ungated slate
     // (default on).
     marketsV3Gate: env.ORACLE_MARKETS_V3_GATE?.toLowerCase() !== "off",
+    // PR-5b: outputs assembly — off keeps the exact legacy 39-cap trim untouched
+    // (regression pin). Only relevant when enableMarketsV3 === "on".
+    marketsV3Outputs: env.ORACLE_MARKETS_V3_OUTPUTS?.toLowerCase() !== "off",
   };
 }
 
