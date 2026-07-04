@@ -265,7 +265,20 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     v3CornersCards: env.ORACLE_V3_CORNERS_CARDS?.toLowerCase() !== "off",
     // PR-6: R10 goals cross-check on the all-markets batch — off skips the hook.
     v3GoalsCrossCheck: env.ORACLE_V3_GOALS_CROSSCHECK?.toLowerCase() !== "off",
+    // PR-7: calibration feedback loop (off|shadow|on, default shadow). Write side
+    // settles resolved picks into the ledger in shadow+on; read side only applies
+    // calibFactor/isotonic when "on".
+    calibrationLedger: parseCalibrationMode(env.ORACLE_CALIBRATION_LEDGER),
   };
+}
+
+/** ORACLE_CALIBRATION_LEDGER → off|shadow|on. Default shadow (write-only, no live
+ *  behaviour change) for the initial rollout window; explicit off disables the
+ *  write side too. Unknown values fall back to the safe shadow default. */
+function parseCalibrationMode(raw: string | undefined): "off" | "shadow" | "on" {
+  const v = raw?.toLowerCase().trim();
+  if (v === "off" || v === "on") return v;
+  return "shadow";
 }
 
 function parseMarketsV3Mode(raw: string | undefined): "on" | "shadow" | "off" {

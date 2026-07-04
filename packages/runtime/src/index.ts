@@ -4,6 +4,13 @@
 
 export type { AnalyzeOptions, AnalyzeResult, ResolveDayResult } from "./analyze.js";
 export { CLV_ELIGIBLE_LEAGUES, resolveDay, runAnalysis } from "./analyze.js";
+export {
+  appendResolvedToLedger,
+  DEFAULT_LEDGER_MAX,
+  formatCalibrationMetrics,
+  loadLedgerState,
+  settlePick,
+} from "./calibrationFeed.js";
 export type {
   CommentBarAction,
   CommentBarActionType,

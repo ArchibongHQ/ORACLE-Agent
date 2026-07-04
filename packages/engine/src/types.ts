@@ -268,6 +268,15 @@ export interface OracleConfig {
   // cost). Default true. ORACLE_V3_GOALS_CROSSCHECK=off skips the hook
   // entirely even when one is supplied (byte-identical to pre-PR-6).
   v3GoalsCrossCheck?: boolean;
+  // PR-7: calibration feedback loop. Three-state:
+  //   "off"    — write side inert, read side never loads the ledger (calibFactor=1.0)
+  //   "shadow" — write side settles resolved picks into the ledger, but the read
+  //              side only LOGS the would-be calibFactor/isotonic deltas; the
+  //              engine still runs at calibFactor=1.0 (no behaviour change)
+  //   "on"     — write side settles + read side stamps state.ledger so the engine's
+  //              calibFactor + isotonic 1x2 calibration activate live
+  // Default "shadow" (ORACLE_CALIBRATION_LEDGER) for the first 1-2 weeks.
+  calibrationLedger?: "off" | "shadow" | "on";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
