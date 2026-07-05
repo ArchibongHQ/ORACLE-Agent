@@ -11,7 +11,7 @@ All jobs are pinned to explicit WAT (`WAT_TZ`). If the box was off at a slot, `c
 
 | Time (WAT) | Job | What |
 |---|---|---|
-| 09:30 | `acquire-daily` | `acquire_daily.py` → Parquet lake + JSON sidecar; news-intel enrichment; sends the fixture spreadsheet (xlsx) report to Telegram. Also runs `fetch_injuries.py` when `ORACLE_FETCH_INJURIES=on`. |
+| 09:30 | `acquire-daily` | `acquire_daily.py` → Parquet lake + JSON sidecar; news-intel enrichment; sends the fixture spreadsheet (xlsx) report to Telegram. Also runs `fetch_injuries.py` when `ORACLE_FETCH_INJURIES=on`, and FotMob live-xG + `build_xg_table.py` (rolling xG prior, fills obscure-league gaps) when `ORACLE_FETCH_LIVE_XG=on`. |
 | 09:35 | `daily-batch` | `runDailyBatch("scheduled")` → full v3 all-markets analysis → HTML report + Telegram. Internal scrape is gap-fill-only (reuses the 09:30 lake). Calibration read side runs here (stamps `state.ledger` when `ORACLE_CALIBRATION_LEDGER=on`). |
 | 09:40 | `goals-batch` | Independent goals discovery funnel over the SportyBet pool. |
 | 10:00 | `resolve-yesterday` | `resolveDay` → fetch yesterday's results, write resolution records, **settle picks into the calibration ledger** (PR-7, shadow+on) + surface hit-rate/Brier/ECE/CLV metrics. |
