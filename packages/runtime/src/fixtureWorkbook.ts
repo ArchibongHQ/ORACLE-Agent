@@ -1,21 +1,23 @@
-/** Daily fixture data as a structured spreadsheet (.xlsx) — the deliverable that
- *  replaces the HTML daily-fixture report. One workbook per day with two sheets:
+/** Daily fixture data as structured spreadsheets (.xlsx) — the deliverable that
+ *  replaces the HTML daily-fixture report. Two separate files per day (Telegram
+ *  delivery cap: <2MB per file — see TELEGRAM_FILE_BUDGET_BYTES):
  *
- *   - "Fixtures": one row per fixture, EVERY scraped/derived field as a column
- *     (home/away split into _H / _A columns). The audit's complaint was that the
- *     HTML report surfaced only a fraction of what the scraper captures; here the
- *     full SportyBetStats surface is laid out column-by-column so nothing is hidden.
- *   - "Markets": one row per (fixture × market × outcome) — the line-by-line "all
- *     markets + odds" requirement. Built via ExcelJS's regular in-memory Workbook
- *     API (not the streaming WorkbookWriter), so renderFixtureWorkbook can stay a
- *     pure function its own tests read back in-memory; revisit if a slate's total
- *     fixture×market×outcome row count starts threatening JS heap limits.
+ *   - "Fixtures" file: one row per fixture, EVERY scraped/derived field as a
+ *     column (home/away split into _H / _A columns). Always tiny (~0.1MB).
+ *   - "Markets" file(s): one row per (fixture × market × outcome) — the
+ *     line-by-line "all markets + odds" requirement. This is ~90% of the bytes
+ *     (~100k rows on a real slate); when a single file would blow the budget it
+ *     is split at FIXTURE boundaries into -part{i}of{n} files, each under
+ *     budget. Built via ExcelJS's regular in-memory Workbook API (not the
+ *     streaming WorkbookWriter) so the render helpers stay pure functions their
+ *     own tests read back in-memory; parts are serialized one at a time to keep
+ *     a single workbook in memory.
  *
  *  Reuses the exact data-loading + field-shaping helpers the HTML report used
  *  (loadSportyBetIndex / loadLineupSummaries / buildNewsByTeam / buildMotivation /
  *  buildTravel / dataCompleteness / lookupMarket / PRICEABLE_FAMILIES) so the two
  *  outputs can never drift in what data they consider "captured". */
-import { access, mkdir } from "node:fs/promises";
+import { access, mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { lookupMarket, PRICEABLE_FAMILIES } from "@oracle/engine";
 import ExcelJS from "exceljs";
@@ -419,10 +421,9 @@ export interface FixtureWorkbookDeps {
   newsByTeam: Map<string, DailyNewsRow[]>;
 }
 
-/** Build the in-memory workbook. Markets are written into the same workbook via a
- *  second sheet; for very large slates prefer generateAndWriteFixtureWorkbook which
- *  streams to disk. Returns an ExcelJS.Workbook the caller writes/serializes. */
-export function renderFixtureWorkbook(
+/** Build the Fixtures-only workbook (one row per fixture, every captured field).
+ *  Pure — the caller writes/serializes. */
+export function renderFixturesWorkbook(
   events: SportyBetEvent[],
   date: string,
   deps: FixtureWorkbookDeps
@@ -438,27 +439,33 @@ export function renderFixtureWorkbook(
   fx.columns = FIXTURE_COLUMNS.map((c) => ({ header: c.header, width: c.width ?? 12 }));
   fx.getRow(1).font = { bold: true };
 
-  const mk = wb.addWorksheet("Markets", { views: [{ state: "frozen", ySplit: 1 }] });
-  mk.columns = [
-    { header: "Home", width: 22 },
-    { header: "Away", width: 22 },
-    { header: "Market ID", width: 12 },
-    { header: "Market", width: 30 },
-    { header: "Family", width: 20 },
-    { header: "Group", width: 16 },
-    { header: "Specifier", width: 14 },
-    { header: "Outcome", width: 24 },
-    { header: "Odds", width: 10 },
-  ];
-  mk.getRow(1).font = { bold: true };
-
   for (const event of events) {
     const lineup = findLineupSummary(deps.lineups, event.home, event.away);
     const homeNews = deps.newsByTeam.get(teamSlug(event.home)) ?? [];
     const awayNews = deps.newsByTeam.get(teamSlug(event.away)) ?? [];
     const ctx: FixtureRowCtx = { event, lineup, homeNews, awayNews };
     fx.addRow(FIXTURE_COLUMNS.map((c) => sanitizeCell(c.get(ctx) ?? null)));
+  }
 
+  fx.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: FIXTURE_COLUMNS.length } };
+  return wb;
+}
+
+/** One fixture's block of Markets-sheet rows. Groups are the atomic unit the
+ *  size-capped writer partitions on — a fixture's markets never straddle two
+ *  part files. */
+export interface MarketRowGroup {
+  home: string;
+  away: string;
+  rows: (string | number)[][];
+}
+
+/** Pure extraction of the Markets sheet data: one row per
+ *  (fixture × market × outcome), same 9 columns as before the file split. */
+export function buildMarketRowGroups(events: SportyBetEvent[]): MarketRowGroup[] {
+  const groups: MarketRowGroup[] = [];
+  for (const event of events) {
+    const rows: (string | number)[][] = [];
     for (const m of event.detail?.odds?.allMarkets ?? []) {
       const cat = lookupMarket(m.id);
       const family = cat
@@ -467,7 +474,7 @@ export function renderFixtureWorkbook(
           : cat.family
         : "";
       for (const o of m.outcomes ?? []) {
-        mk.addRow(
+        rows.push(
           [
             event.home,
             event.away,
@@ -482,31 +489,167 @@ export function renderFixtureWorkbook(
         );
       }
     }
+    if (rows.length) groups.push({ home: event.home, away: event.away, rows });
   }
+  return groups;
+}
 
-  fx.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: FIXTURE_COLUMNS.length } };
+/** Build a Markets-only workbook from (a slice of) the row groups. */
+export function renderMarketsWorkbook(groups: MarketRowGroup[], date: string): ExcelJS.Workbook {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "ORACLE";
+  wb.created = new Date();
+  wb.title = `ORACLE Daily Markets — ${date}`;
+
+  const mk = wb.addWorksheet("Markets", { views: [{ state: "frozen", ySplit: 1 }] });
+  mk.columns = [
+    { header: "Home", width: 22 },
+    { header: "Away", width: 22 },
+    { header: "Market ID", width: 12 },
+    { header: "Market", width: 30 },
+    { header: "Family", width: 20 },
+    { header: "Group", width: 16 },
+    { header: "Specifier", width: 14 },
+    { header: "Outcome", width: 24 },
+    { header: "Odds", width: 10 },
+  ];
+  mk.getRow(1).font = { bold: true };
+
+  for (const g of groups) for (const row of g.rows) mk.addRow(row);
   return wb;
 }
 
-/** Writes the workbook to .tmp/reports/oracle-fixtures-{date}.xlsx — same atomic
- *  primary-then-suffixed collision pattern as writeDailyFixtureReport, on the .xlsx
- *  extension so it never collides with the (now-retired) HTML flavor. */
-export async function writeFixtureWorkbook(
-  wb: ExcelJS.Workbook,
+/** Telegram delivery budget per file. The user cap is 2MB; keep headroom so a
+ *  part sized from a serialization estimate can't land a few KB over. */
+export const TELEGRAM_FILE_BUDGET_BYTES = Math.floor(1.8 * 1024 * 1024);
+
+/** Max DEFLATE — the markets data is ~90% of the bytes and pure repeated text,
+ *  the CPU cost is a one-shot daily job. */
+const XLSX_WRITE_OPTS = {
+  zip: { compression: "DEFLATE" as const, compressionOptions: { level: 9 } },
+};
+
+export interface FixtureReportFiles {
+  fixturesPath: string;
+  marketsPaths: string[];
+}
+
+async function serialize(wb: ExcelJS.Workbook): Promise<Buffer> {
+  return Buffer.from(await wb.xlsx.writeBuffer(XLSX_WRITE_OPTS));
+}
+
+/** Partition groups into `parts` contiguous chunks balanced by row count. */
+function partitionGroups(groups: MarketRowGroup[], parts: number): MarketRowGroup[][] {
+  const totalRows = groups.reduce((n, g) => n + g.rows.length, 0);
+  const chunks: MarketRowGroup[][] = [];
+  let chunk: MarketRowGroup[] = [];
+  let chunkRows = 0;
+  let remainingRows = totalRows;
+  for (const g of groups) {
+    const remainingChunks = parts - chunks.length;
+    // Close the chunk once it reaches its fair share, but never leave fewer
+    // groups than chunks still to fill.
+    if (
+      chunk.length > 0 &&
+      chunkRows >= remainingRows / remainingChunks &&
+      chunks.length < parts - 1
+    ) {
+      chunks.push(chunk);
+      remainingRows -= chunkRows;
+      chunk = [];
+      chunkRows = 0;
+    }
+    chunk.push(g);
+    chunkRows += g.rows.length;
+  }
+  if (chunk.length) chunks.push(chunk);
+  return chunks;
+}
+
+/** Write the two-deliverable file set for a slate:
+ *
+ *   - oracle-fixtures-{date}.xlsx — always a single small file.
+ *   - oracle-markets-{date}.xlsx — when it fits the budget, one file; otherwise
+ *     split at fixture boundaries into oracle-markets-{date}-part{i}of{n}.xlsx
+ *     parts, each under the budget. Parts are serialized one at a time so only
+ *     one ExcelJS workbook is ever in memory (7.84GB box, worker OOM history).
+ *
+ *  Same primary-then-timestamp-suffixed collision pattern as before, with ONE
+ *  shared suffix across the whole set so a re-run's files stay grouped. */
+export async function writeFixtureReportFiles(
+  events: SportyBetEvent[],
   date: string,
-  outDir = ".tmp/reports"
-): Promise<string> {
+  deps: FixtureWorkbookDeps,
+  outDir = ".tmp/reports",
+  budgetBytes = TELEGRAM_FILE_BUDGET_BYTES
+): Promise<FixtureReportFiles> {
   await mkdir(outDir, { recursive: true });
-  const primary = join(outDir, `oracle-fixtures-${date}.xlsx`);
-  let outPath = primary;
+  let suffix = "";
   try {
-    await access(primary);
-    outPath = join(outDir, `oracle-fixtures-${date}-${Date.now()}.xlsx`);
+    await access(join(outDir, `oracle-fixtures-${date}.xlsx`));
+    suffix = `-${Date.now()}`;
   } catch {
     // Primary does not exist — claim it
   }
-  await wb.xlsx.writeFile(outPath);
-  return outPath;
+
+  const fixturesPath = join(outDir, `oracle-fixtures-${date}${suffix}.xlsx`);
+  const fxBuf = await serialize(renderFixturesWorkbook(events, date, deps));
+  if (fxBuf.length > budgetBytes) {
+    process.stderr.write(
+      `[fixture-workbook] WARN fixtures file ${fxBuf.length} bytes exceeds the ${budgetBytes}-byte budget (not split — investigate column bloat)\n`
+    );
+  }
+  await writeFile(fixturesPath, fxBuf);
+
+  const groups = buildMarketRowGroups(events);
+  if (!groups.length) return { fixturesPath, marketsPaths: [] };
+
+  const single = await serialize(renderMarketsWorkbook(groups, date));
+  if (single.length <= budgetBytes) {
+    const marketsPath = join(outDir, `oracle-markets-${date}${suffix}.xlsx`);
+    await writeFile(marketsPath, single);
+    return { fixturesPath, marketsPaths: [marketsPath] };
+  }
+
+  // Over budget: re-partition with one more part each attempt until every part
+  // fits. Starts at the byte-ratio estimate, which is almost always right.
+  let parts = Math.min(groups.length, Math.ceil(single.length / budgetBytes));
+  for (;;) {
+    const chunks = partitionGroups(groups, parts);
+    const buffers: Buffer[] = [];
+    let allFit = true;
+    for (const chunk of chunks) {
+      const buf = await serialize(renderMarketsWorkbook(chunk, date));
+      if (buf.length > budgetBytes) {
+        allFit = false;
+        break;
+      }
+      buffers.push(buf);
+    }
+    if (!allFit && parts < groups.length) {
+      parts += 1;
+      continue;
+    }
+    if (!allFit) {
+      // A single fixture's markets alone exceed the budget — can't split below
+      // the fixture boundary; ship oversized rather than drop data.
+      process.stderr.write(
+        `[fixture-workbook] WARN a markets part exceeds the ${budgetBytes}-byte budget even at one fixture per part — shipping oversized\n`
+      );
+      buffers.length = 0;
+      for (const chunk of chunks) buffers.push(await serialize(renderMarketsWorkbook(chunk, date)));
+    }
+    const marketsPaths: string[] = [];
+    for (let i = 0; i < buffers.length; i++) {
+      const p = join(
+        outDir,
+        `oracle-markets-${date}${suffix}-part${i + 1}of${buffers.length}.xlsx`
+      );
+      await writeFile(p, buffers[i] as Buffer);
+      marketsPaths.push(p);
+    }
+    return { fixturesPath, marketsPaths };
+  }
 }
 
 /** One-call generate-and-write for a date — the .xlsx replacement for
@@ -515,7 +658,12 @@ export async function writeFixtureWorkbook(
 export async function generateAndWriteFixtureWorkbook(
   date: string,
   outDir: string
-): Promise<{ path: string; fixtureCount: number; marketsEmpty: boolean } | null> {
+): Promise<{
+  fixturesPath: string;
+  marketsPaths: string[];
+  fixtureCount: number;
+  marketsEmpty: boolean;
+} | null> {
   const index = await loadSportyBetIndex(date);
   if (!index?.events.length) return null;
   // Coverage guard: the SportyBet scrape file is enriched with per-fixture
@@ -528,9 +676,43 @@ export async function generateAndWriteFixtureWorkbook(
     loadLineupSummaries(),
     buildNewsByTeamForWorkbook(index.events, date),
   ]);
-  const wb = renderFixtureWorkbook(index.events, date, { lineups, newsByTeam });
-  const path = await writeFixtureWorkbook(wb, date, outDir);
-  return { path, fixtureCount: index.events.length, marketsEmpty };
+  const files = await writeFixtureReportFiles(index.events, date, { lineups, newsByTeam }, outDir);
+  return { ...files, fixtureCount: index.events.length, marketsEmpty };
+}
+
+/** Locate an already-written report file set for a date (bot on-disk shortcut).
+ *  Prefers the primary (unsuffixed) fixtures file, else the newest suffixed one,
+ *  and pairs it with the markets file(s) carrying the same suffix. Returns null
+ *  when no fixtures file exists. */
+export async function listFixtureReportFiles(
+  date: string,
+  outDir: string
+): Promise<FixtureReportFiles | null> {
+  let names: string[];
+  try {
+    names = await readdir(outDir);
+  } catch {
+    return null;
+  }
+  const fixturePattern = new RegExp(`^oracle-fixtures-${date}(-\\d+)?\\.xlsx$`);
+  const candidates = names.filter((n) => fixturePattern.test(n)).sort();
+  if (!candidates.length) return null;
+  const primary = `oracle-fixtures-${date}.xlsx`;
+  // Sorted ascending: primary (no suffix) sorts before timestamped ones; prefer
+  // it, else take the newest (largest) timestamp.
+  const fixturesName = candidates.includes(primary)
+    ? primary
+    : (candidates[candidates.length - 1] as string);
+  const suffix = fixturesName.slice(`oracle-fixtures-${date}`.length, -".xlsx".length);
+  const marketsPattern = new RegExp(`^oracle-markets-${date}${suffix}(-part(\\d+)of\\d+)?\\.xlsx$`);
+  const marketsPaths = names
+    .filter((n) => marketsPattern.test(n))
+    .sort((a, b) => {
+      const idx = (n: string) => Number(marketsPattern.exec(n)?.[2] ?? 0);
+      return idx(a) - idx(b);
+    })
+    .map((n) => join(outDir, n));
+  return { fixturesPath: join(outDir, fixturesName), marketsPaths };
 }
 
 /** Same one-pass team→news loader as the HTML report's buildNewsByTeam, kept
