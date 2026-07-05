@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sendTelegramDocument, sendTelegramText } from "../src/telegramDocument.js";
+import { mimeForFile, sendTelegramDocument, sendTelegramText } from "../src/telegramDocument.js";
 
 let dir: string;
 let filePath: string;
@@ -60,6 +60,16 @@ describe("sendTelegramDocument", () => {
     await expect(
       sendTelegramDocument("TOKEN", "CHAT", filePath, "caption")
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("mimeForFile", () => {
+  it("maps known extensions and falls back to octet-stream", () => {
+    expect(mimeForFile("oracle-markets-2026-07-05-part1of2.xlsx")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    expect(mimeForFile("report.HTML")).toBe("text/html");
+    expect(mimeForFile("blob.weird")).toBe("application/octet-stream");
   });
 });
 

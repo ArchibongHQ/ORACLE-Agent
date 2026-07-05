@@ -16,8 +16,9 @@ const API = (token: string, method: string) => `https://api.telegram.org/bot${to
 
 /** MIME by file extension — Telegram mislabels the attachment if the part's
  *  Content-Type doesn't match (e.g. an .xlsx sent as text/html opens as gibberish).
- *  Defaults to octet-stream for anything unrecognised. */
-function mimeForFile(fileName: string): string {
+ *  Defaults to octet-stream for anything unrecognised. Exported for the bot's
+ *  own document sender. */
+export function mimeForFile(fileName: string): string {
   const ext = fileName.toLowerCase().split(".").pop() ?? "";
   switch (ext) {
     case "xlsx":

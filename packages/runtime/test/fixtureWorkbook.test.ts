@@ -1,16 +1,27 @@
+import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import ExcelJS from "exceljs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LineupSummary } from "../src/lineups.js";
 import type { SportyBetEvent } from "../src/selectFixtures.js";
 
-// dailyStore is only needed by the generate-and-write path (not renderFixtureWorkbook);
+// dailyStore is only needed by the generate-and-write path (not the pure renders);
 // stub teamSlug so the in-memory render path stays pure.
 vi.mock("../src/dailyStore.js", () => ({
   loadDailyNews: vi.fn(async () => []),
   teamSlug: (s: string) => s.toLowerCase().replace(/\s+/g, "_"),
 }));
 
-const { renderFixtureWorkbook } = await import("../src/fixtureWorkbook.js");
+const {
+  buildMarketRowGroups,
+  listFixtureReportFiles,
+  renderFixturesWorkbook,
+  renderMarketsWorkbook,
+  writeFixtureReportFiles,
+} = await import("../src/fixtureWorkbook.js");
 
 function event(home: string, away: string, withStats = true): SportyBetEvent {
   return {
@@ -90,9 +101,33 @@ const lineup: LineupSummary = {
 
 const deps = { lineups: [lineup], newsByTeam: new Map() };
 
-describe("renderFixtureWorkbook", () => {
+/** A fixture whose markets carry ~6KB of incompressible (sha256-hex) outcome
+ *  text, so DEFLATE-9 can't collapse it and small byte budgets force real
+ *  multi-part splits. 30 markets × 3 outcomes = 90 rows per fixture. */
+const BIG_EVENT_ROWS = 90;
+function bigEvent(home: string, away: string): SportyBetEvent {
+  const e = event(home, away);
+  const odds = e.detail?.odds;
+  if (odds) {
+    odds.allMarkets = Array.from({ length: 30 }, (_, m) => ({
+      id: String(m),
+      name: `Market ${m}`,
+      desc: `Market ${m}`,
+      group: "Main",
+      specifier: null,
+      outcomes: Array.from({ length: 3 }, (_, o) => ({
+        id: String(o),
+        desc: createHash("sha256").update(`${home}|${m}|${o}`).digest("hex"),
+        odds: "1.85",
+      })),
+    }));
+  }
+  return e;
+}
+
+describe("renderFixturesWorkbook", () => {
   it("produces a Fixtures sheet with one row per fixture and an H2H results column", () => {
-    const wb = renderFixtureWorkbook(
+    const wb = renderFixturesWorkbook(
       [event("Alpha", "Beta"), event("Gamma", "Delta", false)],
       "2026-06-29",
       deps
@@ -109,21 +144,147 @@ describe("renderFixtureWorkbook", () => {
     const h2hCol = headers.indexOf("H2H results") + 1; // ExcelJS values[] is 1-based
     expect(String(fx?.getRow(2).getCell(h2hCol).value)).toBe("2-0; 1-1; 3-1");
   });
+});
 
-  it("produces a Markets sheet with one row per outcome", () => {
-    const wb = renderFixtureWorkbook([event("Alpha", "Beta")], "2026-06-29", deps);
+describe("buildMarketRowGroups", () => {
+  it("groups per fixture with one row per outcome, skipping marketless fixtures", () => {
+    const groups = buildMarketRowGroups([event("Alpha", "Beta"), event("Gamma", "Delta", false)]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.home).toBe("Alpha");
+    // 3 outcomes for 1X2 + 2 for O/U
+    expect(groups[0]?.rows).toHaveLength(5);
+    const first = groups[0]?.rows[0] ?? [];
+    expect(first.slice(0, 4)).toEqual(["Alpha", "Beta", "1", "Match Result"]);
+    // family (idx 4) comes from the engine market catalogue — only assert shape
+    expect(typeof first[4]).toBe("string");
+    expect(first.slice(5)).toEqual(["Main", "", "Home", "1.85"]);
+  });
+});
+
+describe("renderMarketsWorkbook", () => {
+  it("produces a Markets sheet with one row per outcome and round-trips through xlsx", async () => {
+    const wb = renderMarketsWorkbook(buildMarketRowGroups([event("Alpha", "Beta")]), "2026-06-29");
     const mk = wb.getWorksheet("Markets");
     expect(mk).toBeDefined();
     // header + 5 outcomes (3 for 1X2, 2 for O/U)
     expect(mk?.rowCount).toBe(6);
-  });
-
-  it("round-trips through xlsx serialization", async () => {
-    const wb = renderFixtureWorkbook([event("Alpha", "Beta")], "2026-06-29", deps);
     const buf = await wb.xlsx.writeBuffer();
     const wb2 = new ExcelJS.Workbook();
     await wb2.xlsx.load(buf as ArrayBuffer);
-    expect(wb2.getWorksheet("Fixtures")?.rowCount).toBe(2);
     expect(wb2.getWorksheet("Markets")?.rowCount).toBe(6);
+  });
+});
+
+describe("writeFixtureReportFiles", () => {
+  let dir: string;
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it("writes one fixtures + one markets file when everything fits the budget", async () => {
+    dir = await mkdtemp(join(tmpdir(), "oracle-wb-"));
+    const files = await writeFixtureReportFiles([event("Alpha", "Beta")], "2026-06-29", deps, dir);
+    expect(basename(files.fixturesPath)).toBe("oracle-fixtures-2026-06-29.xlsx");
+    expect(files.marketsPaths.map((p) => basename(p))).toEqual(["oracle-markets-2026-06-29.xlsx"]);
+  });
+
+  it("writes no markets file when no fixture has markets", async () => {
+    dir = await mkdtemp(join(tmpdir(), "oracle-wb-"));
+    const files = await writeFixtureReportFiles(
+      [event("Gamma", "Delta", false)],
+      "2026-06-29",
+      deps,
+      dir
+    );
+    expect(files.marketsPaths).toEqual([]);
+  });
+
+  it("ships a single oversized part when one fixture alone blows the budget", async () => {
+    dir = await mkdtemp(join(tmpdir(), "oracle-wb-"));
+    // A lone fixture's markets can't be split below the fixture boundary; a
+    // budget far under its ~7KB size must still ship exactly one part1of1
+    // file rather than looping forever or fabricating extra parts.
+    const files = await writeFixtureReportFiles(
+      [bigEvent("Solo", "Opp")],
+      "2026-06-29",
+      deps,
+      dir,
+      512
+    );
+    expect(files.marketsPaths).toHaveLength(1);
+    expect(basename(files.marketsPaths[0] as string)).toBe(
+      "oracle-markets-2026-06-29-part1of1.xlsx"
+    );
+    expect(statSync(files.marketsPaths[0] as string).size).toBeGreaterThan(512);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(files.marketsPaths[0] as string);
+    expect(wb.getWorksheet("Markets")?.rowCount).toBe(BIG_EVENT_ROWS + 1);
+  });
+
+  it("splits markets into fixture-aligned parts under the budget when over it", async () => {
+    dir = await mkdtemp(join(tmpdir(), "oracle-wb-"));
+    const events = Array.from({ length: 8 }, (_, i) => bigEvent(`Home${i}`, `Away${i}`));
+    // ~6KB of incompressible text per fixture: the combined markets file blows a
+    // 20KB budget, while a one-fixture part always fits.
+    const budget = 20 * 1024;
+    const files = await writeFixtureReportFiles(events, "2026-06-29", deps, dir, budget);
+    expect(files.marketsPaths.length).toBeGreaterThan(1);
+    const n = files.marketsPaths.length;
+    files.marketsPaths.forEach((p, i) => {
+      expect(basename(p)).toBe(`oracle-markets-2026-06-29-part${i + 1}of${n}.xlsx`);
+    });
+    // Parts respect fixture boundaries, cover all rows, and each stays under
+    // budget with header + data intact.
+    const seenRows: string[] = [];
+    for (const p of files.marketsPaths) {
+      expect(statSync(p).size).toBeLessThanOrEqual(budget);
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.readFile(p);
+      const mk = wb.getWorksheet("Markets");
+      expect(mk).toBeDefined();
+      expect(String(mk?.getRow(1).getCell(1).value)).toBe("Home");
+      const homes = new Set<string>();
+      mk?.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        homes.add(String(row.getCell(1).value));
+        seenRows.push(`${row.getCell(1).value}|${row.getCell(8).value}`);
+      });
+      // every fixture's rows land in exactly one part
+      const dataRows = (mk?.rowCount ?? 1) - 1;
+      expect(dataRows % BIG_EVENT_ROWS).toBe(0);
+      expect(homes.size).toBe(dataRows / BIG_EVENT_ROWS);
+    }
+    expect(seenRows).toHaveLength(events.length * BIG_EVENT_ROWS);
+    expect(new Set(seenRows.map((r) => r.split("|")[0])).size).toBe(events.length);
+  });
+
+  it("suffixes the whole file set on filename collision", async () => {
+    dir = await mkdtemp(join(tmpdir(), "oracle-wb-"));
+    const first = await writeFixtureReportFiles([event("Alpha", "Beta")], "2026-06-29", deps, dir);
+    const second = await writeFixtureReportFiles([event("Alpha", "Beta")], "2026-06-29", deps, dir);
+    expect(basename(second.fixturesPath)).toMatch(/^oracle-fixtures-2026-06-29-\d+\.xlsx$/);
+    const suffix = basename(second.fixturesPath).slice(
+      "oracle-fixtures-2026-06-29".length,
+      -".xlsx".length
+    );
+    expect(basename(second.marketsPaths[0] as string)).toBe(
+      `oracle-markets-2026-06-29${suffix}.xlsx`
+    );
+    expect(first.fixturesPath).not.toBe(second.fixturesPath);
+  });
+
+  it("listFixtureReportFiles finds the primary set and orders parts", async () => {
+    dir = await mkdtemp(join(tmpdir(), "oracle-wb-"));
+    const events = Array.from({ length: 8 }, (_, i) => bigEvent(`Home${i}`, `Away${i}`));
+    const written = await writeFixtureReportFiles(events, "2026-06-29", deps, dir, 20 * 1024);
+    const listed = await listFixtureReportFiles("2026-06-29", dir);
+    expect(listed?.fixturesPath).toBe(written.fixturesPath);
+    expect(listed?.marketsPaths).toEqual(written.marketsPaths);
+    expect(await listFixtureReportFiles("2020-01-01", dir)).toBeNull();
+    // sanity: no stray files beyond the written set
+    const names = await readdir(dir);
+    expect(names.sort()).toEqual(
+      [written.fixturesPath, ...written.marketsPaths].map((p) => basename(p)).sort()
+    );
   });
 });
