@@ -53,6 +53,68 @@ def _maybe_fetch_injuries(quiet: bool = False) -> None:
             print(f"[acquire_daily] fetch_injuries skipped: {exc}", flush=True)
 
 
+def _maybe_fetch_live_xg(events: list[dict], quiet: bool = False) -> None:
+    """Refresh the rolling team-xG prior from live FotMob xG when
+    ORACLE_FETCH_LIVE_XG=on. Closes the gap where build_xg_table.py already
+    merges .tmp/xg/fotmob_xg.json but nothing in production ever writes it — so
+    obscure-league teams (outside Understat's top-5 + FBref's coverage) get no
+    xG. FotMob covers 1000+ competitions and runs HEADLESS (unlike Sofascore,
+    which needs a real display the LocalSystem service lacks), making it the
+    service-viable live tier.
+
+    Feeds today's slate team names to fetch_fotmob_xg.py, then rebuilds the
+    merged prior (build_xg_table.py). The updated prior is a rolling
+    strength prior keyed by team — same semantics as the weekly Understat/FBref
+    table — so it enriches each team's NEXT scrape, not retroactively today's.
+
+    DEFAULT OFF: browser-page Playwright swarms are the memory-pressure class
+    behind the 2026-07-05 BSOD/OOM crisis (see oracle_machine_crash_2026_07_05
+    memory) — keep this opt-in until RAM headroom exists or on a VPS. Runs
+    AFTER the lake write and sequentially before the worker's news-enrichment
+    browser swarm (acquireDailyJob awaits acquire_daily.py to exit first), so
+    the two browser swarms never overlap (GPU-safety, oracle_swarm_gpu_bsod_incident).
+    Best-effort: any failure or timeout must never break daily acquisition."""
+    if os.environ.get("ORACLE_FETCH_LIVE_XG", "").strip().lower() != "on":
+        return
+    teams = sorted({
+        (ev.get(side) or "").strip()
+        for ev in events
+        for side in ("home", "away")
+        if (ev.get(side) or "").strip()
+    })
+    if not teams:
+        return
+    tools_dir = Path(__file__).resolve().parent
+    teams_file = tools_dir.parent / ".tmp" / "xg" / "teams_today.txt"
+    try:
+        teams_file.parent.mkdir(parents=True, exist_ok=True)
+        teams_file.write_text("\n".join(teams), encoding="utf-8")
+    except OSError as exc:
+        if not quiet:
+            print(f"[acquire_daily] live-xg skipped (teams-file write): {exc}", flush=True)
+        return
+    # 1. FotMob live xG for the slate (headless, own browser-page cap). Bounded
+    #    timeout so a hung browser can never stall the 09:30 acquisition slot.
+    for label, script, args, timeout in (
+        ("fetch_fotmob_xg", "fetch_fotmob_xg.py", ["--teams-file", str(teams_file)], 1200),
+        # 2. Re-merge Understat/FBref CSVs + the fresh fotmob_xg.json into the prior.
+        ("build_xg_table", "build_xg_table.py", [], 180),
+    ):
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(tools_dir / script), *args],
+                capture_output=True, text=True, timeout=timeout, check=False,
+            )
+            if not quiet:
+                status = "ok" if proc.returncode == 0 else f"exit={proc.returncode}"
+                tail = (proc.stdout or proc.stderr or "").strip().splitlines()
+                note = tail[-1] if tail else ""
+                print(f"[acquire_daily] {label} {status} {note}".rstrip(), flush=True)
+        except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
+            if not quiet:
+                print(f"[acquire_daily] {label} skipped: {exc}", flush=True)
+
+
 def _flatten_odds(event_id: str, date_str: str, odds: Optional[dict], scraped_at: str) -> list[dict]:
     """Tidy/long-format odds rows: one row per (market, side)."""
     if not odds:
@@ -132,6 +194,7 @@ def acquire(date_str: str, quiet: bool = False, no_playwright: bool = False) -> 
     ds.write_table("odds", date_str, rows["odds"])
     ds.write_table("stats", date_str, rows["stats"])
     _maybe_fetch_injuries(quiet=quiet)
+    _maybe_fetch_live_xg(events, quiet=quiet)
     if not quiet:
         print(
             f"[acquire_daily] lake write — fixtures:{len(rows['fixtures'])} "
