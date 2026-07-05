@@ -199,6 +199,28 @@ describe("writeFixtureReportFiles", () => {
     expect(files.marketsPaths).toEqual([]);
   });
 
+  it("ships a single oversized part when one fixture alone blows the budget", async () => {
+    dir = await mkdtemp(join(tmpdir(), "oracle-wb-"));
+    // A lone fixture's markets can't be split below the fixture boundary; a
+    // budget far under its ~7KB size must still ship exactly one part1of1
+    // file rather than looping forever or fabricating extra parts.
+    const files = await writeFixtureReportFiles(
+      [bigEvent("Solo", "Opp")],
+      "2026-06-29",
+      deps,
+      dir,
+      512
+    );
+    expect(files.marketsPaths).toHaveLength(1);
+    expect(basename(files.marketsPaths[0] as string)).toBe(
+      "oracle-markets-2026-06-29-part1of1.xlsx"
+    );
+    expect(statSync(files.marketsPaths[0] as string).size).toBeGreaterThan(512);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(files.marketsPaths[0] as string);
+    expect(wb.getWorksheet("Markets")?.rowCount).toBe(BIG_EVENT_ROWS + 1);
+  });
+
   it("splits markets into fixture-aligned parts under the budget when over it", async () => {
     dir = await mkdtemp(join(tmpdir(), "oracle-wb-"));
     const events = Array.from({ length: 8 }, (_, i) => bigEvent(`Home${i}`, `Away${i}`));

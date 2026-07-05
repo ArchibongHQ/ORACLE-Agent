@@ -538,31 +538,34 @@ async function serialize(wb: ExcelJS.Workbook): Promise<Buffer> {
   return Buffer.from(await wb.xlsx.writeBuffer(XLSX_WRITE_OPTS));
 }
 
-/** Partition groups into `parts` contiguous chunks balanced by row count. */
+/** Partition groups into exactly `min(parts, groups.length)` contiguous chunks,
+ *  balanced by row count. Each chunk is capped so it never absorbs more groups
+ *  than leaves enough remaining groups for the remaining chunks — otherwise a
+ *  large group early in the list could swallow later groups into one chunk and
+ *  under-shoot the requested part count (critical when parts === groups.length,
+ *  the "one fixture per part" case the retry loop relies on to detect a truly
+ *  unsplittable oversized fixture). */
 function partitionGroups(groups: MarketRowGroup[], parts: number): MarketRowGroup[][] {
-  const totalRows = groups.reduce((n, g) => n + g.rows.length, 0);
+  const n = Math.min(parts, groups.length);
   const chunks: MarketRowGroup[][] = [];
-  let chunk: MarketRowGroup[] = [];
-  let chunkRows = 0;
-  let remainingRows = totalRows;
-  for (const g of groups) {
-    const remainingChunks = parts - chunks.length;
-    // Close the chunk once it reaches its fair share, but never leave fewer
-    // groups than chunks still to fill.
-    if (
-      chunk.length > 0 &&
-      chunkRows >= remainingRows / remainingChunks &&
-      chunks.length < parts - 1
-    ) {
-      chunks.push(chunk);
-      remainingRows -= chunkRows;
-      chunk = [];
-      chunkRows = 0;
+  let idx = 0;
+  let remainingRows = groups.reduce((sum, g) => sum + g.rows.length, 0);
+  for (let c = 0; c < n; c++) {
+    const remainingChunks = n - c;
+    const maxTakeable = groups.length - idx - (remainingChunks - 1);
+    const chunk: MarketRowGroup[] = [];
+    let chunkRows = 0;
+    while (idx < groups.length) {
+      if (chunk.length > 0 && chunk.length >= maxTakeable) break;
+      if (chunk.length > 0 && chunkRows >= remainingRows / remainingChunks) break;
+      const g = groups[idx] as MarketRowGroup;
+      chunk.push(g);
+      chunkRows += g.rows.length;
+      idx += 1;
     }
-    chunk.push(g);
-    chunkRows += g.rows.length;
+    chunks.push(chunk);
+    remainingRows -= chunkRows;
   }
-  if (chunk.length) chunks.push(chunk);
   return chunks;
 }
 
@@ -616,17 +619,22 @@ export async function writeFixtureReportFiles(
   let parts = Math.min(groups.length, Math.ceil(single.length / budgetBytes));
   for (;;) {
     const chunks = partitionGroups(groups, parts);
+    // Once parts === groups.length there's no more splitting to try, so finish
+    // building every chunk's buffer instead of bailing on the first oversized
+    // one — otherwise the "ship oversized" fallback below would have to
+    // re-serialize everything from scratch.
+    const willRetryOnOverflow = parts < groups.length;
     const buffers: Buffer[] = [];
     let allFit = true;
     for (const chunk of chunks) {
       const buf = await serialize(renderMarketsWorkbook(chunk, date));
+      buffers.push(buf);
       if (buf.length > budgetBytes) {
         allFit = false;
-        break;
+        if (willRetryOnOverflow) break;
       }
-      buffers.push(buf);
     }
-    if (!allFit && parts < groups.length) {
+    if (!allFit && willRetryOnOverflow) {
       parts += 1;
       continue;
     }
@@ -636,8 +644,6 @@ export async function writeFixtureReportFiles(
       process.stderr.write(
         `[fixture-workbook] WARN a markets part exceeds the ${budgetBytes}-byte budget even at one fixture per part — shipping oversized\n`
       );
-      buffers.length = 0;
-      for (const chunk of chunks) buffers.push(await serialize(renderMarketsWorkbook(chunk, date)));
     }
     const marketsPaths: string[] = [];
     for (let i = 0; i < buffers.length; i++) {
