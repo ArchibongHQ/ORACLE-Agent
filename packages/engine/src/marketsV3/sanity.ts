@@ -20,6 +20,8 @@
  *  `V3MarketOutcomeAssessment` and the goals-path `V3MarketAssessment`
  *  without importing either (no cross-pipeline coupling). Pure math, no I/O. */
 
+import { dirOfDesc, sideOfDesc } from "./descParse.js";
+
 const CAP_RATE_THRESHOLD = 0.25;
 const SKEW_THRESHOLD = 0.7;
 const RAW_EDGE_HOT_THRESHOLD = 0.05;
@@ -68,24 +70,6 @@ export interface GoalsSanityInput extends SanityGateOutcome {
   label: string;
 }
 
-function sideOfResultDesc(desc: string): "home" | "away" | null {
-  const d = desc.toLowerCase();
-  const mentionsHome = d.includes("home");
-  const mentionsAway = d.includes("away");
-  if (mentionsHome && !mentionsAway) return "home";
-  if (mentionsAway && !mentionsHome) return "away";
-  return null; // draw / ambiguous double-chance combos — excluded from the ratio
-}
-
-function directionOfTotalsDesc(desc: string): "over" | "under" | null {
-  const d = desc.toLowerCase();
-  const hasOver = /\bover\b/.test(d);
-  const hasUnder = /\bunder\b/.test(d);
-  if (hasOver && !hasUnder) return "over";
-  if (hasUnder && !hasOver) return "under";
-  return null;
-}
-
 /** (a) cap-rate. Division guard: a quiet slate (denominator 0) reports
  *  capRate=null, never NaN — absence of signal is not a miscalibration flag. */
 function capRateCheck(assessments: SanityGateOutcome[]): {
@@ -111,7 +95,7 @@ function resultSkewCheck(assessments: AllMarketsSanityInput[]): {
   let home = 0;
   let away = 0;
   for (const a of done) {
-    const side = sideOfResultDesc(a.desc);
+    const side = sideOfDesc(a.desc);
     if (side === "home") home++;
     else if (side === "away") away++;
   }
@@ -150,7 +134,7 @@ function totalsSkewFromDescs(descs: string[]): {
   let over = 0;
   let under = 0;
   for (const desc of descs) {
-    const dir = directionOfTotalsDesc(desc);
+    const dir = dirOfDesc(desc);
     if (dir === "over") over++;
     else if (dir === "under") under++;
   }

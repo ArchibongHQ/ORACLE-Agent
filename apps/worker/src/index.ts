@@ -53,6 +53,7 @@ import {
   findSidecarDetail,
   fixturesPartitionExists,
   formatCalibrationMetrics,
+  formatSettlementBreakdown,
   formatSlateGateLog,
   type GoalsSelectionResult,
   generateAndWriteFixtureWorkbook,
@@ -1943,24 +1944,25 @@ async function resolveYesterdayFixtures(): Promise<void> {
   const storage = new MemoryAdapter(STORE_PATH);
   const yesterday = watYesterdayString();
 
-  const { candidates, resolved, unmatched, ledgerAppended, calibrationMetrics } = await resolveDay(
-    storage,
-    {
-      footballDataApiKey: config.footballDataApiKey,
-      oddsApiKey: config.oddsApiKey,
-      geminiApiKey: config.geminiApiKey,
-      apiFootballKey: config.apiFootballKey,
-    },
-    yesterday,
-    {
-      enabled: config.enableWebSearchResultsFallback,
-      minConsensus: config.webResultsMinConsensus,
-    },
-    {
-      mode: config.calibrationLedger,
-      maxLedger: Number(process.env.ORACLE_LEDGER_MAX ?? DEFAULT_LEDGER_MAX),
-    }
-  );
+  const { candidates, resolved, unmatched, ledgerAppended, calibrationMetrics, ledgerByFamily } =
+    await resolveDay(
+      storage,
+      {
+        footballDataApiKey: config.footballDataApiKey,
+        oddsApiKey: config.oddsApiKey,
+        geminiApiKey: config.geminiApiKey,
+        apiFootballKey: config.apiFootballKey,
+      },
+      yesterday,
+      {
+        enabled: config.enableWebSearchResultsFallback,
+        minConsensus: config.webResultsMinConsensus,
+      },
+      {
+        mode: config.calibrationLedger,
+        maxLedger: Number(process.env.ORACLE_LEDGER_MAX ?? DEFAULT_LEDGER_MAX),
+      }
+    );
 
   if (!candidates) {
     process.stdout.write(`[resolve] ${yesterday}: no candidate records\n`);
@@ -1975,6 +1977,13 @@ async function resolveYesterdayFixtures(): Promise<void> {
     process.stdout.write(
       `[calibration] ${config.calibrationLedger ?? "shadow"}: +${ledgerAppended ?? 0} settled — ${formatCalibrationMetrics(calibrationMetrics)}\n`
     );
+  }
+  // [audit fix] surface the per-family settle/skip breakdown so a ledger
+  // that's silently biased toward 1x2-derivable families is visible in the
+  // resolve log, not indistinguishable from a healthy one.
+  if (ledgerByFamily) {
+    const line = formatSettlementBreakdown(ledgerByFamily);
+    if (line) process.stdout.write(`[calibration] ${line}\n`);
   }
 
   writeHeartbeat("lastResolve", {

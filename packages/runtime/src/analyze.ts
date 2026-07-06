@@ -24,6 +24,7 @@ import {
   appendResolvedToLedger,
   formatCalibrationMetrics,
   loadLedgerState,
+  type SettlementFamilyBreakdown,
 } from "./calibrationFeed.js";
 import { findFixtureEnrichmentHtml, loadFixtureEnrichmentContext } from "./dailyFixtureReport.js";
 import { renderReport, writeReport } from "./report.js";
@@ -359,6 +360,11 @@ export interface ResolveDayResult extends ResolveResult {
   ledgerAppended?: number;
   /** PR-7: post-append calibration metrics for the resolve report / Telegram. */
   calibrationMetrics?: CalibrationMetrics;
+  /** [audit fix] Per-family settle/skip breakdown from this run's
+   *  appendResolvedToLedger call — surfaces a ledger that's silently biased
+   *  toward 1x2-derivable families instead of hiding it behind ledgerAppended's
+   *  one aggregate number. */
+  ledgerByFamily?: SettlementFamilyBreakdown;
 }
 
 /** Resolve all analysis records whose kickoff falls on `date` (YYYY-MM-DD).
@@ -426,6 +432,7 @@ export async function resolveDay(
   // failure must never abort the resolve run.
   let ledgerAppended: number | undefined;
   let calibrationMetrics: CalibrationMetrics | undefined;
+  let ledgerByFamily: SettlementFamilyBreakdown | undefined;
   const calibMode = calibration.mode ?? "shadow";
   if (calibMode !== "off" && resolved.length) {
     try {
@@ -434,6 +441,7 @@ export async function resolveDay(
       });
       ledgerAppended = r.appended;
       calibrationMetrics = r.metrics;
+      ledgerByFamily = r.byFamily;
     } catch (err) {
       process.stderr.write(
         `[calibration] WARN: ledger append failed (non-fatal): ${
@@ -496,5 +504,6 @@ export async function resolveDay(
     unmatched,
     ledgerAppended,
     calibrationMetrics,
+    ledgerByFamily,
   };
 }

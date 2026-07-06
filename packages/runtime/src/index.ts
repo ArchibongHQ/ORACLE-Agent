@@ -4,10 +4,12 @@
 
 export type { AnalyzeOptions, AnalyzeResult, ResolveDayResult } from "./analyze.js";
 export { CLV_ELIGIBLE_LEAGUES, resolveDay, runAnalysis } from "./analyze.js";
+export type { SettlementFamilyBreakdown } from "./calibrationFeed.js";
 export {
   appendResolvedToLedger,
   DEFAULT_LEDGER_MAX,
   formatCalibrationMetrics,
+  formatSettlementBreakdown,
   loadLedgerState,
   settlePick,
 } from "./calibrationFeed.js";

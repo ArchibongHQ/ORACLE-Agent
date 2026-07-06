@@ -2,6 +2,7 @@
  *  Rewrite #1: _safeStorage → StoragePort. MathEngine imported for safeNum/clamp/rps. */
 import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS, withKeyLock } from "@oracle/storage";
+import type { MarketFamily } from "../markets/index.js";
 import { clamp, rankedProbabilityScore, safeNum } from "../math/index.js";
 import type { ClvSourceQuality, LiquidityTag } from "../types.js";
 
@@ -50,6 +51,11 @@ export interface BetRecord {
   expAwayG?: number;
   fp?: Record<string, number>;
   marketType?: string;
+  /** Canonical market family (settlePick's dispatch key) — lets the read side
+   *  break metrics/skip-rate out per family, surfacing whether the ledger is
+   *  a representative sample or silently biased toward 1x2-derivable
+   *  families (calibrationFeed.ts only settles a subset; see its docstring). */
+  family?: MarketFamily;
   predictedClv?: number;
   loggedAt?: string;
   resolvedAt?: string;

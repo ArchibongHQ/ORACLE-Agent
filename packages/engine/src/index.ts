@@ -113,6 +113,7 @@ export {
   classifyMarket,
   STRUCTURAL_X_FAMILIES,
 } from "./marketsV3/classes.js";
+export { dcCovers, dirOfDesc, lineOfDesc, sideOfDesc } from "./marketsV3/descParse.js";
 export type { V3CardsInput, V3CardsMeans } from "./marketsV3/engines/cards.js";
 export { cardsMeans, priceCardsOutcome } from "./marketsV3/engines/cards.js";
 export type { V3CornersInput, V3CornersMeans } from "./marketsV3/engines/corners.js";
