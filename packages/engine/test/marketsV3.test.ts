@@ -1,6 +1,6 @@
 /** all-markets-analysis-prompt-v3 — Phase 2 core deterministic engine tests.
  *  Anchored to the spec's own worked examples (DNB 64.9% discard, 1H Under 1.5
- *  70.3% fail-Class-S, Over 2.5 +8.5pts done) plus per-engine unit coverage. */
+ *  70.2% noise-band discard, Over 2.5 +8.5pts done) plus per-engine unit coverage. */
 
 import {
   type AllMarketEntry,
@@ -70,17 +70,35 @@ describe("grid (§3.1/§3.4)", () => {
 // ── evGate.ts — spec worked examples ────────────────────────────────────────
 
 describe("evGate — spec §5 worked examples", () => {
-  // The spec's WORKED EXAMPLES prose gives illustrative model-P/q PAIRS
-  // (66.6%, 65.5% etc.) that don't reconcile bit-exact against any single
-  // devig formula applied to its example odds (rounding in the prose) — so
-  // these tests feed the spec's own P/q numbers straight into the gate to
-  // verify the GATE ARITHMETIC (raw/adjusted/tiering), which is exact.
-  it("Class S (1H Under 1.5): model 70.3% vs q 66.6% → adj +1.7pts fails the S gate (needs ≥3pts & ≥4% EV)", () => {
-    const q = { q: 0.666, devigged: true };
-    const gate = gateAllMarkets(0.703, q, 1.36, "S", { xgMissing: true });
-    // raw ≈ 3.7pts, penalty 2pts (no xG) → adjusted ≈ 1.7pts, EV% ≈ 1.7/66.6 ≈ 2.6%
-    expect(gate.rawEdge).toBeCloseTo(0.037, 3);
-    expect(gate.adjustedEdge).toBeCloseTo(0.017, 3);
+  // The spec's WORKED EXAMPLES prose gives illustrative model-P/q PAIRS that
+  // don't always reconcile bit-exact against a real devig formula applied to
+  // its example odds (rounding in the prose) — so most of these tests feed
+  // the spec's own P/q numbers straight into the gate to verify the GATE
+  // ARITHMETIC (raw/adjusted/tiering), which is exact. Where a test uses a
+  // real odds pair, q is the ACTUAL additive de-vig of those odds (the method
+  // the live code has always used — see markets/devig.ts), not an
+  // approximation.
+  it("Class S (1H Under 1.5): model 70.2% vs the real additive de-vig of 1.36/3.05 (q=70.4%) → near-zero raw edge, noise-band discard", () => {
+    // q = additive de-vig of odds 1.36/3.05 (margin/2 subtracted from each
+    // side) — matches all-markets-analysis-prompt-v4.md §4.1's worked example.
+    // An earlier draft of this fixture used q=0.666 (a de-vig arithmetic
+    // error), then the doc briefly stated q=0.692 via the multiplicative
+    // formula that the live code has never used — both superseded.
+    const q = { q: 0.704, devigged: true };
+    const gate = gateAllMarkets(0.702, q, 1.36, "S", { xgMissing: true });
+    expect(gate.rawEdge).toBeCloseTo(-0.002, 3);
+    expect(gate.adjustedEdge).toBeCloseTo(-0.022, 3);
+    expect(gate.outcome).toBe("noise");
+  });
+
+  it("Class S: a real edge that clears the noise band can still fail the S gate on inadequate adjusted edge", () => {
+    // Illustrative pair (not tied to a specific doc example) covering the
+    // below_gate-via-insufficient-edge path distinctly from the noise-band
+    // case above.
+    const q = { q: 0.704, devigged: true };
+    const gate = gateAllMarkets(0.73, q, 1.36, "S", { xgMissing: true });
+    expect(gate.rawEdge).toBeCloseTo(0.026, 3);
+    expect(gate.adjustedEdge).toBeCloseTo(0.006, 3);
     expect(gate.outcome).toBe("below_gate");
   });
 
@@ -168,6 +186,20 @@ describe("evGate — spec §5 worked examples", () => {
     expect(CLASS_GATE.M).toMatchObject({ minAdjEdge: 0.05, minAdjEvPct: null });
     expect(CLASS_GATE.L).toMatchObject({ minAdjEdge: 0.06, minAdjEvPct: 0.15 });
     expect(CLASS_GATE.X).toMatchObject({ minAdjEdge: 0.06, minAdjEvPct: 0.2, maxOdds: 15 });
+  });
+
+  it("[audit fix] the true-EV floor rejects a -EV pick that would otherwise clear the S-class points/EV% gate", () => {
+    // Odds 1.40 @ ~8% margin (opposite side 2.734), model p=0.706 — clears
+    // Class S on rawEdge/adjEvPct alone (3.17pts / 4.7%) but true EV at the
+    // offered price is 0.706*1.40-1 = -1.16%. Confirmed the pre-fix live code
+    // returned "done" here; the floor must now reject it.
+    const q = impliedQ(1.4, 2.734)!;
+    expect(q.q).toBeCloseTo(0.6743, 3);
+    const gate = gateAllMarkets(0.706, q, 1.4, "S", {});
+    expect(gate.rawEdge).toBeCloseTo(0.0317, 3);
+    expect(gate.adjEvPct).toBeCloseTo(0.047, 2);
+    expect(gate.ev).toBeCloseTo(-0.0116, 3);
+    expect(gate.outcome).toBe("below_gate");
   });
 });
 

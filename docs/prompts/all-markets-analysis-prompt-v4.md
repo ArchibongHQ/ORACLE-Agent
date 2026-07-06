@@ -369,10 +369,14 @@ summary — never model corners/cards from league folklore.
 
 ### 4.1 Implied probability
 
-Two-way markets: de-vig the pair `q = (1/o₁)/((1/o₁)+(1/o₂))`. Three-way (DC legs, HSH,
-winning-margin buckets): normalise the full outcome set, `q_k = (1/o_k)/Σ(1/o_j)`. Single-price
-only: `q = 1/o` (harder bar — acceptable, conservative). Push markets: compare conditional p′ vs
-the two-way de-vig, as defined per engine.
+Two-way markets: de-vig the pair via the **additive** method — `margin = (1/o₁)+(1/o₂)-1`,
+`q = 1/o₁ - margin/2`. (Not proportional/multiplicative scaling: additive is mathematically
+identical to the Shin (1993) method for exactly two-way markets and corrects for the
+favourite-longshot bias that proportional scaling ignores — see `packages/engine/src/markets/devig.ts`
+for the citation. Every live devig call site, goals-only and all-markets alike, uses additive.)
+Three-way (DC legs, HSH, winning-margin buckets): normalise the full outcome set,
+`q_k = (1/o_k)/Σ(1/o_j)`. Single-price only: `q = 1/o` (harder bar — acceptable, conservative).
+Push markets: compare conditional p′ vs the two-way de-vig, as defined per engine.
 
 ### 4.2 Market classes (variance taxonomy)
 
@@ -548,11 +552,15 @@ note.
 > "clearly qualifies," and "flagged as too hot to trust."
 
 > **Class S (1H Under 1.5):** μ = 2.60, fixture 1H share ρ = 0.42 (from 1Hgoals both sides) — μ1H =
-> 1.09. P = e^(−1.09)(1+1.09) = **70.2%**. Priced 1.36 (Under) / 3.05 (Over) — de-vig q(Under) =
-> (1/1.36)/((1/1.36)+(1/3.05)) = **69.2%**. Raw +1.0; penalties −2 (no xG) — Adjusted **−1.0** —
-> **fails Class S gate** (needs ≥3 pts & ≥4% EV). DISCARD. The gate is doing its job. *(Note: an
-> earlier draft of this example quoted q = 66.6% — a de-vig arithmetic error. Verify worked-example
-> numbers before trusting them as calibration anchors.)*
+> 1.09. P = e^(−1.09)(1+1.09) = **70.2%**. Priced 1.36 (Under) / 3.05 (Over) — de-vig q(Under)
+> (additive): margin = (1/1.36)+(1/3.05)-1 = 6.32%, q = 1/1.36 - margin/2 = **70.4%**. Raw −0.2;
+> penalties −2 (no xG) — Adjusted **−2.2** — **fails Class S gate** (needs ≥3 pts & ≥4% EV).
+> DISCARD. The gate is doing its job. *(Note: two earlier drafts of this example quoted q = 66.6%
+> — a de-vig arithmetic error — then q = 69.2% via the multiplicative/proportional formula, which
+> §4.1 has since stated but the live code has never used (the code has always devigged 2-way
+> markets additively — see §4.1's note). The additive result above is what the engine actually
+> computes for this pair. Verify worked-example numbers against the live devig function before
+> trusting them as calibration anchors.)*
 
 > **Class M (Over 2.5):** μ = 3.15 — P(O2.5) = 61.0% exact. Priced 1.89/1.85 — q = 49.5%. Raw +11.5
 > (< 12 cap) − 3 pen = **+8.5 — DONE, High**.

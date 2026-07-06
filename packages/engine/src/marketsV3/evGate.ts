@@ -29,6 +29,7 @@ import {
   type V3PenaltyFlags,
   v3PenaltyPts,
 } from "../goalsV3/edgeGate.js";
+import { devigTwoWay } from "../markets/index.js";
 import type { V3MarketClass } from "./classes.js";
 
 /** §5.3 additions on top of the goalsV3 table. Probability points (0.01 = 1pt). */
@@ -84,6 +85,18 @@ export const RELATIVE_CAP_ODDS_FLOOR = 3.0;
 export const RELATIVE_CAP_RATIO = 0.4;
 export const RELATIVE_CAP_RATIO_X = 0.3;
 
+/** True-EV floor at the offered price: modelP * odds - 1. The class thresholds
+ *  above gate on probability-points/EV% vs. the de-vigged fair price, which is
+ *  a different quantity from EV at the price actually offered — at a
+ *  wide-margin book, a selection can clear every class bar in points/EV% terms
+ *  while still being -EV at the real odds (e.g. odds 1.40 @ 8% margin, p=0.706
+ *  clears the S-class gate at 3.17pts/4.7% while true EV = 0.706*1.40-1 =
+ *  -1.16%). Requiring true EV > 0 in addition to the class gate closes that
+ *  gap without touching the class tiers themselves (still used for confidence
+ *  banding). Mirrors the legacy pipeline's already-correct `adjEV` gate
+ *  (math/index.ts, p*odds-1-MOS) that this all-markets path never reused. */
+export const V3_EV_FLOOR_DEFAULT = 0;
+
 export type V3Confidence = "very_high" | "high" | "medium";
 export type V3AllGateOutcome = "done" | "capped" | "noise" | "below_gate";
 
@@ -95,6 +108,8 @@ export interface V3AllMarketsAssessment {
   adjustedEdge: number;
   /** Adjusted EV% = adjustedEdge / q (ROI proxy per unit staked). */
   adjEvPct: number;
+  /** True EV at the offered price: modelP * odds - 1. See V3_EV_FLOOR_DEFAULT. */
+  ev: number;
   cls: V3MarketClass;
   outcome: V3AllGateOutcome;
   confidence: V3Confidence | null;
@@ -130,18 +145,29 @@ export function gateAllMarkets(
   odds: number,
   cls: V3MarketClass,
   flags: V3AllMarketsPenaltyFlags,
-  opts: { edgeCap?: number; noiseGate?: number; heightened?: boolean } = {}
+  opts: { edgeCap?: number; noiseGate?: number; heightened?: boolean; evFloor?: number } = {}
 ): V3AllMarketsAssessment {
   const edgeCap = opts.edgeCap ?? V3_EDGE_CAP_DEFAULT;
   const noiseGate = opts.noiseGate ?? V3_NOISE_GATE_DEFAULT;
   const heightened = opts.heightened ?? false;
+  const evFloor = opts.evFloor ?? V3_EV_FLOOR_DEFAULT;
 
   const rawEdge = modelP - q.q;
   const penaltyPts = allMarketsPenaltyPts(flags);
   const adjustedEdge = rawEdge - penaltyPts;
   const adjEvPct = q.q > 0 ? adjustedEdge / q.q : 0;
+  const ev = modelP * odds - 1;
 
-  const base = { q: q.q, devigged: q.devigged, rawEdge, penaltyPts, adjustedEdge, adjEvPct, cls };
+  const base = {
+    q: q.q,
+    devigged: q.devigged,
+    rawEdge,
+    penaltyPts,
+    adjustedEdge,
+    adjEvPct,
+    ev,
+    cls,
+  };
 
   // v4 heightened: X excluded entirely
   if (heightened && cls === "X") {
@@ -165,7 +191,8 @@ export function gateAllMarkets(
   const passes =
     adjustedEdge >= gate.minAdjEdge &&
     (gate.minAdjEvPct === null || adjEvPct >= gate.minAdjEvPct) &&
-    (gate.maxOdds === null || odds <= gate.maxOdds);
+    (gate.maxOdds === null || odds <= gate.maxOdds) &&
+    ev >= evFloor;
   if (!passes) return { ...base, outcome: "below_gate", confidence: null };
 
   return { ...base, outcome: "done", confidence: v3Confidence(cls, adjustedEdge, adjEvPct) };
@@ -183,9 +210,8 @@ export function impliedQ(
 ): { q: number; devigged: boolean } | null {
   if (!odds || !Number.isFinite(odds) || odds <= 1) return null;
   if (oppositeOdds && Number.isFinite(oppositeOdds) && oppositeOdds > 1) {
-    const inv = 1 / odds + 1 / oppositeOdds;
-    const margin = inv - 1;
-    return { q: 1 / odds - margin / 2, devigged: true };
+    const pair = devigTwoWay(odds, oppositeOdds);
+    if (pair) return { q: pair[0], devigged: true };
   }
   if (outcomeSetOdds && outcomeSetOdds.length >= 3) {
     const valid = outcomeSetOdds.filter((o) => Number.isFinite(o) && o > 1);
