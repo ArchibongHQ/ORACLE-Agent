@@ -239,6 +239,12 @@ export interface OracleConfig {
   // input is season-aggregate stats and HFA multiplier should be applied.
   // Default false (most sources provide team-overall stats, not splits).
   v3VenueSplitUsed?: boolean;
+  // λ v5: each side of the xG blend (goalsV3/lambda.ts) blends independently
+  // when its own cross-pair exists, instead of requiring both sides to have a
+  // full xG pair before blending either; the xG-λ also gets small-sample
+  // shrinkage. Default true. Set ORACLE_V3_LAMBDA_V5=off to restore the prior
+  // both-sides-only, unshrunk xG blend.
+  v3LambdaV5?: boolean;
   // v4 gate deltas: heightened EV bars (S {5%,7%}, M {8%}, L {9%,20%}, X excluded),
   // exact-goals/multigoals routing + odds-band classing, sample-scaled empirical blend,
   // sanity checks. Default true. Set ORACLE_V3_GATES_V4=off to restore v3 semantics.

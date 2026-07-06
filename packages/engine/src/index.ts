@@ -78,7 +78,12 @@ export {
   v3Tier,
 } from "./goalsV3/edgeGate.js";
 export type { V3LambdaInput, V3Lambdas, V3TeamXg } from "./goalsV3/lambda.js";
-export { computeV3Lambdas, V3_LEAGUE_BASELINES, v3LeaguePerTeamAvg } from "./goalsV3/lambda.js";
+export {
+  computeV3Lambdas,
+  V3_LEAGUE_BASELINES,
+  V3_LEAGUE_BASELINES_BY_ID,
+  v3LeaguePerTeamAvg,
+} from "./goalsV3/lambda.js";
 export type { Devigged1x2, MatchShape } from "./goalsV3/matchShape.js";
 export { deriveMatchShape, SHAPE_LAMBDA_FLOOR } from "./goalsV3/matchShape.js";
 export type { MarketCatalogEntry, MarketFamily } from "./markets/index.js";

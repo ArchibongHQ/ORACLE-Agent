@@ -50,6 +50,12 @@ SCHEMAS: dict[str, pa.Schema] = {
         ("home", pa.string()),
         ("away", pa.string()),
         ("league", pa.string()),
+        # Sportradar tournament ID (e.g. "sr:tournament:17"), when the source
+        # provided one — empty string when absent (older partitions, or a
+        # source without one). Added 2026-07-06 (P0-2 league-collision fix);
+        # each partition's own dt= file is read in full, never globbed across
+        # dates, so this is a safe additive column (see dailyStore.ts).
+        ("league_id", pa.string()),
         ("kickoff_utc", pa.string()),
         ("market_count", pa.int64()),
         ("scraped_at", pa.string()),
@@ -195,7 +201,8 @@ def _selftest() -> int:
     stamp = utc_now_stamp()
     write_table("fixtures", date_str, [
         {"dt": date_str, "event_id": "sr:match:1", "home": "A", "away": "B",
-         "league": "Test League", "kickoff_utc": "1999-01-01T20:00:00Z",
+         "league": "Test League", "league_id": "sr:tournament:1",
+         "kickoff_utc": "1999-01-01T20:00:00Z",
          "market_count": 42, "scraped_at": stamp},
     ])
     write_table("odds", date_str, [
@@ -217,6 +224,7 @@ def _selftest() -> int:
     st = read_table("stats", date_str)
     nw = read_table("news", date_str)
     ok = (len(fx) == 1 and fx[0]["market_count"] == 42 and
+          fx[0]["league_id"] == "sr:tournament:1" and
           len(od) == 2 and od[1]["overround"] is None and
           len(st) == 1 and st[0]["subtab"] == "h2h" and
           len(nw) == 1 and nw[0]["source"] == "google_ai")

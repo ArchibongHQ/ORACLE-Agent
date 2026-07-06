@@ -1466,7 +1466,7 @@ function v3TeamXg(
  *  carries the completeness-scorer outputs the caller already computed. */
 function buildGoalsV3Input(
   detail: SportyBetEventDetail | undefined,
-  fixture: { home: string; away: string; league: string; kickoff: string },
+  fixture: { home: string; away: string; league: string; leagueId?: string; kickoff: string },
   runId: string,
   gating: {
     penaltyFlags: V3AnalyzeInput["penaltyFlags"];
@@ -1485,6 +1485,7 @@ function buildGoalsV3Input(
     odds: buildV3Odds(detail),
     lambdaInput: {
       league: fixture.league,
+      leagueId: fixture.leagueId,
       homeScoredPer90: detail?.stats?.goals?.home?.avg_scored ?? null,
       homeConcededPer90: detail?.stats?.goals?.home?.avg_conceded ?? null,
       awayScoredPer90: detail?.stats?.goals?.away?.avg_scored ?? null,
@@ -1501,6 +1502,11 @@ function buildGoalsV3Input(
     xgBlend: goalsV3Config.xgBlend,
     edgeCap: goalsV3Config.edgeCap,
     noiseGate: goalsV3Config.noiseGate,
+    // NOTE: unlike the main all-markets batch (batch/index.ts's buildV3Input),
+    // this goals-only path does not currently pass hfa/venueSplitUsed — a
+    // pre-existing gap (goals-only fixtures get no HFA term at all) outside
+    // this fix's scope; flagging for a follow-up rather than fixing inline.
+    lambdaV5: config.v3LambdaV5,
     heightened: gating.heightened,
     lineHitRates: deriveLineHitRates(detail),
   };

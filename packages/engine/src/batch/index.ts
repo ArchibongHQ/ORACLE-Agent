@@ -48,6 +48,7 @@ function buildV3Input(
   config?: {
     v3Hfa?: number;
     v3VenueSplitUsed?: boolean;
+    v3LambdaV5?: boolean;
     v3GatesV4?: boolean;
     v3CornersCards?: boolean;
   }
@@ -126,6 +127,7 @@ function buildV3Input(
     },
     hfa: config?.v3Hfa,
     venueSplitUsed: config?.v3VenueSplitUsed,
+    lambdaV5: config?.v3LambdaV5,
     // Heightened bars are per-fixture (§1.2 youth/women/friendly/cup-final),
     // stamped as telemetry.v3Heightened by the PR-5a slate pre-filter — the
     // gates-v4 flag only enables the mechanism, it never heightens the slate.
@@ -230,6 +232,9 @@ export interface FixtureJob {
   home: string;
   away: string;
   league: string;
+  /** Canonical league ID (Sportradar tournament ID), when the source
+   *  captured one — see goalsV3/lambda.ts's V3_LEAGUE_BASELINES_BY_ID. */
+  leagueId?: string;
   kickoff: string; // ISO-8601 or YYYY-MM-DDTHH:mm:ssZ
   state?: RunState; // optional pre-populated telemetry / odds
 }

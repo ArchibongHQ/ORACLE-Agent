@@ -244,6 +244,10 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // field advantage via true home/away splits (suppress HFA multiplier).
     // ORACLE_V3_VENUE_SPLIT=on to enable (default off = team-overall stats).
     v3VenueSplitUsed: env.ORACLE_V3_VENUE_SPLIT?.toLowerCase() === "on",
+    // λ v5 independent-side xG blend (goalsV3/lambda.ts) — default on, was an
+    // unwired always-on option prior to this flag existing. Set
+    // ORACLE_V3_LAMBDA_V5=off to restore the prior both-sides-only blend.
+    v3LambdaV5: env.ORACLE_V3_LAMBDA_V5?.toLowerCase() !== "off",
     // v4 gate deltas: heightened EV bars, exact-goals/multigoals routing, sanity checks.
     // ORACLE_V3_GATES_V4=off to restore v3 semantics (default on).
     v3GatesV4: env.ORACLE_V3_GATES_V4?.toLowerCase() !== "off",

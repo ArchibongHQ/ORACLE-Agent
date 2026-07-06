@@ -344,6 +344,11 @@ export interface SportyBetEvent {
   away: string;
   marketCount: number;
   league?: string;
+  /** Sportradar tournament ID (e.g. "sr:tournament:17"), when the source
+   *  captured one — disambiguates leagues that share a generic name across
+   *  competitions. Absent for older lake partitions and non-SportyBet sources
+   *  (e.g. the ESPN scraper). See goalsV3/lambda.ts's V3_LEAGUE_BASELINES_BY_ID. */
+  leagueId?: string;
   kickoff_utc?: string;
   detail?: SportyBetEventDetail;
   /** Sportradar/SportyBet event ID (e.g. "sr:match:66456926") — present when the
@@ -504,6 +509,7 @@ export async function loadSportyBetIndex(
         }
       }
       const league = typeof ev.league === "string" ? ev.league : undefined;
+      const leagueId = typeof ev.leagueId === "string" && ev.leagueId ? ev.leagueId : undefined;
       const kickoff_utc = typeof ev.kickoff_utc === "string" ? ev.kickoff_utc : undefined;
       const eventId = typeof ev.eventId === "string" && ev.eventId ? ev.eventId : undefined;
       events.push({
@@ -511,6 +517,7 @@ export async function loadSportyBetIndex(
         away: ev.away,
         marketCount: mc,
         league,
+        leagueId,
         kickoff_utc,
         detail,
         eventId,

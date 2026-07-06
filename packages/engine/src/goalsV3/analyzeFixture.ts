@@ -74,6 +74,8 @@ export interface V3AnalyzeInput {
   hfa?: number;
   /** True when λ input uses venue-split data (suppress HFA multiplier). */
   venueSplitUsed?: boolean;
+  /** λ v5 independent-side xG blend (ORACLE_V3_LAMBDA_V5). Default on. */
+  lambdaV5?: boolean;
   /** v4 heightened gates: 8pt pass floor under HFA/hit-rate uncertainty (PR-3). */
   heightened?: boolean;
   /** v4 §0.3 per-selection hit-rates (PR-4) — overrides `penaltyFlags.hitRateMissing`
@@ -193,6 +195,7 @@ export function analyzeGoalsFixtureV3(input: V3AnalyzeInput): V3FixtureResult | 
     xgBlend: input.xgBlend,
     hfa: input.hfa,
     venueSplitUsed: input.venueSplitUsed,
+    lambdaV5: input.lambdaV5,
   });
   if (!lambdas) return null;
 

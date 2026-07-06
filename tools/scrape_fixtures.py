@@ -765,7 +765,7 @@ class BetExplorerScraper:
 # Timestamps are UTC Unix ms — no timezone conversion needed.
 # todayGames=true limits to today; pageSize=100 with pagination covers all matches.
 
-def _sportybet_event_to_record(ev: dict, league: str) -> Optional[dict]:
+def _sportybet_event_to_record(ev: dict, league: str, league_id: str = "") -> Optional[dict]:
     """Map a pcUpcomingEvents event to a sidecar record, or None if malformed."""
     home = ev.get("homeTeamName", "")
     away = ev.get("awayTeamName", "")
@@ -789,6 +789,12 @@ def _sportybet_event_to_record(ev: dict, league: str) -> Optional[dict]:
         "home": home,
         "away": away,
         "league": league,
+        # Sportradar tournament ID (e.g. "sr:tournament:17"), when the API
+        # response includes one — closes the league-name-collision gap where
+        # two unrelated competitions sharing a generic label (e.g. a
+        # lower-tier "Premier League") would otherwise be indistinguishable
+        # downstream. Empty string, not None, when absent (Parquet-friendly).
+        "leagueId": league_id,
         "kickoff_utc": kickoff,
         "marketCount": market_count,
     }
@@ -2175,8 +2181,13 @@ class SportyBetScraper:
                 tournaments = api_data.get("data", {}).get("tournaments", [])
                 for tournament in tournaments:
                     league = tournament.get("name", "Football")
+                    # Sportradar tournament ID (e.g. "sr:tournament:28424") —
+                    # verified against .tmp/sportybet_api_capture's real
+                    # pcUpcomingEvents response. Previously discarded; now
+                    # captured to disambiguate leagues sharing a generic name.
+                    league_id = str(tournament.get("id") or "")
                     for ev in tournament.get("events", []):
-                        record = _sportybet_event_to_record(ev, league)
+                        record = _sportybet_event_to_record(ev, league, league_id)
                         # Only keep fixtures for the requested date
                         if record and record["kickoff_utc"][:10] == date_str:
                             ev_key = (record["home"], record["away"], record["kickoff_utc"])
@@ -2331,7 +2342,7 @@ def write_sportybet_sidecar(date_str: str, events: list[dict]) -> None:
 
     Written even when events is empty (TS selector fails open on empty list).
     Atomic write — a concurrent reader must never see a partial file.
-    Each event record shape: {eventId, home, away, league, kickoff_utc, marketCount,
+    Each event record shape: {eventId, home, away, league, leagueId, kickoff_utc, marketCount,
       odds: {1x2, ou15, ou25, ou35, btts, dc, dnb, ah}, stats: {form, standings, goals, h2h},
       statscoverage: {leaguetable, formtable, headtohead, …},
       xg: {home: {xgf, xga|null, src} | null, away: ...}  # Understat top-5 + FBref fallback}

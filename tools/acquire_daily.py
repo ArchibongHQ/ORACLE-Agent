@@ -177,7 +177,8 @@ def events_to_lake_rows(events: list[dict], date_str: str, scraped_at: str) -> d
             continue
         fixtures.append({
             "dt": date_str, "event_id": eid, "home": ev.get("home"), "away": ev.get("away"),
-            "league": ev.get("league"), "kickoff_utc": ev.get("kickoff_utc"),
+            "league": ev.get("league"), "league_id": ev.get("leagueId") or "",
+            "kickoff_utc": ev.get("kickoff_utc"),
             "market_count": ev.get("marketCount"), "scraped_at": scraped_at,
         })
         odds.extend(_flatten_odds(eid, date_str, ev.get("odds"), scraped_at))

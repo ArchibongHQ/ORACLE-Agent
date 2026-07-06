@@ -92,6 +92,8 @@ export interface V3AllMarketsInput {
   hfa?: number;
   /** True when λ input uses venue-split data (suppress HFA). */
   venueSplitUsed?: boolean;
+  /** λ v5 independent-side xG blend (ORACLE_V3_LAMBDA_V5). Default on. */
+  lambdaV5?: boolean;
   /** v4 heightened gates: stricter bars, X excluded (PR-3). */
   heightened?: boolean;
 }
@@ -199,6 +201,7 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     xgBlend: input.xgBlend,
     hfa: input.hfa,
     venueSplitUsed: input.venueSplitUsed,
+    lambdaV5: input.lambdaV5,
   });
   if (!lambdas) return null;
 
