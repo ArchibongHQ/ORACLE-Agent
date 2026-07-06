@@ -82,6 +82,7 @@ import {
 } from "@oracle/runtime";
 import { MemoryAdapter } from "@oracle/storage";
 import cron from "node-cron";
+import { awaitAcquireOrTimeout, trackAcquireJob } from "./acquireChain.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -340,6 +341,12 @@ const DAILY_BATCH_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a faili
 const ACQUIRE_SLOT_MINUTES = 9 * 60 + 30; // 09:30 WAT
 const DAILY_BATCH_SLOT_MINUTES = 9 * 60 + 35; // 09:35 WAT
 
+// [audit fix, P0-4] Cap on how long the 09:35/09:40 cron slots wait for the
+// 09:30 acquire job before proceeding anyway (awaitAcquireDailyJobOrTimeout) —
+// the "fallback cron" half of the fix: a hung/dead acquire job must not
+// permanently starve the rest of the day's pipeline.
+const ACQUIRE_CHAIN_TIMEOUT_MS = 20 * 60 * 1000; // 20 min
+
 function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
   if (!lastBatchAt) return false;
   if (watDateString(new Date(lastBatchAt)) !== watDateString()) return false;
@@ -450,7 +457,16 @@ async function checkHeartbeatFreshness(): Promise<void> {
     process.stdout.write(
       "[worker] daily batch stale/missing for today — triggering back-online run\n"
     );
-    logJob("daily-batch@back-online", () => runDailyBatch("scheduled"));
+    // [audit fix, P0-4] This trigger and the lake/acquire back-online trigger
+    // above are two independent `if` blocks that can both fire in the same
+    // checkHeartbeatFreshness() pass (e.g. a machine coming back online with
+    // both the lake AND the batch stale) — without this handoff, this
+    // logJob's runDailyBatch could start concurrently with the other one's
+    // acquireDailyJob, the same race the cron-slot fix addresses below.
+    logJob("daily-batch@back-online", async () => {
+      await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
+      await runDailyBatch("scheduled");
+    });
   }
 
   // Fixture-report enrichment follow-up: sendDailyFixtureReport() sent today's
@@ -682,13 +698,32 @@ function runNewsEnrichment(): Promise<void> {
 /** Full 09:30 WAT acquisition job: scrape -> lake write -> news enrichment ->
  *  heartbeat. Only stamps lastAcquire when fixtures were actually acquired, so
  *  a failed run leaves the lake-staleness check above free to keep retrying
- *  rather than masking the failure with a fresh timestamp. */
-async function acquireDailyJob(): Promise<void> {
-  const count = await acquireDaily();
-  await runNewsEnrichment();
-  if (count > 0) {
-    writeHeartbeat("lastAcquire", { date: watDateString(), fixtures: count });
-  }
+ *  rather than masking the failure with a fresh timestamp.
+ *
+ *  [audit fix, P0-4] Tracked via trackAcquireJob so the 09:35/09:40 cron slots
+ *  (and the daily-batch back-online trigger) can await its actual completion
+ *  instead of firing on a fixed wall-clock offset — see acquireChain.ts. */
+function acquireDailyJob(): Promise<void> {
+  return trackAcquireJob(
+    (async () => {
+      const count = await acquireDaily();
+      await runNewsEnrichment();
+      if (count > 0) {
+        writeHeartbeat("lastAcquire", { date: watDateString(), fixtures: count });
+      }
+    })()
+  );
+}
+
+/** [audit fix, P0-4] Wait for acquireDailyJob (up to ACQUIRE_CHAIN_TIMEOUT_MS)
+ *  before starting the caller's own heavy work — logs and proceeds anyway if
+ *  the bound is hit (the "fallback cron" requirement). */
+function awaitAcquireDailyJobOrTimeout(timeoutMs: number): Promise<void> {
+  return awaitAcquireOrTimeout(timeoutMs, () => {
+    process.stdout.write(
+      `[worker] acquire-daily still running after ${Math.round(timeoutMs / 60000)}min — proceeding anyway\n`
+    );
+  });
 }
 
 /** Daily raw-fixture-data report (item #5): every SportyBet fixture for the
@@ -2051,26 +2086,37 @@ if (!IS_ONE_SHOT) {
     { timezone: WAT_TZ }
   );
 
-  // 2. Main Daily Batch — 09:35 WAT, 5 min after the scrape starts. Full LLM
+  // 2. Main Daily Batch — 09:35 WAT slot, but its heavy work now waits (up to
+  // ACQUIRE_CHAIN_TIMEOUT_MS) for the 09:30 acquire job to actually finish
+  // instead of assuming 5 minutes was enough [audit fix, P0-4]. Full LLM
   // all-markets analysis -> HTML report + Telegram. Its internal scrape is
   // gap-fill-only — runDailyBatch only re-acquires when the 09:30 lake is
   // missing/stale (see isLakeFreshForToday), so this normally reuses the lake the
   // job above just wrote.
   cron.schedule(
     "35 9 * * *",
-    () => logJob("daily-batch@09:35-WAT", () => runDailyBatch("scheduled")),
+    () =>
+      logJob("daily-batch@09:35-WAT", async () => {
+        await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
+        await runDailyBatch("scheduled");
+      }),
     { timezone: WAT_TZ }
   );
 
-  // 3. Goals batch — 09:40 WAT, standalone after the main daily run.
-  // Independent discovery funnel (mechanical pre-filter -> Sonnet screen) over the
-  // full SportyBet pool, using the same fresh morning odds the lake above wrote.
-  // runGoalsBatch reads the SportyBet index written by acquireDailyJob; if the
-  // scrape is still in progress (in-flight guard) it waits for it via loadSportyBetIndex
+  // 3. Goals batch — 09:40 WAT slot, same chained-not-clocked handoff as the
+  // daily batch above [audit fix, P0-4]. Independent discovery funnel
+  // (mechanical pre-filter -> Sonnet screen) over the full SportyBet pool,
+  // using the same fresh morning odds the lake above wrote. runGoalsBatch
+  // reads the SportyBet index written by acquireDailyJob; if the scrape is
+  // still in progress (in-flight guard) it waits for it via loadSportyBetIndex
   // fallback + scrapeFixtures() call inside runGoalsBatch itself.
   cron.schedule(
     "40 9 * * *",
-    () => logJob("goals-batch@09:40-WAT", () => runGoalsBatch("scheduled")),
+    () =>
+      logJob("goals-batch@09:40-WAT", async () => {
+        await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
+        await runGoalsBatch("scheduled");
+      }),
     { timezone: WAT_TZ }
   );
 
