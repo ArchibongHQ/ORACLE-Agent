@@ -932,6 +932,53 @@ describe("analyzeFixtureMarketsV3 (orchestrator)", () => {
       if (a.outcome === "done") expect(a.cls).not.toBe("X");
     }
   });
+
+  describe("dynamicRho override (PR-5, §8.1 NEW-07)", () => {
+    // Over/Under 1.5 (not 2.5): the DC tau correction only redistributes
+    // probability among the four low-score cells (0-0/1-0/0-1/1-1) — all of
+    // which sit on the SAME side of the 2.5 line, so Over/Under 2.5 is
+    // mathematically insensitive to rho. 1-1 straddles the 1.5 line (it's the
+    // only one of the four cells that's "over"), so Over/Under 1.5 is the
+    // line that actually moves when rho changes.
+    const allMarkets: AllMarketEntry[] = [
+      {
+        id: "18",
+        name: "Over/Under",
+        specifier: "total=1.5",
+        outcomes: [
+          { id: "1", desc: "Over 1.5", odds: "1.30" },
+          { id: "2", desc: "Under 1.5", odds: "3.20" },
+        ],
+      },
+    ];
+
+    it("omitting dynamicRho falls back to the static getLeagueParams baseRho (unchanged)", async () => {
+      const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+      const withoutOverride = analyzeFixtureMarketsV3({ ...baseInput, allMarkets });
+      // Default league's baseRho per execution/index.ts's LEAGUE_PARAMS is -0.13.
+      const withMatchingOverride = analyzeFixtureMarketsV3({
+        ...baseInput,
+        allMarkets,
+        dynamicRho: -0.13,
+      });
+      expect(withoutOverride).not.toBeNull();
+      expect(withMatchingOverride).not.toBeNull();
+      const mp = (r: typeof withoutOverride) =>
+        r!.assessments.find((a) => a.desc === "Over 1.5")!.mp;
+      expect(mp(withMatchingOverride)).toBeCloseTo(mp(withoutOverride), 10);
+    });
+
+    it("a dynamicRho override changes the priced model probability", async () => {
+      const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+      const withoutOverride = analyzeFixtureMarketsV3({ ...baseInput, allMarkets });
+      const withOverride = analyzeFixtureMarketsV3({ ...baseInput, allMarkets, dynamicRho: -0.28 });
+      expect(withoutOverride).not.toBeNull();
+      expect(withOverride).not.toBeNull();
+      const mp = (r: typeof withoutOverride) =>
+        r!.assessments.find((a) => a.desc === "Over 1.5")!.mp;
+      expect(mp(withOverride)).not.toBeCloseTo(mp(withoutOverride), 5);
+    });
+  });
 });
 
 // ── totals engine — per-line marketStatMissing flag (PR-4 §0.3) ────────────

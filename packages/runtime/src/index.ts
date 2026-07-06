@@ -184,3 +184,4 @@ export {
   selectGoalsAccumulator,
   V3_MINI_ACCA_HAIRCUT,
 } from "./selectGoals.js";
+export { blendRecencyScored } from "./sportyBetStats.js";

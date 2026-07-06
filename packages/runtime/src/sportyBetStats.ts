@@ -122,6 +122,25 @@ function formToRecentMatches(
   return matches.length >= 3 ? matches : null;
 }
 
+/** Recency-blend a season-average scored rate: prefer the real recentGoals
+ *  last-5 signal (60/40 recent/season blend), fall back to a form-string-
+ *  synthesized RecentMatch[] run through applyTemporalDecay, or return the
+ *  season average unchanged when neither recency signal exists. Shared by
+ *  the legacy xH/xA override below and the v3 scoredPer90H/A raw λ inputs —
+ *  both need the same recency treatment, previously only applied to xH/xA
+ *  (§3.1 goalsV3/marketsV3 lambdas ran on undecayed season averages). */
+export function blendRecencyScored(
+  seasonAvg: number | null | undefined,
+  recentAvg: number | null | undefined,
+  formLast5: string | null | undefined
+): number | null {
+  if (!finite(seasonAvg)) return seasonAvg ?? null;
+  const RECENT_W = 0.6;
+  if (finite(recentAvg)) return recentAvg * RECENT_W + seasonAvg * (1 - RECENT_W);
+  const form = formToRecentMatches(formLast5, seasonAvg);
+  return form ? applyTemporalDecay(form, seasonAvg) : seasonAvg;
+}
+
 export interface StatsOverride {
   xH?: number;
   xA?: number;
@@ -289,9 +308,23 @@ export function buildStatsOverride(
   const gConcededH = stats.goals?.home?.avg_conceded;
   const gScoredA = stats.goals?.away?.avg_scored;
   const gConcededA = stats.goals?.away?.avg_conceded;
-  if (finite(gScoredH)) override.scoredPer90H = gScoredH;
+  // Recency-blend the scored side only (mirrors the xH/xA decay below, which
+  // has never applied to these v3-specific fields — goalsV3/marketsV3 lambdas
+  // ran on flat season averages with zero recency weighting until now).
+  // Conceded rates stay season-flat, matching the existing xH/xA convention.
+  const scoredH = blendRecencyScored(
+    gScoredH,
+    stats.recentGoals?.home?.scored_avg,
+    stats.form?.home?.last5
+  );
+  const scoredA = blendRecencyScored(
+    gScoredA,
+    stats.recentGoals?.away?.scored_avg,
+    stats.form?.away?.last5
+  );
+  if (scoredH !== null) override.scoredPer90H = scoredH;
   if (finite(gConcededH)) override.concededPer90H = gConcededH;
-  if (finite(gScoredA)) override.scoredPer90A = gScoredA;
+  if (scoredA !== null) override.scoredPer90A = scoredA;
   if (finite(gConcededA)) override.concededPer90A = gConcededA;
   if (finite(stats.xg?.home?.xgf)) override.xgfH = stats.xg?.home?.xgf;
   if (finite(stats.xg?.home?.xga)) override.xgaH = stats.xg?.home?.xga;

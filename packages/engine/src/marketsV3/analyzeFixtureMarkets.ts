@@ -96,6 +96,10 @@ export interface V3AllMarketsInput {
   lambdaV5?: boolean;
   /** v4 heightened gates: stricter bars, X excluded (PR-3). */
   heightened?: boolean;
+  /** Per-league dynamic rho refit from the calibration ledger's observed
+   *  scoreline frequencies (CalibrationMetrics.dynamicRhoParams, §8.1 NR-MLE).
+   *  Falls back to the static getLeagueParams(league).baseRho when absent. */
+  dynamicRho?: number;
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -205,7 +209,7 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
   });
   if (!lambdas) return null;
 
-  const rho = getLeagueParams(input.league).baseRho;
+  const rho = input.dynamicRho ?? getLeagueParams(input.league).baseRho;
   const split = deriveDualSplit(lambdas, input.devigged1x2);
   const statsGrid = buildV3Grid(split.stats.lambdaHome, split.stats.lambdaAway, rho);
   const shapeGrid = buildV3Grid(split.odds.lambdaHome, split.odds.lambdaAway, rho);

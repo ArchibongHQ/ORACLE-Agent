@@ -37,6 +37,7 @@ import {
 } from "@oracle/notify";
 import {
   applySlateVerdicts,
+  blendRecencyScored,
   buildConfig,
   buildGoalsV3Config,
   buildMarketsV3GateConfig,
@@ -60,6 +61,7 @@ import {
   generateAndWriteGoalsWorkbook,
   heightenedTrendsAligned,
   loadEnv,
+  loadLedgerState,
   loadSportyBetIndex,
   markPrompted,
   ORACLE_PRIORITY_LEAGUES,
@@ -1509,6 +1511,13 @@ function buildGoalsV3Input(
     completeness: number;
     sources: string[];
     heightened: boolean;
+    /** Per-league dynamic rho from the calibration ledger (see runGoalsBatchV3's
+     *  dynamicRhoByLeague). Undefined ⇒ analyzeGoalsFixtureV3 falls back to the
+     *  static getLeagueParams baseRho — same as before this field existed. Not
+     *  threaded through the R10 cross-check hook (buildGoalsCrossCheckHook)
+     *  below, a deliberate scope cut mirroring the pre-existing hfa/
+     *  venueSplitUsed gap noted on lambdaV5 above. */
+    dynamicRho?: number;
   }
 ): V3AnalyzeInput {
   return {
@@ -1522,9 +1531,21 @@ function buildGoalsV3Input(
     lambdaInput: {
       league: fixture.league,
       leagueId: fixture.leagueId,
-      homeScoredPer90: detail?.stats?.goals?.home?.avg_scored ?? null,
+      // Recency-blended scored rate (recentGoals last-5 preferred, form-string
+      // + applyTemporalDecay fallback) — this path builds its lambda input
+      // straight from the sidecar detail rather than via buildStatsOverride,
+      // so it needs the same blend applied inline. Conceded stays season-flat.
+      homeScoredPer90: blendRecencyScored(
+        detail?.stats?.goals?.home?.avg_scored,
+        detail?.stats?.recentGoals?.home?.scored_avg,
+        detail?.stats?.form?.home?.last5
+      ),
       homeConcededPer90: detail?.stats?.goals?.home?.avg_conceded ?? null,
-      awayScoredPer90: detail?.stats?.goals?.away?.avg_scored ?? null,
+      awayScoredPer90: blendRecencyScored(
+        detail?.stats?.goals?.away?.avg_scored,
+        detail?.stats?.recentGoals?.away?.scored_avg,
+        detail?.stats?.form?.away?.last5
+      ),
       awayConcededPer90: detail?.stats?.goals?.away?.avg_conceded ?? null,
       nHome: v3SampleSize(detail, "home"),
       nAway: v3SampleSize(detail, "away"),
@@ -1545,6 +1566,7 @@ function buildGoalsV3Input(
     lambdaV5: config.v3LambdaV5,
     heightened: gating.heightened,
     lineHitRates: deriveLineHitRates(detail),
+    dynamicRho: gating.dynamicRho,
   };
 }
 
@@ -1651,6 +1673,14 @@ async function runGoalsBatchV3(
   }
 
   const storage = new MemoryAdapter(STORE_PATH);
+  // §8.1/PR-5: per-league dynamic rho (NEW-07) — same "on"-mode-only gating
+  // analyze.ts uses when stamping job.state.ledger for the legacy/marketsV3
+  // path; goals-v3 has no RunState/job.state ledger concept of its own, so
+  // load the ledger directly once per batch instead.
+  const dynamicRhoByLeague =
+    config.calibrationLedger === "on"
+      ? (await loadLedgerState(storage))?.metrics.dynamicRhoParams
+      : undefined;
   const withH2H = await enrichWithH2H(
     preJobs.map((x) => x.job),
     config.footballDataApiKey
@@ -1742,6 +1772,7 @@ async function runGoalsBatchV3(
       // Per-fixture (§1.2 eligibility class), not slate-wide: the gates-v4 flag
       // enables the heightened mechanism, eligibility decides who it applies to.
       heightened: config.v3GatesV4 !== false && heightened,
+      dynamicRho: dynamicRhoByLeague?.[job.league],
     });
     const result = analyzeGoalsFixtureV3(input);
     if (!result) {

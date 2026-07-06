@@ -132,6 +132,11 @@ function buildV3Input(
     // stamped as telemetry.v3Heightened by the PR-5a slate pre-filter — the
     // gates-v4 flag only enables the mechanism, it never heightens the slate.
     heightened: config?.v3GatesV4 !== false && t.v3Heightened === true,
+    // Same ledger.metrics.dynamicRhoParams read the legacy engine already does
+    // at execution/index.ts:1524 — only populated (mode="on") once calibration
+    // has ≥30 resolved fixtures for this league; undefined otherwise, so the
+    // v3 gate falls back to the static getLeagueParams baseRho unchanged.
+    dynamicRho: state.ledger?.metrics?.dynamicRhoParams?.[job.league],
   };
 }
 

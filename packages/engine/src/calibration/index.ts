@@ -3,7 +3,7 @@
 import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS, withKeyLock } from "@oracle/storage";
 import type { MarketFamily } from "../markets/index.js";
-import { clamp, rankedProbabilityScore, safeNum } from "../math/index.js";
+import { clamp, estimateDynamicRho, rankedProbabilityScore, safeNum } from "../math/index.js";
 import type { ClvSourceQuality, LiquidityTag } from "../types.js";
 
 export interface CalibrationMetrics {
@@ -25,7 +25,7 @@ export interface CalibrationMetrics {
   winRate: number;
   totalPnl: number;
   totalStaked: number;
-  dynamicRhoParams: Record<string, unknown>;
+  dynamicRhoParams: Record<string, number>;
   clvDecayCalibration: Record<string, unknown>;
   ruinProb: number;
   ahAccuracy: Record<string, Record<string, number>>;
@@ -445,6 +445,18 @@ export class CalibrationEngine {
       };
     });
 
+    // §8.1/NEW-07: per-league dynamic rho via NR-MLE over the four-cell scoreline
+    // frequencies already collected into goalData above (was computed and discarded
+    // every time — the {} literal below never called estimateDynamicRho on real data,
+    // so execution/index.ts's `ledger?.metrics?.dynamicRhoParams?.[league]` consumer
+    // was always reading an empty table). estimateDynamicRho itself falls back to
+    // baseRho when a league's n < 30, so thin-data leagues are unaffected.
+    const dynamicRhoParams: Record<string, number> = {};
+    Object.keys(goalData).forEach((lg) => {
+      const baseRho = LEAGUE_PARAMS[lg]?.baseRho ?? LEAGUE_PARAMS.Default!.baseRho;
+      dynamicRhoParams[lg] = estimateDynamicRho(goalData[lg], baseRho);
+    });
+
     // Per-league calibFactor with hierarchical shrinkage toward global calibFactor (§8.3).
     const leagueCalibFactors: Record<
       string,
@@ -532,7 +544,7 @@ export class CalibrationEngine {
       winRate: winRateCalc,
       totalPnl: pnl,
       totalStaked: stk,
-      dynamicRhoParams: {},
+      dynamicRhoParams,
       clvDecayCalibration: this.backtestCLV(res),
       ruinProb,
       ahAccuracy: ahAccuracyFlat,

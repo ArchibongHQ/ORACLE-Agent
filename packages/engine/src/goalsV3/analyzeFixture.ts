@@ -81,6 +81,11 @@ export interface V3AnalyzeInput {
   /** v4 §0.3 per-selection hit-rates (PR-4) — overrides `penaltyFlags.hitRateMissing`
    *  per candidate line when the matching entry is defined. */
   lineHitRates?: V3LineHitRates;
+  /** Per-league dynamic rho refit from the calibration ledger's observed
+   *  scoreline frequencies (CalibrationMetrics.dynamicRhoParams, §8.1 NR-MLE).
+   *  Falls back to the static getLeagueParams(league).baseRho when absent
+   *  (calibrationLedger mode "off"/"shadow", or a league with n<30 samples). */
+  dynamicRho?: number;
 }
 
 /** One market's full v3 assessment — kept for every priced market including
@@ -199,7 +204,7 @@ export function analyzeGoalsFixtureV3(input: V3AnalyzeInput): V3FixtureResult | 
   });
   if (!lambdas) return null;
 
-  const rho = getLeagueParams(input.league).baseRho;
+  const rho = input.dynamicRho ?? getLeagueParams(input.league).baseRho;
   const nb = v3NbDispersion(input.nbDispersion);
 
   // Raw-μ matrix: O/U totals (§3.2 exact tail, DC-corrected cells).

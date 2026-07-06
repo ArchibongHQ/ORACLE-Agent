@@ -554,6 +554,26 @@ describe("analyzeGoalsFixtureV3 (full pipeline)", () => {
     });
   });
 
+  describe("dynamicRho override (PR-5, §8.1 NEW-07)", () => {
+    it("uses the static league baseRho when dynamicRho is absent (unchanged behavior)", () => {
+      const withStatic = analyzeGoalsFixtureV3(baseInput());
+      const withSameAsStatic = analyzeGoalsFixtureV3(baseInput({ dynamicRho: -0.13 })); // PL's baseRho
+      expect(withStatic).not.toBeNull();
+      expect(withSameAsStatic).not.toBeNull();
+      const mp = (r: typeof withStatic) => r!.assessments.find((a) => a.label === "Over 1.5")!.mp;
+      expect(mp(withSameAsStatic)).toBeCloseTo(mp(withStatic), 10);
+    });
+
+    it("a dynamicRho override actually changes the priced model probabilities", () => {
+      const withStatic = analyzeGoalsFixtureV3(baseInput());
+      const withDynamic = analyzeGoalsFixtureV3(baseInput({ dynamicRho: -0.28 }));
+      expect(withStatic).not.toBeNull();
+      expect(withDynamic).not.toBeNull();
+      const mp = (r: typeof withStatic) => r!.assessments.find((a) => a.label === "Over 1.5")!.mp;
+      expect(mp(withDynamic)).not.toBeCloseTo(mp(withStatic), 5);
+    });
+  });
+
   describe("rationale limits text", () => {
     it("surfaces every active penalty flag, including hfaDefaultUsed and hitRateMissing", () => {
       const result = analyzeGoalsFixtureV3(

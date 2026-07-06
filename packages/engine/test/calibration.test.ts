@@ -12,6 +12,7 @@
 import {
   applyPlatt,
   CalibrationEngine,
+  estimateDynamicRho,
   expectedCalibrationError,
   logLoss,
   plattScale,
@@ -78,6 +79,59 @@ describe("LAYER 7: CalibrationEngine.calculate (T36-T42, T111)", () => {
   });
   it("T111: dynamicRhoParams field present (NEW-07)", () =>
     expect(metrics.dynamicRhoParams).toBeDefined());
+});
+
+// ── PR-5 (§8.1 NEW-07): dynamicRhoParams actually populated from goalData ────
+// Was previously computed into a local `goalData` map every call and then
+// discarded (`dynamicRhoParams: {}` hardcoded) — execution/index.ts's
+// `ledger?.metrics?.dynamicRhoParams?.[league]` consumer always read an empty
+// table. This locks in the fix: the ledger's real per-league scoreline
+// frequencies now flow through estimateDynamicRho (same NR-MLE bisection
+// math.test.ts already covers) instead of being thrown away.
+describe("dynamicRhoParams — real computation, not a discarded stub (PR-5)", () => {
+  it("wires goalData through estimateDynamicRho for a league with n >= 30", () => {
+    const bets: BetRecord[] = [
+      ...Array.from({ length: 5 }, () => ({ homeGoals: 0, awayGoals: 0 })),
+      ...Array.from({ length: 5 }, () => ({ homeGoals: 1, awayGoals: 0 })),
+      ...Array.from({ length: 5 }, () => ({ homeGoals: 0, awayGoals: 1 })),
+      ...Array.from({ length: 5 }, () => ({ homeGoals: 1, awayGoals: 1 })),
+      ...Array.from({ length: 10 }, () => ({ homeGoals: 2, awayGoals: 2 })), // padding, no bucket
+    ].map((g, i) => ({
+      status: "resolved" as const,
+      outcome: i % 2 === 0 ? "win" : "loss",
+      mp: 0.5,
+      odds: 2.0,
+      stakeAmt: 50,
+      league: "Premier League",
+      ...g,
+    }));
+    const metrics = engine.calculate(bets);
+    // Matches the goalData this exact bet mix produces: n=30, hG=30, aG=30,
+    // zeroZero=5, oneZero=5, zeroOne=5, oneOne=5 — Premier League's baseRho
+    // in this file's LEAGUE_PARAMS is -0.13.
+    const expected = estimateDynamicRho(
+      { n: 30, hG: 30, aG: 30, zeroZero: 5, oneZero: 5, zeroOne: 5, oneOne: 5 },
+      -0.13
+    );
+    expect(metrics.dynamicRhoParams["Premier League"]).toBeCloseTo(expected, 8);
+    expect(metrics.dynamicRhoParams["Premier League"]).toBeGreaterThanOrEqual(-0.3);
+    expect(metrics.dynamicRhoParams["Premier League"]).toBeLessThanOrEqual(0.02);
+  });
+
+  it("falls back to baseRho (seed unchanged) for a league with n < 30", () => {
+    const bets: BetRecord[] = Array.from({ length: 10 }, () => ({
+      status: "resolved" as const,
+      outcome: "win" as const,
+      mp: 0.5,
+      odds: 2.0,
+      stakeAmt: 50,
+      league: "La Liga",
+      homeGoals: 1,
+      awayGoals: 1,
+    }));
+    const metrics = engine.calculate(bets);
+    expect(metrics.dynamicRhoParams["La Liga"]).toBe(-0.16); // La Liga's baseRho, n=10 < 30
+  });
 });
 
 // ── Empty ledger returns defaults ─────────────────────────────────────────────

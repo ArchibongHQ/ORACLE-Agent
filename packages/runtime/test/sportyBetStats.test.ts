@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SportyBetEventDetail } from "../src/selectFixtures.js";
 import {
+  blendRecencyScored,
   buildStatsOverride,
   buildStatsSoftContext,
   goalRateNudge,
@@ -484,5 +485,64 @@ describe("buildStatsOverride — v3 raw lambda inputs (§3.1, ungated by MIN_PLA
     const override = buildStatsOverride(d);
     expect(override?.scoredPer90H).toBeUndefined();
     expect(override?.xgfH).toBeUndefined();
+  });
+
+  it("recency-blends scoredPer90H/A from recentGoals when present (PR-5, §8.1)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.0, avg_conceded: 1.0 },
+        away: { avg_scored: 1.0, avg_conceded: 1.0 },
+      },
+      recentGoals: {
+        home: { scored_avg: 2.0, n: 5 },
+        away: { scored_avg: 0.4, n: 5 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    // RECENT_W=0.6: 2.0*0.6 + 1.0*0.4 = 1.6; 0.4*0.6 + 1.0*0.4 = 0.64
+    expect(override?.scoredPer90H).toBeCloseTo(1.6, 5);
+    expect(override?.scoredPer90A).toBeCloseTo(0.64, 5);
+  });
+
+  it("leaves scoredPer90H/A at the season average when no recency signal exists", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.4, avg_conceded: 1.0 },
+        away: { avg_scored: 0.8, avg_conceded: 1.6 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBe(1.4);
+    expect(override?.scoredPer90A).toBe(0.8);
+  });
+});
+
+describe("blendRecencyScored (PR-5, §8.1 temporal decay for v3 lambda inputs)", () => {
+  it("returns the season average unchanged when neither recency signal exists", () => {
+    expect(blendRecencyScored(1.4, undefined, undefined)).toBe(1.4);
+  });
+
+  it("returns null/undefined-safe when the season average itself is absent", () => {
+    expect(blendRecencyScored(undefined, 2.0, "WWDLW")).toBeNull();
+    expect(blendRecencyScored(null, 2.0, "WWDLW")).toBeNull();
+  });
+
+  it("prefers the real recentGoals signal at a 60/40 recent/season blend", () => {
+    expect(blendRecencyScored(1.0, 2.0, undefined)).toBeCloseTo(1.6, 5);
+  });
+
+  it("falls back to form-string + applyTemporalDecay when recentGoals is absent", () => {
+    const v = blendRecencyScored(1.4, undefined, "WWDLW");
+    // A W-heavy last-5 pulls the decayed average above the flat season figure.
+    expect(v).not.toBeNull();
+    expect(v as number).toBeGreaterThan(1.4);
+  });
+
+  it("a losing-heavy form string pulls the decayed average below the season figure", () => {
+    const v = blendRecencyScored(1.4, undefined, "LLDLL");
+    expect(v).not.toBeNull();
+    expect(v as number).toBeLessThan(1.4);
   });
 });
