@@ -2,7 +2,7 @@
  *  an HTTP SDK. Mirrors callOpenRouter.ts's contract — never throws, returns
  *  null on any failure (binary missing, timeout, non-zero exit, an `is_error`
  *  envelope, unparseable JSON) — so every call site falls through to the
- *  existing GLM-first API cascade unchanged on null.
+ *  existing DeepSeek-first API cascade unchanged on null.
  *
  *  Envelope shape live-verified 2026-06-22 via `claude -p --output-format
  *  json` (success and a forced model-404 error case): top-level

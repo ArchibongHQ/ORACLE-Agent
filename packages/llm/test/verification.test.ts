@@ -86,29 +86,31 @@ describe("callVerification — Claude Opus tier", () => {
   });
 });
 
-describe("callVerification — OpenRouter fallback tiers, GLM-first", () => {
-  it("uses GLM-5.2 when Claude throws", async () => {
+describe("callVerification — OpenRouter fallback tiers, DeepSeek-first", () => {
+  it("uses DeepSeek-V4-Flash when Claude throws", async () => {
     messagesCreateMock.mockRejectedValue(new Error("claude down"));
     fetchMock.mockResolvedValue(chatResponse('{"status":"APPROVED","rationale":"sound"}'));
     const ctx = makeCtx({ claudeApiKey: "ck", openrouterApiKey: "or" });
     const res = await callVerification("p", ctx);
     expect(res.status).toBe("APPROVED");
-    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2);
-    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GLM_5_2]);
+    expect(res.model).toBe(OPENROUTER_MODELS.DEEPSEEK_V4_FLASH);
+    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.DEEPSEEK_V4_FLASH]);
   });
 
-  it("falls GLM-5.2 → GLM-5.1 → DeepSeek-R1 in order", async () => {
+  it("falls DeepSeek-V4-Flash → DeepSeek-V4-Pro → DeepSeek-R1 → GLM-5.2 in order", async () => {
     fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(chatResponse('{"status":"VETO","rationale":"flaw"}'));
     const res = await callVerification("p", makeCtx({ openrouterApiKey: "or" }));
     expect(res.status).toBe("VETO");
-    expect(res.model).toBe(OPENROUTER_MODELS.DEEPSEEK_R1);
+    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2);
     expect(postedModels(fetchMock)).toEqual([
-      OPENROUTER_MODELS.GLM_5_2,
-      OPENROUTER_MODELS.GLM_5_1,
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
       OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.GLM_5_2,
     ]);
   });
 });
@@ -163,6 +165,27 @@ describe("callVerification — terminal SKIPPED behavior", () => {
     expect(res.status).toBe("SKIPPED");
     expect(res.rationale).toBe("CVL error — all tiers failed");
     expect(res.model).toBe("none");
+    // Full cascade order, paid models before the free tier — locks in the
+    // 2026-07-06 ordering-bug fix (deeper paid fallbacks must precede GPT-OSS).
+    expect(postedModels(fetchMock)).toEqual([
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.GLM_5_1,
+      OPENROUTER_MODELS.KIMI_K2,
+      OPENROUTER_MODELS.GPT_4O,
+      OPENROUTER_MODELS.QWEN3_235B_THINKING,
+      OPENROUTER_MODELS.MINIMAX_M3,
+      OPENROUTER_MODELS.MINIMAX_M2_5,
+      OPENROUTER_MODELS.MIMO_V2_5_PRO,
+      OPENROUTER_MODELS.QWEN3_CODER_480B,
+      OPENROUTER_MODELS.QWEN3_CODER_NEXT,
+      OPENROUTER_MODELS.LONGCAT_FLASH_CHAT,
+      OPENROUTER_MODELS.NEMOTRON_3_ULTRA,
+      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.GPT_OSS_20B,
+    ]);
   });
 
   it("returns SKIPPED 'all tiers failed' with model none when no keys configured", async () => {

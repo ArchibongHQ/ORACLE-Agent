@@ -40,15 +40,30 @@ export const DECISION_CASCADE: ModelId[] = [MODELS.GEMINI_PRO, MODELS.GEMINI_FLA
 /** OpenRouter base URL (OpenAI-compatible endpoint). */
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
-/** OpenRouter model IDs — Tier 2 (paid) and Tier 3 (free).
- *  Cascade order per owner directive 2026-06-29:
- *  Claude (primary) → GLM-5.2 → GLM-5.1 → DeepSeek → Kimi-K2 → GPT → Qwen3 → Minimax-M3
- *  then free tier: GPT-OSS-120B → Nemotron → Qwen3-Next 80B → etc. */
+/** OpenRouter model IDs — Tier 2 (paid) and Tier 3 (free). Paid models MUST stay
+ *  ahead of the free tier in every call-site cascade — never append a new paid
+ *  fallback after the free safety net, that silently demotes it below weaker models.
+ *  Cascade order per owner directive 2026-07-06:
+ *  Claude (primary) → DeepSeek-V4-Flash → DeepSeek-V4-Pro → DeepSeek-R1 → GLM-5.2 →
+ *  GLM-5.1 → Kimi-K2 → GPT-4o → Qwen3-235B-Thinking → MiniMax-M3 → MiniMax-M2.5 →
+ *  MiMo-V2.5 → Qwen3-Coder-480B → Qwen3-Coder-Next(80B) → LongCat-Flash-Chat →
+ *  Nemotron-3-Ultra, THEN free tier last: GPT-OSS-120B → Nemotron-3-Super →
+ *  Qwen3-Next-80B → GPT-OSS-20B → Llama-3.3-70B. (NEMOTRON_NANO_30B is defined but
+ *  not referenced by any call site — dormant, not part of the live cascade.)
+ *
+ *  Owner asked for "LongCat-2.0" and "Nemotron-4-Ultra"; verified 2026-07-06 neither
+ *  exists on OpenRouter yet (LongCat-2.0 not listed — meituan/longcat-2 returns "not
+ *  available"; NVIDIA's current flagship is Nemotron-3-Ultra, there is no Nemotron-4
+ *  Ultra). Substituted the closest live models (LongCat-Flash-Chat 560B, Nemotron-3-
+ *  Ultra 550B) per owner direction. Similarly "Qwen3 Coder 32B" doesn't exist — the
+ *  existing Qwen3-Coder-Next (80B) stands in as the smaller coder-specialized tier. */
 export const OPENROUTER_MODELS = {
   // ── Tier 2 — paid frontier models ────────────────────────────────────────
-  GLM_5_2: "z-ai/glm-5.2", // 744B MoE, 1M ctx — primary OR model
+  DEEPSEEK_V4_FLASH: "deepseek/deepseek-v4-flash", // 284B MoE (13B active), 1M ctx — verified 2026-07-06
+  DEEPSEEK_V4_PRO: "deepseek/deepseek-v4-pro", // 1.6T MoE (49B active), 1M ctx — verified 2026-07-06
+  DEEPSEEK_R1: "deepseek/deepseek-r1", // still live (paid slug) — verified 2026-07-06
+  GLM_5_2: "z-ai/glm-5.2", // 744B MoE, 1M ctx
   GLM_5_1: "z-ai/glm-5.1", // GLM-5.2 internal fallback
-  DEEPSEEK_R1: "deepseek/deepseek-r1", // DeepSeek R1 reasoning model — verified 2026-06-29
   // Owner asked for "Kimi-2.7"; verified 2026-06-29 there is no general-purpose
   // kimi-k2.7 slug — only the original kimi-k2 (general chat/JSON, no forced
   // extended thinking) and kimi-k2.7-code (coding-specialized, always-thinking,
@@ -57,8 +72,12 @@ export const OPENROUTER_MODELS = {
   GPT_4O: "openai/gpt-4o", // verified 2026-06-29 on openrouter.ai/models
   QWEN3_235B_THINKING: "qwen/qwen3-235b-a22b-thinking-2507", // Qwen3 235B — reasoning, near-frontier
   MINIMAX_M3: "minimax/minimax-m3", // verified 2026-06-29 on openrouter.ai/models
+  MINIMAX_M2_5: "minimax/minimax-m2.5", // 197K ctx, SWE-Bench Verified 80.2% — verified 2026-07-06
   MIMO_V2_5_PRO: "xiaomi/mimo-v2.5-pro", // beats Claude Opus on SWE-bench Pro
+  QWEN3_CODER_480B: "qwen/qwen3-coder", // 480B A35B MoE coder — verified 2026-07-06
   QWEN3_CODER_NEXT: "qwen/qwen3-coder-next", // SWE-bench Verified >70%, 80B MoE
+  LONGCAT_FLASH_CHAT: "meituan/longcat-flash-chat", // 560B MoE — LongCat-2.0 stand-in, see note above
+  NEMOTRON_3_ULTRA: "nvidia/nemotron-3-ultra-550b-a55b", // 550B MoE — Nemotron-4-Ultra stand-in, see note above
   // ── Tier 3 — free (:free variants) ───────────────────────────────────────
   // Verified live 2026-06-17: GPT_OSS_120B + NEMOTRON_SUPER_120B work with zero
   // credits; others are free but can 429 (transient rate-limit) — kept as deeper

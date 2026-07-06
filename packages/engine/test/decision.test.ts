@@ -383,16 +383,31 @@ describe("decide — GLM-5.2 shadow run", () => {
       rationale: "GLM-5.2 tier-3 pick.",
       rejectedAndWhy: [],
     };
-    // GLM-first cascade: GLM-5.2 is tried first and succeeds immediately.
-    const callOpenRouterJson = vi.fn().mockResolvedValueOnce(JSON.stringify(glmResponse));
+    // DeepSeek-first cascade: DeepSeek-V4-Flash/Pro/R1 fail, GLM-5.2 is tried next and succeeds.
+    const callOpenRouterJson = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(JSON.stringify(glmResponse));
     vi.doMock("@oracle/llm", () => ({
       callOpenRouterJson,
       OPENROUTER_MODELS: {
+        DEEPSEEK_V4_FLASH: "deepseek/deepseek-v4-flash",
+        DEEPSEEK_V4_PRO: "deepseek/deepseek-v4-pro",
+        DEEPSEEK_R1: "deepseek/deepseek-r1",
         GPT_OSS_120B: "openai/gpt-oss-120b:free",
         NEMOTRON_SUPER_120B: "nvidia/nemotron-3-super-120b-a12b:free",
         QWEN3_NEXT_80B: "qwen/qwen3-next-80b-a3b-instruct:free",
         GPT_OSS_20B: "openai/gpt-oss-20b:free",
         LLAMA_3_3_70B: "meta-llama/llama-3.3-70b-instruct:free",
+        MINIMAX_M3: "minimax/minimax-m3",
+        MINIMAX_M2_5: "minimax/minimax-m2.5",
+        MIMO_V2_5_PRO: "xiaomi/mimo-v2.5-pro",
+        QWEN3_CODER_480B: "qwen/qwen3-coder",
+        QWEN3_CODER_NEXT: "qwen/qwen3-coder-next",
+        LONGCAT_FLASH_CHAT: "meituan/longcat-flash-chat",
+        NEMOTRON_3_ULTRA: "nvidia/nemotron-3-ultra-550b-a55b",
         GLM_5_2: "z-ai/glm-5.2",
         GLM_5_1: "z-ai/glm-5.1",
       },
@@ -403,27 +418,30 @@ describe("decide — GLM-5.2 shadow run", () => {
     });
     expect(decision.rationale).toBe("GLM-5.2 tier-3 pick.");
     expect(shadow).toBeUndefined();
-    // GLM-5.2 is tried first and succeeds — no other cascade model is called.
-    expect(callOpenRouterJson).toHaveBeenCalledTimes(1);
+    // DeepSeek (Flash/Pro/R1) fails, GLM-5.2 succeeds next — no further cascade model is called.
+    expect(callOpenRouterJson).toHaveBeenCalledTimes(4);
     vi.doUnmock("@oracle/llm");
   });
 });
 
 // ── _tryOpenRouter cascade order (via decide, no Claude/Gemini keys) ──────────
 
-describe("decide — OpenRouter cascade, GLM-first", () => {
+describe("decide — OpenRouter cascade, DeepSeek-first", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("tries GLM-5.2 → GLM-5.1 → free models in order", async () => {
+  it("tries DeepSeek(Flash/Pro/R1) → GLM-5.2 → GLM-5.1 → deeper paid tier in order", async () => {
     const finalResponse: DecisionOutput = {
       primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
       confidence: 0.6,
-      rationale: "GPT-oss pick.",
+      rationale: "MiniMax-M3 pick.",
       rejectedAndWhy: [],
     };
     const OPENROUTER_MODELS = {
+      DEEPSEEK_V4_FLASH: "deepseek/deepseek-v4-flash",
+      DEEPSEEK_V4_PRO: "deepseek/deepseek-v4-pro",
+      DEEPSEEK_R1: "deepseek/deepseek-r1",
       GLM_5_2: "z-ai/glm-5.2",
       GLM_5_1: "z-ai/glm-5.1",
       GPT_OSS_120B: "openai/gpt-oss-120b:free",
@@ -431,25 +449,73 @@ describe("decide — OpenRouter cascade, GLM-first", () => {
       QWEN3_NEXT_80B: "qwen/qwen3-next-80b-a3b-instruct:free",
       GPT_OSS_20B: "openai/gpt-oss-20b:free",
       LLAMA_3_3_70B: "meta-llama/llama-3.3-70b-instruct:free",
+      MINIMAX_M3: "minimax/minimax-m3",
+      MINIMAX_M2_5: "minimax/minimax-m2.5",
+      MIMO_V2_5_PRO: "xiaomi/mimo-v2.5-pro",
+      QWEN3_CODER_480B: "qwen/qwen3-coder",
+      QWEN3_CODER_NEXT: "qwen/qwen3-coder-next",
+      LONGCAT_FLASH_CHAT: "meituan/longcat-flash-chat",
+      NEMOTRON_3_ULTRA: "nvidia/nemotron-3-ultra-550b-a55b",
     };
     const callOpenRouterJson = vi
       .fn()
+      .mockResolvedValueOnce(null) // DEEPSEEK_V4_FLASH
+      .mockResolvedValueOnce(null) // DEEPSEEK_V4_PRO
+      .mockResolvedValueOnce(null) // DEEPSEEK_R1
       .mockResolvedValueOnce(null) // GLM_5_2
       .mockResolvedValueOnce(null) // GLM_5_1
-      .mockResolvedValueOnce(JSON.stringify(finalResponse)); // GPT_OSS_120B
+      .mockResolvedValueOnce(JSON.stringify(finalResponse)); // MINIMAX_M3
     vi.doMock("@oracle/llm", () => ({ callOpenRouterJson, OPENROUTER_MODELS }));
 
     const { decision } = await decide([makeMarket()], BASE_CTX, { openrouterApiKey: "or-key" });
-    expect(decision.rationale).toBe("GPT-oss pick.");
-    // Real decision came from GPT_OSS_120B (not GLM-5.2), so decide()'s wrapper
+    expect(decision.rationale).toBe("MiniMax-M3 pick.");
+    // Real decision came from MINIMAX_M3 (not GLM-5.2), so decide()'s wrapper
     // fires one more GLM-5.2 shadow call after the cascade — assert the cascade
-    // order itself via the first 3 calls, independent of that shadow call.
+    // order itself via the first 6 calls, independent of that shadow call.
+    // Paid models (MiniMax onward) must precede the free tier (GPT_OSS_120B etc.)
+    // in this cascade — see the 2026-07-06 ordering-bug fix in decision/index.ts.
     const calledModels = callOpenRouterJson.mock.calls.map((c) => c[2]);
-    expect(calledModels.slice(0, 3)).toEqual([
+    expect(calledModels.slice(0, 6)).toEqual([
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
       OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GLM_5_1,
-      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.MINIMAX_M3,
     ]);
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("exhausts the full OpenRouter cascade in order, then falls back to deterministic", async () => {
+    const OPENROUTER_MODELS = {
+      DEEPSEEK_V4_FLASH: "deepseek/deepseek-v4-flash",
+      DEEPSEEK_V4_PRO: "deepseek/deepseek-v4-pro",
+      DEEPSEEK_R1: "deepseek/deepseek-r1",
+      GLM_5_2: "z-ai/glm-5.2",
+      GLM_5_1: "z-ai/glm-5.1",
+      MINIMAX_M3: "minimax/minimax-m3",
+      MINIMAX_M2_5: "minimax/minimax-m2.5",
+      MIMO_V2_5_PRO: "xiaomi/mimo-v2.5-pro",
+      QWEN3_CODER_480B: "qwen/qwen3-coder",
+      QWEN3_CODER_NEXT: "qwen/qwen3-coder-next",
+      LONGCAT_FLASH_CHAT: "meituan/longcat-flash-chat",
+      NEMOTRON_3_ULTRA: "nvidia/nemotron-3-ultra-550b-a55b",
+      GPT_OSS_120B: "openai/gpt-oss-120b:free",
+      NEMOTRON_SUPER_120B: "nvidia/nemotron-3-super-120b-a12b:free",
+      QWEN3_NEXT_80B: "qwen/qwen3-next-80b-a3b-instruct:free",
+      GPT_OSS_20B: "openai/gpt-oss-20b:free",
+      LLAMA_3_3_70B: "meta-llama/llama-3.3-70b-instruct:free",
+    };
+    const callOpenRouterJson = vi.fn().mockResolvedValue(null);
+    vi.doMock("@oracle/llm", () => ({ callOpenRouterJson, OPENROUTER_MODELS }));
+
+    const { decision } = await decide([makeMarket()], BASE_CTX, { openrouterApiKey: "or-key" });
+    expect(decision.rationale).toMatch(/deterministic fallback|Deterministic/i);
+    // Paid models (DeepSeek/GLM/MiniMax/MiMo/Qwen-Coder/LongCat/Nemotron-Ultra) must
+    // ALL precede the free tier (GPT-OSS/Nemotron-Super/Qwen3-Next/Llama) — locks in
+    // the 2026-07-06 ordering-bug fix.
+    const calledModels = callOpenRouterJson.mock.calls.map((c) => c[2]);
+    expect(calledModels).toEqual(Object.values(OPENROUTER_MODELS));
     vi.doUnmock("@oracle/llm");
   });
 });

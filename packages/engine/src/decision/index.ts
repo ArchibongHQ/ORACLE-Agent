@@ -377,10 +377,10 @@ export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
 
 /** Evaluates GLM-5.2 against the same prompt the real decision tier received,
  *  for observability only — never affects the returned decision. Fail-open:
- *  any error or missing key returns undefined. Research context: GLM-5.2 sits
- *  at decision-layer Tier 3 (last resort) behind Claude/Gemini/free OpenRouter
- *  models; this shadow run tests whether it would pick differently before any
- *  cascade reordering is considered. */
+ *  any error or missing key returns undefined. Since the 2026-07-06 DeepSeek-first
+ *  reorder, GLM-5.2 is no longer the first (or usual) Tier-3 model, so this now
+ *  fires as a genuine cross-model comparison against most Tier-3-sourced drafts
+ *  (not just a self-check) — each firing is one extra paid OpenRouter call. */
 async function shadowDecideWithGlm52(
   prompt: string,
   openrouterKey: string,
@@ -420,7 +420,8 @@ async function shadowDecideWithGlm52(
  *  Draft cascade (multi-tier — produces the candidate the arbiter will review):
  *   1. Claude Opus    — when claudeApiKey present
  *   2. Gemini 3.5     — when geminiApiKey present (fires if Claude key absent OR Claude call fails)
- *   3. OpenRouter     — GLM-5.2 → GLM-5.1 → free models (when openrouterApiKey present)
+ *   3. OpenRouter     — DeepSeek(Flash/Pro/R1) → GLM-5.2 → GLM-5.1 → deeper paid fallback
+ *                       tier → free models last (when openrouterApiKey present)
  *   4. Deterministic  — when all LLMs unavailable or parse fails
  *
  *  Final arbiter — ORACLE_LOCAL_DECISION="true" (global, applies to every fixture
@@ -497,10 +498,13 @@ export async function decide(
 
   if (!ctx || draft.replay === null || !config?.openrouterApiKey) return result;
 
-  // Skip when GLM-5.2 itself already produced the draft (Tier 3 last resort) —
-  // shadowing it against itself is a wasted call with a trivial result. Also
-  // skip when the draft came from the market-executor tier — GLM-5.2 never saw
-  // the full allMarkets catalogue, so shadowing it here tests nothing useful.
+  // Skip when GLM-5.2 itself already produced the draft — shadowing it against
+  // itself is a wasted call with a trivial result. GLM-5.2 is no longer the first
+  // Tier-3 model tried (DeepSeek-V4-Flash/Pro/R1 precede it as of 2026-07-06), so
+  // this self-check now rarely fires; most Tier-3 drafts DO trigger a real paid
+  // shadow call. Also skip when the draft came from the market-executor tier —
+  // GLM-5.2 never saw the full allMarkets catalogue, so shadowing it here tests
+  // nothing useful.
   if (draft.replay.model === "claude-code-market-executor") return result;
   const { OPENROUTER_MODELS } = await import("@oracle/llm");
   if (draft.replay.model === OPENROUTER_MODELS.GLM_5_2) return result;
@@ -594,7 +598,8 @@ async function _tryGemini(
   );
 }
 
-/** ── Tier 3: OpenRouter cascade — GLM-5.2 → GLM-5.1 → free models.
+/** ── Tier 3: OpenRouter cascade — DeepSeek-V4-Flash → DeepSeek-V4-Pro → DeepSeek-R1 →
+ *  GLM-5.2 → GLM-5.1 → free models → deeper paid fallback tier.
  *  Each model is tried at temperature 0 with JSON mode; the first that parses wins.
  *  All fail (or no key) → deterministic fallback. callOpenRouterJson never throws. */
 async function _tryOpenRouter(
@@ -611,14 +616,27 @@ async function _tryOpenRouter(
   }
 
   const { callOpenRouterJson, OPENROUTER_MODELS } = await import("@oracle/llm");
-  // GLM-first: GLM-5.2 is the primary decision model (cascade.ts), tried before the
-  // free-tier models. Tier-0 local Claude Code already absorbs most traffic before
-  // this cascade is reached, bounding the GLM cost here. Cycling through the free
-  // models after GLM means a transient 429 on one just rolls to the next instead
+  // DeepSeek-first (owner directive 2026-07-06): DeepSeek-V4-Flash/Pro/R1 are tried
+  // before GLM-5.2, the prior primary decision model (cascade.ts), then a deeper paid
+  // fallback tier (MiniMax/MiMo/Qwen3-Coder/LongCat/Nemotron-Ultra), THEN free-tier
+  // models last — paid models must stay ahead of the free safety net, never behind it.
+  // Tier-0 local Claude Code already absorbs most traffic before this cascade is
+  // reached, bounding paid-tier cost here. Cycling through the free models after
+  // exhausting every paid option means a transient 429 just rolls to the next instead
   // of dropping straight to the deterministic fallback.
   for (const model of [
+    OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+    OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
+    OPENROUTER_MODELS.DEEPSEEK_R1,
     OPENROUTER_MODELS.GLM_5_2,
     OPENROUTER_MODELS.GLM_5_1,
+    OPENROUTER_MODELS.MINIMAX_M3,
+    OPENROUTER_MODELS.MINIMAX_M2_5,
+    OPENROUTER_MODELS.MIMO_V2_5_PRO,
+    OPENROUTER_MODELS.QWEN3_CODER_480B,
+    OPENROUTER_MODELS.QWEN3_CODER_NEXT,
+    OPENROUTER_MODELS.LONGCAT_FLASH_CHAT,
+    OPENROUTER_MODELS.NEMOTRON_3_ULTRA,
     OPENROUTER_MODELS.GPT_OSS_120B,
     OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
     OPENROUTER_MODELS.QWEN3_NEXT_80B,

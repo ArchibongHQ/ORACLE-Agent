@@ -93,11 +93,15 @@ export async function callRegimeHint(
     }
   }
 
-  // Tier 2/3: OpenRouter cascade — advisory only, GLM-5.2 → DeepSeek → GPT → free nets
+  // Tier 2/3: OpenRouter cascade — advisory only, DeepSeek-V4-Flash → DeepSeek-V4-Pro →
+  // DeepSeek-R1 → GLM-5.2 → GPT → free nets. Deliberately kept short (no Kimi/Minimax/
+  // Qwen-Coder/LongCat/Nemotron-Ultra tail) — Tier 2/3 depth is overkill for an advisory hint.
   if (ctx.config.openrouterApiKey) {
     for (const model of [
-      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
       OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GPT_4O,
       OPENROUTER_MODELS.GPT_OSS_120B,
       OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
