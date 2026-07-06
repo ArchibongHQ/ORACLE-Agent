@@ -6,7 +6,7 @@
  *  All analysis/fixture/report logic lives in @oracle/runtime; this file only schedules. */
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -207,51 +207,96 @@ const CRASH_LOOP_COOLDOWN_MS = 10 * 60 * 1000; // hold off back-online retrigger
 
 let crashLoopCooldownUntil = 0;
 
-function checkCrashLoopOnStartup(): void {
+// event/at (not startedAt/cleanExit) so "when" always means the same thing —
+// a prior startedAt/cleanExit shape read "start time" on one write path and
+// "exit time" on the other, a latent trap for any future uptime-based check.
+function writeProcessState(event: "start" | "clean-exit"): void {
   try {
-    const prev = JSON.parse(readFileSync(PROCESS_STATE_FILE, "utf8")) as {
-      startedAt?: string;
-      cleanExit?: boolean;
-    };
-    if (
-      prev.startedAt &&
-      !prev.cleanExit &&
-      Date.now() - new Date(prev.startedAt).getTime() < CRASH_LOOP_WINDOW_MS
-    ) {
-      crashLoopCooldownUntil = Date.now() + CRASH_LOOP_COOLDOWN_MS;
-      process.stderr.write(
-        `[worker] crash loop detected (previous start ${prev.startedAt} did not exit cleanly and died within ${
-          CRASH_LOOP_WINDOW_MS / 1000
-        }s) — holding off back-online batch retriggers until ${new Date(
-          crashLoopCooldownUntil
-        ).toISOString()}\n`
-      );
-    }
-  } catch {
-    /* no previous state file — first start, nothing to detect */
-  }
-  try {
+    const tmpPath = `${PROCESS_STATE_FILE}.tmp`;
     writeFileSync(
-      PROCESS_STATE_FILE,
-      JSON.stringify({ startedAt: new Date().toISOString(), cleanExit: false }, null, 2),
+      tmpPath,
+      JSON.stringify({ event, at: new Date().toISOString() }, null, 2),
       "utf8"
     );
+    // Atomic rename so a crash mid-write (the exact OOM/BSOD scenario this
+    // guard exists to catch) can't leave a truncated file that the next
+    // start's JSON.parse chokes on and silently treats as "never ran before".
+    renameSync(tmpPath, PROCESS_STATE_FILE);
   } catch (err) {
     process.stderr.write(`[worker] process-state write failed: ${String(err)}\n`);
   }
 }
 
-function markCleanExit(): void {
+// Fire-and-forget so a slow Telegram send never delays startup — every other
+// staleness alert in this file (checkHeartbeatFreshness, checkBotHeartbeatFreshness)
+// pushes through the same buildNotifiers/notifyAll pipeline; crash-loop detection
+// was stderr-only (Servy log only), which pages nobody if the underlying crash is
+// deterministic and the loop just keeps recurring every cooldown window instead.
+async function alertCrashLoopDetected(
+  prevAt: string | undefined,
+  cooldownUntil: number
+): Promise<void> {
+  const notifiers = buildNotifiers(env);
+  if (!notifiers.length) return;
+  const alertSummary: BatchSummary = {
+    date: watDateString(),
+    analysed: 0,
+    actionableCount: 0,
+    errors: 0,
+    actionable: [],
+    alertText: `worker crash loop detected — previous start (${
+      prevAt ?? "unknown, corrupt state file"
+    }) did not exit cleanly and died within ${
+      CRASH_LOOP_WINDOW_MS / 1000
+    }s. Holding off back-online batch retriggers until ${new Date(cooldownUntil).toISOString()}.`,
+  };
+  await notifyAll(notifiers, alertSummary);
+}
+
+function checkCrashLoopOnStartup(): void {
+  let raw: string | null = null;
   try {
-    writeFileSync(
-      PROCESS_STATE_FILE,
-      JSON.stringify({ startedAt: new Date().toISOString(), cleanExit: true }, null, 2),
-      "utf8"
-    );
+    raw = readFileSync(PROCESS_STATE_FILE, "utf8");
   } catch {
-    /* best-effort only — a missed clean-exit mark just means the next start
-     * conservatively treats itself as a possible crash if it also dies fast */
+    /* no previous state file — first start, nothing to detect */
   }
+  if (raw !== null) {
+    let armCooldown = false;
+    let prevAt: string | undefined;
+    try {
+      const prev = JSON.parse(raw) as { event?: string; at?: string };
+      prevAt = prev.at;
+      if (
+        prev.event === "start" &&
+        prev.at &&
+        Date.now() - new Date(prev.at).getTime() < CRASH_LOOP_WINDOW_MS
+      ) {
+        armCooldown = true;
+      }
+    } catch {
+      // Corrupt/truncated file — can't rule out a mid-write crash, so don't
+      // treat it the same as a clean first start.
+      armCooldown = true;
+    }
+    if (armCooldown) {
+      crashLoopCooldownUntil = Date.now() + CRASH_LOOP_COOLDOWN_MS;
+      process.stderr.write(
+        `[worker] crash loop detected (previous start ${
+          prevAt ?? "unknown (corrupt state file)"
+        } did not exit cleanly and died within ${
+          CRASH_LOOP_WINDOW_MS / 1000
+        }s) — holding off back-online batch retriggers until ${new Date(
+          crashLoopCooldownUntil
+        ).toISOString()}\n`
+      );
+      void alertCrashLoopDetected(prevAt, crashLoopCooldownUntil);
+    }
+  }
+  writeProcessState("start");
+}
+
+function markCleanExit(): void {
+  writeProcessState("clean-exit");
 }
 
 // Staleness alert: catches two distinct failure modes —
@@ -2027,7 +2072,10 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     process.stdout.write(`[worker] ${sig} received — stopping cron schedules\n`);
     for (const task of cron.getTasks().values()) task.stop();
-    markCleanExit();
+    // Only the daemon writes PROCESS_STATE_FILE (checkCrashLoopOnStartup is
+    // gated the same way) — a one-shot invocation signaled mid-run must not
+    // stamp cleanExit:true over the daemon's own crash-loop tracking.
+    if (!IS_ONE_SHOT) markCleanExit();
     process.exit(0);
   });
 }
