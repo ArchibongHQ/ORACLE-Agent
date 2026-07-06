@@ -165,6 +165,11 @@ function watYesterdayString(d: Date = new Date()): string {
   return watDateString(new Date(d.getTime() - 86_400_000));
 }
 
+function watMinutesSinceMidnight(d: Date = new Date()): number {
+  const watDate = new Date(d.getTime() + WAT_OFFSET_MS);
+  return watDate.getUTCHours() * 60 + watDate.getUTCMinutes();
+}
+
 // ── Job logging + heartbeat ───────────────────────────────────────────────────
 // Every cron job runs through logJob so a failure is always visible in the log,
 // and successful batch/resolve runs stamp .tmp/worker_heartbeat.json (read by
@@ -323,6 +328,16 @@ const STALE_ALERT_REPEAT_MS = 12 * 60 * 60 * 1000; // don't re-alert more than e
 const DAILY_BATCH_STALE_MS = 20 * 60 * 60 * 1000; // ~20h — same-day batch is always fresher than this
 let lastDailyBatchTriggerAt = 0;
 const DAILY_BATCH_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a failing batch more than every 6h
+// Slot floors for the back-online triggers below: "today has no data yet" is
+// true and expected for every minute before the scheduled cron slot, so
+// without this floor the first hourly tick after WAT midnight (~00:00-01:00
+// WAT) always mistook "too early" for "missed" and fired the whole
+// acquire+report+goals-batch chain hours ahead of schedule, every night —
+// confirmed nightly in .tmp/servy_worker_stdout.log back to at least 2026-06-24,
+// independent of any crash-loop. Mirrors the actual cron minutes below
+// (30/35 past 9 WAT).
+const ACQUIRE_SLOT_MINUTES = 9 * 60 + 30; // 09:30 WAT
+const DAILY_BATCH_SLOT_MINUTES = 9 * 60 + 35; // 09:35 WAT
 
 function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
   if (!lastBatchAt) return false;
@@ -403,6 +418,7 @@ async function checkHeartbeatFreshness(): Promise<void> {
   // lastBatch never short-circuits this independent trigger.
   if (
     !isLakeFreshForToday() &&
+    watMinutesSinceMidnight() >= ACQUIRE_SLOT_MINUTES &&
     Date.now() - lastLakeTriggerAt >= LAKE_TRIGGER_REPEAT_MS &&
     Date.now() >= crashLoopCooldownUntil
   ) {
@@ -425,6 +441,7 @@ async function checkHeartbeatFreshness(): Promise<void> {
   // of the lake/acquire trigger above.
   if (
     !isDailyBatchFreshForToday(lastBatchAt) &&
+    watMinutesSinceMidnight() >= DAILY_BATCH_SLOT_MINUTES &&
     Date.now() - lastDailyBatchTriggerAt >= DAILY_BATCH_TRIGGER_REPEAT_MS &&
     Date.now() >= crashLoopCooldownUntil
   ) {
