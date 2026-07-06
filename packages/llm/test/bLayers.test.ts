@@ -91,15 +91,15 @@ describe("callRegimeHint (B6)", () => {
     expect((await callRegimeHint("s", ctx)).label).toBe("UNKNOWN");
   });
 
-  it("falls to GLM-5.2 (first OpenRouter tier) when Gemini throws and an OpenRouter key exists", async () => {
+  it("falls to DeepSeek-V4-Flash (first OpenRouter tier) when Gemini throws and an OpenRouter key exists", async () => {
     generateContentMock.mockRejectedValue(new Error("down"));
     fetchMock.mockResolvedValue(
       chatResponse('{"label":"DEFENSIVE","rationale":"r","confidence":0.5}')
     );
     const res = await callRegimeHint("s", makeCtx({ geminiApiKey: "gk", openrouterApiKey: "or" }));
     expect(res.label).toBe("DEFENSIVE");
-    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2);
-    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GLM_5_2]);
+    expect(res.model).toBe(OPENROUTER_MODELS.DEEPSEEK_V4_FLASH);
+    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.DEEPSEEK_V4_FLASH]);
   });
 
   it("returns the UNKNOWN fallback (never throws) when no tier is available", async () => {
@@ -111,6 +111,24 @@ describe("callRegimeHint (B6)", () => {
       model: "none",
       advisory: true,
     });
+  });
+
+  it("exhausts the full OpenRouter cascade in order, then falls back to UNKNOWN", async () => {
+    generateContentMock.mockRejectedValue(new Error("down"));
+    fetchMock.mockResolvedValue({ ok: false, status: 500 });
+    const res = await callRegimeHint("s", makeCtx({ geminiApiKey: "gk", openrouterApiKey: "or" }));
+    expect(res.label).toBe("UNKNOWN");
+    // Advisory cascade is deliberately short — DeepSeek/GLM/GPT/free nets only,
+    // no Kimi/Minimax/Qwen-Coder/LongCat/Nemotron-Ultra deep tail.
+    expect(postedModels(fetchMock)).toEqual([
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
+      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.GPT_4O,
+      OPENROUTER_MODELS.GPT_OSS_120B,
+      OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
+    ]);
   });
 });
 

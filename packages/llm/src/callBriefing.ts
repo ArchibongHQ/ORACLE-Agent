@@ -160,20 +160,31 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
     }
   }
 
-  // Tier 2/3: OpenRouter — GLM-5.2 → GLM-5.1 → DeepSeek → Kimi-K2 → GPT → Qwen3 → Minimax-M3
-  // then free-tier safety net (GPT-OSS-120B → Nemotron → Qwen3-Next 80B → etc.)
+  // Tier 2/3: OpenRouter — DeepSeek-V4-Flash → DeepSeek-V4-Pro → DeepSeek-R1 → GLM-5.2
+  // → GLM-5.1 → Kimi-K2 → GPT → Qwen3 → Minimax-M3, then the deeper paid fallback tier:
+  // Minimax-M2.5 → MiMo-V2.5 → Qwen3-Coder-480B → Qwen3-Coder-Next → LongCat-Flash-Chat →
+  // Nemotron-3-Ultra, then free tier LAST: GPT-OSS-120B → Nemotron-Super → Qwen3-Next-80B → GPT-OSS-20B
   if (ctx.config.openrouterApiKey) {
     for (const model of [
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
       OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GLM_5_1,
-      OPENROUTER_MODELS.DEEPSEEK_R1,
       OPENROUTER_MODELS.KIMI_K2,
       OPENROUTER_MODELS.GPT_4O,
       OPENROUTER_MODELS.QWEN3_235B_THINKING,
       OPENROUTER_MODELS.MINIMAX_M3,
+      OPENROUTER_MODELS.MINIMAX_M2_5,
+      OPENROUTER_MODELS.MIMO_V2_5_PRO,
+      OPENROUTER_MODELS.QWEN3_CODER_480B,
+      OPENROUTER_MODELS.QWEN3_CODER_NEXT,
+      OPENROUTER_MODELS.LONGCAT_FLASH_CHAT,
+      OPENROUTER_MODELS.NEMOTRON_3_ULTRA,
       OPENROUTER_MODELS.GPT_OSS_120B,
       OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
       OPENROUTER_MODELS.QWEN3_NEXT_80B,
+      OPENROUTER_MODELS.GPT_OSS_20B,
     ]) {
       const text = await callOpenRouterJson(
         BRIEFING_OR_SYSTEM,

@@ -64,7 +64,10 @@ describe("fetchGeminiWithCascade", () => {
       .mockResolvedValueOnce({ ok: false, status: 500 })
       .mockResolvedValueOnce(chatResponse("or-text"));
     expect(await fetchGeminiWithCascade("p", ctxWithOr)).toBe("or-text");
-    expect(postedModels(fetchMock)).toEqual([OPENROUTER_MODELS.GLM_5_2, OPENROUTER_MODELS.GLM_5_1]);
+    expect(postedModels(fetchMock)).toEqual([
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
+    ]);
   });
 
   it("throws after Gemini + all OpenRouter tiers fail", async () => {
@@ -74,16 +77,25 @@ describe("fetchGeminiWithCascade", () => {
       /Gemini cascade exhausted/
     );
     expect(postedModels(fetchMock)).toEqual([
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
+      OPENROUTER_MODELS.DEEPSEEK_R1,
       OPENROUTER_MODELS.GLM_5_2,
       OPENROUTER_MODELS.GLM_5_1,
-      OPENROUTER_MODELS.DEEPSEEK_R1,
       OPENROUTER_MODELS.KIMI_K2,
       OPENROUTER_MODELS.GPT_4O,
       OPENROUTER_MODELS.QWEN3_235B_THINKING,
       OPENROUTER_MODELS.MINIMAX_M3,
+      OPENROUTER_MODELS.MINIMAX_M2_5,
+      OPENROUTER_MODELS.MIMO_V2_5_PRO,
+      OPENROUTER_MODELS.QWEN3_CODER_480B,
+      OPENROUTER_MODELS.QWEN3_CODER_NEXT,
+      OPENROUTER_MODELS.LONGCAT_FLASH_CHAT,
+      OPENROUTER_MODELS.NEMOTRON_3_ULTRA,
       OPENROUTER_MODELS.GPT_OSS_120B,
       OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
       OPENROUTER_MODELS.QWEN3_NEXT_80B,
+      OPENROUTER_MODELS.GPT_OSS_20B,
     ]);
   });
 });
