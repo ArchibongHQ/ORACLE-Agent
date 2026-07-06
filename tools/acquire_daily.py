@@ -14,6 +14,7 @@ Usage:
     python tools/acquire_daily.py --date 2026-06-21
     python tools/acquire_daily.py --no-playwright # ESPN+Sky+BBC only, no SportyBet sidecar
     python tools/acquire_daily.py --purge         # also run the 24h lake retention sweep after
+    python tools/acquire_daily.py --live-xg-refresh  # standalone FotMob xG refresh only (PR-7 off-peak cron)
 """
 from __future__ import annotations
 
@@ -81,26 +82,23 @@ def _maybe_fetch_squad_availability(quiet: bool = False) -> None:
 
 def _maybe_fetch_live_xg(events: list[dict], quiet: bool = False) -> None:
     """Refresh the rolling team-xG prior from live FotMob xG when
-    ORACLE_FETCH_LIVE_XG=on. Closes the gap where build_xg_table.py already
+    ORACLE_FETCH_LIVE_XG=on (default ON as of PR-7 — see run_live_xg_refresh's
+    docstring for why the swarm-collision risk this was originally gated
+    against no longer applies). Closes the gap where build_xg_table.py already
     merges .tmp/xg/fotmob_xg.json but nothing in production ever writes it — so
     obscure-league teams (outside Understat's top-5 + FBref's coverage) get no
     xG. FotMob covers 1000+ competitions and runs HEADLESS (unlike Sofascore,
     which needs a real display the LocalSystem service lacks), making it the
     service-viable live tier.
 
-    Feeds today's slate team names to fetch_fotmob_xg.py, then rebuilds the
-    merged prior (build_xg_table.py). The updated prior is a rolling
-    strength prior keyed by team — same semantics as the weekly Understat/FBref
-    table — so it enriches each team's NEXT scrape, not retroactively today's.
-
-    DEFAULT OFF: browser-page Playwright swarms are the memory-pressure class
-    behind the 2026-07-05 BSOD/OOM crisis (see oracle_machine_crash_2026_07_05
-    memory) — keep this opt-in until RAM headroom exists or on a VPS. Runs
-    AFTER the lake write and sequentially before the worker's news-enrichment
-    browser swarm (acquireDailyJob awaits acquire_daily.py to exit first), so
-    the two browser swarms never overlap (GPU-safety, oracle_swarm_gpu_bsod_incident).
-    Best-effort: any failure or timeout must never break daily acquisition."""
-    if os.environ.get("ORACLE_FETCH_LIVE_XG", "").strip().lower() != "on":
+    Feeds `events`'s team names to fetch_fotmob_xg.py, then rebuilds the merged
+    prior (build_xg_table.py). The updated prior is a rolling strength prior
+    keyed by team — same semantics as the weekly Understat/FBref table — so it
+    enriches each team's NEXT scrape, not retroactively the fixtures `events`
+    came from (irrelevant whether those are today's live-acquired events or a
+    prior day's sidecar read back from disk, per run_live_xg_refresh).
+    Best-effort: any failure or timeout must never break the caller."""
+    if os.environ.get("ORACLE_FETCH_LIVE_XG", "on").strip().lower() != "on":
         return
     teams = sorted({
         (ev.get(side) or "").strip()
@@ -120,7 +118,7 @@ def _maybe_fetch_live_xg(events: list[dict], quiet: bool = False) -> None:
             print(f"[acquire_daily] live-xg skipped (teams-file write): {exc}", flush=True)
         return
     # 1. FotMob live xG for the slate (headless, own browser-page cap). Bounded
-    #    timeout so a hung browser can never stall the 09:30 acquisition slot.
+    #    timeout so a hung browser can never stall the caller.
     for label, script, args, timeout in (
         ("fetch_fotmob_xg", "fetch_fotmob_xg.py", ["--teams-file", str(teams_file)], 1200),
         # 2. Re-merge Understat/FBref CSVs + the fresh fotmob_xg.json into the prior.
@@ -139,6 +137,39 @@ def _maybe_fetch_live_xg(events: list[dict], quiet: bool = False) -> None:
         except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
             if not quiet:
                 print(f"[acquire_daily] {label} skipped: {exc}", flush=True)
+
+
+def run_live_xg_refresh(quiet: bool = False) -> None:
+    """PR-7: standalone, off-peak entry point for the FotMob live-xG refresh —
+    decouples it from acquire()'s 09:30 critical path. Previously
+    _maybe_fetch_live_xg ran INLINE inside acquire(), sequentially after that
+    run's own SportyBet/BBC/Flashscore Playwright fixture-discovery swarm —
+    never concurrent, but still stacked back-to-back in the same 09:30 window,
+    extending how long the process holds multiple browser-page swarms' memory
+    (the actual pressure class behind the 2026-07-05 BSOD/OOM crisis, see
+    oracle_machine_crash_2026_07_05 memory). Intended to run from its own
+    off-peak worker cron slot (e.g. 02:00 WAT, apps/worker/src/index.ts) —
+    nothing else is scraping then, so the collision risk this was gated
+    against is gone and ORACLE_FETCH_LIVE_XG can default on.
+
+    Reads the SportyBet sidecar already on disk (written by the most recent
+    acquire() run, whichever day that was) for its team list rather than
+    re-running the Playwright fixture-discovery swarm just to get names —
+    fetch_fotmob_xg.py's rolling team-xG prior only ever benefits a team's
+    NEXT scrape regardless of which day's fixtures supplied the name (see
+    _maybe_fetch_live_xg's docstring), so a live re-scrape here would just be
+    redundant Playwright usage for no benefit. Missing/corrupt sidecar (e.g.
+    first run ever) degrades to a no-op, never fatal."""
+    try:
+        import json
+        payload = json.loads(sf.SPORTYBET_SIDECAR.read_text(encoding="utf-8"))
+        events = payload.get("events") if isinstance(payload, dict) else None
+        events = events if isinstance(events, list) else []
+    except (OSError, ValueError):
+        events = []
+    if not events and not quiet:
+        print("[acquire_daily] live-xg-refresh: no sidecar on disk yet — skipping", flush=True)
+    _maybe_fetch_live_xg(events, quiet=quiet)
 
 
 def _flatten_odds(event_id: str, date_str: str, odds: Optional[dict], scraped_at: str) -> list[dict]:
@@ -231,7 +262,9 @@ def acquire(date_str: str, quiet: bool = False, no_playwright: bool = False) -> 
     ds.write_table("stats", date_str, rows["stats"])
     _maybe_fetch_injuries(quiet=quiet)
     _maybe_fetch_squad_availability(quiet=quiet)
-    _maybe_fetch_live_xg(events, quiet=quiet)
+    # Live-xG refresh is NOT called here (PR-7 decoupling) — see
+    # run_live_xg_refresh()'s docstring for why it now runs from its own
+    # off-peak worker cron slot instead of inline in the 09:30 critical path.
     if not quiet:
         print(
             f"[acquire_daily] lake write — fixtures:{len(rows['fixtures'])} "
@@ -248,7 +281,14 @@ def main() -> None:
     parser.add_argument("--no-playwright", action="store_true",
                         help="Skip Playwright scrapers (no SportyBet sidecar; lake gets 0 odds/stats rows)")
     parser.add_argument("--purge", action="store_true", help="Run the 24h lake retention sweep after acquiring")
+    parser.add_argument("--live-xg-refresh", action="store_true",
+                        help="Run ONLY the standalone off-peak FotMob live-xG refresh (PR-7) and exit — "
+                             "no acquisition, no lake write. Intended for its own off-peak cron slot.")
     args = parser.parse_args()
+
+    if args.live_xg_refresh:
+        run_live_xg_refresh(quiet=args.quiet)
+        return
 
     date_str = args.date or ds.utc_today()
     n = acquire(date_str, quiet=args.quiet, no_playwright=args.no_playwright)

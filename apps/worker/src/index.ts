@@ -953,6 +953,33 @@ async function runWeeklyKaggleRefresh(): Promise<void> {
   process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s ===\n`);
 }
 
+// ── FotMob live-xG refresh (02:00 WAT, PR-7) ────────────────────────────────
+
+/** Standalone, off-peak trigger for the FotMob live-xG refresh — decoupled
+ *  from acquire-daily's 09:30 critical path (see the 02:00 cron registration's
+ *  comment for the full BSOD-collision rationale). Shells out to
+ *  acquire_daily.py --live-xg-refresh, which reads the on-disk sidecar for
+ *  team names rather than re-scraping. Same non-fatal execFile pattern as
+ *  runKaggleTool — a failure here must never take down the worker daemon. */
+function runFotmobXgRefresh(): Promise<void> {
+  const python = PYTHON_BIN;
+  const script = join(ROOT, "tools", "acquire_daily.py");
+  const start = Date.now();
+  return new Promise((resolve) => {
+    execFile(python, [script, "--live-xg-refresh"], { cwd: ROOT }, (err, stdout, stderr) => {
+      if (stdout) process.stdout.write(stdout);
+      if (stderr) process.stderr.write(stderr);
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      if (err) {
+        process.stderr.write(`[fotmob-xg-refresh] FAILED after ${elapsed}s — ${err.message}\n`);
+      } else {
+        process.stdout.write(`[fotmob-xg-refresh] done in ${elapsed}s\n`);
+      }
+      resolve(); // best-effort — never rejects, matches every other fetch tier here
+    });
+  });
+}
+
 // ── Daily batch (09:35 WAT) ─────────────────────────────────────────────────
 
 /** Merge multiple BatchResult chunks (from the priority-ordered chunk loop) into a
@@ -2102,7 +2129,22 @@ if (!IS_ONE_SHOT) {
   // Fixed 2026-07-02 alongside the watDateString() staleness-date fix above —
   // see that comment for the related incident this schedule shift caused.
 
-  // 1. Scrape + Intel Batch — 09:30 WAT. Bookmakers finalise their morning
+  // 1. FotMob live-xG refresh — 02:00 WAT (PR-7). Standalone and off-peak by
+  // design: runs acquire_daily.py --live-xg-refresh, which reads the
+  // SportyBet sidecar already on disk (from the last acquire-daily run, not a
+  // fresh scrape) for team names, then runs FotMob + build_xg_table. Its own
+  // Playwright browser-page swarm (fetch_fotmob_batch) used to run INLINE
+  // inside acquire-daily's 09:30 critical path, sequentially stacked after
+  // that job's own SportyBet/BBC/Flashscore Playwright swarm — never
+  // concurrent, but extending how long the process held multiple swarms'
+  // memory (the actual pressure class behind the 2026-07-05 BSOD/OOM crisis).
+  // Decoupled here so nothing else is scraping at 02:00; gated by
+  // ORACLE_FETCH_LIVE_XG (default on now that the collision risk is gone).
+  cron.schedule("0 2 * * *", () => logJob("fotmob-xg-refresh@02:00-WAT", runFotmobXgRefresh), {
+    timezone: WAT_TZ,
+  });
+
+  // 2. Scrape + Intel Batch — 09:30 WAT. Bookmakers finalise their morning
   // lines and player props by ~09:00 WAT; 09:30 hits after the morning sync
   // completes and avoids the on-the-hour server spike. Writes the Parquet lake +
   // JSON sidecar (acquire_daily.py), runs news-intel enrichment, then sends the
@@ -2121,7 +2163,7 @@ if (!IS_ONE_SHOT) {
     { timezone: WAT_TZ }
   );
 
-  // 2. Main Daily Batch — 09:35 WAT slot, but its heavy work now waits (up to
+  // 3. Main Daily Batch — 09:35 WAT slot, but its heavy work now waits (up to
   // ACQUIRE_CHAIN_TIMEOUT_MS) for the 09:30 acquire job to actually finish
   // instead of assuming 5 minutes was enough [audit fix, P0-4]. Full LLM
   // all-markets analysis -> HTML report + Telegram. Its internal scrape is
@@ -2138,7 +2180,7 @@ if (!IS_ONE_SHOT) {
     { timezone: WAT_TZ }
   );
 
-  // 3. Goals batch — 09:40 WAT slot, same chained-not-clocked handoff as the
+  // 4. Goals batch — 09:40 WAT slot, same chained-not-clocked handoff as the
   // daily batch above [audit fix, P0-4]. Independent discovery funnel
   // (mechanical pre-filter -> Sonnet screen) over the full SportyBet pool,
   // using the same fresh morning odds the lake above wrote. runGoalsBatch
@@ -2155,14 +2197,14 @@ if (!IS_ONE_SHOT) {
     { timezone: WAT_TZ }
   );
 
-  // 4. Resolve yesterday's results — 10:00 WAT.
+  // 5. Resolve yesterday's results — 10:00 WAT.
   cron.schedule(
     "0 10 * * *",
     () => logJob("resolve-yesterday@10:00-WAT", resolveYesterdayFixtures),
     { timezone: WAT_TZ }
   );
 
-  // 5. Punt prompt — 10:00 WAT (first), 12:00 WAT + 13:00 WAT (retry only if no
+  // 6. Punt prompt — 10:00 WAT (first), 12:00 WAT + 13:00 WAT (retry only if no
   // code received yet). Runs alongside resolve-yesterday above; independent jobs,
   // no shared state.
   cron.schedule(
@@ -2181,16 +2223,16 @@ if (!IS_ONE_SHOT) {
     { timezone: WAT_TZ }
   );
 
-  // 6. Weekly Kaggle refresh — Saturday 04:00 WAT.
+  // 7. Weekly Kaggle refresh — Saturday 04:00 WAT.
   cron.schedule("0 4 * * 6", () => logJob("kaggle-refresh", runWeeklyKaggleRefresh), {
     timezone: WAT_TZ,
   });
 
-  // 7. Heartbeat freshness check — every hour, on the hour (timezone is a
+  // 8. Heartbeat freshness check — every hour, on the hour (timezone is a
   // no-op for an every-hour cadence, but pinned for consistency).
   cron.schedule("0 * * * *", () => void checkHeartbeatFreshness(), { timezone: WAT_TZ });
 
-  // 8. Bot heartbeat check — every 10 min (its own staleness threshold is
+  // 9. Bot heartbeat check — every 10 min (its own staleness threshold is
   // 10 min, not the 36h daily-batch threshold, so it needs tighter polling).
   cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness(), { timezone: WAT_TZ });
 }

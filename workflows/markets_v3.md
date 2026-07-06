@@ -74,7 +74,7 @@ Implement `all-markets-analysis-prompt-v3` (owner-supplied spec) as deterministi
 | `ORACLE_LLM_EXTRAS_TIERS` | `apex` | PR-8 tier scope for optional LLM extras (briefing/swarm/CVL). `apex` = APEX only; `all` = the route's own tier decisions |
 | `ENABLE_BRIEFING` / `ENABLE_CVL` | `false` | PR-8 made the previously-dead B1 briefing / B2 CVL layers explicit + opt-in |
 | `ORACLE_FETCH_INJURIES` | `off` | PR-8 — `on` runs `tools/fetch_injuries.py` (season injury-burden features) in the acquisition chain, best-effort |
-| `ORACLE_FETCH_LIVE_XG` | `off` | `on` runs FotMob live-xG (`fetch_fotmob_xg.py`, 1000+ comps, headless) for the slate + rebuilds the rolling xG prior (`build_xg_table.py`) in daily acquisition, filling obscure-league xG gaps. Best-effort. Default OFF — browser-page swarm, keep off until RAM headroom / VPS (BSOD risk) |
+| `ORACLE_FETCH_LIVE_XG` | `on` | (PR-7) `on` runs FotMob live-xG (`fetch_fotmob_xg.py`, 1000+ comps, headless) + rebuilds the rolling xG prior (`build_xg_table.py`), filling obscure-league xG gaps. Runs from its own standalone 02:00 WAT worker cron (`acquire_daily.py --live-xg-refresh`, reads the on-disk sidecar for team names), NOT inline in the 09:30 acquisition — decoupled so its Playwright browser-page swarm never stacks with the 09:30 job's own (was the BSOD risk this defaulted off for). Best-effort. |
 
 Rollback: set `ORACLE_MARKETS_V3=off` for the whole engine, or flip any single v4 flag above to its `off`/`1.0` value — each PR is independently reversible. The legacy `scanMarkets` path in `packages/engine/src/execution/index.ts` was never touched by this work.
 
