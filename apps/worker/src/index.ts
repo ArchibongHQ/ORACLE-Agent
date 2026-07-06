@@ -1551,6 +1551,10 @@ function buildGoalsV3Input(
       nAway: v3SampleSize(detail, "away"),
       homeXg: v3TeamXg(detail?.stats?.xg?.home),
       awayXg: v3TeamXg(detail?.stats?.xg?.away),
+      // §8.2 (PR-6): tool-derived squad availability, not an LLM guess (see
+      // fetch_squad_availability.py). Undefined ⇒ computeV3Lambdas no-ops (1.0).
+      homeAvailabilityMult: detail?.stats?.availability?.home?.idx ?? null,
+      awayAvailabilityMult: detail?.stats?.availability?.away?.idx ?? null,
     },
     penaltyFlags: gating.penaltyFlags,
     completeness: gating.completeness,

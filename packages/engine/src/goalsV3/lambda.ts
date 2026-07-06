@@ -116,6 +116,14 @@ export interface V3LambdaInput {
    *  away team's away split — falls back to season aggregate upstream). */
   homeXg?: V3TeamXg | null;
   awayXg?: V3TeamXg | null;
+  /** Match-day squad availability multiplier (tools/fetch_squad_availability.py
+   *  §8.2 — matchday squad value / rolling peak squad value, 1.0 = full
+   *  strength), applied to the raw λ before small-sample shrinkage — same
+   *  "reduce expected goals for a depleted squad" shape as the legacy engine's
+   *  adjH*(1-injPen), but sourced from real Kaggle Transfermarkt data instead
+   *  of an LLM guess. Clamped to [0.5, 1.0]; absent/undefined ⇒ 1.0 (no-op). */
+  homeAvailabilityMult?: number | null;
+  awayAvailabilityMult?: number | null;
 }
 
 export interface V3Lambdas {
@@ -142,6 +150,11 @@ const SHRINK_N = 8;
  *  forecast (0.05 keeps Poisson tails well-defined; 4.5 exceeds any real team). */
 const LAMBDA_MIN = 0.05;
 const LAMBDA_MAX = 4.5;
+/** §8.2 availability multiplier bounds — 1.0 matches fetch_squad_availability.py's
+ *  own min(ratio, 1.0) cap; 0.5 floors a data glitch (or a genuinely gutted XI)
+ *  from ever zeroing a team's λ outright. */
+const AVAILABILITY_MULT_MIN = 0.5;
+const AVAILABILITY_MULT_MAX = 1.0;
 
 function isRate(v: number | null | undefined): v is number {
   return typeof v === "number" && Number.isFinite(v) && v >= 0;
@@ -197,6 +210,14 @@ export function computeV3Lambdas(
     rawA = simpleAverageLambda(input.awayScoredPer90, input.homeConcededPer90);
   }
   if (rawH === null || rawA === null) return null;
+
+  // §8.2: match-day squad availability — applied before shrinkage so a
+  // depleted squad's reduced λ still regresses toward the league mean under
+  // small-sample noise exactly like any other raw λ.
+  if (isRate(input.homeAvailabilityMult))
+    rawH *= clamp(input.homeAvailabilityMult, AVAILABILITY_MULT_MIN, AVAILABILITY_MULT_MAX);
+  if (isRate(input.awayAvailabilityMult))
+    rawA *= clamp(input.awayAvailabilityMult, AVAILABILITY_MULT_MIN, AVAILABILITY_MULT_MAX);
 
   const shrunkH = shrink(rawH, input.nHome, L);
   const shrunkA = shrink(rawA, input.nAway, L);

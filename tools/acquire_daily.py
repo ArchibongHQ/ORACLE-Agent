@@ -53,6 +53,32 @@ def _maybe_fetch_injuries(quiet: bool = False) -> None:
             print(f"[acquire_daily] fetch_injuries skipped: {exc}", flush=True)
 
 
+def _maybe_fetch_squad_availability(quiet: bool = False) -> None:
+    """Refresh the match-day squad availability feature CSV (fetch_squad_
+    availability.py) when ORACLE_FETCH_SQUAD_AVAILABILITY=on. This is a Kaggle
+    Transfermarkt BACKFILL over top-5-league historical matches, not a live
+    per-fixture fetch — refreshing it here keeps availability_features.csv
+    current with whatever Kaggle player-scores snapshot is on disk so
+    scrape_fixtures.py's _load_availability_table() picks up new rows as the
+    underlying dataset is updated. Requires .tmp/kaggle/player-scores/ to
+    already be downloaded (see workflows/kaggle_integration.md) — a missing
+    dataset exits non-zero and is logged, never fatal to daily acquisition."""
+    if os.environ.get("ORACLE_FETCH_SQUAD_AVAILABILITY", "").strip().lower() != "on":
+        return
+    script = Path(__file__).resolve().parent / "fetch_squad_availability.py"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True, text=True, timeout=300, check=False,
+        )
+        if not quiet:
+            status = "ok" if proc.returncode == 0 else f"exit={proc.returncode}"
+            print(f"[acquire_daily] fetch_squad_availability {status}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
+        if not quiet:
+            print(f"[acquire_daily] fetch_squad_availability skipped: {exc}", flush=True)
+
+
 def _maybe_fetch_live_xg(events: list[dict], quiet: bool = False) -> None:
     """Refresh the rolling team-xG prior from live FotMob xG when
     ORACLE_FETCH_LIVE_XG=on. Closes the gap where build_xg_table.py already
@@ -143,7 +169,8 @@ def _flatten_odds(event_id: str, date_str: str, odds: Optional[dict], scraped_at
 
 
 def _stats_rows(event_id: str, date_str: str, stats: Optional[dict],
-                 statscoverage: Optional[dict], xg: Optional[dict], scraped_at: str) -> list[dict]:
+                 statscoverage: Optional[dict], xg: Optional[dict],
+                 availability: Optional[dict], scraped_at: str) -> list[dict]:
     """One row per stats subtab; variable-shape bodies go in as a JSON string
     (payload_json) so the Parquet schema stays stable across days."""
     import json as _json
@@ -162,6 +189,11 @@ def _stats_rows(event_id: str, date_str: str, stats: Optional[dict],
         rows.append({
             "dt": date_str, "event_id": event_id, "subtab": "xg",
             "payload_json": _json.dumps(xg, ensure_ascii=False), "scraped_at": scraped_at,
+        })
+    if availability and (availability.get("home") or availability.get("away")):
+        rows.append({
+            "dt": date_str, "event_id": event_id, "subtab": "availability",
+            "payload_json": _json.dumps(availability, ensure_ascii=False), "scraped_at": scraped_at,
         })
     return rows
 
@@ -182,7 +214,10 @@ def events_to_lake_rows(events: list[dict], date_str: str, scraped_at: str) -> d
             "market_count": ev.get("marketCount"), "scraped_at": scraped_at,
         })
         odds.extend(_flatten_odds(eid, date_str, ev.get("odds"), scraped_at))
-        stats.extend(_stats_rows(eid, date_str, ev.get("stats"), ev.get("statscoverage"), ev.get("xg"), scraped_at))
+        stats.extend(_stats_rows(
+            eid, date_str, ev.get("stats"), ev.get("statscoverage"),
+            ev.get("xg"), ev.get("availability"), scraped_at,
+        ))
     return {"fixtures": fixtures, "odds": odds, "stats": stats}
 
 
@@ -195,6 +230,7 @@ def acquire(date_str: str, quiet: bool = False, no_playwright: bool = False) -> 
     ds.write_table("odds", date_str, rows["odds"])
     ds.write_table("stats", date_str, rows["stats"])
     _maybe_fetch_injuries(quiet=quiet)
+    _maybe_fetch_squad_availability(quiet=quiet)
     _maybe_fetch_live_xg(events, quiet=quiet)
     if not quiet:
         print(

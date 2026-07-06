@@ -97,6 +97,52 @@ describe("computeV3Lambdas (§3.1)", () => {
     expect(shrunk.lambdaHome).toBeGreaterThan(L);
   });
 
+  describe("homeAvailabilityMult/awayAvailabilityMult (§8.2, PR-6)", () => {
+    const base = {
+      league: "__unknown_league__",
+      homeScoredPer90: 1.7,
+      homeConcededPer90: 1.0,
+      awayScoredPer90: 1.2,
+      awayConcededPer90: 1.5,
+    };
+
+    it("reduces lambda proportionally before shrink when a mult < 1 is supplied", () => {
+      const full = computeV3Lambdas(base, { xgBlend: false })!;
+      const depleted = computeV3Lambdas(
+        { ...base, homeAvailabilityMult: 0.8 },
+        { xgBlend: false }
+      )!;
+      expect(depleted.lambdaHome).toBeCloseTo(full.lambdaHome * 0.8, 5);
+      // Away side untouched when only the home mult is supplied.
+      expect(depleted.lambdaAway).toBeCloseTo(full.lambdaAway, 10);
+    });
+
+    it("clamps a mult above 1.0 down to 1.0 (matches fetch_squad_availability.py's own cap)", () => {
+      const full = computeV3Lambdas(base, { xgBlend: false })!;
+      const overCapped = computeV3Lambdas(
+        { ...base, awayAvailabilityMult: 1.5 },
+        { xgBlend: false }
+      )!;
+      expect(overCapped.lambdaAway).toBeCloseTo(full.lambdaAway, 5);
+    });
+
+    it("clamps a mult below 0.5 up to 0.5 (floor against a data glitch zeroing lambda)", () => {
+      const floored = computeV3Lambdas({ ...base, homeAvailabilityMult: 0.1 }, { xgBlend: false })!;
+      const atFloor = computeV3Lambdas({ ...base, homeAvailabilityMult: 0.5 }, { xgBlend: false })!;
+      expect(floored.lambdaHome).toBeCloseTo(atFloor.lambdaHome, 5);
+    });
+
+    it("is a no-op when absent or null", () => {
+      const withUndefined = computeV3Lambdas(base, { xgBlend: false })!;
+      const withNull = computeV3Lambdas(
+        { ...base, homeAvailabilityMult: null, awayAvailabilityMult: null },
+        { xgBlend: false }
+      )!;
+      expect(withNull.lambdaHome).toBeCloseTo(withUndefined.lambdaHome, 10);
+      expect(withNull.lambdaAway).toBeCloseTo(withUndefined.lambdaAway, 10);
+    });
+  });
+
   it("blends 50/50 with xG when present, and marks xgBlended", () => {
     const noXg = computeV3Lambdas({
       league: "__unknown_league__",

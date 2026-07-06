@@ -244,6 +244,22 @@ python tools/fetch_squad_availability.py --kaggle-dir .tmp/kaggle/player-scores
   (Transfermarkt `club_code` → fdco short name — the single TM↔fdco bridge, also
   reusable for the OTS name-gap fix).
 
+**Also wired live (2026-07-07, audit PR-6, not just the offline GBM trainer):**
+`tools/acquire_daily.py`'s `_maybe_fetch_squad_availability()` refreshes
+`availability_features.csv` during daily acquisition when
+`ORACLE_FETCH_SQUAD_AVAILABILITY=on` (off by default — requires
+`.tmp/kaggle/player-scores/` already downloaded). `scrape_fixtures.py` then
+looks up each team's MOST RECENT row (there's no "today's" row for a fixture
+that hasn't been played yet — this is a recency proxy, not a live lineup feed)
+and merges it into the sidecar as `stats.availability.{home,away}.idx` /
+`.keyPlayerPresent`, same pattern as the existing xG-table merge.
+`apps/worker/src/index.ts`'s `buildGoalsV3Input` reads `idx` into
+`V3LambdaInput.homeAvailabilityMult`/`awayAvailabilityMult`
+(`packages/engine/src/goalsV3/lambda.ts`), applied as a multiplier on the raw λ
+before shrinkage — a real, tool-derived replacement for the legacy engine's
+`injPenH`/`injPenA`, which is an LLM guess. Top-5 domestic leagues only; other
+fixtures simply get no mult (no-op, λ unchanged).
+
 ### 3F — Match-Day Weather
 
 ```bash

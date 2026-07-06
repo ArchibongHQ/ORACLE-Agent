@@ -319,6 +319,24 @@ export interface SportyBetStats {
     home?: { top_scorer_goals?: number; top_scorer_name?: string } | null;
     away?: { top_scorer_goals?: number; top_scorer_name?: string } | null;
   } | null;
+  /** Match-day squad availability (tools/fetch_squad_availability.py, Kaggle
+   *  Transfermarkt backfill) — the team's MOST RECENT known matchday
+   *  availability_idx (matchday squad value / rolling peak squad value, 1.0 =
+   *  full strength) as a recency proxy for today's expected squad depth; not
+   *  literally today's lineup (unknowable pre-kickoff from a historical
+   *  dataset). Top-5 domestic leagues only, absent elsewhere. */
+  availability?: {
+    home?: SportyBetAvailabilityEntry | null;
+    away?: SportyBetAvailabilityEntry | null;
+  } | null;
+}
+
+export interface SportyBetAvailabilityEntry {
+  /** matchday_squad_value / rolling_peak_squad_value, clamped to [0,1]. */
+  idx: number;
+  /** 1 = the club's single most-valued rostered player started/was named;
+   *  0 = absent; undefined when unknown. */
+  keyPlayerPresent?: 0 | 1;
 }
 
 export interface ScoringConcedingProfile {
@@ -494,9 +512,20 @@ export async function loadSportyBetIndex(
               }
             | null
             | undefined;
+          const availabilityBlock = ev.availability as
+            | {
+                home?: SportyBetAvailabilityEntry | null;
+                away?: SportyBetAvailabilityEntry | null;
+              }
+            | null
+            | undefined;
           const stats: SportyBetStats | null =
-            baseStats != null || xgBlock != null
-              ? { ...(baseStats ?? {}), ...(xgBlock != null ? { xg: xgBlock } : {}) }
+            baseStats != null || xgBlock != null || availabilityBlock != null
+              ? {
+                  ...(baseStats ?? {}),
+                  ...(xgBlock != null ? { xg: xgBlock } : {}),
+                  ...(availabilityBlock != null ? { availability: availabilityBlock } : {}),
+                }
               : null;
           detail = {
             eventId: ev.eventId,

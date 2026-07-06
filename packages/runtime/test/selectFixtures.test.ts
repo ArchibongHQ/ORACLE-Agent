@@ -487,4 +487,57 @@ describe("loadSportyBetIndex", () => {
     expect(idx?.byKey.get(sidecarKey("Lyon", "Lille"))).toBe(0); // string count coerced to 0
     expect(idx?.events).toHaveLength(2);
   });
+
+  it("merges the top-level availability block into stats.availability (PR-6, §8.2)", async () => {
+    const p = join(dir, "sidecar.json");
+    await writeFile(
+      p,
+      JSON.stringify({
+        date: TODAY,
+        events: [
+          {
+            home: "Arsenal FC",
+            away: "Chelsea FC",
+            marketCount: 27,
+            eventId: "ev1",
+            stats: { goals: { home: { avg_scored: 1.5 } } },
+            availability: {
+              home: { idx: 0.72, keyPlayerPresent: 0 },
+              away: { idx: 0.95 },
+            },
+          },
+        ],
+      }),
+      "utf8"
+    );
+    const idx = await loadSportyBetIndex(TODAY, p);
+    const detail = idx?.detailByKey.get(sidecarKey("Arsenal FC", "Chelsea FC"));
+    expect(detail?.stats?.availability?.home).toEqual({ idx: 0.72, keyPlayerPresent: 0 });
+    expect(detail?.stats?.availability?.away).toEqual({ idx: 0.95 });
+    // Pre-existing stats fields survive the merge untouched.
+    expect(detail?.stats?.goals?.home?.avg_scored).toBe(1.5);
+  });
+
+  it("omits stats.availability entirely when the top-level block is absent", async () => {
+    const p = join(dir, "sidecar.json");
+    await writeFile(
+      p,
+      JSON.stringify({
+        date: TODAY,
+        events: [
+          {
+            home: "Arsenal FC",
+            away: "Chelsea FC",
+            marketCount: 27,
+            eventId: "ev1",
+            stats: { goals: { home: { avg_scored: 1.5 } } },
+          },
+        ],
+      }),
+      "utf8"
+    );
+    const idx = await loadSportyBetIndex(TODAY, p);
+    const detail = idx?.detailByKey.get(sidecarKey("Arsenal FC", "Chelsea FC"));
+    expect(detail?.stats?.availability).toBeUndefined();
+  });
 });
