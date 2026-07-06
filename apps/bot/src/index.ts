@@ -38,7 +38,13 @@ import https from "node:https";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { BatchSummary } from "@oracle/notify";
-import { buildNotifiers, formatSummaryText, notifyAll, summarizeBatch } from "@oracle/notify";
+import {
+  buildNotifiers,
+  formatSummaryText,
+  mimeForFile,
+  notifyAll,
+  summarizeBatch,
+} from "@oracle/notify";
 import {
   buildConfig,
   CLV_ELIGIBLE_LEAGUES,
@@ -47,6 +53,7 @@ import {
   findSidecarDetail,
   formatPuntResult,
   generateAndWriteFixtureWorkbook,
+  listFixtureReportFiles,
   loadEnv,
   loadSportyBetIndex,
   markFulfilled,
@@ -206,11 +213,12 @@ async function sendDocumentTo(chatId: string, filePath: string, caption: string)
   const token = TOKEN();
   if (!token || !existsSync(filePath)) return;
   try {
+    const fileName = filePath.split(/[\\/]/).pop() ?? "report.bin";
     const form = new FormData();
-    const blob = new Blob([readFileSync(filePath)], { type: "text/html" });
+    const blob = new Blob([readFileSync(filePath)], { type: mimeForFile(fileName) });
     form.append("chat_id", chatId);
     form.append("caption", caption);
-    form.append("document", blob, filePath.split(/[\\/]/).pop() ?? "report.html");
+    form.append("document", blob, fileName);
     await fetch(API(token, "sendDocument"), {
       method: "POST",
       body: form,
@@ -218,6 +226,25 @@ async function sendDocumentTo(chatId: string, filePath: string, caption: string)
     });
   } catch {
     /* best-effort */
+  }
+}
+
+/** Send a split fixture-report file set (fixtures file + 0..n markets parts)
+ *  sequentially with part-numbered captions. */
+async function sendReportFiles(
+  chatId: string,
+  files: { fixturesPath: string; marketsPaths: string[] },
+  baseCaption: string
+): Promise<void> {
+  const total = 1 + files.marketsPaths.length;
+  const partCount = files.marketsPaths.length;
+  await sendDocumentTo(chatId, files.fixturesPath, `${baseCaption} [file 1/${total}]`);
+  for (let i = 0; i < files.marketsPaths.length; i++) {
+    await sendDocumentTo(
+      chatId,
+      files.marketsPaths[i] as string,
+      `${baseCaption} — markets [file ${i + 2}/${total}${partCount > 1 ? `, part ${i + 1} of ${partCount}` : ""}]`
+    );
   }
 }
 
@@ -517,11 +544,11 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
     return;
   }
 
-  const fixturesPath = join(REPORTS_DIR, `oracle-fixtures-${date}.xlsx`);
-  if (existsSync(fixturesPath)) {
-    await sendDocumentTo(
+  const onDisk = await listFixtureReportFiles(date, REPORTS_DIR);
+  if (onDisk) {
+    await sendReportFiles(
       chatId,
-      fixturesPath,
+      onDisk,
       `ORACLE fixtures report — ${date} (engine-decision report not generated yet today; showing today's scrape instead)`
     );
     return;
@@ -531,9 +558,9 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
   try {
     const result = await generateAndWriteFixtureWorkbook(date, REPORTS_DIR);
     if (result) {
-      await sendDocumentTo(
+      await sendReportFiles(
         chatId,
-        result.path,
+        result,
         `ORACLE fixtures report — ${date} (${result.fixtureCount} fixtures; engine-decision report not generated yet today)`
       );
       return;
@@ -558,10 +585,9 @@ async function handleReport(chatId: string, dateArg?: string): Promise<void> {
 async function handleFixturesReport(chatId: string, dateArg?: string): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const date = dateArg && /^\d{4}-\d{2}-\d{2}$/.test(dateArg) ? dateArg : today;
-  const reportPath = join(REPORTS_DIR, `oracle-fixtures-${date}.xlsx`);
-
-  if (existsSync(reportPath)) {
-    await sendDocumentTo(chatId, reportPath, `ORACLE daily fixtures — ${date}`);
+  const onDisk = await listFixtureReportFiles(date, REPORTS_DIR);
+  if (onDisk) {
+    await sendReportFiles(chatId, onDisk, `ORACLE daily fixtures — ${date}`);
     return;
   }
 
@@ -572,9 +598,9 @@ async function handleFixturesReport(chatId: string, dateArg?: string): Promise<v
       await sendTo(chatId, `ℹ️ No SportyBet fixtures found for ${date}.`);
       return;
     }
-    await sendDocumentTo(
+    await sendReportFiles(
       chatId,
-      result.path,
+      result,
       `ORACLE daily fixtures — ${date} (${result.fixtureCount} fixtures)`
     );
   } catch (err) {

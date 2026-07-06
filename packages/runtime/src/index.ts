@@ -36,11 +36,19 @@ export {
   resolvePythonBin,
   SPORT_TO_LEAGUE,
 } from "./fixtures.js";
-export type { FixtureWorkbookDeps } from "./fixtureWorkbook.js";
+export type {
+  FixtureReportFiles,
+  FixtureWorkbookDeps,
+  MarketRowGroup,
+} from "./fixtureWorkbook.js";
 export {
+  buildMarketRowGroups,
   generateAndWriteFixtureWorkbook,
-  renderFixtureWorkbook,
-  writeFixtureWorkbook,
+  listFixtureReportFiles,
+  renderFixturesWorkbook,
+  renderMarketsWorkbook,
+  TELEGRAM_FILE_BUDGET_BYTES,
+  writeFixtureReportFiles,
 } from "./fixtureWorkbook.js";
 export type { GoalsArtifact } from "./goalsArtifact.js";
 export { readGoalsArtifact, writeGoalsArtifact } from "./goalsArtifact.js";

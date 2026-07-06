@@ -6,7 +6,7 @@
  *  All analysis/fixture/report logic lives in @oracle/runtime; this file only schedules. */
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -698,8 +698,9 @@ async function sendDailyFixtureReport(): Promise<void> {
   const hasCreds = Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID);
   process.stdout.write(`[fixture-report] start ${startedAt.toISOString()} (creds=${hasCreds})\n`);
   try {
-    // Spreadsheet (.xlsx) replaces the old HTML report — one row per fixture with
-    // every captured field, plus a per-outcome Markets sheet.
+    // Spreadsheets (.xlsx) replace the old HTML report — a small Fixtures file
+    // (one row per fixture, every captured field) plus per-outcome Markets
+    // file(s), split under the Telegram per-file size budget.
     const result = await generateAndWriteFixtureWorkbook(today, join(ROOT, ".tmp/reports"));
     if (!result) {
       // No-fixtures is a real, reportable state — surface it loudly (was a silent
@@ -734,23 +735,37 @@ async function sendDailyFixtureReport(): Promise<void> {
       if (!alreadyFlagged) writeHeartbeat("fixtureReportPlaceholder", { date: today });
       return;
     }
-    process.stdout.write(`[fixture-report] wrote ${result.path}\n`);
+    const allPaths = [result.fixturesPath, ...result.marketsPaths];
+    for (const p of allPaths) {
+      const kb = Math.round(statSync(p).size / 1024);
+      process.stdout.write(`[fixture-report] wrote ${p} (${kb}KB)\n`);
+    }
 
     if (hasCreds) {
+      const total = allPaths.length;
+      const partCount = result.marketsPaths.length;
       await sendTelegramDocument(
         env.TELEGRAM_BOT_TOKEN as string,
         env.TELEGRAM_CHAT_ID as string,
-        result.path,
-        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures)`
+        result.fixturesPath,
+        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]`
       );
+      for (let i = 0; i < result.marketsPaths.length; i++) {
+        await sendTelegramDocument(
+          env.TELEGRAM_BOT_TOKEN as string,
+          env.TELEGRAM_CHAT_ID as string,
+          result.marketsPaths[i] as string,
+          `ORACLE daily markets — ${today} [file ${i + 2}/${total}${partCount > 1 ? `, part ${i + 1} of ${partCount}` : ""}]`
+        );
+      }
       process.stdout.write(
-        `[fixture-report] delivered to Telegram in ${Date.now() - startedAt.getTime()}ms\n`
+        `[fixture-report] delivered ${total} file(s) to Telegram in ${Date.now() - startedAt.getTime()}ms\n`
       );
       writeHeartbeat("fixtureReportDelivered", { date: today });
     } else {
       // Was a silent skip — now explicit so an unconfigured box is obvious in logs.
       process.stderr.write(
-        `[fixture-report] WARN Telegram creds missing — spreadsheet on disk at ${result.path}, not delivered\n`
+        `[fixture-report] WARN Telegram creds missing — spreadsheets on disk at ${allPaths.join(", ")}, not delivered\n`
       );
     }
   } catch (err) {
