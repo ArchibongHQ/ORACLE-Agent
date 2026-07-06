@@ -6,7 +6,7 @@
  *  All analysis/fixture/report logic lives in @oracle/runtime; this file only schedules. */
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -188,6 +188,117 @@ function writeHeartbeat(event: string, detail: Record<string, unknown> = {}): vo
   }
 }
 
+// ── Crash-loop guard ─────────────────────────────────────────────────────────
+// Servy's recoveryAction=RestartService (maxRestartAttempts=0, i.e. unbounded)
+// relaunches a crashed worker unconditionally. If the crash happens inside the
+// back-online batch itself (e.g. the 2026-07-05 OOM during runDailyBatch's
+// [select]/[scrape] phase), the fresh process starts, checkHeartbeatFreshness
+// sees the batch still isn't fresh for today, and immediately re-triggers the
+// same expensive batch — a tight restart loop with no backoff. Confirmed in
+// practice: 11 restarts in ~13 minutes on 2026-07-03 (~65s apart, matching how
+// fast each attempt re-crashed). This guard detects "the previous process
+// died within CRASH_LOOP_WINDOW_MS of starting, without a clean SIGINT/SIGTERM
+// exit" and, if so, holds off the back-online retriggers for
+// CRASH_LOOP_COOLDOWN_MS so Servy's restarts don't just keep re-running
+// straight into the same crash.
+const PROCESS_STATE_FILE = join(ROOT, ".tmp", "worker_process_state.json");
+const CRASH_LOOP_WINDOW_MS = 3 * 60 * 1000; // previous start died within 3 min = crash, not a long healthy run
+const CRASH_LOOP_COOLDOWN_MS = 10 * 60 * 1000; // hold off back-online retriggers this long after a detected crash loop
+
+let crashLoopCooldownUntil = 0;
+
+// event/at (not startedAt/cleanExit) so "when" always means the same thing —
+// a prior startedAt/cleanExit shape read "start time" on one write path and
+// "exit time" on the other, a latent trap for any future uptime-based check.
+function writeProcessState(event: "start" | "clean-exit"): void {
+  try {
+    const tmpPath = `${PROCESS_STATE_FILE}.tmp`;
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({ event, at: new Date().toISOString() }, null, 2),
+      "utf8"
+    );
+    // Atomic rename so a crash mid-write (the exact OOM/BSOD scenario this
+    // guard exists to catch) can't leave a truncated file that the next
+    // start's JSON.parse chokes on and silently treats as "never ran before".
+    renameSync(tmpPath, PROCESS_STATE_FILE);
+  } catch (err) {
+    process.stderr.write(`[worker] process-state write failed: ${String(err)}\n`);
+  }
+}
+
+// Fire-and-forget so a slow Telegram send never delays startup — every other
+// staleness alert in this file (checkHeartbeatFreshness, checkBotHeartbeatFreshness)
+// pushes through the same buildNotifiers/notifyAll pipeline; crash-loop detection
+// was stderr-only (Servy log only), which pages nobody if the underlying crash is
+// deterministic and the loop just keeps recurring every cooldown window instead.
+async function alertCrashLoopDetected(
+  prevAt: string | undefined,
+  cooldownUntil: number
+): Promise<void> {
+  const notifiers = buildNotifiers(env);
+  if (!notifiers.length) return;
+  const alertSummary: BatchSummary = {
+    date: watDateString(),
+    analysed: 0,
+    actionableCount: 0,
+    errors: 0,
+    actionable: [],
+    alertText: `worker crash loop detected — previous start (${
+      prevAt ?? "unknown, corrupt state file"
+    }) did not exit cleanly and died within ${
+      CRASH_LOOP_WINDOW_MS / 1000
+    }s. Holding off back-online batch retriggers until ${new Date(cooldownUntil).toISOString()}.`,
+  };
+  await notifyAll(notifiers, alertSummary);
+}
+
+function checkCrashLoopOnStartup(): void {
+  let raw: string | null = null;
+  try {
+    raw = readFileSync(PROCESS_STATE_FILE, "utf8");
+  } catch {
+    /* no previous state file — first start, nothing to detect */
+  }
+  if (raw !== null) {
+    let armCooldown = false;
+    let prevAt: string | undefined;
+    try {
+      const prev = JSON.parse(raw) as { event?: string; at?: string };
+      prevAt = prev.at;
+      if (
+        prev.event === "start" &&
+        prev.at &&
+        Date.now() - new Date(prev.at).getTime() < CRASH_LOOP_WINDOW_MS
+      ) {
+        armCooldown = true;
+      }
+    } catch {
+      // Corrupt/truncated file — can't rule out a mid-write crash, so don't
+      // treat it the same as a clean first start.
+      armCooldown = true;
+    }
+    if (armCooldown) {
+      crashLoopCooldownUntil = Date.now() + CRASH_LOOP_COOLDOWN_MS;
+      process.stderr.write(
+        `[worker] crash loop detected (previous start ${
+          prevAt ?? "unknown (corrupt state file)"
+        } did not exit cleanly and died within ${
+          CRASH_LOOP_WINDOW_MS / 1000
+        }s) — holding off back-online batch retriggers until ${new Date(
+          crashLoopCooldownUntil
+        ).toISOString()}\n`
+      );
+      void alertCrashLoopDetected(prevAt, crashLoopCooldownUntil);
+    }
+  }
+  writeProcessState("start");
+}
+
+function markCleanExit(): void {
+  writeProcessState("clean-exit");
+}
+
 // Staleness alert: catches two distinct failure modes —
 // (a) called once at startup, it flags "the daemon itself was dead" (the previous
 //     process's lastBatch is already stale by the time a fresh process starts — this
@@ -272,6 +383,11 @@ function isLakeFreshForToday(): boolean {
 }
 
 async function checkHeartbeatFreshness(): Promise<void> {
+  // Called at startup and hourly (cron.schedule("0 * * * *", ...) below) — this
+  // doubles as an hourly baseline memory reading independent of which jobs ran,
+  // so a steady hour-over-hour climb is visible even on an hour with no batch.
+  logMemoryUsage("hourly-tick");
+
   let lastBatchAt: string | undefined;
   try {
     const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
@@ -285,7 +401,11 @@ async function checkHeartbeatFreshness(): Promise<void> {
 
   // Checked before any lastBatch-related early return below, so a healthy
   // lastBatch never short-circuits this independent trigger.
-  if (!isLakeFreshForToday() && Date.now() - lastLakeTriggerAt >= LAKE_TRIGGER_REPEAT_MS) {
+  if (
+    !isLakeFreshForToday() &&
+    Date.now() - lastLakeTriggerAt >= LAKE_TRIGGER_REPEAT_MS &&
+    Date.now() >= crashLoopCooldownUntil
+  ) {
     lastLakeTriggerAt = Date.now();
     process.stdout.write(
       "[worker] daily lake stale/missing — triggering back-online acquisition\n"
@@ -305,7 +425,8 @@ async function checkHeartbeatFreshness(): Promise<void> {
   // of the lake/acquire trigger above.
   if (
     !isDailyBatchFreshForToday(lastBatchAt) &&
-    Date.now() - lastDailyBatchTriggerAt >= DAILY_BATCH_TRIGGER_REPEAT_MS
+    Date.now() - lastDailyBatchTriggerAt >= DAILY_BATCH_TRIGGER_REPEAT_MS &&
+    Date.now() >= crashLoopCooldownUntil
   ) {
     lastDailyBatchTriggerAt = Date.now();
     process.stdout.write(
@@ -391,13 +512,32 @@ async function checkBotHeartbeatFreshness(): Promise<void> {
   await notifyAll(notifiers, alertSummary);
 }
 
+// ── Memory telemetry ─────────────────────────────────────────────────────────
+// Instrumentation-only, added while diagnosing the 2026-07-05 worker OOM
+// (crashed at ~509-517MB, before the Servy heap-ceiling fix was corrected from
+// a stale 512MB to the intended 2048MB — see oracle_machine_crash_2026_07_05
+// memory). The real daily fixture pool is O(100-250), not the ~18.5k first
+// assumed, so rather than redesign loadSportyBetIndex/gating against an
+// unconfirmed problem, this logs real before/after numbers per job phase so a
+// future OOM (or steady hour-over-hour growth) can be pinned to a specific
+// phase instead of guessed at.
+function logMemoryUsage(label: string): void {
+  const mem = process.memoryUsage();
+  const mb = (n: number) => Math.round(n / 1024 / 1024);
+  process.stdout.write(
+    `[mem] ${label} heapUsedMB=${mb(mem.heapUsed)} rssMB=${mb(mem.rss)} externalMB=${mb(mem.external)}\n`
+  );
+}
+
 function logJob(name: string, fn: () => Promise<unknown>): void {
   const started = Date.now();
   process.stdout.write(`[worker] ${new Date().toISOString()} ${name}: start\n`);
+  logMemoryUsage(`${name}:start`);
   fn()
     .then(() => {
       const s = ((Date.now() - started) / 1000).toFixed(1);
       process.stdout.write(`[worker] ${new Date().toISOString()} ${name}: ok in ${s}s\n`);
+      logMemoryUsage(`${name}:ok`);
     })
     .catch((err: unknown) => {
       const s = ((Date.now() - started) / 1000).toFixed(1);
@@ -405,6 +545,7 @@ function logJob(name: string, fn: () => Promise<unknown>): void {
       process.stderr.write(
         `[worker] ${new Date().toISOString()} ${name}: FAILED after ${s}s — ${msg}\n`
       );
+      logMemoryUsage(`${name}:failed`);
     });
 }
 
@@ -833,6 +974,7 @@ async function runDailyBatch(
   // telemetry.v3Heightened stamp the heightened EV bars key off.
   // The index is loaded here (not at the booking block) so both uses share one read.
   const sportyIndex = await loadSportyBetIndex(watDateString());
+  logMemoryUsage("daily-batch:sportyIndex-loaded");
   let gatedJobs = jobs;
   if (config.enableMarketsV3 === "on" && config.marketsV3Gate !== false) {
     const { jobs: survivors, summary } = prefilterMarketsV3Jobs(
@@ -912,6 +1054,7 @@ async function runDailyBatch(
       break;
     }
   }
+  logMemoryUsage("daily-batch:chunk-loop-done");
 
   const batch = mergeBatchChunks(batchChunks);
   const records = allRecords;
@@ -1838,6 +1981,10 @@ async function sendDailyPuntPrompt(retry: boolean): Promise<void> {
 // Cron daemon — skipped entirely in one-shot CLI mode (see IS_ONE_SHOT above) so a
 // single --run-* invocation exits cleanly instead of being held open by these timers.
 if (!IS_ONE_SHOT) {
+  // Must run before checkHeartbeatFreshness so a detected crash loop already
+  // gates that very first back-online check, not just subsequent hourly ticks.
+  checkCrashLoopOnStartup();
+
   // Catches "the daemon itself was dead" — the previous process's lastBatch is
   // already stale by the time this fresh process starts (see checkHeartbeatFreshness
   // comment above for the two failure modes this can and can't detect).
@@ -1940,6 +2087,10 @@ for (const sig of ["SIGINT", "SIGTERM"] as const) {
   process.on(sig, () => {
     process.stdout.write(`[worker] ${sig} received — stopping cron schedules\n`);
     for (const task of cron.getTasks().values()) task.stop();
+    // Only the daemon writes PROCESS_STATE_FILE (checkCrashLoopOnStartup is
+    // gated the same way) — a one-shot invocation signaled mid-run must not
+    // stamp cleanExit:true over the daemon's own crash-loop tracking.
+    if (!IS_ONE_SHOT) markCleanExit();
     process.exit(0);
   });
 }
