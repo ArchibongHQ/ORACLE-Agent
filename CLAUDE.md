@@ -158,10 +158,7 @@ Telegram: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Slack: `SLACK_WEBHOOK_URL`
 
 ### 2. Code Style & Guidelines
 
-- **TypeScript:** Strict mode enabled. Prefer explicit types for exported functions and API responses. Avoid `any`.
-- **Imports:** Use absolute paths with aliases (e.g., `@/components/...`) where configured. Do not use deeply nested relative paths (`../../..`).
-- **Formatting:** Handled via Prettier/ESLint. Run validation before committing code.
-- **Error Handling:** Wrap async operations in try/catch blocks; use robust error boundaries and explicit logging via the internal logger.
+TypeScript conventions load automatically when working with `.ts` files — see `.claude/rules/typescript.md`.
 
 ---
 
