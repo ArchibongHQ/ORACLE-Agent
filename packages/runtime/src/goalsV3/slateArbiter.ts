@@ -33,7 +33,9 @@ export function slateLegKey(leg: GoalsLeg): string {
   return `${leg.home}|${leg.away}|${leg.side}`;
 }
 
-function dedupeLegs(selection: GoalsSelectionResult): GoalsLeg[] {
+/** Exported for reuse by goalsV3/crossBatchVeto.ts (PR-13) — same
+ *  dedupe-across-all-five-outputs logic, not a separately-maintained copy. */
+export function dedupeLegs(selection: GoalsSelectionResult): GoalsLeg[] {
   const seen = new Map<string, GoalsLeg>();
   for (const pool of [
     selection.legs,

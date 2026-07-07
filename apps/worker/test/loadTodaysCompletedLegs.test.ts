@@ -110,6 +110,31 @@ describe("loadTodaysCompletedLegs", () => {
     ]);
   });
 
+  it("excludes manifests from ad-hoc manual runs (CLI/bot/web/punt) — only trigger=scheduled counts", async () => {
+    const manualManifest = fakeManifest({
+      trigger: "manual",
+      fixtures: [
+        {
+          fixtureId: "m1",
+          home: "Man Utd",
+          away: "Newcastle",
+          league: "Premier League",
+          kickoff: "2026-07-07T15:00:00Z",
+          status: "ok",
+          pick: { market: "1x2", side: "Home", odds: 1.7 },
+          grade: "A",
+          confidence: 0.55,
+          errorCode: null,
+          errorMessage: null,
+          stakePct: 0.02,
+        },
+      ],
+    });
+    await storage.set(STORAGE_KEYS.runManifests, [manualManifest]);
+
+    expect(await loadTodaysCompletedLegs(storage, "2026-07-07")).toEqual([]);
+  });
+
   it("collects legs across multiple stored manifests", async () => {
     const m1 = fakeManifest({
       runId: "r1",

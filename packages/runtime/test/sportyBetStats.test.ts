@@ -548,6 +548,60 @@ describe("buildStatsOverride — v3 raw lambda inputs (§3.1, ungated by MIN_PLA
     expect(override?.scoredPer90A).toBe(0.8);
   });
 
+  it("[PR-14] prefers scoringConceding venue split over season goals aggregate when sample is thick enough", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.0, avg_conceded: 1.0 },
+        away: { avg_scored: 1.0, avg_conceded: 1.0 },
+      },
+      scoringConceding: {
+        home: { matches: 8, scored_avg: 1.7, conceded_avg: 0.6 },
+        away: { matches: 8, scored_avg: 0.5, conceded_avg: 1.9 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBe(1.7);
+    expect(override?.concededPer90H).toBe(0.6);
+    expect(override?.scoredPer90A).toBe(0.5);
+    expect(override?.concededPer90A).toBe(1.9);
+  });
+
+  it("[PR-14] falls back to the season aggregate when scoringConceding's own sample is too thin", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.0, avg_conceded: 1.0 },
+        away: { avg_scored: 1.0, avg_conceded: 1.0 },
+      },
+      scoringConceding: {
+        // Below MIN_PLAYED_FOR_OVERRIDE(4) — too thin to trust.
+        home: { matches: 2, scored_avg: 5.0, conceded_avg: 0.1 },
+        away: { matches: 2, scored_avg: 0.1, conceded_avg: 5.0 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBe(1.0);
+    expect(override?.concededPer90H).toBe(1.0);
+    expect(override?.scoredPer90A).toBe(1.0);
+    expect(override?.concededPer90A).toBe(1.0);
+  });
+
+  it("[PR-14] falls back to the season aggregate when scoringConceding is entirely absent", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.4, avg_conceded: 1.0 },
+        away: { avg_scored: 0.8, avg_conceded: 1.6 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBe(1.4);
+    expect(override?.concededPer90H).toBe(1.0);
+    expect(override?.scoredPer90A).toBe(0.8);
+    expect(override?.concededPer90A).toBe(1.6);
+  });
+
   it("populates home/awayAvailabilityMult from stats.availability (PR-6, §8.2)", () => {
     const d = detail({
       standings: { home: { played: 10 }, away: { played: 10 } },

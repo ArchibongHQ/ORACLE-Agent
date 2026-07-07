@@ -98,6 +98,34 @@ describe("crossBatchVetoKeys", () => {
     expect(crossBatchVetoKeys(selection, existing).size).toBe(0);
   });
 
+  it("vetoes a leg on the SAME fixture as an existing daily-batch pick (rho=0 blind spot fix)", () => {
+    // pairwiseCrossFixtureCorrelation itself returns 0 for same-fixture legs
+    // (by design, for its intra-batch caller) — crossBatchVetoKeys must not
+    // inherit that blind spot: the same match on two different markets is
+    // the single highest-correlation case there is.
+    const leg = makeLeg({
+      home: "Arsenal",
+      away: "Chelsea",
+      league: "La Liga", // deliberately different league/window from existing
+      kickoff: "2026-07-07T09:00:00Z",
+    });
+    const selection = makeSelection([leg]);
+    const existing: PortfolioLeg[] = [
+      {
+        home: "Arsenal",
+        away: "Chelsea",
+        league: "Premier League",
+        market: "1x2 Home",
+        mp: 0.5,
+        kickoff: "2026-07-07T15:00:00Z",
+      },
+    ];
+    const vetoes = crossBatchVetoKeys(selection, existing);
+    expect(vetoes.size).toBe(1);
+    const [reason] = vetoes.values();
+    expect(reason).toContain("same fixture");
+  });
+
   it("dedupes legs shared across long/short slips before checking", () => {
     const leg = makeLeg();
     const selection = makeSelection([leg], [leg]);

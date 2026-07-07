@@ -47,6 +47,7 @@ import {
   generateAndWriteGoalsWorkbook,
   heightenedTrendsAligned,
   loadLedgerState,
+  MIN_PLAYED_FOR_OVERRIDE,
   reviewGoalsSlate,
   type SportyBetEvent,
   type SportyBetEventDetail,
@@ -128,6 +129,27 @@ function v3TeamXg(
   };
 }
 
+/** [PR-14] Prefer the scoringConceding venue split (home team's own
+ *  home-scored/home-conceded rate, away team's own away-scored/away-conceded
+ *  rate — stats_season_teamscoringconceding) over the venue-agnostic season
+ *  goals.avg_scored/avg_conceded, gated on the same MIN_PLAYED_FOR_OVERRIDE
+ *  sample threshold sportyBetStats.ts's buildStatsOverride uses for the
+ *  identical preference on the main all-markets path — mirrors v3TeamXg's
+ *  "venue over season aggregate" preference for xG just above. This path
+ *  builds its lambda input straight from the sidecar detail (not via
+ *  buildStatsOverride), so it needs the same gate applied inline. */
+function preferVenueScoring(
+  profile: { matches?: number; scored_avg?: number; conceded_avg?: number } | null | undefined,
+  fallbackScored: number | undefined,
+  fallbackConceded: number | undefined
+): { scored: number | undefined; conceded: number | undefined } {
+  const ok = (profile?.matches ?? 0) >= MIN_PLAYED_FOR_OVERRIDE;
+  return {
+    scored: ok ? (profile?.scored_avg ?? fallbackScored) : fallbackScored,
+    conceded: ok ? (profile?.conceded_avg ?? fallbackConceded) : fallbackConceded,
+  };
+}
+
 /** Assemble the goals-only v3 engine's per-fixture input from a sidecar detail.
  *  Shared by the goals-v3 batch AND the daily all-markets R10 cross-check hook
  *  (PR-6), so the cross-check re-prices each candidate against the byte-
@@ -151,6 +173,18 @@ function buildGoalsV3Input(
     dynamicRho?: number;
   }
 ): V3AnalyzeInput {
+  // [PR-14] Prefer the scoringConceding venue split over the season aggregate
+  // for both scored and conceded rates — see preferVenueScoring above.
+  const homeScoring = preferVenueScoring(
+    detail?.stats?.scoringConceding?.home,
+    detail?.stats?.goals?.home?.avg_scored,
+    detail?.stats?.goals?.home?.avg_conceded
+  );
+  const awayScoring = preferVenueScoring(
+    detail?.stats?.scoringConceding?.away,
+    detail?.stats?.goals?.away?.avg_scored,
+    detail?.stats?.goals?.away?.avg_conceded
+  );
   return {
     fixtureId: v3FixtureId(fixture.home, fixture.away, fixture.kickoff),
     runId,
@@ -167,17 +201,17 @@ function buildGoalsV3Input(
       // straight from the sidecar detail rather than via buildStatsOverride,
       // so it needs the same blend applied inline. Conceded stays season-flat.
       homeScoredPer90: blendRecencyScored(
-        detail?.stats?.goals?.home?.avg_scored,
+        homeScoring.scored,
         detail?.stats?.recentGoals?.home?.scored_avg,
         detail?.stats?.form?.home?.last5
       ),
-      homeConcededPer90: detail?.stats?.goals?.home?.avg_conceded ?? null,
+      homeConcededPer90: homeScoring.conceded ?? null,
       awayScoredPer90: blendRecencyScored(
-        detail?.stats?.goals?.away?.avg_scored,
+        awayScoring.scored,
         detail?.stats?.recentGoals?.away?.scored_avg,
         detail?.stats?.form?.away?.last5
       ),
-      awayConcededPer90: detail?.stats?.goals?.away?.avg_conceded ?? null,
+      awayConcededPer90: awayScoring.conceded ?? null,
       nHome: v3SampleSize(detail, "home"),
       nAway: v3SampleSize(detail, "away"),
       homeXg: v3TeamXg(detail?.stats?.xg?.home),
@@ -266,14 +300,20 @@ async function writeV3CappedLog(
 
 /** [PR-13] Loads today's already-completed daily-batch actionable picks as
  *  PortfolioLeg[], for the cross-batch correlation veto (@oracle/runtime's
- *  crossBatchVetoKeys) below. STORAGE_KEYS.runManifests is shared by both
- *  pipelines (runAnalysis's writeback, packages/runtime/src/analyze.ts) — read
- *  here BEFORE this batch writes its own manifest entry, so this only ever
- *  sees whichever pipeline(s) already completed for today. Fails open to an
- *  empty array (no cross-batch check, today's exact pre-PR-13 behavior) when
- *  the daily batch hasn't run yet, its manifest doesn't parse, or the read
- *  itself throws — this is a portfolio-risk safety net, not a hard dependency,
- *  and must never be why the goals batch itself fails. */
+ *  crossBatchVetoKeys) below. STORAGE_KEYS.runManifests is written by every
+ *  runAnalysis call (packages/runtime/src/analyze.ts) — not just the 09:35
+ *  WAT daily batch, but also ad-hoc CLI/bot/web/punt "manual"-trigger runs
+ *  that share the same array. Filtering to trigger==="scheduled" excludes
+ *  those — an ad-hoc single-fixture lookup during the morning window must
+ *  not be treated as if it were an already-committed daily-batch pick. Under
+ *  ORACLE_GOALS_V3=true (the only mode that calls this) this batch itself
+ *  never reaches runAnalysis/writes its own manifest entry (goalsAccumulator.ts
+ *  dispatches to runGoalsBatchV3 and returns before its own legacy runAnalysis
+ *  call), so there's no risk of this batch's own entry polluting the read.
+ *  Fails open to an empty array (no cross-batch check, today's exact
+ *  pre-PR-13 behavior) when the daily batch hasn't run yet, its manifest
+ *  doesn't parse, or the read itself throws — this is a portfolio-risk safety
+ *  net, not a hard dependency, and must never be why the goals batch fails. */
 export async function loadTodaysCompletedLegs(
   storage: MemoryAdapter,
   today: string
@@ -282,6 +322,7 @@ export async function loadTodaysCompletedLegs(
     const manifests = (await storage.get<RunManifest[]>(STORAGE_KEYS.runManifests)) ?? [];
     const legs: PortfolioLeg[] = [];
     for (const manifest of manifests) {
+      if (manifest.trigger !== "scheduled") continue;
       for (const fixture of manifest.fixtures) {
         if (fixture.status !== "ok" || !fixture.pick || !fixture.kickoff.startsWith(today))
           continue;

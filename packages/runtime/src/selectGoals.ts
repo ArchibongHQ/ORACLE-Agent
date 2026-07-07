@@ -416,8 +416,10 @@ export function pickSafestGoalsLeg(
   };
 }
 
-/** Maps a GoalsLeg to the engine's cross-fixture-correlation input shape. */
-function toPortfolioLeg(leg: GoalsLeg): PortfolioLeg {
+/** Maps a GoalsLeg to the engine's cross-fixture-correlation input shape.
+ *  Exported for reuse by goalsV3/crossBatchVeto.ts (PR-13) — same mapping,
+ *  not a separately-maintained copy. */
+export function toPortfolioLeg(leg: GoalsLeg): PortfolioLeg {
   return {
     home: leg.home,
     away: leg.away,
