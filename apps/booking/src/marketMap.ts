@@ -1,6 +1,8 @@
 /** Maps ORACLE market category + side labels to SportyBet search terms and selection text.
  *  Update selectors here when SportyBet changes their UI — isolated by design. */
 
+import { MARKET_CATALOG } from "@oracle/engine";
+
 export interface MarketMapping {
   /** Text to type into SportyBet's market filter / tab */
   sportyMarket: string;
@@ -137,7 +139,37 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
     }
   }
 
-  return null;
+  // [PR-15] Catalog fallback: none of the ~10 hand-rolled families above
+  // matched. MARKET_CATALOG (@oracle/engine, tools/build_market_catalog.py)
+  // is the canonical index of every SportyBet market ORACLE has actually
+  // observed live — id, real modal display name, and every distinct outcome
+  // description seen for it — across all 25 MarketFamily values, not just the
+  // ~10 this file hand-maps. Before giving up, look the raw (cat, side) up
+  // there: if `cat` matches a catalogued market's real name and `side`
+  // matches one of its observed outcome strings verbatim, use those directly
+  // as sportyMarket/sportySelection. This is real, scraped SportyBet UI text
+  // (not a guess), so it's safe to hand to resolveSelection's live fuzzy
+  // match (apps/booking/src/index.ts) even for a family this file has never
+  // special-cased — that's what "closes the unmatched gap by construction"
+  // means here. It does NOT help page.ts's Playwright DOM path (resolvePageTarget
+  // below only has switch-case branches for the families already hand-mapped
+  // above) — a brand-new family still needs its own hand-verified DOM
+  // selectors there; this only widens the API-based booking path.
+  return catalogFallback(cat, side);
+}
+
+function catalogFallback(cat: string, side: string | null): MarketMapping | null {
+  if (!side) return null;
+  const normCat = normalise(cat);
+  const entry = MARKET_CATALOG.find((e) => {
+    const normName = normalise(e.name);
+    return normName === normCat || normCat.includes(normName) || normName.includes(normCat);
+  });
+  if (!entry) return null;
+  const sideTrimmed = side.trim().toLowerCase();
+  const matchedOutcome = entry.outcomes.find((o) => o.trim().toLowerCase() === sideTrimmed);
+  if (!matchedOutcome) return null;
+  return { sportyMarket: entry.name, sportySelection: matchedOutcome };
 }
 
 /** How to find a market's outcome on the SportyBet fixture detail page.

@@ -18,6 +18,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@oracle/engine": "workspace:*",
     "@oracle/notify": "workspace:*",
     "playwright": "^1.45.0"
   },

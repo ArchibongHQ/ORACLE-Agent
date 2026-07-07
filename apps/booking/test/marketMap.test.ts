@@ -106,3 +106,41 @@ describe("mapMarket — First Half", () => {
     });
   });
 });
+
+describe("mapMarket — catalog fallback (PR-15)", () => {
+  it("maps a family with no hand-rolled branch (Odd/Even) via MARKET_CATALOG", () => {
+    // "Odd/Even" isn't one of the ~10 hand-rolled families above at all —
+    // this only resolves via the catalog fallback added in PR-15.
+    expect(mapMarket("Odd/Even", "Odd")).toEqual({
+      sportyMarket: "Odd/Even",
+      sportySelection: "Odd",
+    });
+    expect(mapMarket("Odd/Even", "Even")).toEqual({
+      sportyMarket: "Odd/Even",
+      sportySelection: "Even",
+    });
+  });
+
+  it("is case/whitespace-tolerant on the side but requires an exact outcome match", () => {
+    expect(mapMarket("Odd/Even", "  odd  ")).toEqual({
+      sportyMarket: "Odd/Even",
+      sportySelection: "Odd",
+    });
+  });
+
+  it("returns null when the side doesn't match any of the catalogued outcomes", () => {
+    expect(mapMarket("Odd/Even", "Maybe")).toBeNull();
+  });
+
+  it("returns null when cat doesn't match any catalogued market name", () => {
+    expect(mapMarket("Not A Real Market", "Whatever")).toBeNull();
+  });
+
+  it("returns null when side is missing entirely", () => {
+    expect(mapMarket("Odd/Even", null)).toBeNull();
+  });
+
+  it("still prefers the hand-rolled branches over the catalog fallback (1x2 unaffected)", () => {
+    expect(mapMarket("1x2", "Home")).toEqual({ sportyMarket: "1X2", sportySelection: "1" });
+  });
+});
