@@ -3,14 +3,23 @@
  *  goalsAccumulator.ts, resolveYesterday.ts) — kept here instead of in index.ts
  *  so importing them never creates a circular import back into index.ts.
  *
- *  Two families:
+ *  Three families:
  *   - WAT calendar helpers (watDateString/watYesterdayString/watMinutesSinceMidnight)
  *   - Heartbeat-file state (writeHeartbeat + the read-side helpers that share
  *     the same on-disk file) and the lake-freshness check built on top of it.
+ *   - mergeBatchChunks: a pure BatchResult-merge helper shared by both
+ *     dailyBatch.ts's runDailyBatch and goalsAccumulator.ts's legacy
+ *     runGoalsBatch chunk loops. It lives here rather than in either pipeline
+ *     file because dailyBatch.ts already imports buildGoalsCrossCheckHook from
+ *     goalsV3Pipeline.ts, which in turn imports finalizeGoalsSelection from
+ *     goalsAccumulator.ts — putting mergeBatchChunks in either dailyBatch.ts
+ *     or goalsAccumulator.ts and importing it from the other would close a
+ *     second, longer import cycle back into dailyBatch.ts.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { BatchResult } from "@oracle/engine";
 import { fixturesPartitionExists } from "@oracle/runtime";
 import { ROOT } from "./workerContext.js";
 
@@ -134,4 +143,32 @@ export function logMemoryUsage(label: string): void {
   process.stdout.write(
     `[mem] ${label} heapUsedMB=${mb(mem.heapUsed)} rssMB=${mb(mem.rss)} externalMB=${mb(mem.external)}\n`
   );
+}
+
+// ── Batch chunk merge ────────────────────────────────────────────────────────
+
+/** Merge multiple BatchResult chunks (from the priority-ordered chunk loop) into a
+ *  single BatchResult so downstream summarizeBatch / selectGoalsAccumulator callers
+ *  see one unified result, identical to what a single runAnalysis call would return. */
+export function mergeBatchChunks(chunks: BatchResult[]): BatchResult {
+  if (!chunks.length) throw new Error("mergeBatchChunks: no chunks to merge");
+  const first = chunks[0]!;
+  return {
+    runId: first.runId,
+    calibrationSnapshotId: first.calibrationSnapshotId,
+    date: first.date,
+    rankingMode: first.rankingMode,
+    ...(first.dryRun != null ? { dryRun: first.dryRun } : {}),
+    jobs: chunks.flatMap((c) => c.jobs),
+    completedCount: chunks.reduce((s, c) => s + c.completedCount, 0),
+    errorCount: chunks.reduce((s, c) => s + c.errorCount, 0),
+    actionableCount: chunks.reduce((s, c) => s + c.actionableCount, 0),
+    totalRecommendedStakePct: chunks.reduce((s, c) => s + c.totalRecommendedStakePct, 0),
+    cost: {
+      estimatedUsd: chunks.reduce((s, c) => s + c.cost.estimatedUsd, 0),
+      ceilingUsd: first.cost.ceilingUsd,
+      halted: chunks.some((c) => c.cost.halted),
+    },
+    errors: chunks.flatMap((c) => c.errors),
+  };
 }
