@@ -83,6 +83,7 @@ export {
   scoreCompleteness,
   V3_COMPLETENESS_WEIGHTS,
 } from "./goalsV3/completeness.js";
+export { applyCrossBatchVeto, crossBatchVetoKeys } from "./goalsV3/crossBatchVeto.js";
 export type { V3Eligibility, V3EligibilityStatus } from "./goalsV3/eligibility.js";
 export { classifyEligibility, GOALS_V3_WHITELIST } from "./goalsV3/eligibility.js";
 export { byPredictabilityV3, scorePredictabilityV3 } from "./goalsV3/predictability.js";

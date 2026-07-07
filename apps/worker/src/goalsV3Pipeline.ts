@@ -24,6 +24,7 @@ import {
   formatSanityFlags,
   type GoalsCrossCheckFn,
   goalsSlateSanityChecks,
+  type PortfolioLeg,
   type RunManifest,
   type V3AnalyzeInput,
   type V3FixtureOdds,
@@ -32,9 +33,11 @@ import {
 } from "@oracle/engine";
 import { sendTelegramDocument } from "@oracle/notify";
 import {
+  applyCrossBatchVeto,
   applySlateVerdicts,
   blendRecencyScored,
   classifyEligibility,
+  crossBatchVetoKeys,
   crossCheckGoalsPick,
   deriveLineHitRates,
   enrichWithH2H,
@@ -54,7 +57,7 @@ import {
   sidecarKey,
   sportyEventToFixtureJob,
 } from "@oracle/runtime";
-import { MemoryAdapter } from "@oracle/storage";
+import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
 import { finalizeGoalsSelection } from "./goalsAccumulator.js";
 import { config, env, goalsV3Config, ROOT, STORE_PATH } from "./workerContext.js";
 import { watDateString } from "./workerUtils.js";
@@ -261,6 +264,46 @@ async function writeV3CappedLog(
   }
 }
 
+/** [PR-13] Loads today's already-completed daily-batch actionable picks as
+ *  PortfolioLeg[], for the cross-batch correlation veto (@oracle/runtime's
+ *  crossBatchVetoKeys) below. STORAGE_KEYS.runManifests is shared by both
+ *  pipelines (runAnalysis's writeback, packages/runtime/src/analyze.ts) — read
+ *  here BEFORE this batch writes its own manifest entry, so this only ever
+ *  sees whichever pipeline(s) already completed for today. Fails open to an
+ *  empty array (no cross-batch check, today's exact pre-PR-13 behavior) when
+ *  the daily batch hasn't run yet, its manifest doesn't parse, or the read
+ *  itself throws — this is a portfolio-risk safety net, not a hard dependency,
+ *  and must never be why the goals batch itself fails. */
+export async function loadTodaysCompletedLegs(
+  storage: MemoryAdapter,
+  today: string
+): Promise<PortfolioLeg[]> {
+  try {
+    const manifests = (await storage.get<RunManifest[]>(STORAGE_KEYS.runManifests)) ?? [];
+    const legs: PortfolioLeg[] = [];
+    for (const manifest of manifests) {
+      for (const fixture of manifest.fixtures) {
+        if (fixture.status !== "ok" || !fixture.pick || !fixture.kickoff.startsWith(today))
+          continue;
+        legs.push({
+          home: fixture.home,
+          away: fixture.away,
+          league: fixture.league,
+          market: fixture.pick.market,
+          mp: fixture.confidence ?? 0,
+          kickoff: fixture.kickoff,
+        });
+      }
+    }
+    return legs;
+  } catch (err) {
+    process.stderr.write(
+      `[goals-v3] WARN: cross-batch leg load failed (non-fatal, skipping cross-batch check): ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return [];
+  }
+}
+
 /** goals-market-analysis-prompt-v3 end-to-end: eligibility (union whitelist +
  *  hard discards) -> enrichment (H2H/newsIntel cache-only/lineups, reused as-is
  *  from the legacy path) -> weighted completeness gate (<70 discard) ->
@@ -447,6 +490,19 @@ export async function runGoalsBatchV3(
     eventIdByKey,
     v3: true,
   });
+
+  // [PR-13] Cross-batch portfolio dedup — veto goals legs too correlated
+  // (same league + near-simultaneous kickoff, CROSS_FIXTURE_CORRELATION_REJECT)
+  // with a pick the daily all-markets batch already committed to today, before
+  // the slate arbiter reviews the (now-deduped) selection.
+  const dailyBatchLegs = await loadTodaysCompletedLegs(storage, date);
+  const crossBatchVetoes = crossBatchVetoKeys(selection, dailyBatchLegs);
+  if (crossBatchVetoes.size > 0) {
+    process.stdout.write(
+      `[goals-v3] cross-batch veto: ${crossBatchVetoes.size} leg(s) too correlated with an already-committed daily-batch pick\n`
+    );
+    selection = applyCrossBatchVeto(selection, crossBatchVetoes);
+  }
 
   // ── One slate-level LLM call ──────────────────────────────────────────────
   const verdicts = await reviewGoalsSlate(selection, { timeoutMs: goalsV3Config.arbiterTimeoutMs });
