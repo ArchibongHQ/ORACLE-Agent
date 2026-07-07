@@ -319,7 +319,15 @@ def main() -> int:
     ap.add_argument("--in", dest="inputs", action="append", required=True,
                     help="captured sportybet snapshot JSON (repeatable)")
     ap.add_argument("--out", dest="out", required=True,
-                    help="output .ts path (catalog.generated.ts)")
+                    help="output .ts path (catalog.generated.ts) — read for the diff "
+                         "baseline even in --diff-only mode, but not written to")
+    ap.add_argument("--diff-only", action="store_true",
+                    help="[PR-21] report added/removed ids vs --out without writing it — "
+                         "the committed catalog stays hand-reviewed/PR'd, this is read-only")
+    ap.add_argument("--json-out", dest="json_out",
+                    help="[PR-21] write newly-observed (uncatalogued) entries as a JSON "
+                         "array of MarketCatalogEntry-shaped objects, for the runtime "
+                         "overlay (packages/engine/src/markets/index.ts's extendCatalog)")
     args = ap.parse_args()
 
     snapshots = []
@@ -335,15 +343,18 @@ def main() -> int:
     prev_ids = _existing_ids(out_path)
     new_ids = {e["id"] for e in catalog}
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(emit_ts(catalog), encoding="utf-8", newline="\n")
-    _biome_format(out_path)
+    if args.diff_only:
+        print(f"[diff-only] {len(catalog)} market types observed — {out_path} NOT written")
+    else:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(emit_ts(catalog), encoding="utf-8", newline="\n")
+        _biome_format(out_path)
+        print(f"wrote {len(catalog)} market types -> {out_path}")
 
     added = sorted(new_ids - prev_ids, key=lambda x: (len(x), x))
     removed = sorted(prev_ids - new_ids, key=lambda x: (len(x), x))
     fam_counts = collections.Counter(e["family"] for e in catalog)
 
-    print(f"wrote {len(catalog)} market types -> {out_path}")
     print(f"  families: {dict(sorted(fam_counts.items()))}")
     if prev_ids:
         print(f"  added vs previous: {len(added)} {added[:20]}")
@@ -353,6 +364,17 @@ def main() -> int:
                   "union more --in days before committing a shrink.")
     else:
         print("  (no previous catalog to diff against)")
+
+    if args.json_out:
+        added_set = set(added)
+        added_entries = [e for e in catalog if e["id"] in added_set]
+        json_path = Path(args.json_out)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(
+            json.dumps(added_entries, indent=2), encoding="utf-8", newline="\n"
+        )
+        print(f"  wrote {len(added_entries)} newly-observed entries -> {json_path}")
+
     return 0
 
 

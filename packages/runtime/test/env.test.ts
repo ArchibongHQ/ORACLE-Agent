@@ -100,6 +100,22 @@ describe("buildConfig marketsCoverageNote (PR-20)", () => {
   });
 });
 
+describe("buildConfig catalogOverlay (PR-21)", () => {
+  it("defaults to false (runtime catalog overlay off until coverage data justifies it)", () => {
+    expect(buildConfig({}).catalogOverlay).toBe(false);
+  });
+
+  it("respects ORACLE_CATALOG_OVERLAY=on (case-insensitive) to enable it", () => {
+    expect(buildConfig({ ORACLE_CATALOG_OVERLAY: "on" }).catalogOverlay).toBe(true);
+    expect(buildConfig({ ORACLE_CATALOG_OVERLAY: "ON" }).catalogOverlay).toBe(true);
+  });
+
+  it("stays false for any value other than exactly 'on'", () => {
+    expect(buildConfig({ ORACLE_CATALOG_OVERLAY: "true" }).catalogOverlay).toBe(false);
+    expect(buildConfig({ ORACLE_CATALOG_OVERLAY: "yes" }).catalogOverlay).toBe(false);
+  });
+});
+
 describe("buildConfig v3CornersCards (PR-6)", () => {
   it("defaults to true (corners/cards O/U pricing on)", () => {
     expect(buildConfig({}).v3CornersCards).toBe(true);

@@ -21,6 +21,12 @@ export const env = loadEnv(join(ROOT, ".env"));
 export const config = buildConfig(env);
 export const goalsV3Config = buildGoalsV3Config(env);
 export const STORE_PATH = join(ROOT, ".tmp/oracle-store");
+// PR-21: relative to ROOT (not ROOT-joined) — dailyAcquisition.ts's weekly
+// build_market_catalog.py --json-out call passes this as-is (its subprocess
+// cwd is already ROOT), while index.ts's startup loadCatalogOverlay call
+// joins it with ROOT for an absolute fs path. One constant for both sides of
+// the write->read wiring so a rename can't silently desync them.
+export const MARKET_CATALOG_OVERLAY_PATH = ".tmp/market_catalog_overlay.json";
 
 // Max fixtures per chunk loop iteration. Priority-sorted fixtures are analyzed
 // in batches of this size; the loop stops as soon as 39 actionable picks are

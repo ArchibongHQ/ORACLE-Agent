@@ -24,7 +24,7 @@ import { runDailyBatch } from "./dailyBatch.js";
 import { printEffectiveConfig } from "./effectiveConfig.js";
 import { runGoalsBatch } from "./goalsAccumulator.js";
 import { resolveYesterdayFixtures } from "./resolveYesterday.js";
-import { config, env, ROOT } from "./workerContext.js";
+import { config, env, MARKET_CATALOG_OVERLAY_PATH, ROOT } from "./workerContext.js";
 import {
   HEARTBEAT_FILE,
   isLakeFreshForToday,
@@ -60,7 +60,7 @@ printEffectiveConfig();
 // IS_ONE_SHOT branch below, so it's active for one-shot CLI runs too, not
 // just the cron daemon. ORACLE_CATALOG_OVERLAY=on to enable (default off).
 if (config.catalogOverlay) {
-  const added = loadCatalogOverlay(join(ROOT, ".tmp", "market_catalog_overlay.json"));
+  const added = loadCatalogOverlay(join(ROOT, MARKET_CATALOG_OVERLAY_PATH));
   if (added > 0) process.stdout.write(`[catalog] overlay: +${added} ids\n`);
 }
 

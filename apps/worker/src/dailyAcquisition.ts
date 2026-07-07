@@ -18,7 +18,14 @@ import {
 import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
 import { awaitAcquireOrTimeout, trackAcquireJob } from "./acquireChain.js";
 import { type SweepCandidate, selectDueFixtures } from "./closingOddsSweep.js";
-import { config, env, PYTHON_BIN, ROOT, STORE_PATH } from "./workerContext.js";
+import {
+  config,
+  env,
+  MARKET_CATALOG_OVERLAY_PATH,
+  PYTHON_BIN,
+  ROOT,
+  STORE_PATH,
+} from "./workerContext.js";
 import {
   readFixtureReportState,
   runPythonScript,
@@ -290,6 +297,21 @@ export async function runWeeklyKaggleRefresh(): Promise<void> {
   await runKaggleTool("xg-table", "build_xg_table.py");
   // Static venue table for the travel-friction + altitude engine features.
   await runKaggleTool("travel", "fetch_travel.py");
+  // PR-21: catalog freshness — --diff-only means the committed
+  // catalog.generated.ts is read for the diff baseline but never overwritten
+  // (a real catalog regeneration is still a hand-reviewed, separate step);
+  // --json-out writes the newly-observed entries for the runtime overlay
+  // (ORACLE_CATALOG_OVERLAY=on, apps/worker/src/catalogOverlay.ts) to pick
+  // up next process start. Advisory — always runs, independent of that flag.
+  await runKaggleTool("catalog-diff", "build_market_catalog.py", [
+    "--in",
+    ".tmp/fixtures/sportybet_today.json",
+    "--out",
+    "packages/engine/src/markets/catalog.generated.ts",
+    "--diff-only",
+    "--json-out",
+    MARKET_CATALOG_OVERLAY_PATH,
+  ]);
 
   const total = ((Date.now() - wall) / 1000).toFixed(1);
   process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s ===\n`);

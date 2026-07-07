@@ -268,6 +268,12 @@ export interface OracleConfig {
   // Default true. ORACLE_MARKETS_COVERAGE=off skips the rollup computation
   // entirely (byte-identical manifest/summary to pre-PR-20).
   marketsCoverageNote?: boolean;
+  // PR-21: load the runtime catalog overlay (markets observed since the last
+  // catalog.generated.ts regeneration) at worker startup. Default FALSE —
+  // unlike the other markets-v3 flags this one starts off until PR-20's
+  // coverage data shows the "uncatalogued" skip tail is material; the weekly
+  // diff-only advisory print runs regardless of this flag.
+  catalogOverlay?: boolean;
   // PR-6: corners/cards routing — Over/Under total-line markets priced via the
   // NB (corners) / Poisson (cards) modules when both odds and season stats
   // exist. Default true. ORACLE_V3_CORNERS_CARDS=off withholds the raw stats

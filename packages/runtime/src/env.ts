@@ -266,6 +266,8 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     marketsV3Outputs: env.ORACLE_MARKETS_V3_OUTPUTS?.toLowerCase() !== "off",
     // PR-20: slate-wide route-coverage rollup — telemetry only, default on.
     marketsCoverageNote: env.ORACLE_MARKETS_COVERAGE?.toLowerCase() !== "off",
+    // PR-21: runtime catalog overlay — default OFF (see OracleConfig.catalogOverlay).
+    catalogOverlay: env.ORACLE_CATALOG_OVERLAY?.toLowerCase() === "on",
     // PR-6: corners/cards O/U pricing — off withholds the stats so the modules
     // stay dormant (byte-identical to pre-PR-6).
     v3CornersCards: env.ORACLE_V3_CORNERS_CARDS?.toLowerCase() !== "off",
