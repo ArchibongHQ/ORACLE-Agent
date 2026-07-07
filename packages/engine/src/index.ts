@@ -46,6 +46,7 @@ export type { MarketExecutorResult, MarketExecutorRiskParams } from "./decision/
 export { runAllMarketsLlmExecutor } from "./decision/marketExecutor.js";
 export type { ExecutionResult, LeagueParam } from "./execution/index.js";
 export {
+  applyConvergenceTierToStake,
   applyRankingMode,
   ExecutionEngine,
   getLeagueParams,

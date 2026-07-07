@@ -629,6 +629,29 @@ function priceAllMarketOutcome(
 
 // ── ExecutionEngine ───────────────────────────────────────────────────────────
 
+/** [PR-17] Scales one evMarket's already-computed optimizedKelly stake by its
+ *  ConvergenceScorer tier's kellyMultiplier — extracted as a standalone pure
+ *  function so it's directly unit-testable without needing to engineer a
+ *  specific convergence score through the full ExecutionEngine.run() pipeline
+ *  (scoreMarket's S01-S14 signals aren't practical to hand-craft a target
+ *  score from). Mutates evMarket in place, matching this file's existing
+ *  post-processing convention (the portfolio-correlation veto block above
+ *  does the same). Full Kelly (multiplier >= 1) is a no-op — the stake
+ *  already reflects it. NOISE (multiplier <= 0) vetoes the market outright
+ *  rather than leaving a live positive-EV pick with a stake the tier
+ *  guidance explicitly says not to deploy. */
+export function applyConvergenceTierToStake(evMarket: EVMarket, kellyMultiplier: number): void {
+  if (kellyMultiplier >= 1) return;
+  if (kellyMultiplier <= 0) {
+    evMarket.veto = "CONVERGENCE_NOISE_VETO";
+    evMarket.stake = 0;
+    evMarket.stakeAmt = 0;
+    return;
+  }
+  evMarket.stake *= kellyMultiplier;
+  evMarket.stakeAmt *= kellyMultiplier;
+}
+
 export class ExecutionEngine {
   constructor(
     private _config: OracleConfig,
@@ -2201,16 +2224,7 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
         (m) => !m.veto && (m.label === scored.market || m.market === scored.market)
       );
       if (!evMarket) continue;
-      const multiplier = scored.tier.kellyMultiplier;
-      if (multiplier >= 1) continue; // Full Kelly — stake already reflects it, nothing to scale
-      if (multiplier <= 0) {
-        evMarket.veto = "CONVERGENCE_NOISE_VETO";
-        evMarket.stake = 0;
-        evMarket.stakeAmt = 0;
-      } else {
-        evMarket.stake *= multiplier;
-        evMarket.stakeAmt *= multiplier;
-      }
+      applyConvergenceTierToStake(evMarket, scored.tier.kellyMultiplier);
     }
     rawRes.mlFilter = new MLSafetyFilter().evaluate(
       fetched as Record<string, unknown>,
