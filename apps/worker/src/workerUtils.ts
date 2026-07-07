@@ -3,7 +3,7 @@
  *  goalsAccumulator.ts, resolveYesterday.ts) — kept here instead of in index.ts
  *  so importing them never creates a circular import back into index.ts.
  *
- *  Three families:
+ *  Four families:
  *   - WAT calendar helpers (watDateString/watYesterdayString/watMinutesSinceMidnight)
  *   - Heartbeat-file state (writeHeartbeat + the read-side helpers that share
  *     the same on-disk file) and the lake-freshness check built on top of it.
@@ -15,11 +15,16 @@
  *     goalsAccumulator.ts — putting mergeBatchChunks in either dailyBatch.ts
  *     or goalsAccumulator.ts and importing it from the other would close a
  *     second, longer import cycle back into dailyBatch.ts.
+ *   - runPythonScript [PR-10]: the shared execFile(python, [script]) wrapper
+ *     every worker Python-tool call site used to reimplement inline, with an
+ *     opt-in DNS-aware retry for the two real scrape entry points.
  */
 
+import { type ExecFileException, execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BatchResult } from "@oracle/engine";
+import { isRetriableNetworkError, withRetry } from "@oracle/engine";
 import { fixturesPartitionExists } from "@oracle/runtime";
 import { ROOT } from "./workerContext.js";
 
@@ -171,4 +176,66 @@ export function mergeBatchChunks(chunks: BatchResult[]): BatchResult {
     },
     errors: chunks.flatMap((c) => c.errors),
   };
+}
+
+// ── Python tool runner ───────────────────────────────────────────────────────
+// [PR-10] Consolidates the execFile(python, [script, ...args]) promise-wrapper
+// shape that dailyAcquisition.ts (5x), dailyBatch.ts (1x), and
+// goalsAccumulator.ts (1x) each reimplemented independently before this PR.
+
+export interface PythonRunResult {
+  err: ExecFileException | null;
+  stdout: string;
+  stderr: string;
+}
+
+// A spawned Python process's network failures speak a different vocabulary
+// than Node's — requests/Playwright raise "getaddrinfo failed"/"Name or
+// service not known"/"ERR_NAME_NOT_RESOLVED", landed in stderr, not in
+// execFile's err.message (which is just "Command failed: ..."). Check both
+// isRetriableNetworkError (Node-side, e.g. a bad PYTHON_BIN path) and this
+// stderr pattern (Python-side) so a transient DNS/connection blip is caught
+// whichever side reports it — the same failure class already observed for
+// Telegram AND scrapers (oracle_dns_and_llm_session_limit_investigation).
+function isRetriableScrapeFailure(err: ExecFileException | null, stderr: string): boolean {
+  if (!err) return false;
+  if (isRetriableNetworkError(err)) return true;
+  return /getaddrinfo failed|name or service not known|err_name_not_resolved|failed to establish a new connection|max retries exceeded|connection aborted|err_connection/i.test(
+    stderr
+  );
+}
+
+/** Runs `python script args...` via execFile, resolving with `{ err, stdout,
+ *  stderr }` — never rejects, matching every existing call site's own
+ *  best-effort logging/degrade behavior (a failed tool run must never abort
+ *  the caller's job). Pass retryOnNetworkError for the two real
+ *  network-scrape entry points (acquireDaily, scrapeFixtures) to retry a
+ *  transient DNS/connection failure (with backoff) before giving up — not
+ *  worth it for the lower-stakes best-effort tools (kaggle refresh, lineups,
+ *  closing-odds, fotmob-xg), which already degrade gracefully on any single
+ *  failure. */
+export function runPythonScript(
+  python: string,
+  script: string,
+  args: string[],
+  opts: { cwd: string; retryOnNetworkError?: boolean }
+): Promise<PythonRunResult> {
+  const attempt = (): Promise<PythonRunResult> =>
+    new Promise((resolve) => {
+      execFile(python, [script, ...args], { cwd: opts.cwd }, (err, stdout, stderr) => {
+        resolve({ err, stdout, stderr });
+      });
+    });
+  if (!opts.retryOnNetworkError) return attempt();
+  let last: PythonRunResult = { err: null, stdout: "", stderr: "" };
+  return withRetry(
+    async () => {
+      last = await attempt();
+      if (isRetriableScrapeFailure(last.err, last.stderr)) throw last.err;
+      return last;
+    },
+    2,
+    (n) => 5_000 * 2 ** n,
+    () => true // the wrapped fn above only throws when isRetriableScrapeFailure already said yes
+  ).catch(() => last); // retries exhausted — resolve with the last real attempt, never reject
 }

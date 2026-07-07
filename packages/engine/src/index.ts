@@ -9,7 +9,13 @@ export type {
   V3AssessmentStat,
   V3CrossCheckOutcome,
 } from "./batch/index.js";
-export { makeFixtureId, parseFixtureList, runBatch } from "./batch/index.js";
+export {
+  isRetriableNetworkError,
+  makeFixtureId,
+  parseFixtureList,
+  runBatch,
+  withRetry,
+} from "./batch/index.js";
 export { runPool } from "./batch/pool.js";
 export type {
   BetRecord,
@@ -96,6 +102,7 @@ export type { MarketCatalogEntry, MarketFamily } from "./markets/index.js";
 export {
   devigThreeWay,
   devigTwoWay,
+  extendCatalog,
   familyOf,
   isPriceable,
   lookupMarket,

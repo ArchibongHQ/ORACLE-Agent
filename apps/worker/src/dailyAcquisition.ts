@@ -6,7 +6,6 @@
  *  this family produces, and the weekly Kaggle dataset refresh. index.ts
  *  wires these into cron.schedule(...) and the --run-* one-shot flags. */
 
-import { execFile } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ClosingOddsSnapshot } from "@oracle/engine";
@@ -22,6 +21,7 @@ import { type SweepCandidate, selectDueFixtures } from "./closingOddsSweep.js";
 import { config, env, PYTHON_BIN, ROOT, STORE_PATH } from "./workerContext.js";
 import {
   readFixtureReportState,
+  runPythonScript,
   watDateString,
   watYesterdayString,
   writeHeartbeat,
@@ -53,17 +53,17 @@ export function acquireDaily(): Promise<number> {
   if (_acquireDailyInFlight) return _acquireDailyInFlight;
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "acquire_daily.py");
-  const run = new Promise<number>((resolve) => {
-    execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
+  const run = runPythonScript(python, script, [], { cwd: ROOT, retryOnNetworkError: true })
+    .then(({ err, stdout, stderr }) => {
       if (stdout) process.stdout.write(stdout);
       if (stderr) process.stderr.write(stderr);
       if (err) process.stderr.write(`acquire_daily error: ${err.message}\n`);
       const m = stdout.match(/acquired:(\d+)/);
-      resolve(m ? parseInt(m[1], 10) : 0);
+      return m ? parseInt(m[1], 10) : 0;
+    })
+    .finally(() => {
+      _acquireDailyInFlight = null;
     });
-  }).finally(() => {
-    _acquireDailyInFlight = null;
-  });
   _acquireDailyInFlight = run;
   return run;
 }
@@ -77,13 +77,10 @@ function runNewsEnrichment(): Promise<void> {
   if (!config.enableNewsIntel) return Promise.resolve();
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "enrich_news.py");
-  return new Promise((resolve) => {
-    execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
-      if (stdout) process.stdout.write(stdout);
-      if (stderr) process.stderr.write(stderr);
-      if (err) process.stderr.write(`enrich_news error: ${err.message}\n`);
-      resolve();
-    });
+  return runPythonScript(python, script, [], { cwd: ROOT }).then(({ err, stdout, stderr }) => {
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    if (err) process.stderr.write(`enrich_news error: ${err.message}\n`);
   });
 }
 
@@ -245,20 +242,17 @@ function runKaggleTool(label: string, scriptName: string, args: string[] = []): 
   const script = join(ROOT, "tools", scriptName);
   const start = Date.now();
   process.stdout.write(`[kaggle-refresh] ${label}: starting\n`);
-  return new Promise((resolve) => {
-    execFile(python, [script, ...args], { cwd: ROOT }, (err, stdout, stderr) => {
-      if (stdout) process.stdout.write(stdout);
-      if (stderr) process.stderr.write(stderr);
-      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-      if (err) {
-        process.stderr.write(
-          `[kaggle-refresh] ${label}: FAILED after ${elapsed}s — ${err.message}\n`
-        );
-      } else {
-        process.stdout.write(`[kaggle-refresh] ${label}: done in ${elapsed}s\n`);
-      }
-      resolve(); // always resolve — one failure must not abort the rest
-    });
+  return runPythonScript(python, script, args, { cwd: ROOT }).then(({ err, stdout, stderr }) => {
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    if (err) {
+      process.stderr.write(
+        `[kaggle-refresh] ${label}: FAILED after ${elapsed}s — ${err.message}\n`
+      );
+    } else {
+      process.stdout.write(`[kaggle-refresh] ${label}: done in ${elapsed}s\n`);
+    }
   });
 }
 
@@ -313,8 +307,8 @@ export function runFotmobXgRefresh(): Promise<void> {
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "acquire_daily.py");
   const start = Date.now();
-  return new Promise((resolve) => {
-    execFile(python, [script, "--live-xg-refresh"], { cwd: ROOT }, (err, stdout, stderr) => {
+  return runPythonScript(python, script, ["--live-xg-refresh"], { cwd: ROOT }).then(
+    ({ err, stdout, stderr }) => {
       if (stdout) process.stdout.write(stdout);
       if (stderr) process.stderr.write(stderr);
       const elapsed = ((Date.now() - start) / 1000).toFixed(1);
@@ -323,9 +317,8 @@ export function runFotmobXgRefresh(): Promise<void> {
       } else {
         process.stdout.write(`[fotmob-xg-refresh] done in ${elapsed}s\n`);
       }
-      resolve(); // best-effort — never rejects, matches every other fetch tier here
-    });
-  });
+    }
+  );
 }
 
 // ── T-30m closing-odds sweep (every 5 min, PR-8a) ────────────────────────────
@@ -347,22 +340,21 @@ function fetchClosingOddsSnapshot(
   if (eventIds.length === 0) return Promise.resolve({});
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "closing_odds_snapshot.py");
-  return new Promise((resolve) => {
-    execFile(python, [script, ...eventIds], { cwd: ROOT }, (err, stdout, stderr) => {
+  return runPythonScript(python, script, eventIds, { cwd: ROOT }).then(
+    ({ err, stdout, stderr }) => {
       if (stderr) process.stderr.write(stderr);
       if (err) {
         process.stderr.write(`[closing-odds] snapshot fetch FAILED — ${err.message}\n`);
-        resolve({});
-        return;
+        return {};
       }
       try {
-        resolve(JSON.parse(stdout.trim()) as Record<string, Record<string, unknown>>);
+        return JSON.parse(stdout.trim()) as Record<string, Record<string, unknown>>;
       } catch {
         process.stderr.write("[closing-odds] snapshot fetch: unparseable stdout\n");
-        resolve({});
+        return {};
       }
-    });
-  });
+    }
+  );
 }
 
 /** One sweep tick: find today's/yesterday's analysed fixtures currently 25-35
