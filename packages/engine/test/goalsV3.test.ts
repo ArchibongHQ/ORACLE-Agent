@@ -11,6 +11,7 @@ import {
   extractMarkets,
   gateV3Edge,
   poissonPMF,
+  resolveRho,
   V3_LEAGUE_BASELINES,
   V3_LEAGUE_BASELINES_BY_ID,
   V3_TIER_HEIGHTENED_FLOOR,
@@ -617,6 +618,34 @@ describe("analyzeGoalsFixtureV3 (full pipeline)", () => {
       expect(withDynamic).not.toBeNull();
       const mp = (r: typeof withStatic) => r!.assessments.find((a) => a.label === "Over 1.5")!.mp;
       expect(mp(withDynamic)).not.toBeCloseTo(mp(withStatic), 5);
+    });
+
+    it("falls back to the static baseRho when dynamicRho is NaN (defense-in-depth type-boundary guard)", () => {
+      const withStatic = analyzeGoalsFixtureV3(baseInput());
+      const withNaN = analyzeGoalsFixtureV3(baseInput({ dynamicRho: Number.NaN }));
+      expect(withStatic).not.toBeNull();
+      expect(withNaN).not.toBeNull();
+      const mp = (r: typeof withStatic) => r!.assessments.find((a) => a.label === "Over 1.5")!.mp;
+      expect(mp(withNaN)).toBeCloseTo(mp(withStatic), 10);
+    });
+  });
+
+  describe("resolveRho (defense-in-depth type-boundary guard)", () => {
+    it("uses dynamicRho when it's a finite number", () => {
+      expect(resolveRho("Premier League", -0.28)).toBe(-0.28);
+    });
+
+    it("falls back to the static league baseRho when dynamicRho is undefined", () => {
+      expect(resolveRho("Premier League", undefined)).toBe(-0.13);
+    });
+
+    it("falls back to the static league baseRho when dynamicRho is NaN", () => {
+      expect(resolveRho("Premier League", Number.NaN)).toBe(-0.13);
+    });
+
+    it("falls back to the static league baseRho when dynamicRho is +/-Infinity", () => {
+      expect(resolveRho("Premier League", Number.POSITIVE_INFINITY)).toBe(-0.13);
+      expect(resolveRho("Premier League", Number.NEGATIVE_INFINITY)).toBe(-0.13);
     });
   });
 

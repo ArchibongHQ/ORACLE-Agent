@@ -207,6 +207,50 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     expect(success.result.evMarkets[0]?.label).toBe("Over 2.5");
   });
 
+  it("threads telemetry.home/awayAvailabilityMult and ledger.metrics.dynamicRhoParams into buildV3Input's lambdaInput/dynamicRho (PR-5/PR-6)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue(null); // return value irrelevant to this test
+
+    const job = makeJob({
+      telemetry: {
+        scoredPer90H: 1.7,
+        concededPer90H: 1.0,
+        scoredPer90A: 1.2,
+        concededPer90A: 1.5,
+        homeAvailabilityMult: 0.72,
+        awayAvailabilityMult: 0.95,
+      },
+      ledger: { metrics: { dynamicRhoParams: { "Premier League": -0.28 } } },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+
+    await runBatch([job], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
+
+    const call = analyzeFixtureMarketsV3Mock.mock.calls[0]![0];
+    expect(call.lambdaInput).toMatchObject({
+      homeAvailabilityMult: 0.72,
+      awayAvailabilityMult: 0.95,
+    });
+    expect(call.dynamicRho).toBe(-0.28);
+  });
+
+  it("home/awayAvailabilityMult and dynamicRho are undefined/null when no ledger or availability telemetry exists", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue(null);
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+
+    await runBatch([job], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
+
+    const call = analyzeFixtureMarketsV3Mock.mock.calls[0]![0];
+    expect(call.lambdaInput.homeAvailabilityMult).toBeNull();
+    expect(call.lambdaInput.awayAvailabilityMult).toBeNull();
+    expect(call.dynamicRho).toBeUndefined();
+  });
+
   it("runs v3 but keeps legacy eligible in 'shadow' mode (comparison instrumentation, no effect on the decision)", async () => {
     vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
     analyzeFixtureMarketsV3Mock.mockReturnValue({

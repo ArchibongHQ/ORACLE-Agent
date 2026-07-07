@@ -8,9 +8,13 @@
  *  Zero LLM calls — pure deterministic script math, per the token-saving
  *  mandate. Pure function; all data arrives in the input struct. */
 
-import { getLeagueParams } from "../execution/index.js";
 import type { V3PenaltyFlags } from "../goalsV3/edgeGate.js";
-import { computeV3Lambdas, type V3LambdaInput, type V3Lambdas } from "../goalsV3/lambda.js";
+import {
+  computeV3Lambdas,
+  resolveRho,
+  type V3LambdaInput,
+  type V3Lambdas,
+} from "../goalsV3/lambda.js";
 import type { Devigged1x2 } from "../goalsV3/matchShape.js";
 import { FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import type { AllMarketEntry, EVMarket, Matrix } from "../types.js";
@@ -209,7 +213,7 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
   });
   if (!lambdas) return null;
 
-  const rho = input.dynamicRho ?? getLeagueParams(input.league).baseRho;
+  const rho = resolveRho(input.league, input.dynamicRho);
   const split = deriveDualSplit(lambdas, input.devigged1x2);
   const statsGrid = buildV3Grid(split.stats.lambdaHome, split.stats.lambdaAway, rho);
   const shapeGrid = buildV3Grid(split.odds.lambdaHome, split.odds.lambdaAway, rho);

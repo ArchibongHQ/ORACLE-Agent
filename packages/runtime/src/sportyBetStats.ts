@@ -125,10 +125,15 @@ function formToRecentMatches(
 /** Recency-blend a season-average scored rate: prefer the real recentGoals
  *  last-5 signal (60/40 recent/season blend), fall back to a form-string-
  *  synthesized RecentMatch[] run through applyTemporalDecay, or return the
- *  season average unchanged when neither recency signal exists. Shared by
- *  the legacy xH/xA override below and the v3 scoredPer90H/A raw λ inputs —
- *  both need the same recency treatment, previously only applied to xH/xA
- *  (§3.1 goalsV3/marketsV3 lambdas ran on undecayed season averages). */
+ *  season average unchanged when neither recency signal exists. Used by the
+ *  v3 scoredPer90H/A raw λ inputs below and by buildGoalsV3Input (apps/worker),
+ *  which previously ran §3.1 goalsV3/marketsV3 lambdas on undecayed season
+ *  averages. NOT wired into the legacy xH/xA override below — that block
+ *  synthesizes its RecentMatch[] from the raw season goals average
+ *  specifically (not whatever xG-blended value xH/xA may already hold), a
+ *  subtly different base than this helper's single `seasonAvg` param assumes;
+ *  left as its own inline implementation rather than force-fit to avoid a
+ *  silent behavior change. */
 export function blendRecencyScored(
   seasonAvg: number | null | undefined,
   recentAvg: number | null | undefined,
@@ -205,6 +210,14 @@ export interface StatsOverride {
   xgaA?: number;
   nHome?: number;
   nAway?: number;
+  /** Match-day squad availability multiplier (tools/fetch_squad_availability.py
+   *  §8.2, PR-6) — feeds V3LambdaInput.home/awayAvailabilityMult in BOTH v3
+   *  pipelines (goals-only via buildGoalsV3Input reads the sidecar directly;
+   *  all-markets via batch/index.ts's buildV3Input reads this telemetry
+   *  field). Ungated by MIN_PLAYED_FOR_OVERRIDE like the raw λ inputs above —
+   *  availability is orthogonal to season sample size. */
+  homeAvailabilityMult?: number;
+  awayAvailabilityMult?: number;
 }
 
 /** Resolve the credibility-shrinkage prior for a league.
@@ -332,6 +345,14 @@ export function buildStatsOverride(
   if (finite(stats.xg?.away?.xga)) override.xgaA = stats.xg?.away?.xga;
   if (homePlayed > 0) override.nHome = homePlayed;
   if (awayPlayed > 0) override.nAway = awayPlayed;
+  // Match-day squad availability (§8.2, PR-6) — feeds V3LambdaInput's λ
+  // multiplier in the all-markets v3 pipeline (batch/index.ts's buildV3Input
+  // reads this telemetry field); the goals-only pipeline reads the sidecar
+  // directly in buildGoalsV3Input instead of going through this override.
+  const availH = stats.availability?.home?.idx;
+  const availA = stats.availability?.away?.idx;
+  if (finiteOrZero(availH)) override.homeAvailabilityMult = availH;
+  if (finiteOrZero(availA)) override.awayAvailabilityMult = availA;
   // §3.5 empirical-blend sample size (PR-3) — recentGoals is a last-5 window,
   // so its own match count is the right "how much to trust this rate" signal,
   // independent of the season-long enoughSample gate below.

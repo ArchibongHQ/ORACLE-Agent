@@ -380,6 +380,10 @@ export interface RunState {
     xgaA?: number;
     nHome?: number;
     nAway?: number;
+    /** Match-day squad availability multiplier (§8.2, PR-6) — see
+     *  V3LambdaInput.home/awayAvailabilityMult. */
+    homeAvailabilityMult?: number;
+    awayAvailabilityMult?: number;
     [key: string]: unknown;
   };
   pipeline?: {

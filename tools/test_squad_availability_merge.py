@@ -70,6 +70,38 @@ class TestLoadAvailabilityTable:
         monkeypatch.setattr(sf, "_AVAILABILITY_TABLE_PATH", path)
         assert sf._load_availability_table() == {}
 
+    def test_skips_out_of_range_or_non_finite_idx_values(self, tmp_path, monkeypatch):
+        import scrape_fixtures as sf
+
+        path = tmp_path / "availability_features.csv"
+        _write_csv(path, [
+            {"date": "2026-01-01", "club": "Arsenal", "league": "E0", "availability_idx": "1.5",
+             "key_player_present": "1", "starting_xi_value": "1"},
+            {"date": "2026-01-02", "club": "Chelsea", "league": "E0", "availability_idx": "-0.1",
+             "key_player_present": "1", "starting_xi_value": "1"},
+            {"date": "2026-01-03", "club": "Fulham", "league": "E0", "availability_idx": "nan",
+             "key_player_present": "1", "starting_xi_value": "1"},
+            {"date": "2026-01-04", "club": "Everton", "league": "E0", "availability_idx": "inf",
+             "key_player_present": "1", "starting_xi_value": "1"},
+        ])
+        monkeypatch.setattr(sf, "_AVAILABILITY_TABLE_PATH", path)
+        assert sf._load_availability_table() == {}
+
+    def test_accepts_boundary_values_zero_and_one(self, tmp_path, monkeypatch):
+        import scrape_fixtures as sf
+
+        path = tmp_path / "availability_features.csv"
+        _write_csv(path, [
+            {"date": "2026-01-01", "club": "Arsenal", "league": "E0", "availability_idx": "0.0",
+             "key_player_present": "0", "starting_xi_value": "1"},
+            {"date": "2026-01-01", "club": "Chelsea", "league": "E0", "availability_idx": "1.0",
+             "key_player_present": "1", "starting_xi_value": "1"},
+        ])
+        monkeypatch.setattr(sf, "_AVAILABILITY_TABLE_PATH", path)
+        table = sf._load_availability_table()
+        assert table[sf.normalise("Arsenal")]["idx"] == 0.0
+        assert table[sf.normalise("Chelsea")]["idx"] == 1.0
+
 
 class TestAvailabilityFor:
     def test_returns_none_when_team_not_in_table(self):

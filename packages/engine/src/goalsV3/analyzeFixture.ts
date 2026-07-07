@@ -15,12 +15,11 @@
  *  Pure function — all data arrives in the input struct; no runtime imports. */
 
 import type { BatchJobResult, FixtureJobSuccess } from "../batch/index.js";
-import { getLeagueParams } from "../execution/index.js";
 import { devigThreeWay, FAMILY_LABEL } from "../markets/index.js";
 import { buildMatrix, extractMarkets } from "../math/index.js";
 import type { ConfidenceGrade, EVMarket, RunResult } from "../types.js";
 import { devigOU, gateV3Edge, type V3EdgeAssessment, type V3PenaltyFlags } from "./edgeGate.js";
-import { computeV3Lambdas, type V3LambdaInput, type V3Lambdas } from "./lambda.js";
+import { computeV3Lambdas, resolveRho, type V3LambdaInput, type V3Lambdas } from "./lambda.js";
 import { deriveMatchShape, type MatchShape } from "./matchShape.js";
 
 /** Decimal odds the goals path prices. Absent side of a pair ⇒ 1/odds implied. */
@@ -204,7 +203,7 @@ export function analyzeGoalsFixtureV3(input: V3AnalyzeInput): V3FixtureResult | 
   });
   if (!lambdas) return null;
 
-  const rho = input.dynamicRho ?? getLeagueParams(input.league).baseRho;
+  const rho = resolveRho(input.league, input.dynamicRho);
   const nb = v3NbDispersion(input.nbDispersion);
 
   // Raw-μ matrix: O/U totals (§3.2 exact tail, DC-corrected cells).

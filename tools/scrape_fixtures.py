@@ -880,6 +880,8 @@ def _load_availability_table() -> dict[str, dict]:
     null, never fatal."""
     import csv
 
+    import math
+
     table: dict[str, dict] = {}
     try:
         with _AVAILABILITY_TABLE_PATH.open("r", encoding="utf-8", newline="") as f:
@@ -891,6 +893,14 @@ def _load_availability_table() -> dict[str, dict]:
                     idx = float(idx_raw)
                 except ValueError:
                     continue
+                # Defense-in-depth: fetch_squad_availability.py's own min(ratio, 1.0)
+                # cap should make this unreachable today, but a NaN/Infinity or
+                # out-of-range value would otherwise flow unvalidated into the
+                # sidecar JSON (json.dumps's default allow_nan=True would emit the
+                # non-standard NaN/Infinity tokens, breaking Node's JSON.parse for
+                # the WHOLE day's sidecar file, not just this one row/fixture).
+                if not math.isfinite(idx) or not (0.0 <= idx <= 1.0):
+                    continue
                 key = normalise(club)
                 existing = table.get(key)
                 if existing is not None and existing["date"] >= date:
@@ -901,7 +911,7 @@ def _load_availability_table() -> dict[str, dict]:
                     "idx": idx,
                     "keyPlayerPresent": int(kp_raw) if kp_raw in ("0", "1") else None,
                 }
-    except OSError:
+    except (OSError, ValueError):
         return {}
     return table
 

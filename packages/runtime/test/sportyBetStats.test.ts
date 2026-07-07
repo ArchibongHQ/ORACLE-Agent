@@ -517,6 +517,26 @@ describe("buildStatsOverride — v3 raw lambda inputs (§3.1, ungated by MIN_PLA
     expect(override?.scoredPer90H).toBe(1.4);
     expect(override?.scoredPer90A).toBe(0.8);
   });
+
+  it("populates home/awayAvailabilityMult from stats.availability (PR-6, §8.2)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      availability: {
+        home: { idx: 0.72, keyPlayerPresent: 0 },
+        away: { idx: 0.95 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.homeAvailabilityMult).toBe(0.72);
+    expect(override?.awayAvailabilityMult).toBe(0.95);
+  });
+
+  it("omits home/awayAvailabilityMult when stats.availability is absent", () => {
+    const d = detail({ standings: { home: { played: 10 }, away: { played: 10 } } });
+    const override = buildStatsOverride(d);
+    expect(override?.homeAvailabilityMult).toBeUndefined();
+    expect(override?.awayAvailabilityMult).toBeUndefined();
+  });
 });
 
 describe("blendRecencyScored (PR-5, §8.1 temporal decay for v3 lambda inputs)", () => {

@@ -89,6 +89,19 @@ export function v3LeaguePerTeamAvg(league: string, leagueId?: string | null): nu
   return V3_DEFAULT_LEAGUE_GPG / 2;
 }
 
+/** Resolve the Dixon-Coles rho to price a fixture with: the calibration-
+ *  ledger-derived dynamic rho (CalibrationMetrics.dynamicRhoParams, §8.1
+ *  NR-MLE) when it's a finite number, else the static per-league baseRho.
+ *  Defense-in-depth type-boundary guard — estimateDynamicRho itself already
+ *  clamps to [-0.3, 0.02] and falls back to baseRho on any degenerate input,
+ *  so no reachable writer produces a bad value today, but dynamicRho crosses
+ *  a module boundary (calibration ledger → goalsV3/marketsV3) with no
+ *  independent check of its own before this fix. */
+export function resolveRho(league: string, dynamicRho?: number | null): number {
+  if (typeof dynamicRho === "number" && Number.isFinite(dynamicRho)) return dynamicRho;
+  return getLeagueParams(league).baseRho;
+}
+
 /** Per-team xG rates (per match, from the rolling xG table). `estimated` marks
  *  AI-Mode-sourced figures (softer penalty than missing, §0.2 fallback tier). */
 export interface V3TeamXg {

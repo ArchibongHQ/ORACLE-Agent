@@ -428,6 +428,15 @@ export class CalibrationEngine {
       string,
       { homeAvg: number; awayAvg: number; shrinkage: number; n: number }
     > = {};
+    // §8.1/NEW-07: per-league dynamic rho via NR-MLE over the same four-cell
+    // scoreline frequencies goalData already collects (was computed and
+    // discarded every time — the {} literal this replaced never called
+    // estimateDynamicRho on real data, so execution/index.ts's
+    // `ledger?.metrics?.dynamicRhoParams?.[league]` consumer always read an
+    // empty table). estimateDynamicRho falls back to baseRho when n < 30, so
+    // thin-data leagues are unaffected. Folded into this same loop rather than
+    // a second Object.keys(goalData).forEach — no need to walk the key set twice.
+    const dynamicRhoParams: Record<string, number> = {};
     Object.keys(goalData).forEach((lg) => {
       const tier = (LEAGUE_TIER[lg] ?? 2) as Tier;
       const tierP = TIER_PRIOR[tier];
@@ -443,18 +452,8 @@ export class CalibrationEngine {
         shrinkage: parseFloat(w.toFixed(4)),
         n,
       };
-    });
-
-    // §8.1/NEW-07: per-league dynamic rho via NR-MLE over the four-cell scoreline
-    // frequencies already collected into goalData above (was computed and discarded
-    // every time — the {} literal below never called estimateDynamicRho on real data,
-    // so execution/index.ts's `ledger?.metrics?.dynamicRhoParams?.[league]` consumer
-    // was always reading an empty table). estimateDynamicRho itself falls back to
-    // baseRho when a league's n < 30, so thin-data leagues are unaffected.
-    const dynamicRhoParams: Record<string, number> = {};
-    Object.keys(goalData).forEach((lg) => {
       const baseRho = LEAGUE_PARAMS[lg]?.baseRho ?? LEAGUE_PARAMS.Default!.baseRho;
-      dynamicRhoParams[lg] = estimateDynamicRho(goalData[lg], baseRho);
+      dynamicRhoParams[lg] = estimateDynamicRho(d, baseRho);
     });
 
     // Per-league calibFactor with hierarchical shrinkage toward global calibFactor (§8.3).

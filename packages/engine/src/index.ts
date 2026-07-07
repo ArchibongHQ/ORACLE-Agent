@@ -80,6 +80,7 @@ export {
 export type { V3LambdaInput, V3Lambdas, V3TeamXg } from "./goalsV3/lambda.js";
 export {
   computeV3Lambdas,
+  resolveRho,
   V3_LEAGUE_BASELINES,
   V3_LEAGUE_BASELINES_BY_ID,
   v3LeaguePerTeamAvg,
