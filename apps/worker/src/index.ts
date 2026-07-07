@@ -11,6 +11,7 @@ import { sendPuntPrompt } from "@oracle/bot";
 import { type BatchSummary, buildNotifiers, notifyAll } from "@oracle/notify";
 import { markPrompted, SLIP_LABELS, shouldReprompt } from "@oracle/runtime";
 import cron from "node-cron";
+import { loadCatalogOverlay } from "./catalogOverlay.js";
 import {
   acquireDailyJob,
   awaitAcquireDailyJobOrTimeout,
@@ -20,9 +21,10 @@ import {
   sendDailyFixtureReport,
 } from "./dailyAcquisition.js";
 import { runDailyBatch } from "./dailyBatch.js";
+import { printEffectiveConfig } from "./effectiveConfig.js";
 import { runGoalsBatch } from "./goalsAccumulator.js";
 import { resolveYesterdayFixtures } from "./resolveYesterday.js";
-import { env, ROOT } from "./workerContext.js";
+import { config, env, ROOT } from "./workerContext.js";
 import {
   HEARTBEAT_FILE,
   isLakeFreshForToday,
@@ -46,6 +48,21 @@ const ONE_SHOT_FLAGS = [
   "--run-report-now",
 ] as const;
 const IS_ONE_SHOT = process.argv.some((a) => ONE_SHOT_FLAGS.includes(a as never));
+
+// PR-11: one-time startup dump of the resolved ORACLE_* flags, ahead of the
+// IS_ONE_SHOT branch below so it prints for one-shot CLI runs too, not just
+// the cron daemon — a misconfigured deploy should be visible from the first
+// log line, not discovered hours later from unexplained behavior.
+printEffectiveConfig();
+
+// PR-21: runtime catalog overlay (markets observed since catalog.generated.ts
+// was last regenerated) — loaded once at process start, ahead of the
+// IS_ONE_SHOT branch below, so it's active for one-shot CLI runs too, not
+// just the cron daemon. ORACLE_CATALOG_OVERLAY=on to enable (default off).
+if (config.catalogOverlay) {
+  const added = loadCatalogOverlay(join(ROOT, ".tmp", "market_catalog_overlay.json"));
+  if (added > 0) process.stdout.write(`[catalog] overlay: +${added} ids\n`);
+}
 
 // Run a single async job to completion, then flush stdio and exit deterministically.
 // Flushing matters because stdout to a pipe (non-TTY parent) is async-buffered on
