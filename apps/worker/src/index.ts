@@ -8,8 +8,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { sendPuntPrompt } from "@oracle/bot";
 import {
   analyzeGoalsFixtureV3,
@@ -39,8 +38,6 @@ import {
 import {
   applySlateVerdicts,
   blendRecencyScored,
-  buildConfig,
-  buildGoalsV3Config,
   buildMarketsV3GateConfig,
   buildMarketsV3SlateOutputs,
   classifyEligibility,
@@ -54,7 +51,6 @@ import {
   fetchTodaysFixtures,
   findSidecarDetail,
   findSportyBetEventId,
-  fixturesPartitionExists,
   formatCalibrationMetrics,
   formatSettlementBreakdown,
   formatSlateGateLog,
@@ -62,7 +58,6 @@ import {
   generateAndWriteFixtureWorkbook,
   generateAndWriteGoalsWorkbook,
   heightenedTrendsAligned,
-  loadEnv,
   loadLedgerState,
   loadSportyBetIndex,
   markPrompted,
@@ -88,21 +83,27 @@ import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
 import cron from "node-cron";
 import { awaitAcquireOrTimeout, trackAcquireJob } from "./acquireChain.js";
 import { type SweepCandidate, selectDueFixtures } from "./closingOddsSweep.js";
+import {
+  ANALYSIS_CHUNK_SIZE,
+  config,
+  env,
+  goalsV3Config,
+  PYTHON_BIN,
+  ROOT,
+  STORE_PATH,
+} from "./workerContext.js";
+import {
+  HEARTBEAT_FILE,
+  isLakeFreshForToday,
+  logMemoryUsage,
+  readFixtureReportState,
+  WAT_TZ,
+  watDateString,
+  watMinutesSinceMidnight,
+  watYesterdayString,
+  writeHeartbeat,
+} from "./workerUtils.js";
 import { formatXgCoverageNote } from "./xgCoverageNote.js";
-
-const __dir = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(__dir, "../../..");
-
-const env = loadEnv(join(ROOT, ".env"));
-const config = buildConfig(env);
-const goalsV3Config = buildGoalsV3Config(env);
-const STORE_PATH = join(ROOT, ".tmp/oracle-store");
-
-// Max fixtures per chunk loop iteration. Priority-sorted fixtures are analyzed
-// in batches of this size; the loop stops as soon as 39 actionable picks are
-// found — avoiding analysis of hundreds of low-priority fixtures when top leagues
-// already provide enough edges. Applies to both daily batch and goals batch.
-const ANALYSIS_CHUNK_SIZE = Math.max(1, Number(env.ANALYSIS_CHUNK_SIZE ?? 50));
 
 // One-shot CLI mode: any of these flags runs a single job and exits, instead of
 // starting the cron daemon. Detected up front so the cron schedules below are
@@ -146,60 +147,15 @@ function flushStdio(): Promise<void> {
   return Promise.all([drain(process.stdout), drain(process.stderr)]).then(() => undefined);
 }
 
-// ── WAT calendar date ────────────────────────────────────────────────────────
-// The whole schedule (cron slots, "today's" lake/report/heartbeat freshness,
-// "yesterday's" resolve target) is defined in WAT (UTC+1, no DST) terms. Every
-// "what date is it" computation in this file MUST use this — NOT
-// `new Date().toISOString().slice(0, 10)`, which is a UTC calendar date and
-// silently disagrees with the WAT one for the first hour of each WAT day
-// (00:00-00:59 WAT = still "yesterday" in UTC). That mismatch was the root
-// cause of the 2026-07-02 incident: the back-online staleness checks
-// (isLakeFreshForToday/isDailyBatchFreshForToday) compared UTC dates, so the
-// moment the UTC day rolled over at 01:00 WAT, yesterday's still-fresh
-// acquisition looked "stale for today" and fired the full scrape+analysis+
-// goals pipeline hours early — then the real 09:30 WAT slot fired again on
-// top of it. Fixed 2026-07-02; see watDateString/watYesterdayString.
-const WAT_OFFSET_MS = 60 * 60 * 1000; // UTC+1, no DST (W. Central Africa Standard Time)
-// IANA zone matching WAT (UTC+1, no DST) — passed explicitly to every
-// cron.schedule() call below so the schedule no longer depends on the host's
-// system clock (see the cron-daemon block's comment for the incident this fixes).
-const WAT_TZ = "Africa/Lagos";
-
-function watDateString(d: Date = new Date()): string {
-  return new Date(d.getTime() + WAT_OFFSET_MS).toISOString().slice(0, 10);
-}
-
-function watYesterdayString(d: Date = new Date()): string {
-  return watDateString(new Date(d.getTime() - 86_400_000));
-}
-
-function watMinutesSinceMidnight(d: Date = new Date()): number {
-  const watDate = new Date(d.getTime() + WAT_OFFSET_MS);
-  return watDate.getUTCHours() * 60 + watDate.getUTCMinutes();
-}
-
 // ── Job logging + heartbeat ───────────────────────────────────────────────────
 // Every cron job runs through logJob so a failure is always visible in the log,
 // and successful batch/resolve runs stamp .tmp/worker_heartbeat.json (read by
 // the web /health endpoint) so a silently-dead worker is detectable.
+// WAT calendar (watDateString/watYesterdayString/watMinutesSinceMidnight/WAT_TZ)
+// and writeHeartbeat live in ./workerUtils.js — see there for the WAT-vs-UTC
+// incident this depends on getting right.
 
-const HEARTBEAT_FILE = join(ROOT, ".tmp", "worker_heartbeat.json");
 const BOT_HEARTBEAT_FILE = join(ROOT, ".tmp", "bot_heartbeat.json");
-
-function writeHeartbeat(event: string, detail: Record<string, unknown> = {}): void {
-  try {
-    let current: Record<string, unknown> = {};
-    try {
-      current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<string, unknown>;
-    } catch {
-      /* first write or corrupt file — start fresh */
-    }
-    current[event] = { at: new Date().toISOString(), ...detail };
-    writeFileSync(HEARTBEAT_FILE, JSON.stringify(current, null, 2), "utf8");
-  } catch (err) {
-    process.stderr.write(`[worker] heartbeat write failed: ${String(err)}\n`);
-  }
-}
 
 // ── Crash-loop guard ─────────────────────────────────────────────────────────
 // Servy's recoveryAction=RestartService (maxRestartAttempts=0, i.e. unbounded)
@@ -362,54 +318,13 @@ function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
 // Lake-staleness back-online trigger: unlike the alert above, this actively
 // re-runs acquisition rather than just notifying — so a daemon that was down
 // across 09:30 WAT catches up as soon as it restarts, instead of waiting for
-// tomorrow's cron slot.
-const LAKE_STALE_MS = 20 * 60 * 60 * 1000; // ~20h — same-day acquisition is always fresher than this
+// tomorrow's cron slot. Freshness window (LAKE_STALE_MS) lives in
+// ./workerUtils.js's isLakeFreshForToday, imported above.
 let lastLakeTriggerAt = 0;
 const LAKE_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a failing acquisition more than every 6h
 
-function readLastAcquire(): { at?: string; date?: string } | undefined {
-  try {
-    const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
-      string,
-      { at?: string; date?: string } | undefined
-    >;
-    return current.lastAcquire;
-  } catch {
-    return undefined;
-  }
-}
-
-// Fixture-report follow-up state: when sendDailyFixtureReport() blocks on
-// marketsEmpty it stamps fixtureReportPlaceholder so the hourly heartbeat tick
-// below knows to retry until the enriched spreadsheet ships (stamped as
-// fixtureReportDelivered) — see sendDailyFixtureReport for the send side.
-function readFixtureReportState(): { placeholderDate?: string; deliveredDate?: string } {
-  try {
-    const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
-      string,
-      { date?: string } | undefined
-    >;
-    return {
-      placeholderDate: current.fixtureReportPlaceholder?.date,
-      deliveredDate: current.fixtureReportDelivered?.date,
-    };
-  } catch {
-    return {};
-  }
-}
-
-/** True when today's Parquet-lake partition was written by a successful
- *  acquireDailyJob run within the last LAKE_STALE_MS — gates both the 09:35
- *  WAT batch's gap-fill scrape and the back-online trigger below. */
-function isLakeFreshForToday(): boolean {
-  const lastAcquire = readLastAcquire();
-  if (!lastAcquire?.date || !lastAcquire.at) return false;
-  if (lastAcquire.date !== watDateString()) return false;
-  if (Date.now() - new Date(lastAcquire.at).getTime() >= LAKE_STALE_MS) return false;
-  // Heartbeat alone can lie if the lake directory was deleted/moved after a
-  // successful acquisition stamped it — confirm the partition is still on disk.
-  return fixturesPartitionExists(lastAcquire.date);
-}
+// readFixtureReportState/isLakeFreshForToday live in ./workerUtils.js — both
+// read the same HEARTBEAT_FILE imported above.
 
 async function checkHeartbeatFreshness(): Promise<void> {
   // Called at startup and hourly (cron.schedule("0 * * * *", ...) below) — this
@@ -552,22 +467,8 @@ async function checkBotHeartbeatFreshness(): Promise<void> {
   await notifyAll(notifiers, alertSummary);
 }
 
-// ── Memory telemetry ─────────────────────────────────────────────────────────
-// Instrumentation-only, added while diagnosing the 2026-07-05 worker OOM
-// (crashed at ~509-517MB, before the Servy heap-ceiling fix was corrected from
-// a stale 512MB to the intended 2048MB — see oracle_machine_crash_2026_07_05
-// memory). The real daily fixture pool is O(100-250), not the ~18.5k first
-// assumed, so rather than redesign loadSportyBetIndex/gating against an
-// unconfirmed problem, this logs real before/after numbers per job phase so a
-// future OOM (or steady hour-over-hour growth) can be pinned to a specific
-// phase instead of guessed at.
-function logMemoryUsage(label: string): void {
-  const mem = process.memoryUsage();
-  const mb = (n: number) => Math.round(n / 1024 / 1024);
-  process.stdout.write(
-    `[mem] ${label} heapUsedMB=${mb(mem.heapUsed)} rssMB=${mb(mem.rss)} externalMB=${mb(mem.external)}\n`
-  );
-}
+// logMemoryUsage lives in ./workerUtils.js — instrumentation added while
+// diagnosing the 2026-07-05 worker OOM (see oracle_machine_crash_2026_07_05 memory).
 
 function logJob(name: string, fn: () => Promise<unknown>): void {
   const started = Date.now();
@@ -589,26 +490,7 @@ function logJob(name: string, fn: () => Promise<unknown>): void {
     });
 }
 
-// ── Python interpreter resolution ────────────────────────────────────────────
-// A bare "python"/"python3" relies on PATH resolution, which a Windows service
-// host does not inherit the same way an interactive shell does (the install is
-// only on this user's PATH, not the machine PATH) — causing a silent spawn
-// ENOENT under Servy while working fine from a terminal. Resolve an absolute
-// path up front so the scrapers/tools run identically in both contexts.
-const PYTHON_BIN = resolvePythonBin();
-
-function resolvePythonBin(): string {
-  if (process.env.PYTHON_BIN && existsSync(process.env.PYTHON_BIN)) return process.env.PYTHON_BIN;
-  if (process.platform === "win32") {
-    const candidates = [
-      join(process.env.LOCALAPPDATA ?? "", "Programs", "Python", "Python313", "python.exe"),
-      join(process.env.LOCALAPPDATA ?? "", "Python", "bin", "python.exe"),
-    ];
-    for (const c of candidates) if (existsSync(c)) return c;
-    return "python"; // fall back to PATH resolution (works in an interactive shell)
-  }
-  return "python3";
-}
+// PYTHON_BIN resolution lives in ./workerContext.js.
 
 // ── Fixture scraper ───────────────────────────────────────────────────────────
 
@@ -2274,7 +2156,7 @@ if (!IS_ONE_SHOT) {
   // the old 00:00 scrape was removed so picks are sourced from one fresh morning
   // odds snapshot instead of two. Back-online: if the machine was off at this slot,
   // checkHeartbeatFreshness fires acquireDailyJob + goals immediately on daemon
-  // restart (see LAKE_STALE_MS trigger above).
+  // restart (see workerUtils.ts's isLakeFreshForToday/LAKE_STALE_MS).
   cron.schedule(
     "30 9 * * *",
     () =>

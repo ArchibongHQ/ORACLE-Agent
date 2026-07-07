@@ -1,0 +1,137 @@
+/** [PR-9, worker god-file split] Shared helpers used by index.ts AND by 2+ of
+ *  the extracted pipeline modules (dailyAcquisition.ts, dailyBatch.ts,
+ *  goalsAccumulator.ts, resolveYesterday.ts) — kept here instead of in index.ts
+ *  so importing them never creates a circular import back into index.ts.
+ *
+ *  Two families:
+ *   - WAT calendar helpers (watDateString/watYesterdayString/watMinutesSinceMidnight)
+ *   - Heartbeat-file state (writeHeartbeat + the read-side helpers that share
+ *     the same on-disk file) and the lake-freshness check built on top of it.
+ */
+
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fixturesPartitionExists } from "@oracle/runtime";
+import { ROOT } from "./workerContext.js";
+
+// ── WAT calendar date ────────────────────────────────────────────────────────
+// The whole schedule (cron slots, "today's" lake/report/heartbeat freshness,
+// "yesterday's" resolve target) is defined in WAT (UTC+1, no DST) terms. Every
+// "what date is it" computation in this file MUST use this — NOT
+// `new Date().toISOString().slice(0, 10)`, which is a UTC calendar date and
+// silently disagrees with the WAT one for the first hour of each WAT day
+// (00:00-00:59 WAT = still "yesterday" in UTC). That mismatch was the root
+// cause of the 2026-07-02 incident: the back-online staleness checks
+// (isLakeFreshForToday/isDailyBatchFreshForToday) compared UTC dates, so the
+// moment the UTC day rolled over at 01:00 WAT, yesterday's still-fresh
+// acquisition looked "stale for today" and fired the full scrape+analysis+
+// goals pipeline hours early — then the real 09:30 WAT slot fired again on
+// top of it. Fixed 2026-07-02; see watDateString/watYesterdayString.
+const WAT_OFFSET_MS = 60 * 60 * 1000; // UTC+1, no DST (W. Central Africa Standard Time)
+// IANA zone matching WAT (UTC+1, no DST) — passed explicitly to every
+// cron.schedule() call in index.ts so the schedule no longer depends on the
+// host's system clock (see the cron-daemon block's comment for the incident this fixes).
+export const WAT_TZ = "Africa/Lagos";
+
+export function watDateString(d: Date = new Date()): string {
+  return new Date(d.getTime() + WAT_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+export function watYesterdayString(d: Date = new Date()): string {
+  return watDateString(new Date(d.getTime() - 86_400_000));
+}
+
+export function watMinutesSinceMidnight(d: Date = new Date()): number {
+  const watDate = new Date(d.getTime() + WAT_OFFSET_MS);
+  return watDate.getUTCHours() * 60 + watDate.getUTCMinutes();
+}
+
+// ── Job logging + heartbeat ───────────────────────────────────────────────────
+// Every cron job runs through logJob (index.ts) so a failure is always visible
+// in the log, and successful batch/resolve runs stamp .tmp/worker_heartbeat.json
+// (read by the web /health endpoint) so a silently-dead worker is detectable.
+
+export const HEARTBEAT_FILE = join(ROOT, ".tmp", "worker_heartbeat.json");
+
+export function writeHeartbeat(event: string, detail: Record<string, unknown> = {}): void {
+  try {
+    let current: Record<string, unknown> = {};
+    try {
+      current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<string, unknown>;
+    } catch {
+      /* first write or corrupt file — start fresh */
+    }
+    current[event] = { at: new Date().toISOString(), ...detail };
+    writeFileSync(HEARTBEAT_FILE, JSON.stringify(current, null, 2), "utf8");
+  } catch (err) {
+    process.stderr.write(`[worker] heartbeat write failed: ${String(err)}\n`);
+  }
+}
+
+function readLastAcquire(): { at?: string; date?: string } | undefined {
+  try {
+    const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
+      string,
+      { at?: string; date?: string } | undefined
+    >;
+    return current.lastAcquire;
+  } catch {
+    return undefined;
+  }
+}
+
+// Fixture-report follow-up state: when sendDailyFixtureReport() blocks on
+// marketsEmpty it stamps fixtureReportPlaceholder so the hourly heartbeat tick
+// (checkHeartbeatFreshness, index.ts) knows to retry until the enriched
+// spreadsheet ships (stamped as fixtureReportDelivered) — see
+// dailyAcquisition.ts's sendDailyFixtureReport for the send side.
+export function readFixtureReportState(): { placeholderDate?: string; deliveredDate?: string } {
+  try {
+    const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
+      string,
+      { date?: string } | undefined
+    >;
+    return {
+      placeholderDate: current.fixtureReportPlaceholder?.date,
+      deliveredDate: current.fixtureReportDelivered?.date,
+    };
+  } catch {
+    return {};
+  }
+}
+
+// Lake-staleness back-online trigger: unlike the plain staleness alert
+// (checkHeartbeatFreshness, index.ts), this gates whether runDailyBatch
+// (dailyBatch.ts) needs to re-run acquisition itself.
+const LAKE_STALE_MS = 20 * 60 * 60 * 1000; // ~20h — same-day acquisition is always fresher than this
+
+/** True when today's Parquet-lake partition was written by a successful
+ *  acquireDailyJob run within the last LAKE_STALE_MS — gates both
+ *  runDailyBatch's gap-fill scrape (dailyBatch.ts) and the back-online
+ *  trigger in checkHeartbeatFreshness (index.ts). */
+export function isLakeFreshForToday(): boolean {
+  const lastAcquire = readLastAcquire();
+  if (!lastAcquire?.date || !lastAcquire.at) return false;
+  if (lastAcquire.date !== watDateString()) return false;
+  if (Date.now() - new Date(lastAcquire.at).getTime() >= LAKE_STALE_MS) return false;
+  // Heartbeat alone can lie if the lake directory was deleted/moved after a
+  // successful acquisition stamped it — confirm the partition is still on disk.
+  return fixturesPartitionExists(lastAcquire.date);
+}
+
+// ── Memory telemetry ─────────────────────────────────────────────────────────
+// Instrumentation-only, added while diagnosing the 2026-07-05 worker OOM
+// (crashed at ~509-517MB, before the Servy heap-ceiling fix was corrected from
+// a stale 512MB to the intended 2048MB — see oracle_machine_crash_2026_07_05
+// memory). The real daily fixture pool is O(100-250), not the ~18.5k first
+// assumed, so rather than redesign loadSportyBetIndex/gating against an
+// unconfirmed problem, this logs real before/after numbers per job phase so a
+// future OOM (or steady hour-over-hour growth) can be pinned to a specific
+// phase instead of guessed at.
+export function logMemoryUsage(label: string): void {
+  const mem = process.memoryUsage();
+  const mb = (n: number) => Math.round(n / 1024 / 1024);
+  process.stdout.write(
+    `[mem] ${label} heapUsedMB=${mb(mem.heapUsed)} rssMB=${mb(mem.rss)} externalMB=${mb(mem.external)}\n`
+  );
+}
