@@ -1,7 +1,7 @@
 /** Maps ORACLE market category + side labels to SportyBet search terms and selection text.
  *  Update selectors here when SportyBet changes their UI — isolated by design. */
 
-import { MARKET_CATALOG } from "@oracle/engine";
+import { FAMILY_LABEL, MARKET_CATALOG, type MarketFamily } from "@oracle/engine";
 
 export interface MarketMapping {
   /** Text to type into SportyBet's market filter / tab */
@@ -158,18 +158,57 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
   return catalogFallback(cat, side);
 }
 
+/** cat -> MarketFamily, keyed off the SAME FAMILY_LABEL table @oracle/engine
+ *  itself uses as "the real value space of PickRef.market/EVMarket.market" —
+ *  ORACLE's own cat values ARE these exact display labels for any market its
+ *  engine produced. Built once at module load, not per call. */
+const FAMILY_BY_LABEL: ReadonlyMap<string, MarketFamily> = new Map(
+  (Object.entries(FAMILY_LABEL) as Array<[MarketFamily, string]>).map(([family, label]) => [
+    normalise(label),
+    family,
+  ])
+);
+
+/** Review fix (PR-15 follow-up): the original version fuzzy-matched `cat`
+ *  against every catalog entry's `name` by substring containment — unsafe,
+ *  since many real catalog names contain each other (e.g. "Half" alone
+ *  substring-contains into 100+ unrelated entries like "Halftime/fulltime
+ *  correct score", and `Array.find` has no exact-match priority, so the
+ *  FIRST array-position collision wins regardless of relevance). Family-first
+ *  narrows to only the entries actually classified under the SAME
+ *  MarketFamily as `cat` before ever comparing names/outcomes, eliminating
+ *  cross-family collisions by construction. Only falls back to the looser
+ *  substring-name search when `cat` isn't one of ORACLE's own known
+ *  FamilyLabel strings at all (an already-unusual input). */
 function catalogFallback(cat: string, side: string | null): MarketMapping | null {
   if (!side) return null;
   const normCat = normalise(cat);
-  const entry = MARKET_CATALOG.find((e) => {
-    const normName = normalise(e.name);
-    return normName === normCat || normCat.includes(normName) || normName.includes(normCat);
-  });
-  if (!entry) return null;
   const sideTrimmed = side.trim().toLowerCase();
-  const matchedOutcome = entry.outcomes.find((o) => o.trim().toLowerCase() === sideTrimmed);
-  if (!matchedOutcome) return null;
-  return { sportyMarket: entry.name, sportySelection: matchedOutcome };
+  const findOutcome = (entry: (typeof MARKET_CATALOG)[number]): MarketMapping | null => {
+    const matchedOutcome = entry.outcomes.find((o) => o.trim().toLowerCase() === sideTrimmed);
+    return matchedOutcome ? { sportyMarket: entry.name, sportySelection: matchedOutcome } : null;
+  };
+
+  const family = FAMILY_BY_LABEL.get(normCat);
+  if (family) {
+    for (const entry of MARKET_CATALOG) {
+      if (entry.family !== family) continue;
+      const mapped = findOutcome(entry);
+      if (mapped) return mapped;
+    }
+    return null; // known family, but no catalogued entry has this exact outcome
+  }
+
+  // cat isn't a recognised FamilyLabel — last-resort loose name match.
+  for (const entry of MARKET_CATALOG) {
+    const normName = normalise(entry.name);
+    if (normName !== normCat && !normCat.includes(normName) && !normName.includes(normCat)) {
+      continue;
+    }
+    const mapped = findOutcome(entry);
+    if (mapped) return mapped;
+  }
+  return null;
 }
 
 /** How to find a market's outcome on the SportyBet fixture detail page.

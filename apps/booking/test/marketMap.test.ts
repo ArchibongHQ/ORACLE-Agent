@@ -143,4 +143,26 @@ describe("mapMarket — catalog fallback (PR-15)", () => {
   it("still prefers the hand-rolled branches over the catalog fallback (1x2 unaffected)", () => {
     expect(mapMarket("1x2", "Home")).toEqual({ sportyMarket: "1X2", sportySelection: "1" });
   });
+
+  // Review regression: the original version fuzzy-matched cat against every
+  // catalog entry's name by substring containment with no exact-match
+  // priority — normalise("Half") is a substring of normalise("Halftime/Fulltime")
+  // (family "ht_ft", id 47), which sorts before "Home To Win Either Half"
+  // (family "half", id 50) in the catalog array, so Array.find picked the
+  // WRONG, unrelated family first. Family-first matching (keyed off the same
+  // FAMILY_LABEL table @oracle/engine itself uses) must never cross families.
+  it("never crosses into a different family on a generic substring collision (Half vs Halftime/Fulltime)", () => {
+    const m = mapMarket("Half", "Yes");
+    // Whichever "half"-family entry wins, it must stay within that family —
+    // never Halftime/Fulltime (family ht_ft, id 47), whose name
+    // ("Halftime/Fulltime") substring-contains "half" and used to win by
+    // sorting first in the unfiltered catalog array.
+    expect(m?.sportyMarket).not.toBe("Halftime/Fulltime");
+    expect([
+      "Home To Win Both Halves",
+      "Away To Win Both Halves",
+      "Home To Win Either Half",
+    ]).toContain(m?.sportyMarket);
+    expect(m?.sportySelection).toBe("Yes");
+  });
 });

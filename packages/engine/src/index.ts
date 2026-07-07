@@ -103,6 +103,7 @@ export {
   devigThreeWay,
   devigTwoWay,
   extendCatalog,
+  FAMILY_LABEL,
   familyOf,
   isPriceable,
   lookupMarket,
