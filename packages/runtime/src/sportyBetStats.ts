@@ -375,10 +375,18 @@ export function buildStatsOverride(
     };
     const xgH = pickXg(stats.xg?.home);
     const xgA = pickXg(stats.xg?.away);
-    // League-mean-estimated xGA (build_xg_table.py xga_src tag) completes the
-    // pair but must not claim empirical/high confidence.
-    const xgaEstimated =
-      stats.xg?.home?.xgaSrc === "estimated" || stats.xg?.away?.xgaSrc === "estimated";
+    // Two independent reasons an xG pair must not claim empirical/high
+    // confidence: (a) league-mean-estimated xGA (build_xg_table.py xga_src
+    // tag) fills a real gap, or (b) either side is google_ai-sourced (PR-19
+    // fallback tier, LLM prose extraction — a whole-pair low-confidence tier,
+    // not just an xGA-specific fill). Mirrors goalsV3/completeness.ts's
+    // xgEstimated check so the goals and all-markets pipelines never disagree
+    // on one xG pair's confidence.
+    const xgConfidenceDowngrade =
+      stats.xg?.home?.xgaSrc === "estimated" ||
+      stats.xg?.away?.xgaSrc === "estimated" ||
+      stats.xg?.home?.src === "google_ai" ||
+      stats.xg?.away?.src === "google_ai";
     const goalsHome = stats.goals?.home?.avg_scored;
     const goalsAway = stats.goals?.away?.avg_scored;
     // Full xG (xGF + xGA both sides) → highest confidence, unless the xGA half
@@ -387,8 +395,8 @@ export function buildStatsOverride(
     if (finite(xgH.xgf) && finite(xgA.xgf) && finite(xgH.xga) && finite(xgA.xga)) {
       override.xH = xgH.xgf;
       override.xA = xgA.xgf;
-      override.xgMode = xgaEstimated ? "estimated" : "empirical";
-      override.xg_confidence = xgaEstimated ? "medium" : "high";
+      override.xgMode = xgConfidenceDowngrade ? "estimated" : "empirical";
+      override.xg_confidence = xgConfidenceDowngrade ? "medium" : "high";
       // xGF-only (pre-fill FBref tables — no team-conceded figure) → still
       // preferred over raw goals-avg since xG is more predictive, but capped at
       // medium confidence to acknowledge the season-mean granularity.

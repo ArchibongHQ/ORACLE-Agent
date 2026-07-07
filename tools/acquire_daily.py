@@ -19,7 +19,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -97,6 +99,15 @@ def _maybe_fetch_live_xg(events: list[dict], quiet: bool = False) -> None:
     enriches each team's NEXT scrape, not retroactively the fixtures `events`
     came from (irrelevant whether those are today's live-acquired events or a
     prior day's sidecar read back from disk, per run_live_xg_refresh).
+
+    After the FotMob+rebuild pass, PR-19 additionally runs the Google-AI-Mode
+    xG fallback (tools/fetch_xg_fallback.py) over whatever teams are STILL
+    missing xG (the residual gap left by Understat/FotMob/Sofascore/FBref) —
+    see _maybe_fetch_xg_fallback below. Gated separately
+    (ORACLE_FETCH_XG_FALLBACK) since it's a materially lower-confidence,
+    LLM-prose-extraction tier; always runs inside this same off-peak window,
+    never inline in the 09:30 acquisition path.
+
     Best-effort: any failure or timeout must never break the caller."""
     if os.environ.get("ORACLE_FETCH_LIVE_XG", "on").strip().lower() != "on":
         return
@@ -134,9 +145,142 @@ def _maybe_fetch_live_xg(events: list[dict], quiet: bool = False) -> None:
                 tail = (proc.stdout or proc.stderr or "").strip().splitlines()
                 note = tail[-1] if tail else ""
                 print(f"[acquire_daily] {label} {status} {note}".rstrip(), flush=True)
+            if label == "fetch_fotmob_xg" and proc.returncode == 0 and not _fotmob_xg_has_teams(tools_dir):
+                # The historical silent-zero bug (fotmob_xg.json parses to {})
+                # must be observable even when the subprocess itself exits 0.
+                print("[acquire_daily] WARN fetch_fotmob_xg yielded 0 teams", flush=True)
         except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
             if not quiet:
                 print(f"[acquire_daily] {label} skipped: {exc}", flush=True)
+
+    # 3. Google-AI-Mode xG fallback (PR-19) — only for the RESIDUAL gap left
+    #    after the real tiers above, and only when explicitly not disabled.
+    _maybe_fetch_xg_fallback(teams, tools_dir, quiet=quiet)
+
+
+def _fotmob_xg_has_teams(tools_dir: Path) -> bool:
+    """True when .tmp/xg/fotmob_xg.json parses to a non-empty team table.
+    Missing/corrupt file counts as "no teams" (same fail-open read as
+    build_xg_table.py's _load_json_xg_table) — used only to decide whether to
+    print the WARN above, never fatal itself."""
+    path = tools_dir.parent / ".tmp" / "xg" / "fotmob_xg.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and len(data) > 0
+
+
+# Mirrors packages/runtime/src/goalsV3/eligibility.ts's SRL_RE (§1.2 hard
+# discard) — reimplemented here in Python rather than parsed from the TS
+# source; keep the two patterns in sync if either changes.
+_SRL_VIRTUAL_RE = re.compile(r"simulated\s*reality|\bsrl\b|e-?soccer|esports?|virtual", re.IGNORECASE)
+
+
+def _residual_teams_for_fallback(teams: list[str], tools_dir: Path) -> list[str]:
+    """Teams from today's slate NOT already covered by the merged xG table
+    (.tmp/xg/team_xg_table.json, rebuilt just before this is called) AND not
+    SRL/virtual — those fixtures are hard-discarded by eligibility anyway, so
+    spending a fallback browser page on them is wasted quota.
+
+    Membership must use the SAME normaliser that built team_xg_table.json's
+    keys (scrape_fixtures.normalise — see build_xg_table.py's own "reuse the
+    shared team-name normaliser, do not add a second one" convention and
+    fetch_xg_fallback.py's identical _residual_teams helper). tools/lib/
+    team_names.normalise_team is a DIFFERENT function with a different alias
+    table; using it here would silently misclassify already-covered teams as
+    residual (or vice versa) since the two normalisers don't agree on the
+    same input. `sf` (scrape_fixtures, already imported at module level) is
+    the same module build_xg_table.py and fetch_xg_fallback.py both import
+    `normalise` from — reuse it directly rather than re-importing."""
+    table_path = tools_dir.parent / ".tmp" / "xg" / "team_xg_table.json"
+    try:
+        covered = json.loads(table_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        covered = {}
+    if not isinstance(covered, dict):
+        covered = {}
+
+    residual: list[str] = []
+    for team in teams:
+        if _SRL_VIRTUAL_RE.search(team):
+            continue
+        if sf.normalise(team) in covered:
+            continue
+        residual.append(team)
+    return residual
+
+
+def _maybe_fetch_xg_fallback(teams: list[str], tools_dir: Path, quiet: bool = False) -> None:
+    """PR-19: run the Google-AI-Mode xG fallback (fetch_xg_fallback.py) over
+    the RESIDUAL team list — those still missing xG after the Understat/
+    FotMob/Sofascore/FBref merge above — then re-run build_xg_table.py so the
+    new google_ai tier merges in as the last, lowest-confidence fill. Gated by
+    ORACLE_FETCH_XG_FALLBACK (default on); capped by
+    ORACLE_XG_FALLBACK_MAX_TEAMS (default 25) since each team is a real
+    Playwright page load against Google AI-Mode. Best-effort: any failure or
+    timeout must never break the caller, same convention as every other stage
+    in _maybe_fetch_live_xg."""
+    if os.environ.get("ORACLE_FETCH_XG_FALLBACK", "on").strip().lower() == "off":
+        if not quiet:
+            print("[acquire_daily] xg-fallback skipped (ORACLE_FETCH_XG_FALLBACK=off)", flush=True)
+        return
+
+    residual = _residual_teams_for_fallback(teams, tools_dir)
+    if not residual:
+        if not quiet:
+            print("[acquire_daily] xg-fallback skipped (no residual teams)", flush=True)
+        return
+
+    try:
+        max_teams = int(os.environ.get("ORACLE_XG_FALLBACK_MAX_TEAMS", "25"))
+    except ValueError:
+        max_teams = 25
+    residual = residual[: max(0, max_teams)]
+    if not residual:
+        return
+
+    fallback_teams_file = tools_dir.parent / ".tmp" / "xg" / "teams_fallback_today.txt"
+    try:
+        fallback_teams_file.parent.mkdir(parents=True, exist_ok=True)
+        fallback_teams_file.write_text("\n".join(residual), encoding="utf-8")
+    except OSError as exc:
+        if not quiet:
+            print(f"[acquire_daily] xg-fallback skipped (teams-file write): {exc}", flush=True)
+        return
+
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable, str(tools_dir / "fetch_xg_fallback.py"),
+                "--teams-file", str(fallback_teams_file),
+            ],
+            capture_output=True, text=True, timeout=900, check=False,
+        )
+        if not quiet:
+            status = "ok" if proc.returncode == 0 else f"exit={proc.returncode}"
+            tail = (proc.stdout or proc.stderr or "").strip().splitlines()
+            note = tail[-1] if tail else ""
+            print(f"[acquire_daily] fetch_xg_fallback {status} {note}".rstrip(), flush=True)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
+        if not quiet:
+            print(f"[acquire_daily] fetch_xg_fallback skipped: {exc}", flush=True)
+        return
+
+    # Re-merge so the new google_ai tier is reflected in team_xg_table.json.
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(tools_dir / "build_xg_table.py")],
+            capture_output=True, text=True, timeout=180, check=False,
+        )
+        if not quiet:
+            status = "ok" if proc.returncode == 0 else f"exit={proc.returncode}"
+            tail = (proc.stdout or proc.stderr or "").strip().splitlines()
+            note = tail[-1] if tail else ""
+            print(f"[acquire_daily] build_xg_table (post-fallback) {status} {note}".rstrip(), flush=True)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never fatal
+        if not quiet:
+            print(f"[acquire_daily] build_xg_table (post-fallback) skipped: {exc}", flush=True)
 
 
 def run_live_xg_refresh(quiet: bool = False) -> None:

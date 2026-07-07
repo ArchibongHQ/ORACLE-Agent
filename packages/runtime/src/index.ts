@@ -42,9 +42,11 @@ export type {
   FixtureReportFiles,
   FixtureWorkbookDeps,
   MarketRowGroup,
+  XgCoverage,
 } from "./fixtureWorkbook.js";
 export {
   buildMarketRowGroups,
+  computeXgCoverage,
   generateAndWriteFixtureWorkbook,
   listFixtureReportFiles,
   renderFixturesWorkbook,

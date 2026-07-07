@@ -17,6 +17,7 @@ vi.mock("../src/dailyStore.js", () => ({
 
 const {
   buildMarketRowGroups,
+  computeXgCoverage,
   listFixtureReportFiles,
   renderFixturesWorkbook,
   renderMarketsWorkbook,
@@ -143,6 +144,92 @@ describe("renderFixturesWorkbook", () => {
     // the joined H2H results string lands in the H2H results column for the first fixture
     const h2hCol = headers.indexOf("H2H results") + 1; // ExcelJS values[] is 1-based
     expect(String(fx?.getRow(2).getCell(h2hCol).value)).toBe("2-0; 1-1; 3-1");
+  });
+});
+
+describe("computeXgCoverage", () => {
+  function eventWithXg(
+    home: string,
+    away: string,
+    xg: { home?: { xgf?: number; src?: string }; away?: { xgf?: number; src?: string } }
+  ): SportyBetEvent {
+    const e = event(home, away);
+    if (e.detail?.stats) (e.detail.stats as Record<string, unknown>).xg = xg;
+    return e;
+  }
+
+  it("counts a fixture covered only when BOTH sides have a numeric xgf, tallied by src", () => {
+    const events = [
+      eventWithXg("A", "B", {
+        home: { xgf: 1.5, src: "understat" },
+        away: { xgf: 1.1, src: "understat" },
+      }),
+      eventWithXg("C", "D", {
+        home: { xgf: 1.2, src: "google_ai" },
+        away: { xgf: 0.9, src: "google_ai" },
+      }),
+      eventWithXg("E", "F", { home: { xgf: 1.0 } }), // away side missing xgf — not covered
+    ];
+    expect(computeXgCoverage(events)).toEqual({
+      covered: 2,
+      total: 3,
+      bySrc: { understat: 1, google_ai: 1 },
+    });
+  });
+
+  it("tags a covered fixture 'unknown' when neither side carries a src, and 'mixed' when the two sides disagree", () => {
+    const events = [
+      eventWithXg("A", "B", { home: { xgf: 1.5 }, away: { xgf: 1.1 } }),
+      eventWithXg("C", "D", {
+        home: { xgf: 1.2, src: "understat" },
+        away: { xgf: 0.9, src: "google_ai" },
+      }),
+    ];
+    expect(computeXgCoverage(events)).toEqual({
+      covered: 2,
+      total: 2,
+      bySrc: { unknown: 1, mixed: 1 },
+    });
+  });
+
+  it("returns covered=0 and an empty bySrc map when no fixture has an xg block", () => {
+    expect(computeXgCoverage([event("Alpha", "Beta", false)])).toEqual({
+      covered: 0,
+      total: 1,
+      bySrc: {},
+    });
+  });
+});
+
+describe("ShotsOff/Blocked columns (PR-19)", () => {
+  it("renders shots_off_target_avg and shots_blocked_avg alongside the existing SoT columns", () => {
+    const e = event("Alpha", "Beta");
+    if (e.detail?.stats) {
+      (e.detail.stats as Record<string, unknown>).possessionValue = {
+        home: { shots_on_target_avg: 5.2, shots_off_target_avg: 3.1, shots_blocked_avg: 1.4 },
+        away: { shots_on_target_avg: 4.0, shots_off_target_avg: 2.2, shots_blocked_avg: 0.8 },
+      };
+    }
+    const wb = renderFixturesWorkbook([e], "2026-06-29", deps);
+    const fx = wb.getWorksheet("Fixtures");
+    const headers = (fx?.getRow(1).values as unknown[]).filter(Boolean).map(String);
+    for (const h of ["ShotsOff_H", "ShotsOff_A", "Blocked_H", "Blocked_A"]) {
+      expect(headers).toContain(h);
+    }
+    const col = (name: string) => headers.indexOf(name) + 1;
+    expect(fx?.getRow(2).getCell(col("ShotsOff_H")).value).toBe(3.1);
+    expect(fx?.getRow(2).getCell(col("ShotsOff_A")).value).toBe(2.2);
+    expect(fx?.getRow(2).getCell(col("Blocked_H")).value).toBe(1.4);
+    expect(fx?.getRow(2).getCell(col("Blocked_A")).value).toBe(0.8);
+  });
+
+  it("renders null for the new columns when possessionValue is absent", () => {
+    const wb = renderFixturesWorkbook([event("Gamma", "Delta", false)], "2026-06-29", deps);
+    const fx = wb.getWorksheet("Fixtures");
+    const headers = (fx?.getRow(1).values as unknown[]).filter(Boolean).map(String);
+    const col = (name: string) => headers.indexOf(name) + 1;
+    expect(fx?.getRow(2).getCell(col("ShotsOff_H")).value).toBeNull();
+    expect(fx?.getRow(2).getCell(col("Blocked_A")).value).toBeNull();
   });
 });
 

@@ -334,6 +334,36 @@ describe("buildStatsOverride — all-markets v3 additions", () => {
     });
   });
 
+  it("downgrades a google_ai-sourced xG pair to estimated/medium (PR-19 fallback tier parity)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      xg: {
+        home: { xgf: 1.5, xga: 1.2, src: "google_ai" },
+        away: { xgf: 1.0, xga: 1.1, src: "google_ai" },
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({
+      xH: 1.5,
+      xA: 1.0,
+      xgMode: "estimated",
+      xg_confidence: "medium",
+    });
+  });
+
+  it("downgrades even when only ONE side is google_ai-sourced (OR condition, not AND)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      xg: {
+        home: { xgf: 1.5, xga: 1.2, src: "google_ai" },
+        away: { xgf: 1.0, xga: 1.1 }, // no src tag — real/pre-PR-19 source
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({
+      xgMode: "estimated",
+      xg_confidence: "medium",
+    });
+  });
+
   it("types scoringConceding rates + first-half share through when the venue sample is thick enough", () => {
     const d = detail({
       scoringConceding: {

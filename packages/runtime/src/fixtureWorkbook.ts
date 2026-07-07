@@ -221,6 +221,22 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
     get: ({ event }) => event.detail?.stats?.possessionValue?.away?.shots_on_target_avg ?? null,
   },
   {
+    header: "ShotsOff_H",
+    get: ({ event }) => event.detail?.stats?.possessionValue?.home?.shots_off_target_avg ?? null,
+  },
+  {
+    header: "ShotsOff_A",
+    get: ({ event }) => event.detail?.stats?.possessionValue?.away?.shots_off_target_avg ?? null,
+  },
+  {
+    header: "Blocked_H",
+    get: ({ event }) => event.detail?.stats?.possessionValue?.home?.shots_blocked_avg ?? null,
+  },
+  {
+    header: "Blocked_A",
+    get: ({ event }) => event.detail?.stats?.possessionValue?.away?.shots_blocked_avg ?? null,
+  },
+  {
     header: "Corners_H",
     get: ({ event }) => event.detail?.stats?.possessionValue?.home?.corners_avg ?? null,
   },
@@ -658,6 +674,35 @@ export async function writeFixtureReportFiles(
   }
 }
 
+/** PR-19: per-slate xG coverage — how many fixtures actually carry an xG pair
+ *  before the report ships, broken down by provenance. A fixture counts as
+ *  covered only when BOTH sides have a numeric xgf (mirrors the xGF_H/xGF_A
+ *  column getters above); `bySrc` keys on the home side's src tag (falling
+ *  back to the away side's, else "mixed" when the two sides disagree, else
+ *  "unknown" when covered but untagged — pre-PR-19 sources never set `src`). */
+export interface XgCoverage {
+  covered: number;
+  total: number;
+  bySrc: Record<string, number>;
+}
+
+export function computeXgCoverage(events: SportyBetEvent[]): XgCoverage {
+  let covered = 0;
+  const bySrc: Record<string, number> = {};
+  for (const event of events) {
+    const xg = event.detail?.stats?.xg;
+    const hxgf = xg?.home?.xgf;
+    const axgf = xg?.away?.xgf;
+    if (typeof hxgf !== "number" || typeof axgf !== "number") continue;
+    covered += 1;
+    const hSrc = xg?.home?.src;
+    const aSrc = xg?.away?.src;
+    const src = hSrc && aSrc && hSrc !== aSrc ? "mixed" : (hSrc ?? aSrc ?? "unknown");
+    bySrc[src] = (bySrc[src] ?? 0) + 1;
+  }
+  return { covered, total: events.length, bySrc };
+}
+
 /** One-call generate-and-write for a date — the .xlsx replacement for
  *  generateAndWriteDailyFixtureReport. Returns null when SportyBet listed no
  *  fixtures for the date (nothing to report); never throws. */
@@ -669,6 +714,7 @@ export async function generateAndWriteFixtureWorkbook(
   marketsPaths: string[];
   fixtureCount: number;
   marketsEmpty: boolean;
+  xgCoverage: XgCoverage;
 } | null> {
   const index = await loadSportyBetIndex(date);
   if (!index?.events.length) return null;
@@ -683,7 +729,12 @@ export async function generateAndWriteFixtureWorkbook(
     buildNewsByTeamForWorkbook(index.events, date),
   ]);
   const files = await writeFixtureReportFiles(index.events, date, { lineups, newsByTeam }, outDir);
-  return { ...files, fixtureCount: index.events.length, marketsEmpty };
+  return {
+    ...files,
+    fixtureCount: index.events.length,
+    marketsEmpty,
+    xgCoverage: computeXgCoverage(index.events),
+  };
 }
 
 /** Locate an already-written report file set for a date (bot on-disk shortcut).

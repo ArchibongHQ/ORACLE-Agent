@@ -88,6 +88,7 @@ import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
 import cron from "node-cron";
 import { awaitAcquireOrTimeout, trackAcquireJob } from "./acquireChain.js";
 import { type SweepCandidate, selectDueFixtures } from "./closingOddsSweep.js";
+import { formatXgCoverageNote } from "./xgCoverageNote.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -760,6 +761,14 @@ async function sendDailyFixtureReport(): Promise<void> {
     // (one row per fixture, every captured field) plus per-outcome Markets
     // file(s), split under the Telegram per-file size budget.
     const result = await generateAndWriteFixtureWorkbook(today, join(ROOT, ".tmp/reports"));
+    if (result) {
+      // PR-19: log the xG coverage line unconditionally (even on the
+      // marketsEmpty early-return below) — it's a data-availability signal
+      // independent of whether markets depth has enriched yet, and it's the
+      // one place the historical silent-zero FotMob-tier bug becomes visible
+      // in the worker's own logs, not just build_xg_table.py's stdout.
+      process.stdout.write(`[fixture-report] ${formatXgCoverageNote(result.xgCoverage)}\n`);
+    }
     if (!result) {
       // No-fixtures is a real, reportable state — surface it loudly (was a silent
       // return that made "the report never fired" indistinguishable from a crash).
@@ -806,7 +815,7 @@ async function sendDailyFixtureReport(): Promise<void> {
         env.TELEGRAM_BOT_TOKEN as string,
         env.TELEGRAM_CHAT_ID as string,
         result.fixturesPath,
-        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]`
+        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}`
       );
       for (let i = 0; i < result.marketsPaths.length; i++) {
         await sendTelegramDocument(
