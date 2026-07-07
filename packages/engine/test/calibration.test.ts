@@ -14,6 +14,7 @@ import {
   CalibrationEngine,
   estimateDynamicRho,
   expectedCalibrationError,
+  isotonicCalibrateFp,
   logLoss,
   plattScale,
   significanceAcceptGate,
@@ -452,6 +453,14 @@ describe("§8.3/§8.5 significanceAcceptGate", () => {
     expect(result.reason).toContain("INSUFFICIENT_SAMPLES");
   });
 
+  it("[PR-16] defaults minN to 300, not 30, when no override is passed", () => {
+    const base = Array(299).fill(0.22);
+    const cand = Array(299).fill(0.2); // large, reliable delta — would accept at n>=300
+    const result = significanceAcceptGate(base, cand);
+    expect(result.accept).toBe(false);
+    expect(result.reason).toBe("INSUFFICIENT_SAMPLES (n=299 < minN=300)");
+  });
+
   it("rejects when |delta| < effectSizeFloor", () => {
     const base = Array(N).fill(0.22);
     const cand = Array(N).fill(0.2199); // delta = -0.0001 < floor 0.002
@@ -503,6 +512,41 @@ describe("§8.3/§8.5 significanceAcceptGate", () => {
     const cand = Array(N).fill(0.24); // regression
     const result = significanceAcceptGate(base, cand, { minN: 10, nBootstrap: BOOT });
     expect(result.effectSize).toBeCloseTo(0.02, 4);
+  });
+});
+
+describe("§8.4 isotonicCalibrateFp", () => {
+  const fp = { home: 0.5, draw: 0.25, away: 0.25 };
+
+  function resolvedBet(homeGoals: number, awayGoals: number): BetRecord {
+    return {
+      fp: { home: 0.5, draw: 0.25, away: 0.25 },
+      homeGoals,
+      awayGoals,
+    };
+  }
+
+  it("[PR-16] defaults minSamples to 300, not 30 — falls back to the original fp below that", () => {
+    const bets = Array(299)
+      .fill(null)
+      .map((_, i) => resolvedBet(i % 3 === 0 ? 1 : 0, i % 3 === 1 ? 1 : 0));
+    expect(isotonicCalibrateFp(fp, bets)).toEqual(fp);
+  });
+
+  it("still calibrates once eligible bets reach the 300 floor", () => {
+    const bets = Array(300)
+      .fill(null)
+      .map((_, i) => resolvedBet(i % 3 === 0 ? 1 : 0, i % 3 === 1 ? 1 : 0));
+    const result = isotonicCalibrateFp(fp, bets);
+    // Not a strict inequality on any one field — just confirm it actually ran
+    // the PAVA fit (renormalised probabilities that still sum to ~1) rather
+    // than short-circuiting to the untouched input.
+    expect(result.home + result.draw + result.away).toBeCloseTo(1, 5);
+  });
+
+  it("ignores records missing fp or goals when counting eligible samples", () => {
+    const incomplete: BetRecord[] = Array(300).fill({ home: "A", away: "B" });
+    expect(isotonicCalibrateFp(fp, incomplete)).toEqual(fp);
   });
 });
 

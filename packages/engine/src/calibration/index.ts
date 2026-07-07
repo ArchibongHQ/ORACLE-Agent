@@ -605,7 +605,12 @@ export interface SignificanceGateResult {
 }
 
 export interface SignificanceGateOptions {
-  minN?: number; // minimum sample count floor (default 30)
+  // [PR-16] Raised 30->300 (audit item): n=30 is barely enough for the CLT to
+  // apply at all, nowhere near enough to reliably resolve a delta as small as
+  // effectSizeFloor=0.002 against RPS's noise floor via bootstrap CI — a
+  // "significant" result at n=30 is far more likely to be sampling luck than
+  // a real model improvement. Never lower this for a core-param change.
+  minN?: number; // minimum sample count floor (default 300)
   effectSizeFloor?: number; // minimum |delta| to accept (default 0.002; RPS frontier ≈ 0.21)
   alpha?: number; // two-sided confidence level (default 0.95)
   nBootstrap?: number; // resamples (default 1000; use 100–200 in tests)
@@ -628,7 +633,7 @@ export function significanceAcceptGate(
   candidate: number[],
   options: SignificanceGateOptions = {}
 ): SignificanceGateResult {
-  const minN = options.minN ?? 30;
+  const minN = options.minN ?? 300;
   const effectSizeFloor = options.effectSizeFloor ?? 0.002;
   const alpha = options.alpha ?? 0.95;
   const nBoot = options.nBootstrap ?? 1000;
@@ -737,11 +742,14 @@ function pava(predicted: number[], actual: number[]): number[] {
  *  `fp` (predicted) and `homeGoals`/`awayGoals` (actual outcome). Renormalises after fit.
  *
  *  Returns the calibrated fp, or the original fp if < minSamples resolved records exist.
- *  Safe to call with an empty or partial ledger — falls back silently. */
+ *  Safe to call with an empty or partial ledger — falls back silently.
+ *  [PR-16] minSamples raised 30->300 (audit item) — same reasoning as
+ *  significanceAcceptGate's minN: 30 resolved bets is too thin a sample to
+ *  fit a trustworthy PAVA isotonic curve without overfitting to noise. */
 export function isotonicCalibrateFp(
   fp: { home: number; draw: number; away: number },
   resolvedBets: BetRecord[],
-  minSamples = 30
+  minSamples = 300
 ): { home: number; draw: number; away: number } {
   const eligible = resolvedBets.filter(
     (b) =>

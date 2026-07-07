@@ -70,7 +70,7 @@ def rps(probs: dict, outcome: str) -> float:
 def significance_accept_gate(
     baseline: list,
     candidate: list,
-    min_n: int = 30,
+    min_n: int = 300,
     effect_size_floor: float = 0.002,
     alpha: float = 0.95,
     n_bootstrap: int = 1000,
@@ -79,6 +79,12 @@ def significance_accept_gate(
     Bootstrap CI on the delta (candidate - baseline).
     Accepts if: n >= min_n AND |delta| >= floor AND CI_upper < 0.
     For RPS: negative delta = improvement.
+
+    [PR-16] min_n raised 30->300 (audit item) — mirrors the TS
+    significanceAcceptGate default (packages/engine/src/calibration/index.ts):
+    n=30 is too thin to reliably resolve a delta as small as
+    effect_size_floor=0.002 via bootstrap CI without mistaking sampling
+    noise for a real improvement.
     """
     n = min(len(baseline), len(candidate))
     if n < min_n:
@@ -280,7 +286,7 @@ def main():
                         help="JSON config change to evaluate, e.g. '{\"useBivariatePoisson\": true}'")
     parser.add_argument("--label",              default="candidate",
                         help="Human-readable label for this comparison")
-    parser.add_argument("--min-n",              default=30, type=int)
+    parser.add_argument("--min-n",              default=300, type=int)
     parser.add_argument("--effect-size-floor",  default=0.002, type=float)
     parser.add_argument("--n-bootstrap",        default=1000, type=int)
     parser.add_argument("--dry-run",            action="store_true",
