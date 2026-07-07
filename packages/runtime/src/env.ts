@@ -223,7 +223,12 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // through one Opus agent over the full raw allMarkets catalogue (no family
     // privileged), validated against real odds + audited by the arbiter, instead
     // of the family-gated deterministic cascade. Off → deterministic fallback.
-    enableLlmMarketExecutor: env.ENABLE_LLM_MARKET_EXECUTOR?.toLowerCase() === "true",
+    // PR-23: ENABLE_LLM_MARKET_EXECUTOR is now tri-state ("true"/"unmapped"/
+    // anything else) — llmExecutorScope carries the parsed value,
+    // enableLlmMarketExecutor stays a plain boolean (true for both "full" and
+    // "unmapped") since most call sites only ever need the on/off signal.
+    enableLlmMarketExecutor: parseLlmExecutorScope(env.ENABLE_LLM_MARKET_EXECUTOR) !== "off",
+    llmExecutorScope: parseLlmExecutorScope(env.ENABLE_LLM_MARKET_EXECUTOR),
     // v3 cap/noise gates on goals-family markets in the MAIN batch (see
     // OracleConfig.enableV3MainGates docstring). Shares the same threshold env
     // keys as the goals-only v3 batch (buildGoalsV3Config) so one number pair
@@ -308,6 +313,16 @@ function parseMarketsV3Mode(raw: string | undefined): "on" | "shadow" | "off" {
   const v = raw?.toLowerCase().trim();
   if (v === "off" || v === "shadow") return v;
   return "on";
+}
+
+// PR-23: tri-state ENABLE_LLM_MARKET_EXECUTOR. "true" ("full") preserves the
+// pre-PR-23 behavior exactly; "unmapped" is the new skip-tail-only scope;
+// anything else (including unset) is "off" — same default as before.
+function parseLlmExecutorScope(raw: string | undefined): "full" | "unmapped" | "off" {
+  const v = raw?.toLowerCase().trim();
+  if (v === "true") return "full";
+  if (v === "unmapped") return "unmapped";
+  return "off";
 }
 
 /** goals-market-analysis-prompt-v3 settings scoped to the goals-only batch

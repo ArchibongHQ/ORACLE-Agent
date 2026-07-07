@@ -18,7 +18,7 @@ import {
   type V3MarketOutcomeAssessment,
 } from "../marketsV3/analyzeFixtureMarkets.js";
 import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
-import type { RouteCoverage } from "../marketsV3/feedDictionary.js";
+import { computeTailMarkets, type RouteCoverage } from "../marketsV3/feedDictionary.js";
 import type { V3OutputCandidate } from "../marketsV3/outputs.js";
 import type {
   AgentError,
@@ -661,7 +661,16 @@ export async function runBatch(
           // the same fixture would be pure waste. Legacy behavior (including
           // an operator-enabled Q4 executor) is untouched when v3 is off,
           // shadow, or produced nothing for this fixture.
-          const decideConfig = usedV3 ? { ...config, enableLlmMarketExecutor: false } : config;
+          //
+          // PR-23: under "unmapped" scope, don't demote — instead narrow what
+          // the executor sees (via a scoped decisionCtx at the decide() call
+          // below) to just this fixture's recoverable skip-tail, so it sweeps
+          // markets v3 couldn't price rather than re-analyzing the whole
+          // catalogue v3 already handled. "full" scope keeps the original
+          // demote (a second full-catalogue pass is still pure waste there).
+          const unmappedTailScope = usedV3 && config.llmExecutorScope === "unmapped";
+          const decideConfig =
+            usedV3 && !unmappedTailScope ? { ...config, enableLlmMarketExecutor: false } : config;
 
           // Risk multipliers the engine already computed for THIS fixture, reused
           // so the all-markets LLM executor tier's Kelly stake (Q4b) is consistent
@@ -769,6 +778,17 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             /* non-fatal — llm module unavailable */
           }
 
+          // PR-23: the executor only ever reads ctx.allMarkets (buildPrompt's
+          // draft-cascade prompt does not) — narrowing it here is sufficient
+          // to scope the sweep, no other decide() behavior is affected. An
+          // empty tail (v3 routed/priced everything) or a non-llmEligible
+          // fixture both naturally no-op: runAllMarketsLlmExecutor's own
+          // `!ctx.allMarkets?.length` guard covers the former, decide()'s
+          // existing `!useDeterministicDraft` gate covers the latter.
+          const decisionCtxForDecide = unmappedTailScope
+            ? { ...decisionCtx, allMarkets: computeTailMarkets(allMarkets ?? []) }
+            : decisionCtx;
+
           const {
             decision: rawDecision,
             replay: decisionReplay,
@@ -776,7 +796,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             eligibleBets: executedEligible,
           } = await decide(
             eligible,
-            decisionCtx,
+            decisionCtxForDecide,
             decideConfig,
             !llmEligible, // force deterministic for fixtures outside the top-N
             marketExecutorRisk,

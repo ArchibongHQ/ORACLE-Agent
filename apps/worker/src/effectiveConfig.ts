@@ -31,6 +31,7 @@ export function printEffectiveConfig(
     enableGoalsOnlyMode: cfg.enableGoalsOnlyMode,
     enableNewsIntel: cfg.enableNewsIntel,
     enableLlmMarketExecutor: cfg.enableLlmMarketExecutor,
+    llmExecutorScope: cfg.llmExecutorScope,
     enableGbmResidual: cfg.enableGbmResidual,
     useNegBinom: cfg.useNegBinom,
     nbDispersion: cfg.nbDispersion,

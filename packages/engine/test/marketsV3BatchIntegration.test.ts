@@ -368,6 +368,49 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     expect(runAllMarketsLlmExecutorMock).not.toHaveBeenCalled();
   });
 
+  it('PR-23 "unmapped" scope: does NOT demote the executor when v3 supplied candidates — narrows ctx.allMarkets to just the recoverable skip-tail instead', async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+    const routedEntry = allMarkets[0]!; // "Double Chance" — routes normally, NOT tail
+    const tailEntry: AllMarketEntry = {
+      id: "999999",
+      name: "Some Uncatalogued Market",
+      outcomes: [{ id: "1", desc: "Yes", odds: "1.9" }],
+    };
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets: [routedEntry, tailEntry] } } },
+    });
+
+    await runBatch([job], {
+      storage,
+      config: {
+        ...baseConfig,
+        enableMarketsV3: "on",
+        enableLlmMarketExecutor: true,
+        llmExecutorScope: "unmapped",
+      },
+    });
+
+    // NOT suppressed (unlike "full" scope's demote, tested above).
+    expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
+    const ctxSeenByExecutor = runAllMarketsLlmExecutorMock.mock.calls[0]![0];
+    // Only the tail entry — the routed "Double Chance" entry v3 already
+    // handled is excluded, so the executor sweeps what v3 couldn't price
+    // instead of re-analyzing the whole catalogue.
+    expect(ctxSeenByExecutor.allMarkets).toEqual([tailEntry]);
+  });
+
   it("leaves the Q4 executor enabled when v3 produced nothing for this fixture (fail-open, not a blanket suppression)", async () => {
     vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
     analyzeFixtureMarketsV3Mock.mockReturnValue(null); // v3 declines

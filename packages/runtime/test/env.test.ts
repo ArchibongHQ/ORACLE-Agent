@@ -177,3 +177,39 @@ describe("buildConfig calibrationLedger (PR-7)", () => {
     expect(buildConfig({ ORACLE_CALIBRATION_LEDGER: "banana" }).calibrationLedger).toBe("shadow");
   });
 });
+
+describe("buildConfig llmExecutorScope + enableLlmMarketExecutor (PR-23 tri-state)", () => {
+  it('defaults to "off" (enableLlmMarketExecutor false) when unset', () => {
+    expect(buildConfig({}).llmExecutorScope).toBe("off");
+    expect(buildConfig({}).enableLlmMarketExecutor).toBe(false);
+  });
+
+  it('ENABLE_LLM_MARKET_EXECUTOR="true" resolves to "full" scope — the exact pre-PR-23 behavior', () => {
+    const cfg = buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "true" });
+    expect(cfg.llmExecutorScope).toBe("full");
+    expect(cfg.enableLlmMarketExecutor).toBe(true);
+  });
+
+  it('ENABLE_LLM_MARKET_EXECUTOR="unmapped" resolves to "unmapped" scope, enableLlmMarketExecutor still true', () => {
+    const cfg = buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "unmapped" });
+    expect(cfg.llmExecutorScope).toBe("unmapped");
+    expect(cfg.enableLlmMarketExecutor).toBe(true);
+  });
+
+  it("is case-insensitive for both recognised values", () => {
+    expect(buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "TRUE" }).llmExecutorScope).toBe("full");
+    expect(buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "UNMAPPED" }).llmExecutorScope).toBe(
+      "unmapped"
+    );
+  });
+
+  it('falls back to "off" on any unrecognised value (never throws, never silently becomes "full")', () => {
+    const cfg = buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "yes" });
+    expect(cfg.llmExecutorScope).toBe("off");
+    expect(cfg.enableLlmMarketExecutor).toBe(false);
+  });
+
+  it('ENABLE_LLM_MARKET_EXECUTOR="false" resolves to "off" (not "full" — only the literal "true" does)', () => {
+    expect(buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "false" }).llmExecutorScope).toBe("off");
+  });
+});

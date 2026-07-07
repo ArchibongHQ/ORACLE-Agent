@@ -195,7 +195,13 @@ export type {
   V3Routing,
   V3Skip,
 } from "./marketsV3/feedDictionary.js";
-export { isSkip, parseSpecifier, routeCoverage, routeMarket } from "./marketsV3/feedDictionary.js";
+export {
+  computeTailMarkets,
+  isSkip,
+  parseSpecifier,
+  routeCoverage,
+  routeMarket,
+} from "./marketsV3/feedDictionary.js";
 export type { ResultProbs } from "./marketsV3/grid.js";
 export {
   buildV3Grid,

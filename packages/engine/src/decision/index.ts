@@ -24,8 +24,10 @@ export interface DecisionResult {
   shadow?: DecisionShadow;
   /** The eligible-bets list actually used for the arbiter + downstream gates.
    *  Only set (and widened by one synthetic EVMarket) when the all-markets LLM
-   *  executor tier (Q4) supplied the draft — absent otherwise, so callers should
-   *  fall back to their own input eligibleBets when this is undefined. */
+   *  executor tier supplied a validated candidate — either as the draft outright
+   *  ("full" scope) or spliced in alongside the existing candidates without
+   *  forcing the draft ("unmapped" scope, PR-23) — absent otherwise, so callers
+   *  should fall back to their own input eligibleBets when this is undefined. */
   eligibleBets?: EVMarket[];
 }
 
@@ -444,7 +446,11 @@ export async function decide(
   ctx?: DecisionContext,
   config?: Pick<
     OracleConfig,
-    "claudeApiKey" | "geminiApiKey" | "openrouterApiKey" | "enableLlmMarketExecutor"
+    | "claudeApiKey"
+    | "geminiApiKey"
+    | "openrouterApiKey"
+    | "enableLlmMarketExecutor"
+    | "llmExecutorScope"
   >,
   forceDeterministic = false,
   marketExecutorRisk?: MarketExecutorRiskParams,
@@ -462,13 +468,25 @@ export async function decide(
   // (forceDeterministic) or by posture A skipping the draft cascade when v3 supplied
   // the candidate set.
   const useDeterministicDraft = forceDeterministic || opts.skipDraftLlm === true;
+  // PR-23: the executor's own gate must NOT inherit skipDraftLlm under
+  // "unmapped" scope. batch/index.ts sets skipDraftLlm=true precisely when
+  // v3 supplied candidates (PR-8 posture A, cost optimization on the PAID
+  // draft cascade) — which is EXACTLY when unmapped-scope's tail sweep is
+  // meant to run. Only forceDeterministic (this fixture isn't llmEligible —
+  // the plan's own "skip when tail empty or !llmEligible" rule) gates the
+  // executor in unmapped scope. "full"/legacy scope is unchanged: both
+  // forceDeterministic and skipDraftLlm block it, since a second
+  // full-catalogue LLM pass is pure waste whenever the draft is already
+  // being forced deterministic for ANY reason.
+  const executorGateOpen =
+    config?.llmExecutorScope === "unmapped" ? !forceDeterministic : !useDeterministicDraft;
 
   // Q4 (owner-directed): when on, REPLACES the eligibleBets-constrained cascade
   // below for this fixture — an LLM agent reasons over the full allMarkets
   // catalogue instead of being limited to the ~9 priced families. Fail-open: any
   // missing data/call/parse/validation failure leaves draft unset and falls
   // through to the normal cascade exactly as if the flag were off.
-  if (config?.enableLlmMarketExecutor && ctx && !useDeterministicDraft && marketExecutorRisk) {
+  if (config?.enableLlmMarketExecutor && ctx && executorGateOpen && marketExecutorRisk) {
     const executed = await runAllMarketsLlmExecutor(ctx, marketExecutorRisk);
     if (executed) {
       // Splice the executor's pick into the eligible set so the arbiter (which
@@ -478,11 +496,22 @@ export async function decide(
       // Exposed back via DecisionResult.eligibleBets so callers (batch/index.ts)
       // use the SAME widened list for their own post-decide() gates/reporting.
       effectiveEligible = [executed.market, ...eligibleBets];
-      draft = {
-        decision: executed.decision,
-        replay: executed.replay,
-        eligibleBets: effectiveEligible,
-      };
+      // PR-23: "full" scope (config.llmExecutorScope undefined or "full" —
+      // the pre-PR-23 behavior, unchanged) makes the executor's pick the
+      // draft outright. "unmapped" scope only SPLICES it into
+      // effectiveEligible above — draft stays unset here, so it falls
+      // through to decideInner's normal cascade below, which now sees the
+      // widened pool and picks whichever candidate (v3's or the executor's)
+      // actually ranks best by EV, same rule everything else in this
+      // pipeline already uses. The arbiter (further below) reviews the same
+      // widened list either way.
+      if (config.llmExecutorScope !== "unmapped") {
+        draft = {
+          decision: executed.decision,
+          replay: executed.replay,
+          eligibleBets: effectiveEligible,
+        };
+      }
     }
   }
 
@@ -494,6 +523,16 @@ export async function decide(
   // arbiter LLM cost (previously every fixture with candidates did).
   if (!opts.skipArbiter && ctx && effectiveEligible.length) {
     result = await arbitrate(effectiveEligible, ctx, draft);
+  }
+  // PR-23: neither decideInner() nor arbitrate() set eligibleBets themselves —
+  // only the executor-direct-draft branch above does. Under "unmapped" scope
+  // (splice, not draft) that branch never runs, so without this the widened
+  // list would silently vanish before reaching callers (batch/index.ts's
+  // effectiveEligible = executedEligible ?? eligible). effectiveEligible !==
+  // eligibleBets (reference check) is only true when the executor actually
+  // spliced something in, so this is a no-op whenever it didn't.
+  if (result.eligibleBets === undefined && effectiveEligible !== eligibleBets) {
+    result = { ...result, eligibleBets: effectiveEligible };
   }
 
   if (!ctx || draft.replay === null || !config?.openrouterApiKey) return result;

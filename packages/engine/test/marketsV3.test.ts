@@ -10,6 +10,7 @@ import {
   CLASS_GATE,
   CLASS_GATE_HEIGHTENED,
   classifyMarket,
+  computeTailMarkets,
   deriveDualSplit,
   EMPIRICAL_BLEND_W,
   gateAllMarkets,
@@ -784,6 +785,37 @@ describe("feedDictionary routing (§0.2)", () => {
     expect(cov.unrouted?.["id:999997"]).toBe(1);
     expect(cov.unrouted?.["1st Half Correct Score"]).toBe(1);
     expect(cov.unrouted?.["Over/Under - Early Goals"]).toBe(1);
+  });
+
+  describe("computeTailMarkets (PR-23)", () => {
+    it("keeps only no-grid-model and uncatalogued entries — the same recoverable tail routeCoverage.unrouted tallies", () => {
+      const uncatalogued = entry({ id: "999999", name: "Some Uncatalogued Market" });
+      const noGridModel = entry({ id: "45", name: "1st Half Correct Score" }); // half correct_score
+      const entries = [
+        entry({ id: "1", name: "1X2" }), // plain-1x2 — principled skip, excluded
+        uncatalogued,
+        noGridModel,
+        entry({ id: "18", name: "Over/Under - Early Goals", specifier: "minsnr=10" }), // bad-specifier, excluded
+        entry({ id: "18", name: "Over/Under", specifier: "total=2.5" }), // routed, excluded
+        entry({ id: "40", name: "Anytime Goalscorer" }), // player-market, excluded
+      ];
+
+      const tail = computeTailMarkets(entries);
+
+      expect(tail).toEqual([uncatalogued, noGridModel]);
+    });
+
+    it("returns an empty array (not an error) when nothing in the catalogue has a recoverable tail reason", () => {
+      const entries = [
+        entry({ id: "1", name: "1X2" }),
+        entry({ id: "18", name: "Over/Under", specifier: "total=2.5" }),
+      ];
+      expect(computeTailMarkets(entries)).toEqual([]);
+    });
+
+    it("returns an empty array for an empty catalogue", () => {
+      expect(computeTailMarkets([])).toEqual([]);
+    });
   });
 });
 

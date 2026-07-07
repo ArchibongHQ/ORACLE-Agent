@@ -211,7 +211,22 @@ export interface OracleConfig {
   // Concurrency is hardware-aware locally (computeMarketExecutorConcurrency) and
   // scales to ~1 agent per fixture on VPS, where it also ignores costCeilingUsd
   // (uncapped spend on VPS is an explicit owner choice, not an oversight).
+  // Derived from llmExecutorScope below (true whenever scope !== "off") —
+  // kept as its own field since most call sites only ever need the boolean.
   enableLlmMarketExecutor?: boolean;
+  // PR-23: tri-state scope for the executor above, parsed from the SAME
+  // ENABLE_LLM_MARKET_EXECUTOR env var ("true"⇒"full", "unmapped"⇒"unmapped",
+  // anything else⇒"off"). "full" is the pre-PR-23 behavior verbatim (executor
+  // reasons over the ENTIRE catalogue and its pick becomes the draft
+  // outright — batch/index.ts still demotes it to off when v3 supplied
+  // candidates, since a second full-catalogue pass over an already-priced
+  // fixture is pure waste). "unmapped" is new: batch/index.ts does NOT
+  // demote it when v3 ran — instead it narrows what the executor sees to
+  // just this fixture's recoverable skip-tail (computeTailMarkets in
+  // feedDictionary.ts), and decide() only SPLICES a validated pick into
+  // effectiveEligible rather than forcing it to be the draft, so the
+  // existing EV-ranked cascade/arbiter decides whether it actually wins.
+  llmExecutorScope?: "full" | "unmapped" | "off";
   // goals-market-analysis-prompt-v3 gates applied to goals-family markets
   // (Goals O/U, Team Total, BTTS) in the MAIN batch's scanMarkets admission —
   // the noise gate and the §4.4 implausible-edge cap, without the goals-batch

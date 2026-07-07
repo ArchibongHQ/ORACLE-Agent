@@ -358,3 +358,21 @@ export function routeCoverage(entries: AllMarketEntry[]): RouteCoverage {
   }
   return { total: entries.length, routed, byEngine, skipped, unrouted };
 }
+
+/** PR-23: the recoverable skip-tail entries for one fixture's catalogue —
+ *  markets that had no engine model at all (no-grid-model) or weren't in the
+ *  compiled catalog when routeMarket() ran (uncatalogued). This is the exact
+ *  set ENABLE_LLM_MARKET_EXECUTOR=unmapped sweeps with a per-fixture LLM
+ *  call, instead of re-analyzing the whole catalogue v3 already priced.
+ *  Player props, settlement variants, plain 1X2, non-goal metrics, and
+ *  dormant corners/cards/shots shapes are EXCLUDED by construction — they
+ *  were skipped for a documented reason, not a coverage gap (see
+ *  routeMarket()'s skip-reason taxonomy). bad-specifier is also excluded:
+ *  that means the line itself didn't parse, not "no model exists for this
+ *  shape" — feeding malformed data to an LLM sweep isn't the same problem. */
+export function computeTailMarkets(allMarkets: AllMarketEntry[]): AllMarketEntry[] {
+  return allMarkets.filter((entry) => {
+    const r = routeMarket(entry);
+    return isSkip(r) && (r.reason === "no-grid-model" || r.reason === "uncatalogued");
+  });
+}
