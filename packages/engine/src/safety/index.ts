@@ -9,6 +9,13 @@ export interface ConvergenceTier {
   max: number;
   label: "APEX" | "PRIME" | "VIABLE" | "MARGINAL" | "NOISE";
   kelly: string;
+  /** [PR-17] Numeric fraction of the already-computed optimizedKelly stake
+   *  this tier actually deploys — the machine-readable counterpart to
+   *  `kelly`'s descriptive text ("Half Kelly" etc.), which execution/index.ts
+   *  now applies to evMarkets.stake/stakeAmt instead of only ever describing
+   *  it. Kept on the same tier entry as `kelly` (not a separately-maintained
+   *  parallel table) so the text and the number can never drift apart. */
+  kellyMultiplier: number;
 }
 
 export interface SignalMap extends Record<string, number | string | undefined> {
@@ -81,11 +88,23 @@ export interface AntiSycophancyResult {
 // ── ConvergenceScorer ─────────────────────────────────────────────────────────
 
 const TIERS: ConvergenceTier[] = [
-  { min: 18, max: 23, label: "APEX", kelly: "Full Kelly — maximum deployment" },
-  { min: 13, max: 17, label: "PRIME", kelly: "Full Kelly — strong deployment" },
-  { min: 8, max: 12, label: "VIABLE", kelly: "Half Kelly — proceed with discipline" },
-  { min: 4, max: 7, label: "MARGINAL", kelly: "Quarter Kelly or pass" },
-  { min: 0, max: 3, label: "NOISE", kelly: "Do not bet — signal too thin" },
+  { min: 18, max: 23, label: "APEX", kelly: "Full Kelly — maximum deployment", kellyMultiplier: 1 },
+  {
+    min: 13,
+    max: 17,
+    label: "PRIME",
+    kelly: "Full Kelly — strong deployment",
+    kellyMultiplier: 1,
+  },
+  {
+    min: 8,
+    max: 12,
+    label: "VIABLE",
+    kelly: "Half Kelly — proceed with discipline",
+    kellyMultiplier: 0.5,
+  },
+  { min: 4, max: 7, label: "MARGINAL", kelly: "Quarter Kelly or pass", kellyMultiplier: 0.25 },
+  { min: 0, max: 3, label: "NOISE", kelly: "Do not bet — signal too thin", kellyMultiplier: 0 },
 ];
 
 export class ConvergenceScorer {

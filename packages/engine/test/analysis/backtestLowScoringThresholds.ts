@@ -98,8 +98,10 @@ export interface ThresholdGridResult {
 export interface BacktestReport {
   totalJoinedFixtures: number;
   /** Minimum classified-LOW_SCORING sample size before a grid row's hit-rate is
-   *  treated as meaningful — mirrors this codebase's existing convention
-   *  (isotonicCalibrateFp's own "no-op if <30 resolved" gate). */
+   *  treated as meaningful — an investigative threshold independent of (not
+   *  kept in sync with) isotonicCalibrateFp's own "no-op if <300 resolved"
+   *  gate (PR-16 raised that one from 30; this Q5 tool's own floor is
+   *  deliberately unchanged, out of that PR's scope). */
   minSampleSize: number;
   hasSufficientData: boolean;
   grid: ThresholdGridResult[];

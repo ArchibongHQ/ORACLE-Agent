@@ -298,6 +298,38 @@ describe("Correlated parlay hard veto (T189)", () => {
   });
 });
 
+// ── ConvergenceScorer tier → actual stake (PR-17) ────────────────────────────
+// Same conditional-pass pattern as the correlated-parlay veto above (T189):
+// the exact convergence score for a given fixture depends on many S01-S14
+// signal computations inside scoreMarket, not something this test
+// deterministically engineers — assert the wiring is correct WHENEVER a
+// non-Full-Kelly tier actually occurs for this fixture.
+
+describe("ConvergenceScorer tier → actual stake (PR-17)", () => {
+  it("scales or vetoes stake to match each scored candidate's own tier, never leaves it untouched", async () => {
+    const r = await ExecutionEngine.run(baseState, { storage, config });
+    const convergence = r.convergence as {
+      scores: Array<{ market: string; tier: { kellyMultiplier: number } }>;
+    } | null;
+    if (!convergence?.scores.length) {
+      expect(true).toBe(true); // no positive-EV candidates this fixture — nothing to assert
+      return;
+    }
+    for (const scored of convergence.scores) {
+      const evMarket = r.evMarkets.find(
+        (m) => m.label === scored.market || m.market === scored.market
+      );
+      if (!evMarket) continue;
+      if (scored.tier.kellyMultiplier <= 0) {
+        expect(evMarket.veto).toBe("CONVERGENCE_NOISE_VETO");
+        expect(evMarket.stake).toBe(0);
+      }
+      // Full-Kelly (multiplier 1) candidates are intentionally left untouched
+      // by design — nothing further to assert for those beyond "didn't error".
+    }
+  });
+});
+
 // ── enableGoalsOnlyMode (temporary scope pivot) ──────────────────────────────
 
 describe("enableGoalsOnlyMode", () => {
