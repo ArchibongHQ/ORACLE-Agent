@@ -263,6 +263,11 @@ export interface OracleConfig {
   // enableMarketsV3 === "on". Default true. Set ORACLE_MARKETS_V3_OUTPUTS=off
   // to keep the exact legacy trim (regression pin).
   marketsV3Outputs?: boolean;
+  // PR-20: slate-wide route-coverage rollup (RunManifest.marketCoverage +
+  // BatchSummary.marketCoverageNote) — pure telemetry, never gates a pick.
+  // Default true. ORACLE_MARKETS_COVERAGE=off skips the rollup computation
+  // entirely (byte-identical manifest/summary to pre-PR-20).
+  marketsCoverageNote?: boolean;
   // PR-6: corners/cards routing — Over/Under total-line markets priced via the
   // NB (corners) / Poisson (cards) modules when both odds and season stats
   // exist. Default true. ORACLE_V3_CORNERS_CARDS=off withholds the raw stats
@@ -618,6 +623,17 @@ export interface RunManifest {
     halted: boolean;
   };
   errors: AgentError[];
+  /** PR-20: slate-wide route-coverage rollup (packages/runtime's
+   *  rollupCoverage) — additive/optional so existing manifest.json readers and
+   *  the storage-persisted history are unaffected. Absent when v3 didn't run
+   *  or ORACLE_MARKETS_COVERAGE=off. */
+  marketCoverage?: {
+    total: number;
+    routed: number;
+    priced: number;
+    gatePassed: number;
+    topUnrouted: Array<{ name: string; count: number }>;
+  };
 }
 
 /** Output of ExecutionEngine.run(). Index signature allows spread of fixture fields. */

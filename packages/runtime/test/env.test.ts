@@ -89,6 +89,17 @@ describe("buildConfig marketsV3Outputs", () => {
   });
 });
 
+describe("buildConfig marketsCoverageNote (PR-20)", () => {
+  it("defaults to true (route-coverage telemetry on)", () => {
+    expect(buildConfig({}).marketsCoverageNote).toBe(true);
+  });
+
+  it("respects ORACLE_MARKETS_COVERAGE=off (case-insensitive) as the rollback", () => {
+    expect(buildConfig({ ORACLE_MARKETS_COVERAGE: "off" }).marketsCoverageNote).toBe(false);
+    expect(buildConfig({ ORACLE_MARKETS_COVERAGE: "OFF" }).marketsCoverageNote).toBe(false);
+  });
+});
+
 describe("buildConfig v3CornersCards (PR-6)", () => {
   it("defaults to true (corners/cards O/U pricing on)", () => {
     expect(buildConfig({}).v3CornersCards).toBe(true);

@@ -19,7 +19,6 @@
  *  dispatch below). That two-file mutual import is intentional; see
  *  goalsV3Pipeline.ts's header comment for why it's safe. */
 
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BatchResult, RunManifest } from "@oracle/engine";
@@ -55,23 +54,23 @@ import {
   ROOT,
   STORE_PATH,
 } from "./workerContext.js";
-import { mergeBatchChunks, watDateString, writeHeartbeat } from "./workerUtils.js";
+import { mergeBatchChunks, runPythonScript, watDateString, writeHeartbeat } from "./workerUtils.js";
 
 // ── Fixture scraper ───────────────────────────────────────────────────────────
 
 function scrapeFixtures(): Promise<number> {
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "scrape_fixtures.py");
-  return new Promise((resolve) => {
-    execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
+  return runPythonScript(python, script, [], { cwd: ROOT, retryOnNetworkError: true }).then(
+    ({ err, stdout, stderr }) => {
       if (stdout) process.stdout.write(stdout);
       if (stderr) process.stderr.write(stderr);
       if (err) process.stderr.write(`scrape_fixtures error: ${err.message}\n`);
       // Parse sportybet count from playwright summary line, e.g. "sportybet:12"
       const m = stdout.match(/sportybet:(\d+)/);
-      resolve(m ? parseInt(m[1], 10) : 0);
-    });
-  });
+      return m ? parseInt(m[1], 10) : 0;
+    }
+  );
 }
 
 // ── SportyBet streak tracker ──────────────────────────────────────────────────
@@ -169,6 +168,13 @@ export async function sendGoalsSlip(
   logPrefix: string,
   v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number },
   sanityNote?: string
+  // PR-20's marketCoverageNote (all-markets route-coverage telemetry) is
+  // intentionally NOT threaded through here — RunManifest.marketCoverage is
+  // still computed for goals runs (same shared runAnalysis path), but the
+  // stat itself (900+ scraped markets routed/priced/gate-passed) describes
+  // the all-markets catalogue goals-only mode deliberately narrows away
+  // from, so it isn't a useful reader-facing line on a goals-only slip. No
+  // dailyBatch.ts-style Telegram surface is planned for it here.
 ): Promise<BatchSummary> {
   // v3 legs carry mp = model probability (unchanged) but ActionablePick.edge is
   // what formatSummaryText renders as the edge/tier line — feed it the ADJUSTED

@@ -28,6 +28,7 @@ import {
   type SettlementFamilyBreakdown,
 } from "./calibrationFeed.js";
 import { findFixtureEnrichmentHtml, loadFixtureEnrichmentContext } from "./dailyFixtureReport.js";
+import { buildManifestMarketCoverage } from "./marketsV3/slateOutputs.js";
 import { renderReport, writeReport } from "./report.js";
 import type { ResolveResult } from "./resolveFixtures.js";
 import { resolveRecords, resolveUnmatchedViaWebSearch } from "./resolveFixtures.js";
@@ -284,6 +285,11 @@ export async function runAnalysis(
     } satisfies FixtureOutcome;
   });
 
+  // PR-20: slate-wide route-coverage rollup — telemetry only, additive to the
+  // manifest. ORACLE_MARKETS_COVERAGE=off (config.marketsCoverageNote===false)
+  // skips the computation entirely (byte-identical manifest to pre-PR-20).
+  const marketCoverage = buildManifestMarketCoverage(batch.jobs, config.marketsCoverageNote);
+
   const manifest: RunManifest = {
     runId: batch.runId,
     schemaVersion: RUN_MANIFEST_SCHEMA_VERSION,
@@ -301,6 +307,7 @@ export async function runAnalysis(
     },
     cost: batch.cost,
     errors: batch.errors,
+    ...(marketCoverage ? { marketCoverage } : {}),
   };
 
   if (persist) {

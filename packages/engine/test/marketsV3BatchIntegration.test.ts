@@ -591,6 +591,60 @@ describe("batch/index.ts — v3Best/v3AssessmentStats projection (PR-5b)", () =>
     const success = result.jobs[0] as FixtureJobSuccess;
     expect(success.v3Best).toBeUndefined();
     expect(success.v3AssessmentStats).toBeUndefined();
+    expect(success.v3Coverage).toBeUndefined();
+  });
+
+  it("carries the fixture's full v3Coverage (PR-20), same populate-whenever-v3-ran condition as v3Best", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const coverage = {
+      total: 42,
+      routed: 30,
+      byEngine: {
+        totals: 20,
+        result: 10,
+        shape: 0,
+        half: 0,
+        time: 0,
+        exotics: 0,
+        corners: 0,
+        cards: 0,
+      },
+      skipped: {
+        "player-market": 5,
+        "plain-1x2": 3,
+        "non-goal-metric": 2,
+        "corners-dormant": 1,
+        "cards-dormant": 1,
+        "settlement-variant": 0,
+        "no-grid-model": 0,
+        uncatalogued: 0,
+        "bad-specifier": 0,
+      },
+      unrouted: { "Weird New Market": 2 },
+    };
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage,
+      assessments: [],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Coverage).toEqual(coverage);
   });
 });
 

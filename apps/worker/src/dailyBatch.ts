@@ -6,7 +6,6 @@
  *  actionable slate. index.ts wires runDailyBatch into cron.schedule(...),
  *  the daily-batch back-online trigger, and the --run-now one-shot flag. */
 
-import { execFile } from "node:child_process";
 import { join } from "node:path";
 import type { BatchResult, FixtureJobSuccess, RunManifest } from "@oracle/engine";
 import { buildNotifiers, notifyAll, summarizeBatch } from "@oracle/notify";
@@ -16,10 +15,12 @@ import {
   curateActionableByV3Outputs,
   fetchTodaysFixtures,
   findSidecarDetail,
+  formatMarketCoverageNote,
   formatSlateGateLog,
   loadSportyBetIndex,
   ORACLE_PRIORITY_LEAGUES,
   prefilterMarketsV3Jobs,
+  rollupCoverage,
   runAnalysis,
 } from "@oracle/runtime";
 import { MemoryAdapter } from "@oracle/storage";
@@ -30,6 +31,7 @@ import {
   isLakeFreshForToday,
   logMemoryUsage,
   mergeBatchChunks,
+  runPythonScript,
   watDateString,
   writeHeartbeat,
 } from "./workerUtils.js";
@@ -42,13 +44,10 @@ function fetchLineups(): Promise<void> {
   if (!config.apiFootballKey) return Promise.resolve();
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "fetch_lineups.py");
-  return new Promise((resolve) => {
-    execFile(python, [script], { cwd: ROOT }, (err, stdout, stderr) => {
-      if (stdout) process.stdout.write(stdout);
-      if (stderr) process.stderr.write(stderr);
-      if (err) process.stderr.write(`fetch_lineups error: ${err.message}\n`);
-      resolve(); // lineup fetch failure must never abort the batch
-    });
+  return runPythonScript(python, script, [], { cwd: ROOT }).then(({ err, stdout, stderr }) => {
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    if (err) process.stderr.write(`fetch_lineups error: ${err.message}\n`);
   });
 }
 
@@ -217,6 +216,18 @@ export async function runDailyBatch(
       summary.actionableCount = summary.actionable.length;
     }
     summary.sanityNote = v3Outputs.sanityLine;
+
+    // PR-20: slate-wide route-coverage rollup — reports the recoverable skip
+    // tail's size, never suppresses picks. ORACLE_MARKETS_COVERAGE=off skips
+    // the computation entirely (byte-identical to pre-PR-20 otherwise).
+    if (config.marketsCoverageNote !== false) {
+      const coverage = rollupCoverage(successJobs);
+      if (coverage) {
+        const note = formatMarketCoverageNote(coverage);
+        process.stdout.write(`[markets-v3] ${note}\n`);
+        summary.marketCoverageNote = note;
+      }
+    }
   } else if (summary.actionable.length > 39) {
     // Legacy trim — BYTE-IDENTICAL to pre-PR-5b. Only path when v3 outputs
     // are off or v3 isn't live ("on") — this is the regression pin.

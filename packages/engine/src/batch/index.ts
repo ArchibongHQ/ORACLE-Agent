@@ -18,6 +18,7 @@ import {
   type V3MarketOutcomeAssessment,
 } from "../marketsV3/analyzeFixtureMarkets.js";
 import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
+import type { RouteCoverage } from "../marketsV3/feedDictionary.js";
 import type { V3OutputCandidate } from "../marketsV3/outputs.js";
 import type {
   AgentError,
@@ -287,6 +288,11 @@ export interface FixtureJobSuccess {
    *  assessment for this fixture (done/capped/discarded alike) — slate sanity
    *  check input (packages/marketsV3/sanity.ts's slateSanityChecks). */
   v3AssessmentStats?: V3AssessmentStat[];
+  /** PR-20: this fixture's full route-coverage tally (routed/skipped/unrouted
+   *  by engine and reason), present whenever v3 ran (same condition as
+   *  v3Best/v3AssessmentStats) — feeds the slate-level rollupCoverage()
+   *  (packages/runtime/src/marketsV3/slateOutputs.ts). */
+  v3Coverage?: RouteCoverage;
 }
 
 export interface FixtureJobError {
@@ -400,19 +406,34 @@ function makeAnalysisId(
   return `${fixtureId}:${rankingMode}:${calibrationSnapshotId}`;
 }
 
-/** Retries fn up to maxRetries times on RATE_LIMITED errors with exponential backoff. */
-async function withRetry<T>(
+/** [PR-10, generalized retry] Matches transient DNS/transport failures — the
+ *  same failure class observed for both Telegram sends and SportyBet scrapes
+ *  (host-wide intermittent DNS; see oracle_dns_and_llm_session_limit_investigation).
+ *  A delayed retry helps here (the resolver gets time to recover); an
+ *  immediate alternate-transport fallback alone does not. */
+export function isRetriableNetworkError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(msg);
+}
+
+/** Retries fn up to maxRetries times with exponential backoff, on whichever
+ *  errors shouldRetry accepts. Defaults to the original RATE_LIMITED-only
+ *  predicate so the existing call site below is unchanged; pass a different
+ *  predicate (e.g. isRetriableNetworkError) to reuse this for other transient
+ *  failure classes instead of writing a bespoke retry wrapper per caller. */
+export async function withRetry<T>(
   fn: () => Promise<T>,
   maxRetries: number,
-  backoffMs: (attempt: number) => number
+  backoffMs: (attempt: number) => number,
+  shouldRetry: (err: unknown) => boolean = (err) =>
+    classifyError(err instanceof Error ? err.message : String(err)) === "RATE_LIMITED"
 ): Promise<T> {
   let attempt = 0;
   while (true) {
     try {
       return await fn();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (classifyError(msg) !== "RATE_LIMITED" || attempt >= maxRetries) throw err;
+      if (!shouldRetry(err) || attempt >= maxRetries) throw err;
       await new Promise<void>((r) => setTimeout(r, backoffMs(attempt)));
       attempt++;
     }
@@ -579,6 +600,7 @@ export async function runBatch(
           let usedV3 = false;
           let v3Best: V3OutputCandidate | undefined;
           let v3AssessmentStats: V3AssessmentStat[] | undefined;
+          let v3Coverage: RouteCoverage | undefined;
           if (config.enableMarketsV3 && config.enableMarketsV3 !== "off") {
             const v3Input = buildV3Input(job, state, allMarkets, config);
             const v3Result = v3Input ? analyzeFixtureMarketsV3(v3Input) : null;
@@ -600,6 +622,7 @@ export async function runBatch(
             // transparency is free; the WORKER decides whether to ACT on
             // v3Best/v3AssessmentStats (gated there on enableMarketsV3 === "on").
             if (v3Result) {
+              v3Coverage = v3Result.coverage;
               const bestAssessment = v3Result.assessments
                 .filter((a) => a.outcome === "done")
                 .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
@@ -839,6 +862,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             agentVerification: filteredResult.agentVerification,
             v3Best,
             v3AssessmentStats,
+            v3Coverage,
           };
         },
         maxRetries,
