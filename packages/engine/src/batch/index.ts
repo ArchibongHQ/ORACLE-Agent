@@ -378,7 +378,7 @@ function classifyError(msg: string): AgentErrorCode {
   return "INTERNAL";
 }
 
-function makeFixtureId(home: string, away: string, kickoff: string): string {
+export function makeFixtureId(home: string, away: string, kickoff: string): string {
   const slug = (s: string) =>
     s
       .toLowerCase()

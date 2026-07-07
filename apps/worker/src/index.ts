@@ -15,6 +15,7 @@ import {
   analyzeGoalsFixtureV3,
   type BatchJobResult,
   type BatchResult,
+  type ClosingOddsSnapshot,
   type FixtureJobSuccess,
   formatSanityFlags,
   type GoalsCrossCheckFn,
@@ -52,6 +53,7 @@ import {
   enrichWithNewsIntel,
   fetchTodaysFixtures,
   findSidecarDetail,
+  findSportyBetEventId,
   fixturesPartitionExists,
   formatCalibrationMetrics,
   formatSettlementBreakdown,
@@ -82,9 +84,10 @@ import {
   sportyEventToFixtureJob,
   writeGoalsArtifact,
 } from "@oracle/runtime";
-import { MemoryAdapter } from "@oracle/storage";
+import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
 import cron from "node-cron";
 import { awaitAcquireOrTimeout, trackAcquireJob } from "./acquireChain.js";
+import { type SweepCandidate, selectDueFixtures } from "./closingOddsSweep.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dir, "../../..");
@@ -978,6 +981,116 @@ function runFotmobXgRefresh(): Promise<void> {
       resolve(); // best-effort — never rejects, matches every other fetch tier here
     });
   });
+}
+
+// ── T-30m closing-odds sweep (every 5 min, PR-8a) ────────────────────────────
+// Persisted-state, periodically-swept design (not an in-memory setTimeout per
+// fixture): restart-safe by construction — every tick re-reads AnalysisRecords
+// + closingOddsSnapshots from storage and re-derives "who's due" fresh, so a
+// Servy-triggered restart mid-window just means the next tick (<=5min later)
+// still catches any fixture still inside the 25-35min band. See the
+// checkCrashLoopOnStartup comment above for why in-memory timers can't be
+// trusted on this box (11 restarts observed in ~13min once).
+
+/** Odds-only, no-Playwright per-fixture re-scrape via closing_odds_snapshot.py
+ *  — one batched process invocation per tick covering every due fixture, not
+ *  one spawn per fixture. Same non-fatal execFile pattern as the other fetch
+ *  tiers: a failure degrades to an empty result, never throws. */
+function fetchClosingOddsSnapshot(
+  eventIds: string[]
+): Promise<Record<string, Record<string, unknown>>> {
+  if (eventIds.length === 0) return Promise.resolve({});
+  const python = PYTHON_BIN;
+  const script = join(ROOT, "tools", "closing_odds_snapshot.py");
+  return new Promise((resolve) => {
+    execFile(python, [script, ...eventIds], { cwd: ROOT }, (err, stdout, stderr) => {
+      if (stderr) process.stderr.write(stderr);
+      if (err) {
+        process.stderr.write(`[closing-odds] snapshot fetch FAILED — ${err.message}\n`);
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout.trim()) as Record<string, Record<string, unknown>>);
+      } catch {
+        process.stderr.write("[closing-odds] snapshot fetch: unparseable stdout\n");
+        resolve({});
+      }
+    });
+  });
+}
+
+/** One sweep tick: find today's/yesterday's analysed fixtures currently 25-35
+ *  min from kickoff that don't already have a snapshot, resolve their
+ *  SportyBet eventId via today's sidecar index, batch-fetch odds-only, and
+ *  upsert the results keyed by fixtureId. Never throws — every step degrades
+ *  to "try again next tick" rather than aborting the cron daemon. */
+async function closingOddsSweepJob(): Promise<void> {
+  const storage = new MemoryAdapter(STORE_PATH);
+  const today = watDateString();
+  const yesterday = watYesterdayString();
+
+  const allRecords =
+    (await storage.get<
+      Array<{ fixtureId: string; home: string; away: string; kickoff: string; analysedAt: string }>
+    >(STORAGE_KEYS.analysisRecords)) ?? [];
+  // Coarse candidate narrowing only (today/yesterday tolerant, covers a kickoff
+  // just after WAT midnight relative to when the record was analysed the prior
+  // WAT day) — the real gate is selectDueFixtures' epoch-instant window check.
+  const candidates: SweepCandidate[] = allRecords.filter(
+    (r) => r.kickoff.startsWith(today) || r.kickoff.startsWith(yesterday)
+  );
+  if (candidates.length === 0) return;
+
+  const existingSnapshots =
+    (await storage.get<ClosingOddsSnapshot[]>(STORAGE_KEYS.closingOddsSnapshots)) ?? [];
+  const alreadySnapshotted = new Set(existingSnapshots.map((s) => s.fixtureId));
+
+  const due = selectDueFixtures(candidates, alreadySnapshotted, new Date());
+  if (due.length === 0) return;
+
+  const sportyIndex = await loadSportyBetIndex(today);
+  if (!sportyIndex) {
+    process.stdout.write("[closing-odds] sportybet index unavailable this tick — skipping\n");
+    return;
+  }
+
+  const withEventId: Array<{ fixtureId: string; eventId: string; kickoff: string }> = [];
+  for (const f of due) {
+    const eventId = findSportyBetEventId(sportyIndex, f.home, f.away);
+    if (eventId) withEventId.push({ fixtureId: f.fixtureId, eventId, kickoff: f.kickoff });
+  }
+  if (withEventId.length === 0) {
+    process.stdout.write(
+      `[closing-odds] ${due.length} fixture(s) due, none had a resolvable eventId\n`
+    );
+    return;
+  }
+
+  const results = await fetchClosingOddsSnapshot(withEventId.map((f) => f.eventId));
+  const now = new Date().toISOString();
+  const snapshots: ClosingOddsSnapshot[] = [];
+  for (const f of withEventId) {
+    const odds = results[f.eventId];
+    if (!odds) continue;
+    snapshots.push({
+      fixtureId: f.fixtureId,
+      eventId: f.eventId,
+      kickoff: f.kickoff,
+      snapshotAt: now,
+      odds: odds as ClosingOddsSnapshot["odds"],
+    });
+  }
+  if (snapshots.length === 0) return;
+
+  await storage.upsertBulk(
+    STORAGE_KEYS.closingOddsSnapshots,
+    snapshots as unknown as Record<string, unknown>[],
+    "fixtureId"
+  );
+  process.stdout.write(
+    `[closing-odds] snapshotted ${snapshots.length}/${due.length} due fixture(s)\n`
+  );
 }
 
 // ── Daily batch (09:35 WAT) ─────────────────────────────────────────────────
@@ -2235,6 +2348,14 @@ if (!IS_ONE_SHOT) {
   // 9. Bot heartbeat check — every 10 min (its own staleness threshold is
   // 10 min, not the 36h daily-batch threshold, so it needs tighter polling).
   cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness(), { timezone: WAT_TZ });
+
+  // 10. Closing-odds sweep — every 5 min (PR-8a). Timezone pin is a no-op for
+  // this cadence (minutes are timezone-invariant) — kept for consistency with
+  // the hourly/10-min jobs above. Restart-safe: re-derives "who's due" from
+  // storage every tick rather than tracking any in-memory per-fixture timer.
+  cron.schedule("*/5 * * * *", () => logJob("closing-odds-sweep", closingOddsSweepJob), {
+    timezone: WAT_TZ,
+  });
 }
 
 // Graceful shutdown — stop cron schedules so the daemon exits cleanly under SIGINT/SIGTERM.

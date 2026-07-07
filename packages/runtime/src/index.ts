@@ -164,6 +164,7 @@ export type {
 export {
   DEFAULT_MAX_FIXTURES_PER_RUN,
   findSidecarDetail,
+  findSportyBetEventId,
   loadSportyBetIndex,
   ORACLE_PRIORITY_LEAGUES,
   scoreFixture,

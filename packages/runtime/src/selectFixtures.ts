@@ -386,6 +386,25 @@ export function sidecarKey(home: string, away: string): string {
   return `${resolveAlias(home)}|${resolveAlias(away)}`;
 }
 
+/** Resolve a SportyBet/Sportradar eventId for an already-analysed fixture by
+ *  team name (PR-8a) — needed because AnalysisRecord.fixtureId is a
+ *  home::away::kickoff slug (makeFixtureId), not the Sportradar match ID the
+ *  odds-only closing-snapshot endpoint requires. Tries the canonical
+ *  sidecarKey match first, falls back to the alias-aware namesMatch scan for
+ *  edge cases sidecarKey's normalisation doesn't cover — same two-tier
+ *  strategy as findSidecarDetail above. */
+export function findSportyBetEventId(
+  index: Pick<SportyBetIndex, "events">,
+  home: string,
+  away: string
+): string | undefined {
+  const key = sidecarKey(home, away);
+  const exact = index.events.find((e) => sidecarKey(e.home, e.away) === key);
+  if (exact?.eventId) return exact.eventId;
+  const fuzzy = index.events.find((e) => namesMatch(e.home, home) && namesMatch(e.away, away));
+  return fuzzy?.eventId;
+}
+
 /** Look up a fixture's sidecar detail tolerantly. Tries the exact canonical key
  *  first (fast path); on a miss, scans for a key whose two halves both `namesMatch`
  *  the requested teams. This recovers regional-suffix mismatches the canonical key

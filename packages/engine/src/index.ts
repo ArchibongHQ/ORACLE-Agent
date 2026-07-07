@@ -9,7 +9,7 @@ export type {
   V3AssessmentStat,
   V3CrossCheckOutcome,
 } from "./batch/index.js";
-export { parseFixtureList, runBatch } from "./batch/index.js";
+export { makeFixtureId, parseFixtureList, runBatch } from "./batch/index.js";
 export { runPool } from "./batch/pool.js";
 export type {
   BetRecord,
@@ -258,6 +258,8 @@ export type {
   AllMarketEntry,
   AllMarketOutcome,
   AnalysisRecord,
+  ClosingOddsSnapshot,
+  ClosingOddsSnapshotOdds,
   ClvSourceQuality,
   DecisionContext,
   DecisionInput,
@@ -284,6 +286,7 @@ export type {
 } from "./types.js";
 export {
   ANALYSIS_SCHEMA_VERSION,
+  CLOSING_ODDS_SCHEMA_VERSION,
   RESOLUTION_SCHEMA_VERSION,
   RUN_MANIFEST_SCHEMA_VERSION,
 } from "./types.js";

@@ -462,6 +462,51 @@ export interface ResolutionRecord {
   resolvedAt: string; // ISO-8601
 }
 
+/** Odds shape captured by the T-30m closing snapshot (PR-8a) — a curated subset
+ *  of scrape_fixtures.py's _parse_odds() output. Declared independently of
+ *  @oracle/runtime's SportyBetOdds (structurally identical core fields) since
+ *  @oracle/engine must not depend on @oracle/runtime. */
+export interface ClosingOddsSnapshotOdds {
+  "1x2"?: {
+    home?: number | string | null;
+    draw?: number | string | null;
+    away?: number | string | null;
+  } | null;
+  ou15?: { over?: number | string | null; under?: number | string | null } | null;
+  ou25?: { over?: number | string | null; under?: number | string | null } | null;
+  ou35?: { over?: number | string | null; under?: number | string | null } | null;
+  btts?: { yes?: number | string | null; no?: number | string | null } | null;
+  dc?: {
+    "1x"?: number | string | null;
+    "12"?: number | string | null;
+    x2?: number | string | null;
+  } | null;
+  dnb?: { home?: number | string | null; away?: number | string | null } | null;
+  ah?: {
+    line?: number | null;
+    home?: number | string | null;
+    away?: number | string | null;
+  } | null;
+}
+
+/** Increment when ClosingOddsSnapshot shape changes. */
+export const CLOSING_ODDS_SCHEMA_VERSION = 1;
+
+/** T-30m re-snapshot for a fixture ORACLE already analyzed (PR-8a). One entry
+ *  per fixtureId (upserted, not appended — apps/worker/src/closingOddsSweep.ts
+ *  dedupes by fixtureId before the write). Consumed by resolveFixtures.ts (real
+ *  CLV, clvSourceQuality "TICK_LEVEL", and a real steam/sharp-compression
+ *  signal on ResolutionRecord — both computed post-hoc at resolve time, since
+ *  the T-30m snapshot by construction can't exist before ORACLE's decision is
+ *  already made hours earlier). */
+export interface ClosingOddsSnapshot {
+  fixtureId: string; // matches AnalysisRecord.fixtureId exactly (makeFixtureId output)
+  eventId: string; // SportyBet/Sportradar match ID used for the scrape
+  kickoff: string; // ISO-8601, copied from the AnalysisRecord at capture time
+  snapshotAt: string; // ISO-8601, when the scrape actually ran
+  odds: ClosingOddsSnapshotOdds;
+}
+
 /** Input to the LLM decision layer (PRD §6, Appendix B). */
 export interface DecisionInput {
   eligibleBets: EVMarket[];
