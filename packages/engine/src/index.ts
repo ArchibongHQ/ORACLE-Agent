@@ -128,9 +128,19 @@ export {
 } from "./marketsV3/classes.js";
 export { dcCovers, dirOfDesc, lineOfDesc, sideOfDesc } from "./marketsV3/descParse.js";
 export type { V3CardsInput, V3CardsMeans } from "./marketsV3/engines/cards.js";
-export { cardsMeans, priceCardsOutcome } from "./marketsV3/engines/cards.js";
+export {
+  buildCardsGrid,
+  CARDS_GRID_CAP,
+  cardsMeans,
+  priceCardsLikeHandicap,
+  priceCardsLikeRange,
+  priceCardsOutcome,
+  priceCardsVariant,
+} from "./marketsV3/engines/cards.js";
 export type { V3CornersInput, V3CornersMeans } from "./marketsV3/engines/corners.js";
 export {
+  buildCornersGrid,
+  CORNERS_GRID_CAP,
   CORNERS_R_DEFAULT,
   CORNERS_R_MAX,
   CORNERS_R_MIN,
@@ -140,11 +150,16 @@ export {
   nbPMF,
   nbTailOver,
   nbTailUnder,
+  priceCornersLikeHandicap,
+  priceCornersLikeRange,
   priceCornersOutcome,
+  priceCornersVariant,
 } from "./marketsV3/engines/corners.js";
 export { priceExoticsOutcome } from "./marketsV3/engines/exotics.js";
 export { V3_FIRST_HALF_SHARE_DEFAULT } from "./marketsV3/engines/half.js";
 export { priceShapeOutcome } from "./marketsV3/engines/shape.js";
+export type { V3ShotsInput, V3ShotsMeans } from "./marketsV3/engines/shots.js";
+export { priceShotsOutcome, shotsMeans } from "./marketsV3/engines/shots.js";
 export { minuteShare, priceTimeWindow, V3_MINUTE_SHARE_TABLE } from "./marketsV3/engines/time.js";
 export type { ParsedOU } from "./marketsV3/engines/totals.js";
 export { parseOUDesc, priceOU, priceTotalsOutcome } from "./marketsV3/engines/totals.js";

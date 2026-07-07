@@ -7,7 +7,18 @@
  *  Priority lines per the mandate: alt totals O6.5/7.5, U12.5/13.5, team
  *  O2.5 — this module prices any line the feed offers, not just those.
  *
+ *  PR-22: 1X2/handicap/range/odd-even/team-total variants (catalog ids
+ *  162/165/169-172/900300-900301 "Corners 1X2"/"Corner Handicap"/"Corner
+ *  Range"/team ranges/"Odd/Even Corners"/team totals) — built on a joint
+ *  home×away grid (independent NB marginals; no documented correlation term
+ *  for corners the way Dixon-Coles has one for goals) and priced with the
+ *  SAME generic resultProbs/winPushSplit/sumWhere helpers the goals result
+ *  engine already uses, since those are Matrix-generic, not goals-specific.
+ *
  *  Pure math, no I/O. */
+
+import type { Matrix } from "../../types.js";
+import { resultProbs, sumWhere, winPushSplit } from "../grid.js";
 
 export const CORNERS_R_MIN = 8;
 export const CORNERS_R_MAX = 12;
@@ -114,4 +125,114 @@ export function priceCornersOutcome(
   const line = Number.parseFloat(m[2]!);
   const mean = side === "home" ? means.home : side === "away" ? means.away : means.total;
   return m[1] === "over" ? nbTailOver(line, mean, means.r) : nbTailUnder(line, mean, means.r);
+}
+
+// ── PR-22: joint grid + 1X2/handicap/range/odd-even variants ────────────────
+
+/** Generous — corner counts essentially never reach this; the tail bucket
+ *  (index CORNERS_GRID_CAP) folds in whatever residual mass remains so each
+ *  marginal still sums to 1. */
+export const CORNERS_GRID_CAP = 25;
+
+/** Independent NB(home) × NB(away) joint grid. Corners have no documented
+ *  low-count correlation correction analogous to Dixon-Coles for goals, so
+ *  independence is the defensible baseline here — not a compromise, the
+ *  literature default. */
+export function buildCornersGrid(means: V3CornersMeans, cap = CORNERS_GRID_CAP): Matrix {
+  const homeVec: number[] = [];
+  const awayVec: number[] = [];
+  let homeCum = 0;
+  let awayCum = 0;
+  for (let k = 0; k < cap; k++) {
+    const ph = nbPMF(k, means.home, means.r);
+    const pa = nbPMF(k, means.away, means.r);
+    homeVec.push(ph);
+    awayVec.push(pa);
+    homeCum += ph;
+    awayCum += pa;
+  }
+  homeVec.push(Math.max(0, 1 - homeCum));
+  awayVec.push(Math.max(0, 1 - awayCum));
+  const grid: number[][] = [];
+  for (let i = 0; i <= cap; i++) {
+    const row: number[] = [];
+    for (let j = 0; j <= cap; j++) row.push((homeVec[i] ?? 0) * (awayVec[j] ?? 0));
+    grid.push(row);
+  }
+  return grid;
+}
+
+/** "home" / "draw" / "away" — who wins the corner count. */
+function priceCorners1X2(grid: Matrix, d: string): number | null {
+  const { pHome, pDraw, pAway } = resultProbs(grid);
+  if (d === "home") return pHome;
+  if (d === "draw") return pDraw;
+  if (d === "away") return pAway;
+  return null;
+}
+
+/** "Home (+1.5)" / "Away (-1.5)" / "Home -2.5" (Corner Handicap uses parens;
+ *  Bookings Handicap — same parser, reused by cards.ts — does not). Asian
+ *  lines only (no half-integer push case observed in the catalog; whole
+ *  lines fall back to the conditional win/(1-push) form same as goals AH). */
+export function priceCornersLikeHandicap(grid: Matrix, d: string): number | null {
+  const m = d.match(/^(home|away)\s*\(?\s*([+-]?[\d.]+)\)?$/);
+  if (!m) return null;
+  const side = m[1] as "home" | "away";
+  const line = Number.parseFloat(m[2]!);
+  const { pWin, pPush } = winPushSplit(grid, (h, a) => (side === "home" ? h - a : a - h) + line);
+  if (!Number.isInteger(line)) return pWin; // half line: no push possible
+  const denom = 1 - pPush;
+  return denom > 0 ? pWin / denom : 0;
+}
+
+/** "0-8" / "9-11" (closed range) or "12+" / "7+" (open-ended tail) over the
+ *  MATCH total (side undefined) or one team's count (side set — team ranges
+ *  use the same bucket text shape). */
+export function priceCornersLikeRange(
+  grid: Matrix,
+  d: string,
+  side?: "home" | "away"
+): number | null {
+  const m = d.match(/^(\d+)(?:\s*-\s*(\d+))?(\+)?$/);
+  if (!m) return null;
+  const lo = Number.parseInt(m[1]!, 10);
+  const openEnded = m[3] === "+";
+  const hi = m[2] ? Number.parseInt(m[2], 10) : lo;
+  const val = (h: number, a: number) => (side === "home" ? h : side === "away" ? a : h + a);
+  return sumWhere(grid, (h, a) => {
+    const v = val(h, a);
+    return openEnded ? v >= lo : v >= lo && v <= hi;
+  });
+}
+
+/** "Odd" / "Even" — parity of the MATCH total. */
+function priceCornersLikeOddEven(grid: Matrix, d: string): number | null {
+  if (d === "odd") return sumWhere(grid, (h, a) => (h + a) % 2 === 1);
+  if (d === "even") return sumWhere(grid, (h, a) => (h + a) % 2 === 0);
+  return null;
+}
+
+/** PR-22 dispatcher: routes to the right corners pricer for the given
+ *  variant. `variant` undefined (or "team-total") falls back to the original
+ *  marginal-tail priceCornersOutcome (match-total O/U, or team O/U via
+ *  `side`) — the pre-PR-22 behavior, unchanged. */
+export function priceCornersVariant(
+  means: V3CornersMeans,
+  desc: string,
+  variant?: "1x2" | "handicap" | "range" | "odd-even" | "team-total",
+  side?: "home" | "away"
+): number | null {
+  switch (variant) {
+    case "1x2":
+      return priceCorners1X2(buildCornersGrid(means), desc);
+    case "handicap":
+      return priceCornersLikeHandicap(buildCornersGrid(means), desc);
+    case "range":
+      return priceCornersLikeRange(buildCornersGrid(means), desc, side);
+    case "odd-even":
+      return priceCornersLikeOddEven(buildCornersGrid(means), desc);
+    default:
+      return priceCornersOutcome(means, desc, side);
+  }
 }

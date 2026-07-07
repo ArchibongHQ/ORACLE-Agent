@@ -271,6 +271,10 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // PR-6: corners/cards O/U pricing — off withholds the stats so the modules
     // stay dormant (byte-identical to pre-PR-6).
     v3CornersCards: env.ORACLE_V3_CORNERS_CARDS?.toLowerCase() !== "off",
+    // PR-22: 1x2/handicap/range/odd-even corners/cards variants — default on.
+    v3CornersCardsExt: env.ORACLE_V3_CORNERS_CARDS_EXT?.toLowerCase() !== "off",
+    // PR-22: shots-on-target O/U module — default on.
+    v3ShotsOu: env.ORACLE_V3_SHOTS_OU?.toLowerCase() !== "off",
     // PR-6: R10 goals cross-check on the all-markets batch — off skips the hook.
     v3GoalsCrossCheck: env.ORACLE_V3_GOALS_CROSSCHECK?.toLowerCase() !== "off",
     // PR-7: calibration feedback loop (off|shadow|on, default shadow). Write side

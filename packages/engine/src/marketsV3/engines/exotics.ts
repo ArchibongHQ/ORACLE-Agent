@@ -57,13 +57,24 @@ function priceHtFt(ctx: V3EngineCtx, d: string): V3Price | null {
   return { p };
 }
 
-/** Exact goals (e.g., "2", "2-3 goals"). Match desc against grid cell counts or ranges. */
+/** Exact goals (e.g., "2", "2-3 goals", "6+", "1-3+"). Match desc against
+ *  grid cell counts, closed ranges, or open-ended tails.
+ *
+ *  BUG FIX: the previous regex never looked for a trailing "+", so any
+ *  open-ended bucket ("6+" — catalog id 22 "Exact Goals"; "3+" — ids 23/24
+ *  "Home/Away Team Exact Goals") silently fell through to the exact-match
+ *  branch and priced P(total===N) instead of the intended P(total>=N) — a
+ *  real, live mispricing on every N+ outcome routed here. */
 function priceExactGoals(mat: Matrix, d: string): V3Price | null {
-  // "2" → sum of all cells where i + j === 2
-  // "2-3 goals" or "2-3" → sum of cells where i + j in [2, 3]
-  const m = d.match(/^(\d+)(?:\s*-\s*(\d+))?/);
+  // "2" → i+j === 2. "2-3 goals" → i+j in [2,3] (no end anchor — trailing
+  // words like " goals" are ignored, same as before). "6+" → i+j >= 6.
+  // Compound "1-3+"/"2-3+" (catalog ids 450002/450003 "Goal Bounds") read as
+  // "N or more" — the trailing '+' on the upper end makes the whole bucket
+  // open-ended, so the lower bound is the only one that constrains it.
+  const m = d.match(/^(\d+)(?:\s*-\s*(\d+))?(\+)?/);
   if (!m) return null;
-  const minGoals = Number.parseInt(m[1] ?? "0", 10);
+  const minGoals = Number.parseInt(m[1]!, 10);
+  if (m[3] === "+") return { p: sumWhere(mat, (i, j) => i + j >= minGoals) };
   const maxGoals = m[2] ? Number.parseInt(m[2], 10) : minGoals;
   return { p: sumWhere(mat, (i, j) => i + j >= minGoals && i + j <= maxGoals) };
 }

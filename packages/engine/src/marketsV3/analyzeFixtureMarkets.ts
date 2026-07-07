@@ -19,12 +19,13 @@ import type { Devigged1x2 } from "../goalsV3/matchShape.js";
 import { FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import type { AllMarketEntry, EVMarket, Matrix } from "../types.js";
 import { classifyMarket } from "./classes.js";
-import { cardsMeans, priceCardsOutcome } from "./engines/cards.js";
-import { cornersMeans, priceCornersOutcome } from "./engines/corners.js";
+import { cardsMeans, priceCardsVariant } from "./engines/cards.js";
+import { cornersMeans, priceCornersVariant } from "./engines/corners.js";
 import { priceExoticsOutcome } from "./engines/exotics.js";
 import { priceHalfOutcome, V3_FIRST_HALF_SHARE_DEFAULT } from "./engines/half.js";
 import { priceResultOutcome } from "./engines/result.js";
 import { priceShapeOutcome } from "./engines/shape.js";
+import { priceShotsOutcome, shotsMeans } from "./engines/shots.js";
 import { priceTimeWindow } from "./engines/time.js";
 import { priceTotalsOutcome } from "./engines/totals.js";
 import type { V3EngineCtx, V3Price } from "./engines/types.js";
@@ -88,6 +89,16 @@ export interface V3AllMarketsInput {
   cornersAgainstA?: number;
   cardsAvgH?: number;
   cardsAvgA?: number;
+  /** PR-22: 1x2/handicap/range/odd-even corners/cards variants. Default true
+   *  (undefined ⇒ on) — ORACLE_V3_CORNERS_CARDS_EXT=off suppresses only these
+   *  new variants; match/team-total O/U (the pre-PR-22 surface, gated by
+   *  ORACLE_V3_CORNERS_CARDS above) are unaffected. */
+  v3CornersCardsExt?: boolean;
+  /** PR-22: shots-on-target module (engines/shots.ts) — season averages from
+   *  sportyBetStats.ts's possessionValue block. Withheld (⇒ ctx.shots null,
+   *  dormant) when ORACLE_V3_SHOTS_OU=off. */
+  sotForH?: number;
+  sotForA?: number;
   penaltyFlags: V3PenaltyFlags;
   edgeCap?: number;
   noiseGate?: number;
@@ -168,12 +179,30 @@ function priceOutcome(
       return priceExoticsOutcome(ctx, route, marketName, desc);
     case "corners": {
       if (!ctx.corners) return null;
-      const p = priceCornersOutcome(ctx.corners, desc);
+      // PR-22: the new 1x2/handicap/range/odd-even variants are gated by
+      // ORACLE_V3_CORNERS_CARDS_EXT; team-total/match-total O/U (the
+      // pre-PR-22 surface) are unaffected — same "routing unconditional, ctx
+      // gates pricing" convention ORACLE_V3_CORNERS_CARDS itself already uses.
+      const newVariant =
+        route.variant === "1x2" ||
+        route.variant === "handicap" ||
+        route.variant === "odd-even" ||
+        route.variant === "range";
+      if (newVariant && ctx.cornersCardsExt === false) return null;
+      const p = priceCornersVariant(ctx.corners, desc, route.variant, route.side);
       return p !== null ? { p } : null;
     }
     case "cards": {
       if (!ctx.cards) return null;
-      const p = priceCardsOutcome(ctx.cards, desc);
+      const newVariant =
+        route.variant === "1x2" || route.variant === "handicap" || route.variant === "range";
+      if (newVariant && ctx.cornersCardsExt === false) return null;
+      const p = priceCardsVariant(ctx.cards, desc, route.variant, route.side);
+      return p !== null ? { p } : null;
+    }
+    case "shots": {
+      if (!ctx.shots) return null;
+      const p = priceShotsOutcome(ctx.shots, desc, route.side);
       return p !== null ? { p } : null;
     }
     default:
@@ -241,6 +270,8 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
       cornersAgainstA: input.cornersAgainstA,
     }),
     cards: cardsMeans({ cardsAvgH: input.cardsAvgH, cardsAvgA: input.cardsAvgA }),
+    cornersCardsExt: input.v3CornersCardsExt !== false,
+    shots: shotsMeans({ sotForH: input.sotForH, sotForA: input.sotForA }),
   };
 
   const coverage = routeCoverage(input.allMarkets);

@@ -52,6 +52,8 @@ function buildV3Input(
     v3LambdaV5?: boolean;
     v3GatesV4?: boolean;
     v3CornersCards?: boolean;
+    v3CornersCardsExt?: boolean;
+    v3ShotsOu?: boolean;
   }
 ): V3AllMarketsInput | null {
   if (!allMarkets?.length) return null;
@@ -123,6 +125,8 @@ function buildV3Input(
           cardsAvgA: t.cardsAvgA,
         }
       : {}),
+    // PR-22: shots-on-target stats — same withhold-on-off rollback surface.
+    ...(config?.v3ShotsOu !== false ? { sotForH: t.sotForH, sotForA: t.sotForA } : {}),
     penaltyFlags: {
       xgMissing: t.xgMode == null,
       xgEstimated: t.xgMode === "estimated",
@@ -143,6 +147,7 @@ function buildV3Input(
     // has ≥30 resolved fixtures for this league; undefined otherwise, so the
     // v3 gate falls back to the static getLeagueParams baseRho unchanged.
     dynamicRho: state.ledger?.metrics?.dynamicRhoParams?.[job.league],
+    v3CornersCardsExt: config?.v3CornersCardsExt,
   };
 }
 

@@ -280,6 +280,18 @@ export interface OracleConfig {
   // from buildV3Input so ctx.corners/.cards stay null (dormant, byte-identical
   // to pre-PR-6 — routing itself is unconditional, only ctx population is gated).
   v3CornersCards?: boolean;
+  // PR-22: 1x2/handicap/range/odd-even corners/cards variants (match/team-total
+  // O/U — the pre-PR-22 surface above — are unaffected by this flag). Default
+  // true. ORACLE_V3_CORNERS_CARDS_EXT=off suppresses only the new variants;
+  // routeMarket() still classifies them (coverage stays accurate), pricing
+  // just returns null for that outcome (same "route unconditional, ctx gates
+  // pricing" convention v3CornersCards itself uses).
+  v3CornersCardsExt?: boolean;
+  // PR-22: shots-on-target O/U module (engines/shots.ts). Default true.
+  // ORACLE_V3_SHOTS_OU=off withholds sotForH/A from buildV3Input so
+  // ctx.shots stays null (dormant, byte-identical to pre-PR-22) — same
+  // withhold-not-un-route convention as v3CornersCards.
+  v3ShotsOu?: boolean;
   // PR-6: R10 cross-check — re-verify the fixture's best goals-family v3 pick
   // against the independent goals-only engine (in-process, zero extra LLM
   // cost). Default true. ORACLE_V3_GOALS_CROSSCHECK=off skips the hook
@@ -359,6 +371,9 @@ export interface RunState {
     /** §3.9 cards module (Poisson) inputs: total cards per game. */
     cardsAvgH?: number;
     cardsAvgA?: number;
+    /** PR-22 shots-on-target module (Negative Binomial) inputs, per game. */
+    sotForH?: number;
+    sotForA?: number;
     /** §2 prioritisation / §1.2 heightened-trend inputs: season O/U hit-rates,
      *  venue split (stats_season_overunder). ou25 also feeds the totals engine's
      *  per-line marketStatMissing flag (PR-4). */

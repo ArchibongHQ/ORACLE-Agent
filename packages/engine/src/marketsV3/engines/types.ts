@@ -5,6 +5,7 @@ import type { Matrix } from "../../types.js";
 import type { DualSplit } from "../split.js";
 import type { V3CardsMeans } from "./cards.js";
 import type { V3CornersMeans } from "./corners.js";
+import type { V3ShotsMeans } from "./shots.js";
 
 export interface V3EngineCtx {
   /** Full-time grid on the STATS split (§3.2) — result-class + totals (totals
@@ -48,6 +49,14 @@ export interface V3EngineCtx {
    *  (stats missing, or ORACLE_V3_CORNERS_CARDS=off withheld them upstream). */
   corners: V3CornersMeans | null;
   cards: V3CardsMeans | null;
+  /** PR-22: gates the NEW 1x2/handicap/range/odd-even corners/cards variants
+   *  specifically — false only when ORACLE_V3_CORNERS_CARDS_EXT=off; absent
+   *  (e.g. hand-built test ctx fixtures predating PR-22) behaves as true. */
+  cornersCardsExt?: boolean;
+  /** PR-22: shots-on-target module — null is dormant (stats missing, or
+   *  ORACLE_V3_SHOTS_OU=off withheld them upstream), same convention as
+   *  corners/cards. */
+  shots: V3ShotsMeans | null;
 }
 
 export interface V3Price {

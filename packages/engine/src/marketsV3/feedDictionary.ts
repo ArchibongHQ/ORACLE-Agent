@@ -25,7 +25,8 @@ export type V3Engine =
   | "time"
   | "exotics"
   | "corners"
-  | "cards";
+  | "cards"
+  | "shots";
 
 export interface V3Route {
   engine: V3Engine;
@@ -45,6 +46,11 @@ export interface V3Route {
   from?: number;
   /** Parsed `to=` maximum goals for multigoals (exotics engine). */
   to?: number;
+  /** PR-22: which corners/cards sub-shape to price. Absent = the original
+   *  match-total O/U path (unchanged pre-PR-22 behavior). */
+  variant?: "1x2" | "handicap" | "range" | "odd-even" | "team-total";
+  /** PR-22: team-scoped corners/cards side (team-total O/U, team range). */
+  side?: "home" | "away";
 }
 
 export interface V3Skip {
@@ -59,7 +65,8 @@ export interface V3Skip {
     | "settlement-variant"
     | "no-grid-model"
     | "uncatalogued"
-    | "bad-specifier";
+    | "bad-specifier"
+    | "shots-dormant";
 }
 
 export type V3Routing = V3Route | V3Skip;
@@ -95,12 +102,82 @@ const score = (v: string | undefined): [number, number] | undefined => {
  *  under goals_ou). Corners/cards have their own §3.9 conditional modules. */
 const CORNERS_RE = /corner/;
 const CARDS_RE = /booking|card|sending off|red card|yellow/;
+/** PR-22: carved out of OTHER_METRIC_RE below — "shots on target" (not plain
+ *  "shots", which stays a non-goal-metric skip) has real season data
+ *  (sportyBetStats.ts's possessionValue.{home,away}.shots_on_target_avg) and
+ *  its own §3.9-style NB module (engines/shots.ts). Checked BEFORE
+ *  OTHER_METRIC_RE, which would otherwise catch it via its own `shot` term. */
+const SHOTS_ON_TARGET_RE = /shots? on target/;
 const OTHER_METRIC_RE = /foul|offside|shot|throw[- ]in|goal kick|free kick|penalt(y|ies) awarded/;
 const PLAYER_RE = /goalscorer|player|scorer/;
 /** Early-payout / altered-settlement variants of standard markets — the price
  *  is not comparable to the grid probability of the printed outcome. */
 const SETTLEMENT_RE = /\b[12]up\b|to qualify|winning method|overtime|penalt(y|ies)$|extra time/;
 const HALF_RE = /^(1st|2nd) half|half ?time(?!\/)|^ht\b/;
+
+/** PR-22 corners/cards sub-shape detectors — checked against the already-
+ *  lowercased market name. "range"/"exact" never co-occur across the two
+ *  groups in the observed catalog (corners says "range", bookings says
+ *  "exact") so one combined pattern is safe for both callers. */
+const CC_1X2_RE = /^(corners|bookings) 1x2$/;
+const CC_HANDICAP_RE = /handicap/;
+const CC_RANGE_RE = /range|exact/;
+const CC_ODD_EVEN_RE = /odd\/even/;
+const CC_TEAM_SIDE_RE = /^(home|away) team/;
+
+/** Shared corners/cards sub-router — both groups have the identical shape
+ *  taxonomy (match 1X2/handicap/range/odd-even/team-total + team-scoped
+ *  range/exact + a dormant tail), just different family/engine tags, and
+ *  (odd-even) cards has no such market at all. Always returns a route or an
+ *  explicit skip — never null; the caller returns whatever this produces
+ *  directly. */
+function routeCornersLike(
+  name: string,
+  spec: Map<string, string>,
+  engine: "corners" | "cards",
+  dormantReason: "corners-dormant" | "cards-dormant"
+): V3Routing {
+  if (HALF_RE.test(name)) return { skip: true, reason: dormantReason };
+  const family = engine; // "corners"/"cards" MarketFamily values match the engine name 1:1.
+  if (CC_1X2_RE.test(name)) return { engine, family, variant: "1x2" };
+  if (CC_HANDICAP_RE.test(name)) return { engine, family, variant: "handicap" };
+  if (engine === "corners" && CC_ODD_EVEN_RE.test(name)) {
+    return { engine, family, variant: "odd-even" };
+  }
+  const side = CC_TEAM_SIDE_RE.test(name) ? (name.startsWith("home") ? "home" : "away") : undefined;
+  if (CC_RANGE_RE.test(name)) return { engine, family, variant: "range", side };
+  const total = num(spec.get("total"));
+  // Team-scoped O/U ("Home Team Total Corners"/"Home Team Total Bookings",
+  // catalog ids 900300/900301/900304/900305): the NAME never literally says
+  // "over/under" — only the OUTCOMES do ("Over 1.5"/"Under 1.5") — so `side`
+  // + a total= specifier is the actual signal, not the name substring the
+  // match-total path below checks.
+  if (side !== undefined && total !== undefined) {
+    return { engine, family, variant: "team-total", side, total };
+  }
+  // Match-total O/U ("Corners - Over/Under"/"Bookings - Over/Under", ids
+  // 166/139) — the pre-PR-22 path, name literally contains "over/under".
+  if (name.includes("over/under")) {
+    return total !== undefined
+      ? { engine, family, total }
+      : { skip: true, reason: "bad-specifier" };
+  }
+  return { skip: true, reason: dormantReason };
+}
+
+/** PR-22: "Shots on Target Over/Under" (id 900393, match total, full phrase
+ *  "over/under") and its team-scoped variants (ids 900546/900547 "Home/Away
+ *  Team Shots on Target O/U" — the ABBREVIATED "O/U", not the full phrase, so
+ *  this keys off the structured total= specifier instead of a name-text match
+ *  for either spelling). "Shots on Target 1X2" (id 900318, no total=
+ *  specifier) has no matching model here (no 1X2/handicap treatment for
+ *  shots — see shots.ts's header) and falls through to the dormant skip. */
+function routeShotsOnTarget(name: string, spec: Map<string, string>): V3Routing {
+  const total = num(spec.get("total"));
+  if (total === undefined) return { skip: true, reason: "shots-dormant" };
+  const side = CC_TEAM_SIDE_RE.test(name) ? (name.startsWith("home") ? "home" : "away") : undefined;
+  return { engine: "shots", family: "shots", side, total };
+}
 
 /** Route one market entry. Never throws; unparseable ⇒ skip (Rule 0). */
 export function routeMarket(entry: AllMarketEntry): V3Routing {
@@ -110,27 +187,19 @@ export function routeMarket(entry: AllMarketEntry): V3Routing {
 
   // Metric guards run before family routing — they trump the catalogue tag.
   if (PLAYER_RE.test(name)) return { skip: true, reason: "player-market" };
-  // Corners/cards: only the plain match-total Over/Under shape (catalog ids
-  // 166/139) is priceable via the §3.9 NB/Poisson modules — everything else
-  // under these groups (1X2, handicap, range buckets, Xth corner/booking, all
-  // 1st-half variants) has no parseable "Over X.5" line and stays dormant. The
-  // catalog tags these "specials" (a forced-X family); assign the dedicated
-  // "corners"/"cards" family here so they class by odds band like a normal
-  // single-event market instead.
-  if (CORNERS_RE.test(name)) {
-    const total = num(spec.get("total"));
-    if (!HALF_RE.test(name) && name.includes("over/under") && total !== undefined) {
-      return { engine: "corners", family: "corners", total };
-    }
-    return { skip: true, reason: "corners-dormant" };
-  }
-  if (CARDS_RE.test(name)) {
-    const total = num(spec.get("total"));
-    if (!HALF_RE.test(name) && name.includes("over/under") && total !== undefined) {
-      return { engine: "cards", family: "cards", total };
-    }
-    return { skip: true, reason: "cards-dormant" };
-  }
+  // Corners/cards: the match-total Over/Under shape (catalog ids 166/139) plus
+  // the PR-22 variants below are priceable via the §3.9 NB/Poisson modules —
+  // everything else under these groups (Xth corner/booking, points-weighted
+  // "Total Booking Points", red-card-specific "Sending Off", all 1st-half
+  // variants) has no parseable shape or no matching underlying stat and stays
+  // dormant. The catalog tags these "specials" (a forced-X family); assign the
+  // dedicated "corners"/"cards" family here so they class by odds band like a
+  // normal single-event market instead.
+  if (CORNERS_RE.test(name)) return routeCornersLike(name, spec, "corners", "corners-dormant");
+  if (CARDS_RE.test(name)) return routeCornersLike(name, spec, "cards", "cards-dormant");
+  // Checked before OTHER_METRIC_RE, which would otherwise catch "shots on
+  // target" via its own generic `shot` term (see SHOTS_ON_TARGET_RE comment).
+  if (SHOTS_ON_TARGET_RE.test(name)) return routeShotsOnTarget(name, spec);
   if (OTHER_METRIC_RE.test(name)) return { skip: true, reason: "non-goal-metric" };
   if (SETTLEMENT_RE.test(name)) return { skip: true, reason: "settlement-variant" };
 
@@ -258,6 +327,7 @@ export function routeCoverage(entries: AllMarketEntry[]): RouteCoverage {
     exotics: 0,
     corners: 0,
     cards: 0,
+    shots: 0,
   };
   const skipped: Record<V3Skip["reason"], number> = {
     "player-market": 0,
@@ -269,6 +339,7 @@ export function routeCoverage(entries: AllMarketEntry[]): RouteCoverage {
     "no-grid-model": 0,
     uncatalogued: 0,
     "bad-specifier": 0,
+    "shots-dormant": 0,
   };
   let routed = 0;
   const unrouted: Record<string, number> = {};

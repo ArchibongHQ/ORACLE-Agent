@@ -295,6 +295,44 @@ describe("priceExoticsOutcome — exact-goals & multigoals (PR-3)", () => {
     expect(price?.p).toBeCloseTo(expected, 10);
   });
 
+  it('BUG FIX regression: prices exact_goals "6+" (catalog id 22) as P(total>=6), not P(total===6)', () => {
+    const expectedTail = sumWhere(ctx.statsGrid, (h, a) => h + a >= 6);
+    const expectedExact = sumWhere(ctx.statsGrid, (h, a) => h + a === 6);
+    // The two must actually differ for this test to prove anything (true on
+    // any non-degenerate grid — there's real mass above 6 goals).
+    expect(expectedTail).toBeGreaterThan(expectedExact);
+
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals" },
+      "Exact Goals",
+      "6+"
+    );
+    expect(price?.p).toBeCloseTo(expectedTail, 10);
+  });
+
+  it('prices "3+" (catalog ids 23/24, Home/Away Team Exact Goals) as an open-ended tail too', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h + a >= 3);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals" },
+      "Home Team Exact Goals",
+      "3+"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it('prices compound "1-3+" (catalog id 450002, Goal Bounds) as P(total>=1) — the trailing + on the upper end makes it open-ended', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h + a >= 1);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals" },
+      "Goal Bounds",
+      "1-3+"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
   it("prices multigoals from a structured from/to route specifier (not desc text)", () => {
     const expected = sumWhere(ctx.statsGrid, (h, a) => h + a >= 2 && h + a <= 4);
     const price = priceExoticsOutcome(
@@ -683,21 +721,30 @@ describe("feedDictionary routing (§0.2)", () => {
     ).toMatchObject({ engine: "cards", family: "cards", total: 5.5 });
   });
 
-  it("keeps non-O/U and 1st-half corners/cards variants dormant (PR-6 — only the plain total is priced)", () => {
-    // No over/under shape (a corners handicap/1X2) → still dormant.
+  it("keeps 1st-half corners/cards variants dormant; routes handicap (PR-22); flags a missing specifier precisely", () => {
+    // PR-22: "Corners Handicap" now has a real model (joint-grid handicap) —
+    // no longer dormant. This is the intended PR-22 behavior change; see
+    // marketsV3CornersCards.test.ts's routing-table describe block for the
+    // full PR-22 variant coverage (1x2/handicap/range/odd-even/team-total).
     expect(
       routeMarket(entry({ id: "900999", name: "Corners Handicap", specifier: "hcp=0:2" }))
-    ).toMatchObject({ skip: true, reason: "corners-dormant" });
-    // 1st-half corners O/U has no half-calibrated corners model → dormant.
+    ).toMatchObject({ engine: "corners", family: "corners", variant: "handicap" });
+    // 1st-half corners O/U has no half-calibrated corners model → still
+    // dormant (HALF_RE is checked first in routeCornersLike, before any
+    // PR-22 variant detection — unaffected by this change).
     expect(
       routeMarket(
         entry({ id: "900998", name: "1st Half Corners Over/Under", specifier: "total=4.5" })
       )
     ).toMatchObject({ skip: true, reason: "corners-dormant" });
-    // Cards O/U missing its total specifier → dormant (unparseable line).
+    // Cards O/U missing its total specifier: PR-22's routeCornersLike returns
+    // the more precise "bad-specifier" reason here (an O/U-shaped name that
+    // failed to parse) rather than the old generic "cards-dormant" catch-all
+    // — same "bad-specifier" reason routeMarket's own uncatalogued-id path
+    // already uses for an identical failure mode.
     expect(routeMarket(entry({ id: "900997", name: "Total Bookings Over/Under" }))).toMatchObject({
       skip: true,
-      reason: "cards-dormant",
+      reason: "bad-specifier",
     });
   });
 
