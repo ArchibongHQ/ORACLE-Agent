@@ -13,8 +13,13 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AnalysisRecord, ClvSourceQuality, ResolutionRecord } from "@oracle/engine";
-import { RESOLUTION_SCHEMA_VERSION } from "@oracle/engine";
+import type {
+  AnalysisRecord,
+  ClosingOddsSnapshot,
+  ClvSourceQuality,
+  ResolutionRecord,
+} from "@oracle/engine";
+import { isPopularTeam, lstmMarketDecoderProxy, RESOLUTION_SCHEMA_VERSION } from "@oracle/engine";
 import { resolvePythonBin } from "./fixtures.js";
 import { namesMatch } from "./teamNames.js";
 
@@ -264,6 +269,27 @@ export function formatClv(clv: number): string {
   return `${clv >= 0 ? "+" : ""}${(clv * 100).toFixed(2)}pp`;
 }
 
+/** SportyBet odds sometimes arrive as numeric strings (raw API passthrough) —
+ *  coerce to a finite number or undefined, never NaN/Infinity. */
+function toNum(v: unknown): number | undefined {
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/** A T-30m snapshot is only trustworthy as tick-level provenance when it was
+ *  actually captured in a plausible pre-kickoff band relative to THIS record's
+ *  kickoff — guards against a kickoff that moved (postponement) after capture,
+ *  which would otherwise silently mis-tag a stale snapshot as authoritative. */
+function snapshotIsPlausible(snapshot: ClosingOddsSnapshot | undefined, kickoff: string): boolean {
+  if (!snapshot) return false;
+  const delta = Math.abs(new Date(snapshot.snapshotAt).getTime() - new Date(kickoff).getTime());
+  return Number.isFinite(delta) && delta <= 45 * 60_000;
+}
+
 // ── Match + resolve ───────────────────────────────────────────────────────────
 
 function findMatch(record: AnalysisRecord, matches: FDMatch[]): FDMatch | null {
@@ -282,7 +308,8 @@ async function resolveRecord(
   record: AnalysisRecord,
   match: FDMatch,
   runId: string,
-  oddsApiKey?: string
+  oddsApiKey?: string,
+  closingSnapshot?: ClosingOddsSnapshot
 ): Promise<ResolutionRecord | null> {
   const { home: hGoals, away: aGoals } = match.score.fullTime;
   if (hGoals == null || aGoals == null) return null;
@@ -298,22 +325,53 @@ async function resolveRecord(
     realised: actualResult === "draw" ? 1 : 0,
   };
 
+  const snap1x2 = snapshotIsPlausible(closingSnapshot, record.kickoff)
+    ? closingSnapshot?.odds["1x2"]
+    : undefined;
+  const snapHome = toNum(snap1x2?.home);
+  const snapDraw = toNum(snap1x2?.draw);
+  const snapAway = toNum(snap1x2?.away);
+  const frozenHome = toNum((record.frozenOddsAtAnalysis as Record<string, unknown> | null)?.home);
+
+  // Real steam/sharp-compression signal (PR-8b) — independent of CLV
+  // eligibility (broader coverage than CLV), computed post-hoc here since a
+  // T-30m snapshot by construction can't exist before ORACLE's decision was
+  // already made hours earlier. Observability only — never fed back into the
+  // decision layer.
+  let realisedSteamVelocity: number | null = null;
+  let sharpCompressionDetected: boolean | null = null;
+  if (snapHome != null && frozenHome != null) {
+    const signal = lstmMarketDecoderProxy(0.5, frozenHome, snapHome, isPopularTeam(record.home));
+    realisedSteamVelocity = parseFloat(signal.velocity.toFixed(6));
+    sharpCompressionDetected = signal.sharpCompression;
+  }
+
   let realisedCLV: number | null = null;
   let clvSourceQuality: ClvSourceQuality = "UNKNOWN";
-  if (record.liquidityTag === "CLV_ELIGIBLE" && oddsApiKey && record.frozenOddsAtAnalysis) {
-    const sportKey = LEAGUE_TO_SPORT[record.league];
-    if (sportKey) {
-      const closing = await fetchClosingOdds(
-        oddsApiKey,
-        record.home,
-        record.away,
-        sportKey,
-        record.kickoff
+  if (record.liquidityTag === "CLV_ELIGIBLE" && record.frozenOddsAtAnalysis) {
+    if (snapHome != null && snapDraw != null && snapAway != null) {
+      const topLabel = record.deterministicTopPick?.label ?? null;
+      realisedCLV = computeRealisedClv(
+        record.frozenOddsAtAnalysis,
+        { home: snapHome, draw: snapDraw, away: snapAway },
+        topLabel
       );
-      if (closing) {
-        const topLabel = record.deterministicTopPick?.label ?? null;
-        realisedCLV = computeRealisedClv(record.frozenOddsAtAnalysis, closing, topLabel);
-        clvSourceQuality = "KICKOFF_PROXY"; // Odds API retains upcoming events only — proxy, not tick-level
+      clvSourceQuality = "TICK_LEVEL"; // a real captured snapshot, not a proxy
+    } else if (oddsApiKey) {
+      const sportKey = LEAGUE_TO_SPORT[record.league];
+      if (sportKey) {
+        const closing = await fetchClosingOdds(
+          oddsApiKey,
+          record.home,
+          record.away,
+          sportKey,
+          record.kickoff
+        );
+        if (closing) {
+          const topLabel = record.deterministicTopPick?.label ?? null;
+          realisedCLV = computeRealisedClv(record.frozenOddsAtAnalysis, closing, topLabel);
+          clvSourceQuality = "KICKOFF_PROXY"; // Odds API retains upcoming events only — proxy, not tick-level
+        }
       }
     }
   }
@@ -327,6 +385,8 @@ async function resolveRecord(
     awayGoals: aGoals,
     realisedCLV,
     clvSourceQuality,
+    realisedSteamVelocity,
+    sharpCompressionDetected,
     rpsContribution: parseFloat(rps.toFixed(6)),
     drawCalibrationPoint,
     resolvedAt: new Date().toISOString(),
@@ -344,7 +404,8 @@ export async function resolveRecords(
   records: AnalysisRecord[],
   footballDataApiKey?: string,
   oddsApiKey?: string,
-  apiFootballKey?: string
+  apiFootballKey?: string,
+  closingSnapshotsByFixture?: Map<string, ClosingOddsSnapshot>
 ): Promise<ResolveResult> {
   if (!records.length) return { resolved: [], unmatched: [] };
 
@@ -381,7 +442,13 @@ export async function resolveRecords(
       continue;
     }
 
-    const rec = await resolveRecord(record, match, runId, oddsApiKey);
+    const rec = await resolveRecord(
+      record,
+      match,
+      runId,
+      oddsApiKey,
+      closingSnapshotsByFixture?.get(record.fixtureId)
+    );
     if (rec) {
       resolved.push(rec);
       const _clvStr =
@@ -494,6 +561,8 @@ export async function resolveUnmatchedViaWebSearch(
         awayGoals: payload.away_goals,
         realisedCLV: null, // web-search results carry no closing-odds proxy
         clvSourceQuality: "UNKNOWN",
+        realisedSteamVelocity: null, // no snapshot lookup on the web-search fallback path
+        sharpCompressionDetected: null,
         rpsContribution: parseFloat(rps.toFixed(6)),
         drawCalibrationPoint: {
           league: record.league,

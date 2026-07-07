@@ -409,7 +409,7 @@ const POPULAR_TEAMS = new Set([
   "real madrid cf",
 ]);
 
-function isPopularTeam(name: string): boolean {
+export function isPopularTeam(name: string): boolean {
   if (!name) return false;
   const n = name.toLowerCase().trim();
   if (POPULAR_TEAMS.has(n)) return true;

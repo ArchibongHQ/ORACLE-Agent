@@ -39,7 +39,12 @@ export {
 export type { MarketExecutorResult, MarketExecutorRiskParams } from "./decision/marketExecutor.js";
 export { runAllMarketsLlmExecutor } from "./decision/marketExecutor.js";
 export type { ExecutionResult, LeagueParam } from "./execution/index.js";
-export { applyRankingMode, ExecutionEngine, getLeagueParams } from "./execution/index.js";
+export {
+  applyRankingMode,
+  ExecutionEngine,
+  getLeagueParams,
+  isPopularTeam,
+} from "./execution/index.js";
 export type { GbmLiveInputs, GbmModel } from "./gbm/index.js";
 export {
   blendGbmIntoFp,

@@ -9,6 +9,7 @@ import type {
   BatchOptions,
   BatchResult,
   CalibrationMetrics,
+  ClosingOddsSnapshot,
   DecisionShadow,
   FixtureJob,
   FixtureOutcome,
@@ -391,6 +392,12 @@ export async function resolveDay(
     return { date, candidates: 0, resolved: [], unmatched: [] };
   }
 
+  // PR-8b: real T-30m closing-odds snapshots, when captured — preferred over
+  // the KICKOFF_PROXY Odds-API path inside resolveRecord/resolveRecords.
+  const allSnapshots =
+    (await storage.get<ClosingOddsSnapshot[]>(STORAGE_KEYS.closingOddsSnapshots)) ?? [];
+  const snapshotsByFixture = new Map(allSnapshots.map((s) => [s.fixtureId, s]));
+
   // API sources first (structured, fixture-ID-exact). No early-exit when both keys
   // are absent — CLAUDE.md §6 no-data-blocker: the web-search consensus fallback
   // below always runs on whatever resolveRecords couldn't (or, with no keys, didn't
@@ -401,7 +408,8 @@ export async function resolveDay(
           dayRecords,
           keys.footballDataApiKey,
           keys.oddsApiKey,
-          keys.apiFootballKey
+          keys.apiFootballKey,
+          snapshotsByFixture
         )
       : { resolved: [], unmatched: dayRecords.map((r) => r.fixtureId) };
 

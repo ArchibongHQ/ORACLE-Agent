@@ -182,6 +182,8 @@ function resolution(fixtureId: string, hg: number, ag: number): ResolutionRecord
     awayGoals: ag,
     realisedCLV: null,
     clvSourceQuality: "UNKNOWN",
+    realisedSteamVelocity: null,
+    sharpCompressionDetected: null,
     rpsContribution: 0,
     drawCalibrationPoint: null,
     resolvedAt: "2026-07-02T10:00:00.000Z",

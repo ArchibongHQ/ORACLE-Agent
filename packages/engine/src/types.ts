@@ -445,7 +445,7 @@ export interface AnalysisRecord {
 }
 
 /** Increment when ResolutionRecord shape changes — write-once per record. */
-export const RESOLUTION_SCHEMA_VERSION = 1;
+export const RESOLUTION_SCHEMA_VERSION = 2;
 
 /** Resolution record written after the match result is known (PRD §10, Appendix B). */
 export interface ResolutionRecord {
@@ -457,6 +457,15 @@ export interface ResolutionRecord {
   awayGoals: number;
   realisedCLV: number | null; // null when liquidityTag !== CLV_ELIGIBLE
   clvSourceQuality: ClvSourceQuality; // provenance tag for the closing-odds proxy (PRD §8.3)
+  /** Real home-side odds velocity (1/snapshotOdds - 1/frozenOddsAtAnalysis), from
+   *  the T-30m closing-odds snapshot (PR-8b) — null when no snapshot was
+   *  captured for this fixture. Schema version 2. Post-hoc observability only,
+   *  computed here (not at analysis time) because a T-30m snapshot by
+   *  construction can't exist before ORACLE's decision is made hours earlier. */
+  realisedSteamVelocity: number | null;
+  /** lstmMarketDecoderProxy's sharpCompression verdict on realisedSteamVelocity
+   *  — null when no snapshot was captured. Schema version 2. */
+  sharpCompressionDetected: boolean | null;
   rpsContribution: number; // rankedProbabilityScore(forecast, actualResult)
   drawCalibrationPoint: { league: string; predicted: number; realised: number } | null;
   resolvedAt: string; // ISO-8601
