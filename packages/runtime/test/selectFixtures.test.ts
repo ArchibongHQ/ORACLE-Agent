@@ -540,4 +540,58 @@ describe("loadSportyBetIndex", () => {
     const detail = idx?.detailByKey.get(sidecarKey("Arsenal FC", "Chelsea FC"));
     expect(detail?.stats?.availability).toBeUndefined();
   });
+
+  it("merges the top-level weather block into stats.weather (PR-18)", async () => {
+    const p = join(dir, "sidecar.json");
+    await writeFile(
+      p,
+      JSON.stringify({
+        date: TODAY,
+        events: [
+          {
+            home: "Arsenal FC",
+            away: "Chelsea FC",
+            marketCount: 27,
+            eventId: "ev1",
+            stats: { goals: { home: { avg_scored: 1.5 } } },
+            weather: { tempC: 8.5, precipMm: 6.2, windKph: 52.0, isAdverse: true },
+          },
+        ],
+      }),
+      "utf8"
+    );
+    const idx = await loadSportyBetIndex(TODAY, p);
+    const detail = idx?.detailByKey.get(sidecarKey("Arsenal FC", "Chelsea FC"));
+    expect(detail?.stats?.weather).toEqual({
+      tempC: 8.5,
+      precipMm: 6.2,
+      windKph: 52.0,
+      isAdverse: true,
+    });
+    // Pre-existing stats fields survive the merge untouched.
+    expect(detail?.stats?.goals?.home?.avg_scored).toBe(1.5);
+  });
+
+  it("omits stats.weather entirely when the top-level block is absent", async () => {
+    const p = join(dir, "sidecar.json");
+    await writeFile(
+      p,
+      JSON.stringify({
+        date: TODAY,
+        events: [
+          {
+            home: "Arsenal FC",
+            away: "Chelsea FC",
+            marketCount: 27,
+            eventId: "ev1",
+            stats: { goals: { home: { avg_scored: 1.5 } } },
+          },
+        ],
+      }),
+      "utf8"
+    );
+    const idx = await loadSportyBetIndex(TODAY, p);
+    const detail = idx?.detailByKey.get(sidecarKey("Arsenal FC", "Chelsea FC"));
+    expect(detail?.stats?.weather).toBeUndefined();
+  });
 });

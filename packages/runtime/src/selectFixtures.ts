@@ -329,6 +329,24 @@ export interface SportyBetStats {
     home?: SportyBetAvailabilityEntry | null;
     away?: SportyBetAvailabilityEntry | null;
   } | null;
+  /** [PR-18] Match-day weather forecast at the HOME team's city
+   *  (tools/scrape_fixtures.py's _load_weather_table, Open-Meteo Forecast
+   *  API via fetch_weather.py's fetch_forecast — NOT the archive/backfill
+   *  endpoint, which has no same-day coverage). One block per fixture, not
+   *  split by side (weather is a venue property, not a team property).
+   *  camelCase + km/h/mm, matching fetch_weather.py's existing backfill
+   *  convention (build_features()/gbm_residual.py's tempC/precipMm/windKph)
+   *  — NOT @oracle/engine's Weather interface shape (wind_mph/rain_mm),
+   *  which is a different unit system; convert at the fixtures.ts boundary
+   *  where this gets read into RunState.pipeline.fetched.weather, not here.
+   *  Absent for any team outside fetch_weather.py's curated TEAM_CITY map,
+   *  or when ORACLE_FETCH_WEATHER=off. */
+  weather?: {
+    tempC?: number;
+    precipMm?: number;
+    windKph?: number;
+    isAdverse?: boolean;
+  } | null;
 }
 
 export interface SportyBetAvailabilityEntry {
@@ -538,12 +556,20 @@ export async function loadSportyBetIndex(
               }
             | null
             | undefined;
+          const weatherBlock = ev.weather as
+            | { tempC?: number; precipMm?: number; windKph?: number; isAdverse?: boolean }
+            | null
+            | undefined;
           const stats: SportyBetStats | null =
-            baseStats != null || xgBlock != null || availabilityBlock != null
+            baseStats != null ||
+            xgBlock != null ||
+            availabilityBlock != null ||
+            weatherBlock != null
               ? {
                   ...(baseStats ?? {}),
                   ...(xgBlock != null ? { xg: xgBlock } : {}),
                   ...(availabilityBlock != null ? { availability: availabilityBlock } : {}),
+                  ...(weatherBlock != null ? { weather: weatherBlock } : {}),
                 }
               : null;
           detail = {

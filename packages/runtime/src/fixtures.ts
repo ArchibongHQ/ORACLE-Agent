@@ -9,7 +9,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import type { FixtureJob, RunState, SoftContextItem } from "@oracle/engine";
+import type { FixtureJob, RunState, SoftContextItem, Weather } from "@oracle/engine";
 import { parseFixtureList, runPool } from "@oracle/engine";
 import type { LLMCallContext } from "@oracle/llm";
 import { fetchOddsViaGemini } from "@oracle/llm";
@@ -387,6 +387,28 @@ async function readCachedJobs(): Promise<FixtureJob[]> {
   }
 }
 
+const KPH_TO_MPH = 0.621371;
+
+/** [PR-18] Converts scrape_fixtures.py's weather block (camelCase, km/h/mm —
+ *  matching fetch_weather.py's existing backfill/GBM convention) into
+ *  @oracle/engine's Weather shape (wind_mph/rain_mm — the units
+ *  applyEnvironmentalPenalties' thresholds were tuned against). Null/absent
+ *  input (team outside TEAM_CITY, fetch failure, ORACLE_FETCH_WEATHER=off)
+ *  passes through as undefined — the engine already treats a missing Weather
+ *  as "no penalty", never a hard requirement. */
+export function toEngineWeather(
+  raw:
+    | { tempC?: number; precipMm?: number; windKph?: number; isAdverse?: boolean }
+    | null
+    | undefined
+): Weather | undefined {
+  if (!raw || (raw.windKph == null && raw.precipMm == null)) return undefined;
+  return {
+    ...(raw.windKph != null ? { wind_mph: raw.windKph * KPH_TO_MPH } : {}),
+    ...(raw.precipMm != null ? { rain_mm: raw.precipMm } : {}),
+  };
+}
+
 // ── Pre-analysis selection (quota guard) ──────────────────────────────────────
 
 /** Gate the fixture pool BEFORE any per-fixture paid call (gap-fill chain,
@@ -425,12 +447,20 @@ async function applySelection(
     const existingSoft = (existingTel.softContext as SoftContextItem[] | undefined) ?? [];
 
     // Merge full sidecar stats into every fixture (both bulk-odds and sidecar-only paths)
+    // [PR-18] `weather` is also lifted to its own fetched.weather key (not just
+    // buried in sportyBetStats) since @oracle/engine's applyEnvironmentalPenalties
+    // reads fetched.weather directly (execution/index.ts) — same convention as
+    // fetched.odds already being both nested in sportyBetOdds and its own key.
+    // Converted from scrape_fixtures.py's camelCase/km/h shape to the engine's
+    // Weather interface (wind_mph/rain_mm) via toEngineWeather — see there.
+    const engineWeather = toEngineWeather(detail?.stats?.weather);
     const statsEnrich =
       detail && !existingFetched.sportyBetStats
         ? {
             sportyBetStats: detail.stats,
             sportyBetOdds: detail.odds,
             sportyBetStatsCoverage: detail.statscoverage,
+            ...(engineWeather != null ? { weather: engineWeather } : {}),
           }
         : {};
 

@@ -37,6 +37,7 @@ export {
   gameToFixtureJob,
   resolvePythonBin,
   SPORT_TO_LEAGUE,
+  toEngineWeather,
 } from "./fixtures.js";
 export type {
   FixtureReportFiles,
