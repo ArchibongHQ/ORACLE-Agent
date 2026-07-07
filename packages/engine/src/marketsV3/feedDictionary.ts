@@ -234,7 +234,19 @@ export interface RouteCoverage {
   routed: number;
   byEngine: Record<V3Engine, number>;
   skipped: Record<V3Skip["reason"], number>;
+  /** PR-20: distinct market NAMES behind the recoverable skip tail
+   *  (no-grid-model / uncatalogued / bad-specifier) → entry count. Principled
+   *  skips (player/settlement/1x2/non-goal-metric/dormant) stay counts-only in
+   *  `skipped` — they are excluded by design, not by gap. */
+  unrouted?: Record<string, number>;
 }
+
+/** Skip reasons whose market names are worth itemising — the recoverable tail. */
+const UNROUTED_TAIL_REASONS = new Set<V3Skip["reason"]>([
+  "no-grid-model",
+  "uncatalogued",
+  "bad-specifier",
+]);
 
 export function routeCoverage(entries: AllMarketEntry[]): RouteCoverage {
   const byEngine: Record<V3Engine, number> = {
@@ -259,13 +271,19 @@ export function routeCoverage(entries: AllMarketEntry[]): RouteCoverage {
     "bad-specifier": 0,
   };
   let routed = 0;
+  const unrouted: Record<string, number> = {};
   for (const entry of entries) {
     const r = routeMarket(entry);
-    if (isSkip(r)) skipped[r.reason] += 1;
-    else {
+    if (isSkip(r)) {
+      skipped[r.reason] += 1;
+      if (UNROUTED_TAIL_REASONS.has(r.reason)) {
+        const name = entry.name ?? entry.desc ?? `id:${entry.id}`;
+        unrouted[name] = (unrouted[name] ?? 0) + 1;
+      }
+    } else {
       routed += 1;
       byEngine[r.engine] += 1;
     }
   }
-  return { total: entries.length, routed, byEngine, skipped };
+  return { total: entries.length, routed, byEngine, skipped, unrouted };
 }

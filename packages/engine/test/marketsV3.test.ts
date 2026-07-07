@@ -714,6 +714,30 @@ describe("feedDictionary routing (§0.2)", () => {
     expect(cov.byEngine.totals).toBe(1);
     expect(cov.byEngine.shape).toBe(1);
   });
+
+  it("routeCoverage.unrouted tallies market NAMES only for the recoverable skip tail (PR-20)", () => {
+    const entries = [
+      // Principled skip (plain-1x2) — must NOT appear in `unrouted`.
+      entry({ id: "1", name: "1X2" }),
+      // uncatalogued: id not in the catalog, non-O/U-shaped name.
+      entry({ id: "999999", name: "Some Uncatalogued Market" }),
+      // uncatalogued via the desc-only fallback (name absent).
+      entry({ id: "999998", name: undefined, desc: "Desc Only Market" }),
+      // uncatalogued via the id: fallback (both name and desc absent).
+      entry({ id: "999997", name: undefined, desc: undefined }),
+      // no-grid-model: catalogued id 45 = correct_score, half-scoped.
+      entry({ id: "45", name: "1st Half Correct Score" }),
+      // bad-specifier: goals_ou (id 18) with a minute window but no total line.
+      entry({ id: "18", name: "Over/Under - Early Goals", specifier: "minsnr=10" }),
+    ];
+    const cov = routeCoverage(entries);
+    expect(cov.unrouted?.["1X2"]).toBeUndefined();
+    expect(cov.unrouted?.["Some Uncatalogued Market"]).toBe(1);
+    expect(cov.unrouted?.["Desc Only Market"]).toBe(1);
+    expect(cov.unrouted?.["id:999997"]).toBe(1);
+    expect(cov.unrouted?.["1st Half Correct Score"]).toBe(1);
+    expect(cov.unrouted?.["Over/Under - Early Goals"]).toBe(1);
+  });
 });
 
 // ── poissonPMF sanity (shared with engines) ─────────────────────────────────
