@@ -9,10 +9,15 @@ function fakeConfig(overrides: Partial<OracleConfig> = {}): OracleConfig {
 }
 
 const fakeGoalsConfig: GoalsV3Config = {
-  xgBlend: 0.4,
+  enabled: true,
+  completenessMin: 70,
+  heightenedMin: 80,
   edgeCap: 0.12,
   noiseGate: 0.02,
-} as GoalsV3Config;
+  xgBlend: true,
+  arbiterTimeoutMs: 30_000,
+  enableBtts: false,
+};
 
 describe("printEffectiveConfig", () => {
   let stdoutSpy: ReturnType<typeof vi.spyOn>;

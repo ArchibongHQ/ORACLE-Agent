@@ -49,19 +49,34 @@ export function printEffectiveConfig(
   // against the actual lambda-input call sites (packages/engine/src/batch/
   // index.ts's buildV3Input, apps/worker/src/goalsV3Pipeline.ts's
   // buildGoalsV3Input): both source homeScoredPer90/awayScoredPer90 etc. from
-  // team-overall season aggregates (blendRecencyScored over
-  // stats.goals.home/away, keyed by which side of TODAY'S fixture a team is
-  // on, not by that team's own historical venue split) — only the xG blend
-  // has a real venue-conditioned source (venueXgf/venueXga). Flipping this
-  // flag on today would silently suppress HFA with nothing compensating for
-  // it in either pipeline.
+  // team-overall season aggregates (stats.goals.home/away, keyed by which
+  // side of TODAY'S fixture a team is on, not by that team's own historical
+  // venue split) — only the xG blend has a real venue-conditioned source
+  // (venueXgf/venueXga) wired into lambda today.
+  //
+  // Correction from an earlier draft of this comment: a real venue-split
+  // source DOES already exist and is already scraped —
+  // SportyBetEventDetail.stats.scoringConceding.{home,away}.scored_avg/
+  // conceded_avg (packages/runtime/src/selectFixtures.ts's
+  // ScoringConcedingProfile — "home team carries its home split, away team
+  // its away split"), and sportyBetStats.ts already reads it for SoS/BTTS/
+  // clean-sheet rates. It's simply never routed into the
+  // scoredPer90H/A/concededPer90H/A fields that actually feed lambda. So the
+  // fix, when someone picks this up, is "wire scoringConceding into
+  // buildStatsOverride's override.scoredPer90H/A" — a smaller change than
+  // sourcing new data — not a data-acquisition project. Left as a follow-up;
+  // this PR only adds the loud warning so the flag can't be flipped on
+  // silently in the meantime.
   if (cfg.v3VenueSplitUsed) {
     process.stderr.write(
       "[worker] WARN: ORACLE_V3_VENUE_SPLIT=on, but neither the main all-markets " +
-        "batch nor the goals-v3 pipeline currently produces true venue-split " +
-        "scored/conceded data (only xG has a venue-conditioned source) — HFA is " +
-        "being suppressed with nothing compensating for it. Wire real per-venue " +
-        "data into buildV3Input/buildGoalsV3Input before relying on this flag.\n"
+        "batch nor the goals-v3 pipeline currently routes true venue-split " +
+        "scored/conceded data into lambda (only xG has a venue-conditioned source " +
+        "wired) — HFA is being suppressed with nothing compensating for it. A real " +
+        "venue-split source already exists and is already scraped " +
+        "(SportyBetEventDetail.stats.scoringConceding) but isn't wired into " +
+        "buildV3Input/buildGoalsV3Input's scoredPer90H/A yet — wire that before " +
+        "relying on this flag.\n"
     );
   }
 }
