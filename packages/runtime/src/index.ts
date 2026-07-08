@@ -181,6 +181,7 @@ export type { GoalsLeg, GoalsSelectionResult, GoalsSelectOptions } from "./selec
 export {
   avgConceded,
   avgScored,
+  computeMiniAccaStats,
   DEFAULT_GOALS_MIN_CONFIDENCE,
   DEFAULT_GOALS_MIN_IMPLIED,
   DEFAULT_GOALS_TARGET_LEGS,
@@ -189,6 +190,5 @@ export {
   INTL_TOURNAMENT_RE,
   pickSafestGoalsLeg,
   selectGoalsAccumulator,
-  V3_MINI_ACCA_HAIRCUT,
 } from "./selectGoals.js";
 export { blendRecencyScored, MIN_PLAYED_FOR_OVERRIDE } from "./sportyBetStats.js";

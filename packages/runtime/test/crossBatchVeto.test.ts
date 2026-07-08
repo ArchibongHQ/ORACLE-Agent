@@ -37,6 +37,7 @@ function makeSelection(legs: GoalsLeg[], shortSlipLegs: GoalsLeg[] = legs): Goal
     miniAccaLegs: [],
     miniAccaCombinedProb: 1,
     miniAccaCombinedOdds: 1,
+    miniAccaTrueEv: 0,
   };
 }
 

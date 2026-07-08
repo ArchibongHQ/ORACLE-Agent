@@ -21,11 +21,11 @@
 import type { PortfolioLeg } from "@oracle/engine";
 import { pairwiseCrossFixtureCorrelation } from "@oracle/engine";
 import {
+  computeMiniAccaStats,
   CROSS_FIXTURE_CORRELATION_REJECT,
   type GoalsLeg,
   type GoalsSelectionResult,
   toPortfolioLeg,
-  V3_MINI_ACCA_HAIRCUT,
 } from "../selectGoals.js";
 import { dedupeLegs, slateLegKey } from "./slateArbiter.js";
 
@@ -88,6 +88,7 @@ export function applyCrossBatchVeto(
   const droppedFromLong = legs.length !== selection.legs.length;
   const droppedFromShort = shortSlipLegs.length !== selection.shortSlipLegs.length;
   const droppedFromMini = miniAccaLegs.length !== selection.miniAccaLegs.length;
+  const miniAccaStats = droppedFromMini ? computeMiniAccaStats(miniAccaLegs) : null;
 
   return {
     ...selection,
@@ -104,11 +105,6 @@ export function applyCrossBatchVeto(
     shortSlipCombinedOdds: droppedFromShort
       ? prod(shortSlipLegs, (l) => l.odds)
       : selection.shortSlipCombinedOdds,
-    miniAccaCombinedProb: droppedFromMini
-      ? prod(miniAccaLegs, (l) => l.mp) * V3_MINI_ACCA_HAIRCUT
-      : selection.miniAccaCombinedProb,
-    miniAccaCombinedOdds: droppedFromMini
-      ? prod(miniAccaLegs, (l) => l.odds)
-      : selection.miniAccaCombinedOdds,
+    ...(miniAccaStats ?? {}),
   };
 }
