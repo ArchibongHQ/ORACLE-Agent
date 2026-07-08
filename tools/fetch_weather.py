@@ -240,17 +240,23 @@ def fetch_weather(lat: float, lon: float, date_iso: str, throttle: float) -> dic
 
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_DATE_ISO_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
 
 
 def fetch_forecast(lat: float, lon: float, date_iso: str, throttle: float = 0.2) -> dict | None:
-    """PR-25: live match-day counterpart to fetch_weather() above — same disk
-    cache (shared CACHE_DIR, so a date that later falls into the archive API's
-    range never re-fetches), same response shape ({temp_c, precip_mm,
-    wind_kph}), but hits Open-Meteo's FORECAST endpoint instead of ARCHIVE.
-    The archive API only serves PAST dates (this script's original backfill
-    use case); today's/near-future kickoffs need the forecast API's 16-day
-    window instead. Returns None on any failure/no-data/date-out-of-range —
+    """PR-25: live match-day counterpart to fetch_weather() above — same
+    CACHE_DIR but a distinct "fc_"-prefixed cache key (forecast-tier and
+    archive-tier entries are intentionally cached separately, since a date
+    that later falls into the archive API's range should still get one
+    fresh archive-tier fetch rather than silently reusing a forecast-tier
+    value), same response shape ({temp_c, precip_mm, wind_kph}), but hits
+    Open-Meteo's FORECAST endpoint instead of ARCHIVE. The archive API only
+    serves PAST dates (this script's original backfill use case); today's/
+    near-future kickoffs need the forecast API's 16-day window instead.
+    Returns None on any failure/no-data/date-out-of-range/malformed-date —
     the caller degrades to "no weather for this fixture", never fatal."""
+    if not _DATE_ISO_RE.match(date_iso):
+        return None
     cache_path = CACHE_DIR / f"fc_{lat:.2f}_{lon:.2f}_{date_iso}.json"
     if cache_path.exists():
         try:

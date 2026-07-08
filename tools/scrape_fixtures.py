@@ -951,8 +951,6 @@ def _availability_for(table: dict[str, dict], team: str) -> Optional[dict]:
 # pool, so the sequential, throttled, disk-cached fetch loop below never
 # stacks concurrent requests against Open-Meteo from multiple worker threads
 # at once.
-ADVERSE_PRECIP_MM = 5.0
-ADVERSE_WIND_KPH = 50.0
 
 
 def _load_weather_table(events: list[dict]) -> dict[tuple[str, str], dict]:
@@ -961,7 +959,10 @@ def _load_weather_table(events: list[dict]) -> dict[tuple[str, str], dict]:
     90-fixture day, since most fixtures cluster into a handful of leagues/
     cities. Missing coordinate coverage (team outside TEAM_CITY) or any
     fetch failure simply omits that key — degrades to no weather for that
-    fixture, never fatal to acquisition."""
+    fixture, never fatal to acquisition. A per-event fetch/parse error is
+    caught and skips only that event, so one bad record can't blank out
+    weather for the rest of the slate (this loop runs before the
+    ThreadPoolExecutor below, so nothing else isolates it)."""
     if os.environ.get("ORACLE_FETCH_WEATHER", "off").strip().lower() != "on":
         return {}
     try:
@@ -970,7 +971,12 @@ def _load_weather_table(events: list[dict]) -> dict[tuple[str, str], dict]:
         from tools import fetch_weather as fw  # repo root on sys.path instead of tools/
 
     table: dict[tuple[str, str], dict] = {}
-    seen: set[tuple[float, float, str]] = set()
+    # Cache the FETCH RESULT (not just "already fetched") per (lat, lon,
+    # date) — two teams sharing a city (Inter/Milan, Roma/Lazio) must both
+    # get a table entry from the one shared network call, not just the
+    # first team processed. Keying only a "seen" set here previously caused
+    # the second team to silently get no weather at all.
+    fetched: dict[tuple[float, float, str], dict | None] = {}
     for ev in events:
         home = normalise(ev.get("home", ""))
         date_iso = (ev.get("kickoff_utc") or "")[:10]
@@ -980,19 +986,22 @@ def _load_weather_table(events: list[dict]) -> dict[tuple[str, str], dict]:
         if not coords:
             continue
         key = (coords[0], coords[1], date_iso)
-        if key in seen:
+        try:
+            if key not in fetched:
+                fetched[key] = fw.fetch_forecast(coords[0], coords[1], date_iso)
+            wx = fetched[key]
+            if wx is None:
+                continue
+            is_adverse = wx["precip_mm"] > fw.ADVERSE_PRECIP_MM or wx["wind_kph"] > fw.ADVERSE_WIND_KPH
+            table[(home, date_iso)] = {
+                "tempC": round(wx["temp_c"], 1),
+                "precipMm": round(wx["precip_mm"], 2),
+                "windKph": round(wx["wind_kph"], 1),
+                "isAdverse": is_adverse,
+            }
+        except Exception as exc:  # noqa: BLE001 — one bad event must not blank the slate
+            print(f"[weather] skipping {home} {date_iso}: {exc}", flush=True)
             continue
-        seen.add(key)
-        wx = fw.fetch_forecast(coords[0], coords[1], date_iso)
-        if wx is None:
-            continue
-        is_adverse = wx["precip_mm"] > ADVERSE_PRECIP_MM or wx["wind_kph"] > ADVERSE_WIND_KPH
-        table[(home, date_iso)] = {
-            "tempC": round(wx["temp_c"], 1),
-            "precipMm": round(wx["precip_mm"], 2),
-            "windKph": round(wx["wind_kph"], 1),
-            "isAdverse": is_adverse,
-        }
     return table
 
 

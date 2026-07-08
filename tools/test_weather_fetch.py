@@ -104,6 +104,18 @@ def test_fetch_forecast_network_error_returns_none(tmp_path, monkeypatch):
     assert fw.fetch_forecast(51.51, -0.11, "2026-07-10", throttle=0) is None
 
 
+def test_fetch_forecast_rejects_malformed_date_without_touching_network_or_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(fw, "CACHE_DIR", tmp_path)
+
+    def _boom(*a, **k):
+        raise AssertionError("urlopen should not be called for a malformed date")
+
+    monkeypatch.setattr(fw.urllib.request, "urlopen", _boom)
+    for bad_date in ["10/07/2026", "2026-07-10\n", "../../etc/passwd", "2026-07-10/../x", ""]:
+        assert fw.fetch_forecast(51.51, -0.11, bad_date, throttle=0) is None
+    assert list(tmp_path.iterdir()) == []
+
+
 # ── city_for_team ─────────────────────────────────────────────────────────────
 
 def test_city_for_team_known():
@@ -159,6 +171,55 @@ def test_load_weather_table_dedupes_same_city_and_date(monkeypatch):
     ]
     sf._load_weather_table(events)
     assert len(calls) == 1
+
+
+def test_load_weather_table_gives_every_team_sharing_a_city_a_table_entry(monkeypatch):
+    # BUG FIX regression: two different home teams resolving to the same
+    # (lat, lon) — e.g. Inter/Milan both play at San Siro — must BOTH get a
+    # table entry from the one shared fetch, not just whichever is
+    # processed first. The old "seen" dedup set skipped the table write
+    # entirely on a cache hit, silently dropping the second team's weather.
+    monkeypatch.setenv("ORACLE_FETCH_WEATHER", "on")
+    monkeypatch.setattr(fw, "city_for_team", lambda name: (45.48, 9.12))
+    calls = []
+
+    def _fetch(lat, lon, date_iso, **k):
+        calls.append((lat, lon, date_iso))
+        return {"temp_c": 20.0, "precip_mm": 0.0, "wind_kph": 10.0}
+
+    monkeypatch.setattr(fw, "fetch_forecast", _fetch)
+    events = [
+        {"home": "Inter", "kickoff_utc": "2026-07-10T14:00:00Z"},
+        {"home": "Milan", "kickoff_utc": "2026-07-10T19:00:00Z"},
+    ]
+    table = sf._load_weather_table(events)
+    assert len(calls) == 1
+    assert (sf.normalise("Inter"), "2026-07-10") in table
+    assert (sf.normalise("Milan"), "2026-07-10") in table
+    assert table[(sf.normalise("Inter"), "2026-07-10")] == table[(sf.normalise("Milan"), "2026-07-10")]
+
+
+def test_load_weather_table_one_bad_event_does_not_blank_the_rest(monkeypatch):
+    # Robustness regression: this loop runs before the ThreadPoolExecutor
+    # that isolates per-fixture failures elsewhere in this file, so an
+    # unhandled exception here would previously abort weather for the
+    # ENTIRE slate, not just the one bad event.
+    monkeypatch.setenv("ORACLE_FETCH_WEATHER", "on")
+    monkeypatch.setattr(fw, "city_for_team", lambda name: (51.51, -0.11) if name != sf.normalise("Bad FC") else (1.0, 1.0))
+
+    def _fetch(lat, lon, date_iso, **k):
+        if lat == 1.0:
+            raise RuntimeError("simulated Open-Meteo failure")
+        return {"temp_c": 15.0, "precip_mm": 0.0, "wind_kph": 5.0}
+
+    monkeypatch.setattr(fw, "fetch_forecast", _fetch)
+    events = [
+        {"home": "Bad FC", "kickoff_utc": "2026-07-10T14:00:00Z"},
+        {"home": "Arsenal", "kickoff_utc": "2026-07-10T19:00:00Z"},
+    ]
+    table = sf._load_weather_table(events)
+    assert (sf.normalise("Bad FC"), "2026-07-10") not in table
+    assert (sf.normalise("Arsenal"), "2026-07-10") in table
 
 
 def test_load_weather_table_marks_adverse_on_wind_or_precip(monkeypatch):
