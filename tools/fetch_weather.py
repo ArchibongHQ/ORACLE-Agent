@@ -239,6 +239,73 @@ def fetch_weather(lat: float, lon: float, date_iso: str, throttle: float) -> dic
     return result
 
 
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+
+def fetch_forecast(lat: float, lon: float, date_iso: str, throttle: float = 0.2) -> dict | None:
+    """PR-25: live match-day counterpart to fetch_weather() above — same disk
+    cache (shared CACHE_DIR, so a date that later falls into the archive API's
+    range never re-fetches), same response shape ({temp_c, precip_mm,
+    wind_kph}), but hits Open-Meteo's FORECAST endpoint instead of ARCHIVE.
+    The archive API only serves PAST dates (this script's original backfill
+    use case); today's/near-future kickoffs need the forecast API's 16-day
+    window instead. Returns None on any failure/no-data/date-out-of-range —
+    the caller degrades to "no weather for this fixture", never fatal."""
+    cache_path = CACHE_DIR / f"fc_{lat:.2f}_{lon:.2f}_{date_iso}.json"
+    if cache_path.exists():
+        try:
+            with open(cache_path, encoding="utf-8") as fh:
+                cached = json.load(fh)
+            if cached.get("_miss"):
+                return None
+            return cached
+        except Exception:
+            pass
+
+    url = (
+        f"{FORECAST_URL}?latitude={lat:.2f}&longitude={lon:.2f}"
+        f"&start_date={date_iso}&end_date={date_iso}"
+        f"&daily=temperature_2m_mean,precipitation_sum,wind_speed_10m_max&timezone=GMT"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "oracle-agent/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+        print(f"[weather] forecast fetch failed {lat:.2f},{lon:.2f} {date_iso}: {exc}")
+        return None
+    finally:
+        if throttle > 0:
+            time.sleep(throttle)
+
+    daily = payload.get("daily") or {}
+    temps = daily.get("temperature_2m_mean") or []
+    precs = daily.get("precipitation_sum") or []
+    winds = daily.get("wind_speed_10m_max") or []
+    if not temps or temps[0] is None:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as fh:
+            json.dump({"_miss": True}, fh)
+        return None
+
+    result = {
+        "temp_c": float(temps[0]),
+        "precip_mm": float(precs[0]) if precs and precs[0] is not None else 0.0,
+        "wind_kph": float(winds[0]) if winds and winds[0] is not None else 0.0,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as fh:
+        json.dump(result, fh)
+    return result
+
+
+def city_for_team(team_normalised: str) -> tuple[float, float] | None:
+    """PR-25: TEAM_CITY lookup for a name ALREADY run through the shared
+    normalise() — exposed so scrape_fixtures.py's live-weather block can
+    resolve coordinates without re-importing/duplicating TEAM_CITY."""
+    return TEAM_CITY.get(team_normalised)
+
+
 def write_output(rows: list[dict], out_path: Path, dry_run: bool) -> None:
     if dry_run:
         print(f"[weather] [dry-run] would write {len(rows)} rows")

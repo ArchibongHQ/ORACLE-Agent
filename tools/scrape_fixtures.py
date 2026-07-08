@@ -928,6 +928,82 @@ def _availability_for(table: dict[str, dict], team: str) -> Optional[dict]:
     return out
 
 
+# PR-25: match-day weather (tools/fetch_weather.py's forecast-endpoint half —
+# Open-Meteo, keyless, plain HTTP, disk-cached by (lat,lon,date) so a repeat
+# run on the same slate is free). Weather is regional/venue-level, keyed by
+# the HOME team's city only (one block per fixture, not per side) — the away
+# team plays wherever the home team's ground is.
+#
+# Gated by ORACLE_FETCH_WEATHER, DEFAULT OFF — NOT a cheap/harmless default-on
+# feature. Populating this table means fixtures.ts's toEngineWeather() starts
+# setting RunState.pipeline.fetched.weather, which is the ONLY gate on
+# @oracle/engine's applyEnvironmentalPenalties (execution/index.ts) — an
+# already-live, UNCONDITIONAL lambda adjustment (wind >18.5mph: -8%, rain
+# >5mm: -6%) that has been fully dormant since it was ported from the
+# original monolith, simply because nothing ever populated fetched.weather
+# until this PR. Turning this flag on is therefore a real, immediate pricing
+# change on every fixture with adverse conditions, not just a new report
+# column — matches the "no λ change without backtest" caveat in the PR-25
+# plan. Flip to "on" only as a deliberate owner decision.
+#
+# Built as a table BEFORE the threaded enrichment pool starts (same
+# convention as xg/availability) rather than fetching per-event inside the
+# pool, so the sequential, throttled, disk-cached fetch loop below never
+# stacks concurrent requests against Open-Meteo from multiple worker threads
+# at once.
+ADVERSE_PRECIP_MM = 5.0
+ADVERSE_WIND_KPH = 50.0
+
+
+def _load_weather_table(events: list[dict]) -> dict[tuple[str, str], dict]:
+    """One Open-Meteo forecast call per DISTINCT (home-team-city, kickoff
+    date) pair across today's slate — typically a few dozen even on a
+    90-fixture day, since most fixtures cluster into a handful of leagues/
+    cities. Missing coordinate coverage (team outside TEAM_CITY) or any
+    fetch failure simply omits that key — degrades to no weather for that
+    fixture, never fatal to acquisition."""
+    if os.environ.get("ORACLE_FETCH_WEATHER", "off").strip().lower() != "on":
+        return {}
+    try:
+        import fetch_weather as fw
+    except ImportError:
+        from tools import fetch_weather as fw  # repo root on sys.path instead of tools/
+
+    table: dict[tuple[str, str], dict] = {}
+    seen: set[tuple[float, float, str]] = set()
+    for ev in events:
+        home = normalise(ev.get("home", ""))
+        date_iso = (ev.get("kickoff_utc") or "")[:10]
+        if not home or not date_iso:
+            continue
+        coords = fw.city_for_team(home)
+        if not coords:
+            continue
+        key = (coords[0], coords[1], date_iso)
+        if key in seen:
+            continue
+        seen.add(key)
+        wx = fw.fetch_forecast(coords[0], coords[1], date_iso)
+        if wx is None:
+            continue
+        is_adverse = wx["precip_mm"] > ADVERSE_PRECIP_MM or wx["wind_kph"] > ADVERSE_WIND_KPH
+        table[(home, date_iso)] = {
+            "tempC": round(wx["temp_c"], 1),
+            "precipMm": round(wx["precip_mm"], 2),
+            "windKph": round(wx["wind_kph"], 1),
+            "isAdverse": is_adverse,
+        }
+    return table
+
+
+def _weather_for(table: dict[tuple[str, str], dict], home_team: str, kickoff_utc: str) -> Optional[dict]:
+    """Look up today's fixture weather by (normalised home team, date)."""
+    date_iso = (kickoff_utc or "")[:10]
+    if not date_iso:
+        return None
+    return table.get((normalise(home_team), date_iso))
+
+
 def _sb_get(url: str) -> Optional[dict]:
     try:
         req = urllib.request.Request(url, headers=_SB_HDR)
@@ -2087,6 +2163,9 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
 
     xg_table = _load_xg_table()
     availability_table = _load_availability_table()
+    # PR-25: sequential + disk-cached, so this runs to completion BEFORE the
+    # threaded pool below starts — see _load_weather_table's docstring for why.
+    weather_table = _load_weather_table(events)
 
     def _xg_block(ev: dict) -> dict:
         return {
@@ -2100,24 +2179,28 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
             "away": _availability_for(availability_table, ev.get("away", "")),
         }
 
+    def _weather_block(ev: dict) -> Optional[dict]:
+        return _weather_for(weather_table, ev.get("home", ""), ev.get("kickoff_utc", ""))
+
     def _worker(ev: dict) -> dict:
         eid = ev.get("eventId", "")
         xg = _xg_block(ev)
         availability = _availability_block(ev)
+        weather = _weather_block(ev)
         if not eid:
             return {
                 **ev, "odds": None, "stats": None, "statscoverage": None,
-                "xg": xg, "availability": availability,
+                "xg": xg, "availability": availability, "weather": weather,
             }
         try:
             detail = _fetch_fixture_detail(
                 eid, ev.get("kickoff_utc"), ev.get("home", ""), ev.get("away", "")
             )
-            return {**ev, **detail, "xg": xg, "availability": availability}
+            return {**ev, **detail, "xg": xg, "availability": availability, "weather": weather}
         except Exception:
             return {
                 **ev, "odds": None, "stats": None, "statscoverage": None,
-                "xg": xg, "availability": availability,
+                "xg": xg, "availability": availability, "weather": weather,
             }
 
     enriched: list[dict] = [{}] * len(events)
@@ -2134,6 +2217,7 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
                     "odds": None, "stats": None, "statscoverage": None,
                     "xg": _xg_block(events[idx]),
                     "availability": _availability_block(events[idx]),
+                    "weather": _weather_block(events[idx]),
                 }
             done += 1
             if done % 50 == 0:
