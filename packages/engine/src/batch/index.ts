@@ -813,6 +813,15 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           const effectiveEligible = executedEligible ?? eligible;
           const mlFilter = { mlAllowed: decisionCtx.mlAllowed, drawRisk: decisionCtx.drawRisk };
           const decision = validateSelection(rawDecision, effectiveEligible, mlFilter);
+          // PR-23 review fix: effectiveEligible[0] is only the true top-EV pick
+          // in "full" scope (direct-draft-forcing). Under "unmapped" scope the
+          // executor candidate is spliced to index 0 regardless of its own EV
+          // rank (decision/index.ts), so array position no longer implies EV
+          // rank. Sort explicitly wherever "the top pick" is needed instead of
+          // trusting array order; effectiveEligible itself stays untouched
+          // (unsorted) since validateSelection/eligibleBets consumers below
+          // don't assume any particular order.
+          const evSortedEligible = [...effectiveEligible].sort((a, b) => b.ev - a.ev);
 
           // B2: optional CVL adversarial verification
           let cvlStatus: "APPROVED" | "OVERRIDE" | "VETO" | "SKIPPED" | undefined;
@@ -831,7 +840,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
               rawDecision.grade !== "NO_EDGE"
             ) {
               const { callVerification } = await import("@oracle/llm");
-              const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(effectiveEligible.slice(0, 3))}`;
+              const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(evSortedEligible.slice(0, 3))}`;
               const llmCtx = {
                 config: {
                   claudeApiKey: config.claudeApiKey,
@@ -854,7 +863,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           }
 
           // Log when LLM disagrees with deterministic top (SkillOpt training signal)
-          await logPickDisagreement(deps.storage, rawDecision, effectiveEligible[0] ?? null, {
+          await logPickDisagreement(deps.storage, rawDecision, evSortedEligible[0] ?? null, {
             ...job,
             fixtureId,
           });
