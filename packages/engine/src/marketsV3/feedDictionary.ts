@@ -255,10 +255,22 @@ export function routeMarket(entry: AllMarketEntry): V3Routing {
       if (isHalf) return { engine: "half", family, half: name.startsWith("2nd") ? 2 : 1 };
       return { engine: "exotics", family, from, to };
     }
-    case "exact_goals":
+    case "exact_goals": {
+      if (isHalf) return { engine: "half", family, half: name.startsWith("2nd") ? 2 : 1 };
+      // "Home/Away Team Exact Goals" (catalog ids 23/24) are team-scoped —
+      // must price P(side>=N), not the match-total P(home+away>=N) the
+      // unscoped path below computes. Same CC_TEAM_SIDE_RE signal PR-22 uses
+      // for corners/cards team-total routing.
+      const side = CC_TEAM_SIDE_RE.test(name)
+        ? name.startsWith("home")
+          ? "home"
+          : "away"
+        : undefined;
+      return { engine: "exotics", family, side };
+    }
     case "odd_even":
       if (isHalf) return { engine: "half", family, half: name.startsWith("2nd") ? 2 : 1 };
-      return { engine: family === "odd_even" ? "totals" : "exotics", family };
+      return { engine: "totals", family };
     case "team_total": {
       const total = num(spec.get("total"));
       if (isHalf) return { engine: "half", family, half: name.startsWith("2nd") ? 2 : 1, total };

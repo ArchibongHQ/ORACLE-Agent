@@ -312,15 +312,40 @@ describe("priceExoticsOutcome — exact-goals & multigoals (PR-3)", () => {
     expect(price?.p).toBeCloseTo(expectedTail, 10);
   });
 
-  it('prices "3+" (catalog ids 23/24, Home/Away Team Exact Goals) as an open-ended tail too', () => {
+  it('prices "3+" (catalog id 22, match-total Exact Goals) as an open-ended tail over the WHOLE match', () => {
     const expected = sumWhere(ctx.statsGrid, (h, a) => h + a >= 3);
     const price = priceExoticsOutcome(
       ctx,
       { engine: "exotics", family: "exact_goals" },
-      "Home Team Exact Goals",
+      "Exact Goals",
       "3+"
     );
     expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it('BUG FIX regression: "Home/Away Team Exact Goals" (catalog ids 23/24) prices only that TEAM\'s axis, not the match total', () => {
+    const expectedHome = sumWhere(ctx.statsGrid, (h) => h >= 3);
+    const expectedAway = sumWhere(ctx.statsGrid, (_h, a) => a >= 3);
+    const expectedMatchTotal = sumWhere(ctx.statsGrid, (h, a) => h + a >= 3);
+    // The team-axis and match-total tails must actually differ for this test
+    // to prove anything (true on any non-degenerate grid).
+    expect(expectedHome).not.toBeCloseTo(expectedMatchTotal, 5);
+
+    const homePrice = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals", side: "home" },
+      "Home Team Exact Goals",
+      "3+"
+    );
+    expect(homePrice?.p).toBeCloseTo(expectedHome, 10);
+
+    const awayPrice = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals", side: "away" },
+      "Away Team Exact Goals",
+      "3+"
+    );
+    expect(awayPrice?.p).toBeCloseTo(expectedAway, 10);
   });
 
   it('prices compound "1-3+" (catalog id 450002, Goal Bounds) as P(total>=1) — the trailing + on the upper end makes it open-ended', () => {
@@ -705,6 +730,22 @@ describe("feedDictionary routing (§0.2)", () => {
   it("routes a handicap score= specifier (European) distinctly from Asian hcp=", () => {
     const r = routeMarket(entry({ id: "14", name: "Handicap", specifier: "hcp=0:1" }));
     expect(r).toMatchObject({ engine: "result", family: "handicap", hcpScore: [0, 1] });
+  });
+
+  it('BUG FIX regression: routes "Home/Away Team Exact Goals" (ids 23/24) with side set, plain "Exact Goals" (id 22) without', () => {
+    expect(routeMarket(entry({ id: "23", name: "Home Team Exact Goals" }))).toMatchObject({
+      engine: "exotics",
+      family: "exact_goals",
+      side: "home",
+    });
+    expect(routeMarket(entry({ id: "24", name: "Away Team Exact Goals" }))).toMatchObject({
+      engine: "exotics",
+      family: "exact_goals",
+      side: "away",
+    });
+    const matchTotal = routeMarket(entry({ id: "21", name: "Exact Goals" }));
+    expect(matchTotal).toMatchObject({ engine: "exotics", family: "exact_goals" });
+    expect((matchTotal as { side?: string }).side).toBeUndefined();
   });
 
   it("skips player-market and routes plain corners/cards O/U to their §3.9 engines (PR-6)", () => {
