@@ -290,6 +290,21 @@ export async function runWeeklyKaggleRefresh(): Promise<void> {
     "--player-scores-dir",
     ".tmp/kaggle/player-scores",
   ]);
+  // PR-25: match-day squad availability (availIdxHome/Away, keyPlayerHome/Away
+  // → the Wave-2 availability→λ multipliers) derived from the SAME
+  // player-scores snapshot fetch_transfermarkt just refreshed above — MUST run
+  // after it, same dependency fetch_squad_availability.py's own docstring
+  // documents. Previously only ran from a daily acquire_daily.py call gated
+  // behind ORACLE_FETCH_SQUAD_AVAILABILITY=on (default off, so it never ran in
+  // production — availability_features.csv sat stale for weeks). The
+  // underlying Kaggle dataset only changes weekly anyway, so re-deriving it
+  // daily would just be redundant CPU/IO for a byte-identical result between
+  // Saturdays — the weekly cadence is the correct one, not just the cheap one.
+  // No env flag here, matching every other unconditional fetcher in this list.
+  await runKaggleTool("squad-availability", "fetch_squad_availability.py", [
+    "--kaggle-dir",
+    ".tmp/kaggle/player-scores",
+  ]);
   await runKaggleTool("xg", "fetch_xg.py", ["--kaggle-ppda-dir", ".tmp/kaggle/xg-ppda"]);
   // build_xg_table MUST run AFTER both fetch_fbref (adds xG columns) and fetch_xg
   // (Understat per-match CSVs) — it merges both into the rolling team-xG prior,
