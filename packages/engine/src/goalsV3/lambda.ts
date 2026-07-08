@@ -179,7 +179,14 @@ export interface V3Lambdas {
   hfaApplied?: boolean;
 }
 
-const SHRINK_N = 8;
+/** Exported: edgeGate.ts's graduated xG-missing penalty (Desktop-audit concept
+ *  #3) uses this same threshold to decide whether a fixture's raw-goals
+ *  sample is already large enough that missing xG costs less — n>=SHRINK_N
+ *  is exactly the point shrink() below stops pulling lambda toward the
+ *  league mean, i.e. "the raw-goals estimate is already fully trusted on its
+ *  own," which is the same condition that makes losing xG's small-sample
+ *  smoothing benefit less costly. */
+export const SHRINK_N = 8;
 /** Desktop-audit concept #2 (accepted): tournament fixtures (World Cup,
  *  continental championships, etc.) have a much smaller natural sample size
  *  per team than a domestic league season — a team may only ever play 5-7

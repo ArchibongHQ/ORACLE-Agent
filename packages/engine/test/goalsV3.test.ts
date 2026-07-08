@@ -15,6 +15,7 @@ import {
   shrink,
   V3_LEAGUE_BASELINES,
   V3_LEAGUE_BASELINES_BY_ID,
+  V3_PENALTY_PTS,
   V3_TIER_HEIGHTENED_FLOOR,
   type V3AnalyzeInput,
   v3LeaguePerTeamAvg,
@@ -527,6 +528,16 @@ describe("devigOU + v3PenaltyPts + gateV3Edge (§4)", () => {
       10
     );
     expect(v3PenaltyPts({})).toBe(0);
+  });
+
+  it("Desktop-audit fix: xgMissingLargeSample is a lighter -1pt penalty than xgMissing's -2pt", () => {
+    expect(v3PenaltyPts({ xgMissing: true })).toBeCloseTo(0.02, 10);
+    expect(v3PenaltyPts({ xgMissingLargeSample: true })).toBeCloseTo(0.01, 10);
+    // Same tier as xgEstimated, not additive with it (batch/index.ts sets them
+    // mutually exclusively — this just confirms the point VALUES match, which
+    // is the graduated-penalty intent: a large raw-goals sample without xG
+    // costs the same as having AI-Mode-estimated xG).
+    expect(V3_PENALTY_PTS.xgMissingLargeSample).toBe(V3_PENALTY_PTS.xgEstimated);
   });
 
   it("tiers adjusted edge at the 5/7/10pt boundaries", () => {

@@ -155,6 +155,7 @@ function round3(v: number): number {
  *  that penalizes the edge can never silently skip the rationale. */
 const LIMIT_TEXT: Record<keyof V3PenaltyFlags, string> = {
   xgMissing: "no xG",
+  xgMissingLargeSample: "no xG (large raw-goals sample)",
   xgEstimated: "xG estimated (AI-Mode)",
   h2hMissing: "no H2H",
   lineupsUnconfirmed: "lineups unconfirmed",

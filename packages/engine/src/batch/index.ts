@@ -11,6 +11,7 @@ import {
 } from "../decision/index.js";
 import type { MarketExecutorRiskParams } from "../decision/marketExecutor.js";
 import { ExecutionEngine } from "../execution/index.js";
+import { SHRINK_N } from "../goalsV3/lambda.js";
 import { devigThreeWay, FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import {
   analyzeFixtureMarketsV3,
@@ -129,7 +130,15 @@ function buildV3Input(
     // PR-22: shots-on-target stats — same withhold-on-off rollback surface.
     ...(config?.v3ShotsOu !== false ? { sotForH: t.sotForH, sotForA: t.sotForA } : {}),
     penaltyFlags: {
-      xgMissing: t.xgMode == null,
+      // Desktop-audit concept #3: graduated xG-missing penalty. Mutually
+      // exclusive with xgMissingLargeSample — full -2pt only when the
+      // raw-goals sample is ALSO thin (n<SHRINK_N either side); once both
+      // sides clear SHRINK_N the raw-goals lambda is already fully trusted
+      // (shrink() applies zero pull toward the league mean), so losing xG's
+      // smoothing costs less: -1pt, same tier as xgEstimated.
+      xgMissing: t.xgMode == null && ((t.nHome ?? 0) < SHRINK_N || (t.nAway ?? 0) < SHRINK_N),
+      xgMissingLargeSample:
+        t.xgMode == null && (t.nHome ?? 0) >= SHRINK_N && (t.nAway ?? 0) >= SHRINK_N,
       xgEstimated: t.xgMode === "estimated",
       h2hMissing: !((h2hBlock?.total ?? 0) > 0),
       lineupsUnconfirmed: !hasLineups,
