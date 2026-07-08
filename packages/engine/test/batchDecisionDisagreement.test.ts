@@ -118,5 +118,9 @@ describe("logPickDisagreement — compares against the true top-EV pick, not arr
     expect(log.some((e) => e.type === "LLM_DISAGREE")).toBe(false);
 
     runSpy.mockRestore();
-  });
+  }, 20_000); // CI observed >5s: vi.mock's importOriginal() loads decision/index.ts's real
+  // module graph (this file is the ONLY one mocking it), and that one-time transform/eval
+  // cost lands entirely on this file's single test instead of amortizing across many tests
+  // the way batch.test.ts's 31 tests do. Consistently 800-1200ms locally across repeated
+  // runs — not a hang, just cold-start cost a generous CI-safe timeout absorbs.
 });
