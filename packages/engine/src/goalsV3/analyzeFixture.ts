@@ -75,6 +75,9 @@ export interface V3AnalyzeInput {
   venueSplitUsed?: boolean;
   /** λ v5 independent-side xG blend (ORACLE_V3_LAMBDA_V5). Default on. */
   lambdaV5?: boolean;
+  /** Lake-computed league baselines (goals/game by league name) — prefer over
+   *  the static V3_LEAGUE_BASELINES table when present (audit P0-2). */
+  lakeBaselines?: Record<string, number>;
   /** v4 heightened gates: 8pt pass floor under HFA/hit-rate uncertainty (PR-3). */
   heightened?: boolean;
   /** v4 §0.3 per-selection hit-rates (PR-4) — overrides `penaltyFlags.hitRateMissing`
@@ -200,6 +203,7 @@ export function analyzeGoalsFixtureV3(input: V3AnalyzeInput): V3FixtureResult | 
     hfa: input.hfa,
     venueSplitUsed: input.venueSplitUsed,
     lambdaV5: input.lambdaV5,
+    lakeBaselines: input.lakeBaselines,
   });
   if (!lambdas) return null;
 

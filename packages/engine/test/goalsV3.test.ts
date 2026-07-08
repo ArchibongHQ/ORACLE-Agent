@@ -242,6 +242,60 @@ describe("computeV3Lambdas (§3.1)", () => {
     });
   });
 
+  // [audit fix, P0-2 step 2] Lake-computed baselines (goals/game by league
+  // name) injected via config override the static table but rank below the
+  // manual ID-keyed collision overrides; undefined ⇒ static behavior.
+  describe("v3LeaguePerTeamAvg: lake-computed baseline override", () => {
+    const lake = { "Premier League": 3.0 }; // per-game -> 1.5 per-team
+
+    it("prefers a lake baseline over the static name table", () => {
+      expect(v3LeaguePerTeamAvg("Premier League", null, lake)).toBeCloseTo(1.5, 5);
+    });
+
+    it("ignores the lake map for a league it does not contain (static fallback)", () => {
+      expect(v3LeaguePerTeamAvg("Premier League", null, { "La Liga": 4.0 })).toBeCloseTo(
+        2.85 / 2,
+        5
+      );
+    });
+
+    it("ranks the manual ID-keyed override above the lake map", () => {
+      const ID = "sr:tournament:__lake_test__";
+      V3_LEAGUE_BASELINES_BY_ID[ID] = 4.0; // per-team 2.0 — must beat lake's 1.5
+      try {
+        expect(v3LeaguePerTeamAvg("Premier League", ID, lake)).toBeCloseTo(2.0, 5);
+      } finally {
+        delete V3_LEAGUE_BASELINES_BY_ID[ID];
+      }
+    });
+
+    it("skips non-positive/non-finite lake values (static fallback)", () => {
+      expect(v3LeaguePerTeamAvg("Premier League", null, { "Premier League": 0 })).toBeCloseTo(
+        2.85 / 2,
+        5
+      );
+      expect(
+        v3LeaguePerTeamAvg("Premier League", null, {
+          "Premier League": Number.NaN,
+        })
+      ).toBeCloseTo(2.85 / 2, 5);
+    });
+
+    it("computeV3Lambdas threads opts.lakeBaselines through to the L used", () => {
+      const result = computeV3Lambdas(
+        {
+          league: "Premier League",
+          homeScoredPer90: 1.7,
+          homeConcededPer90: 1.0,
+          awayScoredPer90: 1.2,
+          awayConcededPer90: 1.5,
+        },
+        { xgBlend: false, lakeBaselines: lake }
+      );
+      expect(result?.leaguePerTeamAvg).toBeCloseTo(1.5, 5);
+    });
+  });
+
   // [audit fix, P0-2] λ v5: each side blends independently with its own xG
   // cross-pair, instead of requiring both sides to have one.
   describe("λ v5 — independent-side xG blend (xgBlendedSides)", () => {

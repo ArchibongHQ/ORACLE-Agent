@@ -62,6 +62,7 @@ Implement `all-markets-analysis-prompt-v3` (owner-supplied spec) as deterministi
 | `ENABLE_LLM_MARKET_EXECUTOR` | `false` | Legacy Q4 catalogue-dump executor — auto-suppressed per-fixture when v3 supplies that fixture's candidates (P4); still fires normally when v3 is off/shadow/declined |
 | `ORACLE_V3_HFA` | `1.10` | v4 §3.1a home-field-advantage multiplier in the λ core. `1.0` disables (cold-deploy) |
 | `ORACLE_V3_VENUE_SPLIT` | `off` | `on` when input λ already carries venue splits (suppresses the HFA multiplier) |
+| `ORACLE_V3_LAKE_BASELINES` | `off` | Audit P0-2: `on` prefers lake-computed per-league goal baselines (from `tools/compute_league_baselines.py` → `.tmp/oracle-store/league_baselines.json`) over the static `V3_LEAGUE_BASELINES` table in `lambda.ts`; static stays the fallback for absent leagues. Fails open to static if the JSON is missing/unusable. Run the tool's `--report` first to see the pricing diff |
 | `ORACLE_V3_GATES_V4` | `on` | v4 heightened EV bars, exact/multigoals odds-band classing, slate sanity checks. `off` restores v3 gate semantics |
 | `ORACLE_V3_COMPLETENESS_V4` | `on` | Demotes O/U hit-rate out of the mandatory completeness block (critical-tier penalty, not discard) + per-selection line hit-rates. `off` restores v3 |
 | `ORACLE_MARKETS_V3_GATE` | `on` | PR-5a slate pre-filter over the daily slate before the chunk loop (fail-open). `off` analyzes the ungated slate |

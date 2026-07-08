@@ -109,6 +109,9 @@ export interface V3AllMarketsInput {
   venueSplitUsed?: boolean;
   /** λ v5 independent-side xG blend (ORACLE_V3_LAMBDA_V5). Default on. */
   lambdaV5?: boolean;
+  /** Lake-computed league baselines (goals/game by league name) — prefer over
+   *  the static V3_LEAGUE_BASELINES table when present (audit P0-2). */
+  lakeBaselines?: Record<string, number>;
   /** v4 heightened gates: stricter bars, X excluded (PR-3). */
   heightened?: boolean;
   /** Per-league dynamic rho refit from the calibration ledger's observed
@@ -239,6 +242,7 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     hfa: input.hfa,
     venueSplitUsed: input.venueSplitUsed,
     lambdaV5: input.lambdaV5,
+    lakeBaselines: input.lakeBaselines,
   });
   if (!lambdas) return null;
 

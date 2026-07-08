@@ -260,6 +260,13 @@ export interface OracleConfig {
   // shrinkage. Default true. Set ORACLE_V3_LAMBDA_V5=off to restore the prior
   // both-sides-only, unshrunk xG blend.
   v3LambdaV5?: boolean;
+  // Lake-computed league baselines (goals/game keyed by canonical league name),
+  // from tools/compute_league_baselines.py via .tmp/oracle-store/league_baselines
+  // .json. When present, computeV3Lambdas prefers these over the static
+  // V3_LEAGUE_BASELINES table (static stays the fallback for absent leagues) —
+  // the audit P0-2 staleness fix. Loaded only when ORACLE_V3_LAKE_BASELINES is
+  // on; undefined otherwise ⇒ byte-identical to the static-only behavior.
+  v3LakeBaselines?: Record<string, number>;
   // v4 gate deltas: heightened EV bars (S {5%,7%}, M {8%}, L {9%,20%}, X excluded),
   // exact-goals/multigoals routing + odds-band classing, sample-scaled empirical blend,
   // sanity checks. Default true. Set ORACLE_V3_GATES_V4=off to restore v3 semantics.

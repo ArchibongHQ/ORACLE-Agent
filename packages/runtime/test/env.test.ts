@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildConfig } from "../src/env.js";
+import { buildConfig, loadLakeBaselines } from "../src/env.js";
 
 describe("buildConfig maxFixturesPerRun", () => {
   it("defaults to 50 when unset", () => {
@@ -211,5 +214,57 @@ describe("buildConfig llmExecutorScope + enableLlmMarketExecutor (PR-23 tri-stat
 
   it('ENABLE_LLM_MARKET_EXECUTOR="false" resolves to "off" (not "full" — only the literal "true" does)', () => {
     expect(buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "false" }).llmExecutorScope).toBe("off");
+  });
+});
+
+describe("loadLakeBaselines (audit P0-2)", () => {
+  const withTempJson = (content: string, fn: (path: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "lake-baselines-"));
+    const path = join(dir, "league_baselines.json");
+    writeFileSync(path, content, "utf8");
+    try {
+      fn(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("returns the byName map, keeping only positive-finite values", () => {
+    withTempJson(
+      JSON.stringify({
+        byName: { "Premier League": 2.98, "La Liga": 2.58, Bad: 0, Nan: "x" },
+      }),
+      (path) => {
+        expect(loadLakeBaselines(path)).toEqual({
+          "Premier League": 2.98,
+          "La Liga": 2.58,
+        });
+      }
+    );
+  });
+
+  it("returns undefined for a missing file", () => {
+    expect(loadLakeBaselines("/no/such/league_baselines.json")).toBeUndefined();
+  });
+
+  it("returns undefined for malformed JSON", () => {
+    withTempJson("{ not json", (path) => {
+      expect(loadLakeBaselines(path)).toBeUndefined();
+    });
+  });
+
+  it("returns undefined when byName is absent or has no usable values", () => {
+    withTempJson(JSON.stringify({ detail: {} }), (path) => {
+      expect(loadLakeBaselines(path)).toBeUndefined();
+    });
+    withTempJson(JSON.stringify({ byName: { A: 0, B: -1 } }), (path) => {
+      expect(loadLakeBaselines(path)).toBeUndefined();
+    });
+  });
+});
+
+describe("buildConfig v3LakeBaselines gating", () => {
+  it("is undefined by default (flag off ⇒ static table only)", () => {
+    expect(buildConfig({}).v3LakeBaselines).toBeUndefined();
   });
 });

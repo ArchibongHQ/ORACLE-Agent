@@ -77,10 +77,26 @@ export const V3_LEAGUE_BASELINES_BY_ID: Record<string, number> = {};
  *  ID-keyed table (when leagueId is known) → v3 spec name table → engine
  *  LEAGUE_PARAMS (homeAvg + awayAvg is the league's per-game total) → 2.60
  *  default. */
-export function v3LeaguePerTeamAvg(league: string, leagueId?: string | null): number {
+export function v3LeaguePerTeamAvg(
+  league: string,
+  leagueId?: string | null,
+  lakeBaselines?: Record<string, number> | null
+): number {
   if (leagueId) {
     const byId = V3_LEAGUE_BASELINES_BY_ID[leagueId];
     if (byId) return byId / 2;
+  }
+  // Lake-computed baseline (goals/game keyed by league name, from
+  // tools/compute_league_baselines.py) when supplied — the audit P0-2 refresh
+  // path. Ranks below the manual ID-keyed collision overrides (those are
+  // deliberate, name-lookup can't disambiguate a collision) but ABOVE the
+  // static spec table, so a stale hardcoded value can't shadow a fresh lake
+  // figure; the static table stays the fallback for leagues absent from the
+  // lake. Injected via config (ORACLE_V3_LAKE_BASELINES, default off), so
+  // undefined ⇒ byte-identical to the prior static-only behavior.
+  if (lakeBaselines) {
+    const lake = lakeBaselines[league];
+    if (typeof lake === "number" && Number.isFinite(lake) && lake > 0) return lake / 2;
   }
   const spec = V3_LEAGUE_BASELINES[league];
   if (spec) return spec / 2;
@@ -210,9 +226,15 @@ function shrink(lambda: number, n: number | null | undefined, L: number): number
  *  discarded such fixtures already. */
 export function computeV3Lambdas(
   input: V3LambdaInput,
-  opts: { xgBlend?: boolean; venueSplitUsed?: boolean; hfa?: number; lambdaV5?: boolean } = {}
+  opts: {
+    xgBlend?: boolean;
+    venueSplitUsed?: boolean;
+    hfa?: number;
+    lambdaV5?: boolean;
+    lakeBaselines?: Record<string, number> | null;
+  } = {}
 ): V3Lambdas | null {
-  const L = v3LeaguePerTeamAvg(input.league, input.leagueId);
+  const L = v3LeaguePerTeamAvg(input.league, input.leagueId, opts.lakeBaselines);
 
   let method: V3Lambdas["method"] = "multiplicative";
   let rawH = multiplicativeLambda(input.homeScoredPer90, input.awayConcededPer90, L);

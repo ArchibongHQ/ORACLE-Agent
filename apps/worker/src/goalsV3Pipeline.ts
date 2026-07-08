@@ -233,6 +233,9 @@ function buildGoalsV3Input(
     // pre-existing gap (goals-only fixtures get no HFA term at all) outside
     // this fix's scope; flagging for a follow-up rather than fixing inline.
     lambdaV5: config.v3LambdaV5,
+    // Lake-computed league baselines (audit P0-2) — undefined unless
+    // ORACLE_V3_LAKE_BASELINES is on.
+    lakeBaselines: config.v3LakeBaselines,
     heightened: gating.heightened,
     lineHitRates: deriveLineHitRates(detail),
     dynamicRho: gating.dynamicRho,
