@@ -257,15 +257,24 @@ export function routeMarket(entry: AllMarketEntry): V3Routing {
     }
     case "exact_goals": {
       if (isHalf) return { engine: "half", family, half: name.startsWith("2nd") ? 2 : 1 };
-      // "Home/Away Team Exact Goals" (catalog ids 23/24) are team-scoped —
-      // must price P(side>=N), not the match-total P(home+away>=N) the
-      // unscoped path below computes. Same CC_TEAM_SIDE_RE signal PR-22 uses
-      // for corners/cards team-total routing.
+      // Team-scoped exact_goals variants use two different catalog naming
+      // conventions: a "Home/Away Team ..." PREFIX (ids 23/24, same
+      // CC_TEAM_SIDE_RE signal PR-22 uses for corners/cards team totals) and
+      // a "... - Home/Away" SUFFIX (ids 450002/450003 "Goal Bounds -
+      // Home/Away", 450005/450006 "Excluded Goals - Home/Away"). Both must
+      // price P(side>=N), not the match-total P(home+away>=N) the unscoped
+      // path below computes — missing either convention silently falls
+      // through to match-total pricing (the review-caught ~1.69x
+      // overstatement this side-scoping exists to fix).
       const side = CC_TEAM_SIDE_RE.test(name)
         ? name.startsWith("home")
           ? "home"
           : "away"
-        : undefined;
+        : name.endsWith(" - home")
+          ? "home"
+          : name.endsWith(" - away")
+            ? "away"
+            : undefined;
       return { engine: "exotics", family, side };
     }
     case "odd_even":
