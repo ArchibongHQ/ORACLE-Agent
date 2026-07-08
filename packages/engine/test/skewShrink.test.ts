@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { AllMarketsSanityInput, V3SanityResult } from "../src/marketsV3/sanity.js";
 import {
   formatSkewShrinkShadow,
-  shadowSkewShrink,
   SKEW_SHRINK_FRACTION_DEFAULT,
+  shadowSkewShrink,
 } from "../src/marketsV3/skewShrink.js";
-import type { AllMarketsSanityInput, V3SanityResult } from "../src/marketsV3/sanity.js";
 
 function assessment(over: Partial<AllMarketsSanityInput> = {}): AllMarketsSanityInput {
   return {
@@ -132,6 +132,58 @@ describe("shadowSkewShrink", () => {
     );
     expect(result.shrinkFraction).toBe(SKEW_SHRINK_FRACTION_DEFAULT);
     expect(result.candidates[0]!.shrunkAdjustedEdge).toBeCloseTo(0.08 - 0.1 * 0.35, 10);
+  });
+
+  it("review fix: excludes an ambiguous 'Home or Away' double-chance cover from result_skew_home — sideOfDesc() returns null for it, same as sanity.ts's own skew tally", () => {
+    // Real production desc (SportyBet 12-cover), family double_chance is in
+    // RESULT_FAMILIES. Before reusing sideOfDesc, a bare /\bhome\b/i regex
+    // matched this too, sweeping in a pick sanity.ts itself excludes from
+    // the home-skew population.
+    const result = shadowSkewShrink(
+      [
+        assessment({
+          family: "double_chance",
+          desc: "Home or Away",
+          rawEdge: 0.1,
+          adjustedEdge: 0.08,
+          cls: "M",
+        }),
+      ],
+      sanity(["result_skew_home"]),
+      0.5
+    );
+    expect(result.candidates).toEqual([]);
+  });
+
+  it("does not demote exactly at the class-gate boundary, matching evGate.ts's >= convention", () => {
+    // cls M minAdjEdge=0.05. rawEdge=0.1, adjustedEdge=0.085, shrink=0.35
+    // -> shrunkAdjustedEdge = 0.085 - 0.1*0.35 = 0.05 exactly.
+    const result = shadowSkewShrink(
+      [assessment({ rawEdge: 0.1, adjustedEdge: 0.085, cls: "M" })],
+      sanity(["result_skew_home"]),
+      0.35
+    );
+    expect(result.candidates[0]!.shrunkAdjustedEdge).toBeCloseTo(0.05, 10);
+    expect(result.candidates[0]!.wouldBeDemoted).toBe(false);
+  });
+
+  it("accumulates candidates from two simultaneous flags (result_skew_home + totals_skew_over) without duplication or cross-family interference", () => {
+    const result = shadowSkewShrink(
+      [
+        assessment({ family: "dnb", desc: "Home DNB", rawEdge: 0.1, adjustedEdge: 0.08, cls: "M" }),
+        assessment({
+          family: "goals_ou",
+          desc: "Over 2.5",
+          rawEdge: 0.1,
+          adjustedEdge: 0.02,
+          cls: "M",
+        }),
+      ],
+      sanity(["result_skew_home", "totals_skew_over"])
+    );
+    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates.filter((c) => c.desc === "Home DNB")).toHaveLength(1);
+    expect(result.candidates.filter((c) => c.desc === "Over 2.5")).toHaveLength(1);
   });
 });
 

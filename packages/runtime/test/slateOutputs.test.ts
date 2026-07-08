@@ -103,6 +103,77 @@ describe("buildMarketsV3SlateOutputs", () => {
     expect(out.sanityLine.length).toBeGreaterThan(0);
   });
 
+  it("wires shadowSkewShrink end-to-end: a real skewed slate produces a non-null skewShrinkLine, an unskewed one leaves it null", () => {
+    const homeDnb = (adjustedEdge: number) => [
+      { family: "dnb", desc: "Home DNB", outcome: "done", rawEdge: 0.1, adjustedEdge, cls: "M" },
+    ];
+    // 4/5 "done" dnb picks lean Home (80% >= the 70% SKEW_THRESHOLD) -> result_skew_home
+    // fires. Each Home pick's adjustedEdge (0.08) shrinks to 0.08 - 0.1*0.35 = 0.045,
+    // below class M's 0.05 minAdjEdge -> shadowSkewShrink flags it as a demotion.
+    const skewedJobs: FixtureJobSuccess[] = [
+      job(1, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(2, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(3, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(4, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(5, {
+        best: candidate(),
+        v3AssessmentStats: [
+          {
+            family: "dnb",
+            desc: "Away DNB",
+            outcome: "done",
+            rawEdge: 0.06,
+            adjustedEdge: 0.05,
+            cls: "M",
+          },
+        ],
+      }),
+    ];
+
+    const skewed = buildMarketsV3SlateOutputs(skewedJobs);
+    expect(skewed.sanity.flags).toContain("result_skew_home");
+    expect(skewed.skewShrinkLine).not.toBeNull();
+    expect(skewed.skewShrinkLine).toContain("Home DNB");
+    expect(skewed.skewShrinkLine).toContain("shadow");
+
+    // A balanced slate (2 home / 2 away) never trips the skew flag, so the
+    // shadow pass has nothing to evaluate and skewShrinkLine stays null —
+    // confirms this is genuinely conditional, not always-on noise.
+    const balancedJobs: FixtureJobSuccess[] = [
+      job(1, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(2, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(3, {
+        best: candidate(),
+        v3AssessmentStats: [
+          {
+            family: "dnb",
+            desc: "Away DNB",
+            outcome: "done",
+            rawEdge: 0.06,
+            adjustedEdge: 0.05,
+            cls: "M",
+          },
+        ],
+      }),
+      job(4, {
+        best: candidate(),
+        v3AssessmentStats: [
+          {
+            family: "dnb",
+            desc: "Away DNB",
+            outcome: "done",
+            rawEdge: 0.06,
+            adjustedEdge: 0.05,
+            cls: "M",
+          },
+        ],
+      }),
+    ];
+    const balanced = buildMarketsV3SlateOutputs(balancedJobs);
+    expect(balanced.sanity.flags).not.toContain("result_skew_home");
+    expect(balanced.skewShrinkLine).toBeNull();
+  });
+
   it("returns an empty pool/outputs (no error) for a slate where every job has no v3Best", () => {
     const jobs: FixtureJobSuccess[] = [job(1, { best: null }), job(2, { best: null })];
 

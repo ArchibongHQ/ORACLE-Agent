@@ -29,41 +29,49 @@
  *
  *  Pure math, no I/O. */
 
+import { dirOfDesc, sideOfDesc } from "./descParse.js";
 import { CLASS_GATE } from "./evGate.js";
-import type { AllMarketsSanityInput, V3SanityFlag, V3SanityResult } from "./sanity.js";
+import {
+  type AllMarketsSanityInput,
+  RESULT_FAMILIES,
+  TOTALS_FAMILIES,
+  type V3SanityFlag,
+  type V3SanityResult,
+} from "./sanity.js";
 
 export const SKEW_SHRINK_FRACTION_DEFAULT = 0.35;
 
-const RESULT_FAMILIES = new Set([
-  "dnb",
-  "double_chance",
-  "asian_handicap",
-  "handicap",
-  "winning_margin",
-]);
-const TOTALS_FAMILIES = new Set(["goals_ou", "team_total"]);
-
 /** Which skew flag implicates which family set + majority side/direction the
  *  shrink should target. Only "done" outcomes matter — capped/noise/below_edge
- *  assessments never reached a pick in the first place. */
+ *  assessments never reached a pick in the first place.
+ *
+ *  matchesDesc reuses sanity.ts's own sideOfDesc/dirOfDesc (the exact
+ *  functions that decided whether this flag fired) rather than a separate
+ *  regex — a bug caught in review: an ad-hoc `/\bhome\b/i` match would have
+ *  swept in ambiguous covers like "Home or Away" (a real double_chance
+ *  12-cover desc, RESULT_FAMILIES, priced by engines/result.ts) that
+ *  sideOfDesc() deliberately returns null for and sanity.ts's own tally
+ *  excludes from both the home and away count. Reusing the same classifier
+ *  keeps this pass's candidate population a strict subset of whatever
+ *  actually produced the flag. */
 const SKEW_TARGET: Partial<
   Record<V3SanityFlag, { families: Set<string>; matchesDesc: (desc: string) => boolean }>
 > = {
   result_skew_home: {
     families: RESULT_FAMILIES,
-    matchesDesc: (desc) => /\bhome\b/i.test(desc),
+    matchesDesc: (desc) => sideOfDesc(desc) === "home",
   },
   result_skew_away: {
     families: RESULT_FAMILIES,
-    matchesDesc: (desc) => /\baway\b/i.test(desc),
+    matchesDesc: (desc) => sideOfDesc(desc) === "away",
   },
   totals_skew_over: {
     families: TOTALS_FAMILIES,
-    matchesDesc: (desc) => /\bover\b/i.test(desc),
+    matchesDesc: (desc) => dirOfDesc(desc) === "over",
   },
   totals_skew_under: {
     families: TOTALS_FAMILIES,
-    matchesDesc: (desc) => /\bunder\b/i.test(desc),
+    matchesDesc: (desc) => dirOfDesc(desc) === "under",
   },
 };
 
@@ -109,6 +117,16 @@ export function shadowSkewShrink(
       if (!target.matchesDesc(a.desc)) continue;
 
       const shrunkAdjustedEdge = a.adjustedEdge - a.rawEdge * shrinkFraction;
+      // Known limitation (review-noted, not fixed): always checks the BASE
+      // CLASS_GATE, never CLASS_GATE_HEIGHTENED — whether a given "done"
+      // outcome was actually gated against the heightened table isn't
+      // carried on the stored assessment. This can only make the shadow
+      // pass UNDER-report demotions for heightened-gated fixtures (a
+      // heightened bar is stricter, so some picks this reports as
+      // surviving would actually have been demoted against their real
+      // gate) — the safe direction for a diagnostic that must never falsely
+      // claim a demotion, but not perfectly accurate. Revisit if/when this
+      // gets promoted past shadow-mode.
       const gate = CLASS_GATE[a.cls as keyof typeof CLASS_GATE];
       // An unrecognized cls can't be gate-checked — report the shrunk number
       // but never claim a demotion we can't actually verify.

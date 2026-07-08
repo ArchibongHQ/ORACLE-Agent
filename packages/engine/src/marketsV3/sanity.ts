@@ -26,14 +26,17 @@ const CAP_RATE_THRESHOLD = 0.25;
 const SKEW_THRESHOLD = 0.7;
 const RAW_EDGE_HOT_THRESHOLD = 0.05;
 
-const RESULT_FAMILIES = new Set([
+// Exported so skewShrink.ts's shadow pass targets exactly the same family
+// sets that decide whether a skew flag fires in the first place — a
+// duplicated Set literal could silently drift out of sync with this one.
+export const RESULT_FAMILIES = new Set([
   "dnb",
   "double_chance",
   "asian_handicap",
   "handicap",
   "winning_margin",
 ]);
-const TOTALS_FAMILIES = new Set(["goals_ou", "team_total"]);
+export const TOTALS_FAMILIES = new Set(["goals_ou", "team_total"]);
 /** Goals-path `cat` values are FAMILY_LABEL human strings, not MarketFamily ids. */
 const GOALS_TOTALS_CATS = new Set(["Goals O/U", "Team Total"]);
 

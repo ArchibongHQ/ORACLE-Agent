@@ -276,10 +276,12 @@ export type V3AssessmentStat = {
   rawEdge: number;
   /** adjustedEdge + cls (audit fix, Desktop concept #4): the minimum extra
    *  fields needed to shadow-evaluate a skew-shrunk assessment against its
-   *  own class gate (CLASS_GATE[cls].minAdjEdge/minAdjEvPct) without storing
-   *  the full modelP/q/odds/penaltyPts the live assessment carried — see
-   *  marketsV3/skewShrink.ts's header comment for why rawEdge alone is
-   *  enough to derive the shrunk adjustedEdge algebraically. */
+   *  own class gate's minAdjEdge (CLASS_GATE[cls].minAdjEdge — minAdjEvPct
+   *  is NOT re-checked, since that needs q/adjEvPct which aren't carried
+   *  here) without storing the full modelP/q/odds/penaltyPts the live
+   *  assessment carried — see marketsV3/skewShrink.ts's header comment for
+   *  why rawEdge alone is enough to derive the shrunk adjustedEdge
+   *  algebraically. */
   adjustedEdge: number;
   cls: string;
 };
