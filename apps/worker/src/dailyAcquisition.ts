@@ -35,6 +35,30 @@ import {
 } from "./workerUtils.js";
 import { formatXgCoverageNote } from "./xgCoverageNote.js";
 
+/** PR-26: the acquisition-artifact freshness/yield line (tools/lib/
+ *  artifact_health.py) — surfaces exactly the failure class that made the
+ *  FotMob-tier-yields-0 and 6-week-stale-availability-CSV incidents this
+ *  audit train fixed invisible in the first place: the acquisition code ran,
+ *  exited 0, and nothing downstream noticed the output was empty or old.
+ *  Pure local file reads on the Python side (no network calls), so this is
+ *  fast and safe to call inline; best-effort like every other Python
+ *  subprocess call in this file — a failure here must never block the
+ *  fixture report it's annotating. */
+export async function getDataHealthLine(): Promise<string | null> {
+  const { err, stdout } = await runPythonScript(
+    PYTHON_BIN,
+    join(ROOT, "tools", "acquire_daily.py"),
+    ["--health"],
+    { cwd: ROOT }
+  );
+  if (err) {
+    process.stderr.write(`[fixture-report] data-health check failed: ${err.message}\n`);
+    return null;
+  }
+  const line = stdout.trim();
+  return line.length > 0 ? line : null;
+}
+
 // ── Daily acquisition (Parquet lake) ─────────────────────────────────────────
 // tools/acquire_daily.py wraps the same SportyBet/Gismo scrape as
 // scrapeFixtures() in goalsAccumulator.ts, additionally writing the
@@ -151,6 +175,11 @@ export async function sendDailyFixtureReport(): Promise<void> {
     // (one row per fixture, every captured field) plus per-outcome Markets
     // file(s), split under the Telegram per-file size budget.
     const result = await generateAndWriteFixtureWorkbook(today, join(ROOT, ".tmp/reports"));
+    // PR-26: same unconditional-logging rationale as the xG coverage line
+    // below — computed once here so both the log line and (once fixtures
+    // exist) the Telegram caption use the identical snapshot rather than
+    // re-running the check and risking a slightly different result each time.
+    const dataHealthLine = await getDataHealthLine();
     if (result) {
       // PR-19: log the xG coverage line unconditionally (even on the
       // marketsEmpty early-return below) — it's a data-availability signal
@@ -159,6 +188,7 @@ export async function sendDailyFixtureReport(): Promise<void> {
       // in the worker's own logs, not just build_xg_table.py's stdout.
       process.stdout.write(`[fixture-report] ${formatXgCoverageNote(result.xgCoverage)}\n`);
     }
+    if (dataHealthLine) process.stdout.write(`[fixture-report] ${dataHealthLine}\n`);
     if (!result) {
       // No-fixtures is a real, reportable state — surface it loudly (was a silent
       // return that made "the report never fired" indistinguishable from a crash).
@@ -205,7 +235,7 @@ export async function sendDailyFixtureReport(): Promise<void> {
         env.TELEGRAM_BOT_TOKEN as string,
         env.TELEGRAM_CHAT_ID as string,
         result.fixturesPath,
-        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}`
+        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}${dataHealthLine ? `\n${dataHealthLine}` : ""}`
       );
       for (let i = 0; i < result.marketsPaths.length; i++) {
         await sendTelegramDocument(

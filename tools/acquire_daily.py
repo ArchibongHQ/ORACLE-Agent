@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import daily_store as ds
 import scrape_fixtures as sf
+from lib.artifact_health import check_all, format_health_line
 
 
 def _maybe_fetch_injuries(quiet: bool = False) -> None:
@@ -428,7 +429,16 @@ def main() -> None:
     parser.add_argument("--live-xg-refresh", action="store_true",
                         help="Run ONLY the standalone off-peak FotMob live-xG refresh (PR-7) and exit — "
                              "no acquisition, no lake write. Intended for its own off-peak cron slot.")
+    parser.add_argument("--health", action="store_true",
+                        help="PR-26: print the one-line acquisition-artifact freshness/yield summary "
+                             "(tools/lib/artifact_health.py) and exit — no acquisition, no lake write, "
+                             "no network calls. Reads whatever's already on disk. Intended for the "
+                             "worker's daily Telegram report and manual/cron log inspection.")
     args = parser.parse_args()
+
+    if args.health:
+        print(format_health_line(check_all()), flush=True)
+        return
 
     if args.live_xg_refresh:
         run_live_xg_refresh(quiet=args.quiet)
