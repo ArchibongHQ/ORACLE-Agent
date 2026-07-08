@@ -269,7 +269,20 @@ export interface FixtureJob {
   state?: RunState; // optional pre-populated telemetry / odds
 }
 
-export type V3AssessmentStat = { family: string; desc: string; outcome: string; rawEdge: number };
+export type V3AssessmentStat = {
+  family: string;
+  desc: string;
+  outcome: string;
+  rawEdge: number;
+  /** adjustedEdge + cls (audit fix, Desktop concept #4): the minimum extra
+   *  fields needed to shadow-evaluate a skew-shrunk assessment against its
+   *  own class gate (CLASS_GATE[cls].minAdjEdge/minAdjEvPct) without storing
+   *  the full modelP/q/odds/penaltyPts the live assessment carried — see
+   *  marketsV3/skewShrink.ts's header comment for why rawEdge alone is
+   *  enough to derive the shrunk adjustedEdge algebraically. */
+  adjustedEdge: number;
+  cls: string;
+};
 
 export interface FixtureJobSuccess {
   status: "ok";
@@ -665,6 +678,8 @@ export async function runBatch(
                 desc: a.desc,
                 outcome: a.outcome,
                 rawEdge: a.rawEdge,
+                adjustedEdge: a.adjustedEdge,
+                cls: a.cls,
               }));
             }
           }

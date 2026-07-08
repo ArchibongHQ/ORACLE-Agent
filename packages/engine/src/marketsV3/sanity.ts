@@ -58,10 +58,15 @@ interface SanityGateOutcome {
   rawEdge: number;
 }
 
-/** All-markets assessment shape (structurally matches V3MarketOutcomeAssessment). */
+/** All-markets assessment shape (structurally matches V3MarketOutcomeAssessment).
+ *  adjustedEdge/cls (audit fix, Desktop concept #4): carried so skewShrink.ts
+ *  can shadow-evaluate a skew-shrunk assessment against its own class gate
+ *  without needing the full modelP/q/odds/penaltyPts the live assessment had. */
 export interface AllMarketsSanityInput extends SanityGateOutcome {
   family: string;
   desc: string;
+  adjustedEdge: number;
+  cls: string;
 }
 
 /** Goals-path assessment shape (structurally matches V3MarketAssessment). */

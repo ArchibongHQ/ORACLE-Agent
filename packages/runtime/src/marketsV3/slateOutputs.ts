@@ -15,8 +15,10 @@ import {
   buildOutputD,
   type FixtureJobSuccess,
   formatSanityFlags,
+  formatSkewShrinkShadow,
   type RouteCoverage,
   type RunManifest,
+  shadowSkewShrink,
   slateSanityChecks,
   type V3Engine,
   type V3OutputB,
@@ -34,6 +36,10 @@ export interface MarketsV3SlateOutputs {
   outputD: V3OutputRow[];
   sanity: V3SanityResult;
   sanityLine: string;
+  /** Desktop-audit concept #4, shadow-mode only (see engine's skewShrink.ts
+   *  header) — null when sanity fired no skew flag, or every flagged pick
+   *  would still clear its gate under shrinkage. Never affects pool/outputA-D. */
+  skewShrinkLine: string | null;
 }
 
 /** Build the day's slate-level v3 outputs from every successfully-analyzed
@@ -62,6 +68,7 @@ export function buildMarketsV3SlateOutputs(jobs: FixtureJobSuccess[]): MarketsV3
     (j) => (j.v3AssessmentStats ?? []) as AllMarketsSanityInput[]
   );
   const sanity = slateSanityChecks(sanityInputs);
+  const skewShrink = shadowSkewShrink(sanityInputs, sanity);
   return {
     pool,
     outputA,
@@ -70,6 +77,7 @@ export function buildMarketsV3SlateOutputs(jobs: FixtureJobSuccess[]): MarketsV3
     outputD,
     sanity,
     sanityLine: formatSanityFlags(sanity),
+    skewShrinkLine: formatSkewShrinkShadow(skewShrink),
   };
 }
 

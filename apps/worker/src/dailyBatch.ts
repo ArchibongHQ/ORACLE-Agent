@@ -211,11 +211,15 @@ export async function runDailyBatch(
         `B:${v3Outputs.outputB.miniAcca.length}legs C:${v3Outputs.outputC.length} ` +
         `D:${v3Outputs.outputD.length} — ${v3Outputs.sanityLine}\n`
     );
+    if (v3Outputs.skewShrinkLine)
+      process.stdout.write(`[markets-v3] ${v3Outputs.skewShrinkLine}\n`);
     if (summary.actionable.length > 39) {
       summary.actionable = curateActionableByV3Outputs(summary.actionable, v3Outputs.outputA, 39);
       summary.actionableCount = summary.actionable.length;
     }
-    summary.sanityNote = v3Outputs.sanityLine;
+    summary.sanityNote = v3Outputs.skewShrinkLine
+      ? `${v3Outputs.sanityLine}\n${v3Outputs.skewShrinkLine}`
+      : v3Outputs.sanityLine;
 
     // PR-20: slate-wide route-coverage rollup — reports the recoverable skip
     // tail's size, never suppresses picks. ORACLE_MARKETS_COVERAGE=off skips
