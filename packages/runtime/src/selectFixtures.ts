@@ -341,12 +341,7 @@ export interface SportyBetStats {
    *  where this gets read into RunState.pipeline.fetched.weather, not here.
    *  Absent for any team outside fetch_weather.py's curated TEAM_CITY map,
    *  or when ORACLE_FETCH_WEATHER=off. */
-  weather?: {
-    tempC?: number;
-    precipMm?: number;
-    windKph?: number;
-    isAdverse?: boolean;
-  } | null;
+  weather?: SportyBetWeatherEntry | null;
 }
 
 export interface SportyBetAvailabilityEntry {
@@ -355,6 +350,14 @@ export interface SportyBetAvailabilityEntry {
   /** 1 = the club's single most-valued rostered player started/was named;
    *  0 = absent; undefined when unknown. */
   keyPlayerPresent?: 0 | 1;
+}
+
+/** [PR-18] One fixture's match-day weather forecast — see SportyBetStats.weather. */
+export interface SportyBetWeatherEntry {
+  tempC?: number;
+  precipMm?: number;
+  windKph?: number;
+  isAdverse?: boolean;
 }
 
 export interface ScoringConcedingProfile {
@@ -556,10 +559,7 @@ export async function loadSportyBetIndex(
               }
             | null
             | undefined;
-          const weatherBlock = ev.weather as
-            | { tempC?: number; precipMm?: number; windKph?: number; isAdverse?: boolean }
-            | null
-            | undefined;
+          const weatherBlock = ev.weather as SportyBetWeatherEntry | null | undefined;
           const stats: SportyBetStats | null =
             baseStats != null ||
             xgBlock != null ||

@@ -22,6 +22,7 @@ import {
   DEFAULT_MAX_FIXTURES_PER_RUN,
   loadSportyBetIndex,
   type SelectionCandidate,
+  type SportyBetWeatherEntry,
   selectFixtures,
 } from "./selectFixtures.js";
 import { flattenSidecarOdds } from "./sidecarOdds.js";
@@ -397,10 +398,7 @@ const KPH_TO_MPH = 0.621371;
  *  passes through as undefined — the engine already treats a missing Weather
  *  as "no penalty", never a hard requirement. */
 export function toEngineWeather(
-  raw:
-    | { tempC?: number; precipMm?: number; windKph?: number; isAdverse?: boolean }
-    | null
-    | undefined
+  raw: SportyBetWeatherEntry | null | undefined
 ): Weather | undefined {
   if (!raw || (raw.windKph == null && raw.precipMm == null)) return undefined;
   return {
