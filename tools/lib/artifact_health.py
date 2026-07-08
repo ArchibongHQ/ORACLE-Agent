@@ -113,7 +113,15 @@ def _check_one(spec: ArtifactSpec, now: float) -> HealthResult:
     if not spec.path.exists():
         return HealthResult(spec.name, "MISSING", "never written")
 
-    age_hours = (now - spec.path.stat().st_mtime) / 3600
+    # stat() and read_bytes() below share one try/except rather than just the
+    # latter — a producer (the worker, a cron) can delete/replace the file in
+    # the window between the exists() check above and here; without this,
+    # that race raised an uncaught FileNotFoundError instead of degrading to
+    # WARN like every other unreadable-artifact case does.
+    try:
+        age_hours = (now - spec.path.stat().st_mtime) / 3600
+    except OSError:
+        return HealthResult(spec.name, "WARN", "unreadable")
     age_str = f"{age_hours:.1f}h old" if age_hours < 48 else f"{age_hours / 24:.1f}d old"
 
     if spec.count_fn is None:

@@ -45,12 +45,16 @@ import { formatXgCoverageNote } from "./xgCoverageNote.js";
  *  subprocess call in this file — a failure here must never block the
  *  fixture report it's annotating. */
 export async function getDataHealthLine(): Promise<string | null> {
-  const { err, stdout } = await runPythonScript(
+  const { err, stdout, stderr } = await runPythonScript(
     PYTHON_BIN,
     join(ROOT, "tools", "acquire_daily.py"),
     ["--health"],
     { cwd: ROOT }
   );
+  // Forward stderr unconditionally, same as every other Python-subprocess
+  // call site in this file — a warning printed on an otherwise-successful
+  // --health run (e.g. an unreadable artifact) must still surface somewhere.
+  if (stderr) process.stderr.write(stderr);
   if (err) {
     process.stderr.write(`[fixture-report] data-health check failed: ${err.message}\n`);
     return null;
@@ -175,10 +179,12 @@ export async function sendDailyFixtureReport(): Promise<void> {
     // (one row per fixture, every captured field) plus per-outcome Markets
     // file(s), split under the Telegram per-file size budget.
     const result = await generateAndWriteFixtureWorkbook(today, join(ROOT, ".tmp/reports"));
-    // PR-26: same unconditional-logging rationale as the xG coverage line
-    // below — computed once here so both the log line and (once fixtures
-    // exist) the Telegram caption use the identical snapshot rather than
-    // re-running the check and risking a slightly different result each time.
+    // PR-26: computed once here, unconditionally — a stale/missing artifact
+    // is directly relevant diagnostic context for EVERY outcome below (the
+    // success caption, the no-fixtures alert, and the markets-not-enriched
+    // BLOCKED alert all append it), not just the happy path. One snapshot
+    // shared by all of them rather than re-running the check per branch and
+    // risking a slightly different result each time.
     const dataHealthLine = await getDataHealthLine();
     if (result) {
       // PR-19: log the xG coverage line unconditionally (even on the
@@ -197,7 +203,7 @@ export async function sendDailyFixtureReport(): Promise<void> {
         await sendTelegramText(
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
-          `ORACLE — no SportyBet fixtures found for ${today}.`
+          `ORACLE — no SportyBet fixtures found for ${today}.${dataHealthLine ? `\n${dataHealthLine}` : ""}`
         );
       }
       return;
@@ -216,7 +222,7 @@ export async function sendDailyFixtureReport(): Promise<void> {
         await sendTelegramText(
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
-          `ORACLE — ${today} full-lake report BLOCKED: market depth not yet enriched (NO accumulated enriched data). Will auto-send the full spreadsheet once ready.`
+          `ORACLE — ${today} full-lake report BLOCKED: market depth not yet enriched (NO accumulated enriched data). Will auto-send the full spreadsheet once ready.${dataHealthLine ? `\n${dataHealthLine}` : ""}`
         );
       }
       if (!alreadyFlagged) writeHeartbeat("fixtureReportPlaceholder", { date: today });

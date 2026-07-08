@@ -126,6 +126,35 @@ def test_format_health_line_flags_non_ok_status():
     assert line.isascii()  # no Unicode separators — see format_health_line's docstring
 
 
+def test_unreadable_path_warns_instead_of_crashing(tmp_path):
+    # A directory at the artifact's path makes read_bytes() raise OSError
+    # (PermissionError on Windows, IsADirectoryError on POSIX — both are
+    # OSError subclasses) without ever needing real filesystem permissions.
+    path = tmp_path / "x.json"
+    path.mkdir()
+    spec = ah.ArtifactSpec("x", path, max_age_hours=24, count_fn=ah._json_len)
+    result = ah._check_one(spec, time.time())
+    assert result.status == "WARN"
+    assert "unreadable" in result.detail
+
+
+def test_registry_paths_match_known_producers():
+    # Pins _registry()'s paths against the real producers elsewhere in the
+    # repo (apps/worker's MARKET_CATALOG_OVERLAY_PATH, build_xg_table.py,
+    # fetch_fotmob_xg.py, fetch_xg_fallback.py, scrape_fixtures.py's
+    # SPORTYBET_SIDECAR) so a rename on either side breaks this test instead
+    # of silently making that entry report MISSING forever.
+    paths = {spec.name: spec.path.relative_to(ah.ROOT).as_posix() for spec in ah._registry()}
+    assert paths == {
+        "xg-table": ".tmp/xg/team_xg_table.json",
+        "fotmob-xg": ".tmp/xg/fotmob_xg.json",
+        "ai-mode-xg": ".tmp/xg/ai_mode_xg.json",
+        "availability": ".tmp/squad-availability/availability_features.csv",
+        "catalog-overlay": ".tmp/market_catalog_overlay.json",
+        "sidecar": ".tmp/fixtures/sportybet_today.json",
+    }
+
+
 def test_check_all_covers_the_real_registry_without_crashing():
     # Runs against whatever's actually on disk (likely all MISSING on a
     # clean checkout) — just proves the real registry's specs are valid and
