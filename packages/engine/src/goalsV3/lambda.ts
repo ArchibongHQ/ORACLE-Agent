@@ -5,9 +5,14 @@
  *      λ_away = (A_scored/90 ÷ L) × (H_conceded/90 ÷ L) × L
  *  where L = league average goals per TEAM per game. Falls back to the simple
  *  average ((scored + opp conceded) / 2) when a factor is missing. Small-sample
- *  regression (n < 8): λ_adj = λ_raw × (n/8) + L × (1 − n/8). Optional 50/50
- *  blend with an xG-based λ computed through the same formula (xG is more
- *  stable on small samples — spec §3.1 refinement).
+ *  regression: λ_adj = λ_raw × (n/shrinkN) + L × (1 − n/shrinkN), shrinkN = 8
+ *  for domestic fixtures, 5 for tournament fixtures (TOURNAMENT_RE — a
+ *  tournament team may never accumulate 8 tournament-specific matches, so it
+ *  should converge to its own small sample faster than a league season can
+ *  afford to). Optional xG-based λ blend through the same formula, weighted
+ *  by the same n/shrinkN ramp up to a 0.5 ceiling (xgBlendWeight) — a thin xG
+ *  sample gets less say in the blend than a full one, same reasoning as the
+ *  goals-λ shrink (audit fix: was a flat 50/50 regardless of sample size).
  *
  *  Pure math, no I/O, no runtime imports. */
 
@@ -175,6 +180,37 @@ export interface V3Lambdas {
 }
 
 const SHRINK_N = 8;
+/** Desktop-audit concept #2 (accepted): tournament fixtures (World Cup,
+ *  continental championships, etc.) have a much smaller natural sample size
+ *  per team than a domestic league season — a team may only ever play 5-7
+ *  World Cup matches total, so waiting for n=8 the way a 38-game league
+ *  season can afford to means these fixtures almost never leave the
+ *  shrink-toward-league-mean regime. Converge to the fixture's own small
+ *  sample faster instead: full weight (n>=5) trusts the raw λ, same as the
+ *  domestic path does at n>=8. */
+const SHRINK_N_TOURNAMENT = 5;
+/** Cross-boundary duplicate of packages/runtime/src/selectGoals.ts's
+ *  INTL_TOURNAMENT_RE — this file is pure math with no I/O/runtime imports
+ *  (see file header), so it can't be imported directly. Keep the two
+ *  patterns in sync if either changes (same convention as tools/
+ *  acquire_daily.py's _SRL_VIRTUAL_RE mirroring goalsV3/eligibility.ts). */
+const TOURNAMENT_RE =
+  /world\s*cup|euro(?:pean\s*championship)|uefa\s*euro\s*20\d{2}|euro\s*20\d{2}|copa\s*am[ée]rica|copa\s*chile|copa\s*venezuela|nations\s*league|africa(?:n)?\s*cup\s*of\s*nations|afcon|asian\s*cup|gold\s*cup|concacaf/i;
+/** Max weight the xG-based λ can receive in the blend below, reached once
+ *  n >= shrinkN (today's prior behavior at full sample size — unchanged).
+ *  Below that, xG weight ramps down proportionally with n instead of jumping
+ *  straight to 0.5, since a handful of xG-tracked matches is no more
+ *  trustworthy than a handful of goals matches. */
+const XG_BLEND_MAX_WEIGHT = 0.5;
+
+/** 0..XG_BLEND_MAX_WEIGHT, linear in n/shrinkN. n>=shrinkN keeps today's flat
+ *  0.5 exactly (no behavior change for well-sampled fixtures); n<shrinkN
+ *  shrinks the xG side's influence instead of always granting it half the
+ *  blend regardless of how thin the underlying sample is. */
+export function xgBlendWeight(n: number | null | undefined, shrinkN: number): number {
+  if (typeof n !== "number" || !Number.isFinite(n) || n >= shrinkN) return XG_BLEND_MAX_WEIGHT;
+  return (Math.max(0, n) / shrinkN) * XG_BLEND_MAX_WEIGHT;
+}
 /** λ sanity clamp — a team model outside this range is a data artifact, not a
  *  forecast (0.05 keeps Poisson tails well-defined; 4.5 exceeds any real team). */
 const LAMBDA_MIN = 0.05;
@@ -211,10 +247,18 @@ function simpleAverageLambda(
   return s ?? c;
 }
 
-/** §3.1 small-sample regression toward the league mean (cap n at 8). */
-function shrink(lambda: number, n: number | null | undefined, L: number): number {
-  if (typeof n !== "number" || !Number.isFinite(n) || n >= SHRINK_N) return lambda;
-  const w = Math.max(0, n) / SHRINK_N;
+/** §3.1 small-sample regression toward the league mean. `shrinkN` is the
+ *  sample size at which λ is fully trusted — SHRINK_N (8) for domestic
+ *  fixtures, SHRINK_N_TOURNAMENT (5) for tournament fixtures (see
+ *  TOURNAMENT_RE above). */
+export function shrink(
+  lambda: number,
+  n: number | null | undefined,
+  L: number,
+  shrinkN: number
+): number {
+  if (typeof n !== "number" || !Number.isFinite(n) || n >= shrinkN) return lambda;
+  const w = Math.max(0, n) / shrinkN;
   return lambda * w + L * (1 - w);
 }
 
@@ -235,6 +279,7 @@ export function computeV3Lambdas(
   } = {}
 ): V3Lambdas | null {
   const L = v3LeaguePerTeamAvg(input.league, input.leagueId, opts.lakeBaselines);
+  const shrinkN = TOURNAMENT_RE.test(input.league) ? SHRINK_N_TOURNAMENT : SHRINK_N;
 
   let method: V3Lambdas["method"] = "multiplicative";
   let rawH = multiplicativeLambda(input.homeScoredPer90, input.awayConcededPer90, L);
@@ -254,17 +299,22 @@ export function computeV3Lambdas(
   if (isRate(input.awayAvailabilityMult))
     rawA *= clamp(input.awayAvailabilityMult, AVAILABILITY_MULT_MIN, AVAILABILITY_MULT_MAX);
 
-  const shrunkH = shrink(rawH, input.nHome, L);
-  const shrunkA = shrink(rawA, input.nAway, L);
+  const shrunkH = shrink(rawH, input.nHome, L, shrinkN);
+  const shrunkA = shrink(rawA, input.nAway, L, shrinkN);
   const shrunk = shrunkH !== rawH || shrunkA !== rawA;
 
-  // Optional 50/50 xG blend (§3.1 refinement): xG-based λ through the same
-  // multiplicative shape — home creation vs away concession and vice versa.
-  // λ v5 (ORACLE_V3_LAMBDA_V5, default on): each side blends independently when
-  // its cross-pair (own xgf × opponent xga) exists, instead of discarding all
-  // xG unless BOTH sides have full pairs; the xG-λ gets the same small-sample
-  // shrinkage as the goals-λ (per-match xG rates come from the same season
-  // sample, so n<8 noise applies equally).
+  // Optional xG blend (§3.1 refinement, audit fix): xG-based λ through the
+  // same multiplicative shape — home creation vs away concession and vice
+  // versa — blended in at a weight that scales with sample size
+  // (xgBlendWeight) instead of a flat 50/50 regardless of how thin the
+  // underlying xG sample is. Reaches the full 0.5 weight (today's prior
+  // behavior, unchanged) once n >= shrinkN; below that it shrinks toward the
+  // pure goals-based shrunkH/shrunkA, same small-sample-noise logic as the
+  // goals-λ shrink above (a handful of xG-tracked matches isn't more
+  // trustworthy just because it's xG). λ v5 (ORACLE_V3_LAMBDA_V5, default
+  // on): each side blends independently when its cross-pair (own xgf ×
+  // opponent xga) exists, instead of discarding all xG unless BOTH sides
+  // have full pairs.
   let lH = shrunkH;
   let lA = shrunkA;
   let xgBlended = false;
@@ -273,12 +323,18 @@ export function computeV3Lambdas(
     const v5 = opts.lambdaV5 !== false;
     const xgHRaw = multiplicativeLambda(input.homeXg?.xgf, input.awayXg?.xga, L);
     const xgARaw = multiplicativeLambda(input.awayXg?.xgf, input.homeXg?.xga, L);
-    const xgH = v5 && xgHRaw !== null ? shrink(xgHRaw, input.nHome, L) : xgHRaw;
-    const xgA = v5 && xgARaw !== null ? shrink(xgARaw, input.nAway, L) : xgARaw;
+    const xgH = v5 && xgHRaw !== null ? shrink(xgHRaw, input.nHome, L, shrinkN) : xgHRaw;
+    const xgA = v5 && xgARaw !== null ? shrink(xgARaw, input.nAway, L, shrinkN) : xgARaw;
     const blendH = xgH !== null && (v5 || xgA !== null);
     const blendA = xgA !== null && (v5 || xgH !== null);
-    if (blendH) lH = (shrunkH + (xgH as number)) / 2;
-    if (blendA) lA = (shrunkA + (xgA as number)) / 2;
+    if (blendH) {
+      const wH = xgBlendWeight(input.nHome, shrinkN);
+      lH = shrunkH * (1 - wH) + (xgH as number) * wH;
+    }
+    if (blendA) {
+      const wA = xgBlendWeight(input.nAway, shrinkN);
+      lA = shrunkA * (1 - wA) + (xgA as number) * wA;
+    }
     xgBlended = blendH || blendA;
     if (blendH && blendA) xgBlendedSides = "both";
     else if (blendH) xgBlendedSides = "home";
