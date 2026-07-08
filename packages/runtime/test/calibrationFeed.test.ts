@@ -89,8 +89,26 @@ describe("settlePick", () => {
   it("returns null for families it cannot settle from the 1x2 score", () => {
     expect(settlePick(pick("corners", "Over 9.5"), 3, 2)).toBeNull();
     expect(settlePick(pick("cards", "Over 4.5"), 3, 2)).toBeNull();
+    // AH's price math is goals-only too, but the handicap line often lives
+    // only in the market specifier (never persisted onto EVMarket) — see
+    // calibrationFeed.ts's header for the full reasoning.
     expect(settlePick(pick("asian_handicap", "AH Home -0.5"), 2, 0)).toBeNull();
-    expect(settlePick(pick("correct_score", "2-1"), 2, 1)).toBeNull();
+  });
+
+  // [audit fix] correct_score IS purely goals-derivable — same regex as
+  // engines/exotics.ts's priceCorrectScore, the only desc shape that ever
+  // reaches a live pick.
+  it("settles correct_score against the exact final scoreline", () => {
+    expect(settlePick(pick("correct_score", "2-1"), 2, 1)).toBe("win");
+    expect(settlePick(pick("correct_score", "2-1"), 1, 2)).toBe("loss");
+    expect(settlePick(pick("correct_score", "2-1"), 2, 2)).toBe("loss"); // close but not exact
+    expect(settlePick(pick("correct_score", "0-0"), 0, 0)).toBe("win");
+    expect(settlePick(pick("correct_score", "2:1"), 2, 1)).toBe("win"); // colon separator
+    expect(settlePick(pick("correct_score", "10-9"), 10, 9)).toBe("win"); // multi-digit
+  });
+
+  it("fails safe (null) on a correct_score desc it can't parse as H-A digits", () => {
+    expect(settlePick(pick("correct_score", "Any Other"), 2, 1)).toBeNull();
   });
 
   it("returns null on ambiguous descs rather than guessing", () => {

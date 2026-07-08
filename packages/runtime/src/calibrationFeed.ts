@@ -8,13 +8,26 @@
  *
  *  Settlement is deterministic and family-scoped — only families we can settle
  *  purely from the final 1x2 score (match result / double chance / DNB / goals O/U /
- *  BTTS / team totals) are recorded. Corners, cards, Asian handicaps, correct-score,
- *  half-scoped markets, and exotics are skipped+counted (we don't capture their
- *  post-match ground truth — half markets specifically need the half-time score,
- *  which ResolutionRecord doesn't carry yet — or they need half-win/half-loss
- *  handling out of scope this round). `appendResolvedToLedger`'s per-family
- *  skip/settle breakdown (not just an aggregate count) makes this an explicit,
- *  auditable subset rather than a silent one — see its docstring. */
+ *  BTTS / team totals / correct score) are recorded. Corners, cards, Asian
+ *  handicaps, half-scoped markets, and exotics are skipped+counted:
+ *    - corners/cards need counts ResolutionRecord doesn't capture at all.
+ *    - half-scoped markets need the half-time score, which ResolutionRecord
+ *      doesn't carry either.
+ *    - asian_handicap (audit fix, investigated but NOT closed): the price
+ *      math is purely a function of (homeGoals, awayGoals) too — same as the
+ *      settled families — but the handicap LINE isn't reliably recoverable
+ *      at settlement time. engines/result.ts's parseAsianDesc reads the line
+ *      from the outcome desc text ("Home (-0.5)") when present, but falls
+ *      back to route.hcpNum — the market SPECIFIER — for bare "home"/"away"
+ *      descs (feedDictionary.ts:231-238), and hcpNum is never persisted onto
+ *      EVMarket/BetRecord. Settling only the desc-recoverable subset would
+ *      silently bias the ledger toward whichever fraction of SportyBet's AH
+ *      descs happen to embed the line — worse than a visible, honest skip.
+ *      Closing this for real needs hcpNum/hcpScore threaded onto the stored
+ *      pick at analysis time, a separate change to a size-capped hot path.
+ *  `appendResolvedToLedger`'s per-family skip/settle breakdown (not just an
+ *  aggregate count) makes this an explicit, auditable subset rather than a
+ *  silent one — see its docstring. */
 import type {
   AnalysisRecord,
   BetRecord,
@@ -98,14 +111,21 @@ export function settlePick(
       const both = homeGoals > 0 && awayGoals > 0;
       return (yes ? both : !both) ? "win" : "loss";
     }
+    case "correct_score": {
+      // Same regex as engines/exotics.ts's priceCorrectScore — the only desc
+      // shape that ever reaches a live pick (no "any other score" catch-all
+      // is priced), so no other format needs handling here.
+      const m = desc.match(/^(\d+)\s*[-:]\s*(\d+)$/);
+      if (!m) return null;
+      const h = Number.parseInt(m[1]!, 10);
+      const a = Number.parseInt(m[2]!, 10);
+      return h === homeGoals && a === awayGoals ? "win" : "loss";
+    }
     default:
-      // corners / cards / asian_handicap / correct_score / exotics — not settleable
-      // from the final 1x2 score this round. `half` is ALSO in this bucket
-      // despite being priceable (PRICEABLE_FAMILIES) — settling it correctly
-      // needs the half-time score, which ResolutionRecord doesn't capture
-      // today; guessing from the full-time score would silently mis-settle
-      // it, so it's left unsettled (and now visible in the per-family skip
-      // breakdown below) rather than faked.
+      // corners / cards / asian_handicap / half / exotics — not settleable
+      // from the final 1x2 score this round; see the file header for why
+      // each specific family stays unsettled (data gap vs. line-recoverability
+      // gap are different reasons, not one blanket "no data" bucket).
       return null;
   }
 }
