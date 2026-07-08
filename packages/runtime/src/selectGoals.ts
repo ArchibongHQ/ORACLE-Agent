@@ -661,14 +661,28 @@ export function selectGoalsAccumulator(
   // Output C: mid-range legs (2.50 ≤ odds < 4.00), top 3 by edge.
   const outputCLegs = allByEdge.filter((l) => l.odds >= 2.5 && l.odds < 4.0).slice(0, 3);
 
-  // Mini-ACCA: 2–4 highest-edge legs, one per league (strict diversity); v3 also
-  // requires ≥3h kickoff separation (§6 "different kick-off windows") and draws
-  // from the mp-floored slip pool (a mini-ACCA is a confidence product, not a
-  // value single — long-odds legs would gut its combined probability).
+  // Mini-ACCA: 2–4 highest-edge legs, one per league (strict diversity) AND
+  // ≥3h kickoff separation (§6 "different kick-off windows") — draws from the
+  // mp-floored slip pool (a mini-ACCA is a confidence product, not a value
+  // single — long-odds legs would gut its combined probability).
+  //
+  // Audit fix: the kickoff-gap requirement used to be v3-only (gap=0 for
+  // legacy mode). computeMiniAccaStats's jointProb() call assumes these legs
+  // are genuinely independent because they're cross-league — but
+  // pairwiseCrossFixtureCorrelation's SAME_WINDOW_BONUS applies whenever two
+  // legs share a kickoff window, REGARDLESS of league (it's added on top of,
+  // not conditional on, the same-league check — verified directly against
+  // math/index.ts, not assumed from a comment). Two different-league legs
+  // kicking off at the same time — routine on a normal Saturday — would get a
+  // real non-zero rho and jointProb() would (correctly, given that rho) push
+  // miniAccaCombinedProb ABOVE the naive product, in legacy mode specifically
+  // where nothing else guards against it. Enforcing the gap unconditionally
+  // keeps the independence precondition this fix relies on actually true in
+  // both modes, not just v3.
   const miniAccaLegs = forceDiverseLeaguesSlice(
     opts.v3 ? [...all].sort((a, b) => edgeOf(b) - edgeOf(a)) : allByEdge,
     4,
-    opts.v3 ? V3_MINI_ACCA_KICKOFF_GAP_MS : 0
+    V3_MINI_ACCA_KICKOFF_GAP_MS
   );
   const miniAccaStats = computeMiniAccaStats(miniAccaLegs);
 

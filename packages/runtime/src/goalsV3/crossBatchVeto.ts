@@ -21,8 +21,8 @@
 import type { PortfolioLeg } from "@oracle/engine";
 import { pairwiseCrossFixtureCorrelation } from "@oracle/engine";
 import {
-  computeMiniAccaStats,
   CROSS_FIXTURE_CORRELATION_REJECT,
+  computeMiniAccaStats,
   type GoalsLeg,
   type GoalsSelectionResult,
   toPortfolioLeg,
