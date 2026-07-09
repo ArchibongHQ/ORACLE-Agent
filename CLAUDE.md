@@ -22,7 +22,7 @@ Python scripts in `tools/` that do the actual work — API calls, data transform
 ## Operating Rules
 
 ### 1. Look for existing tools first
-Check `tools/` and `.claude/skills/` before building anything new. Only create new scripts when nothing exists for that task.
+Check `tools/` and `.claude/skills/` or  [at](https://www.skills.sh/) - pick only those with high GitHub Stars, installs, security pass and scanning with security tools/skills first - before building anything new. Only create new scripts when nothing exists for that task.
 
 ### 2. State a plan before acting
 For any non-trivial task, lead with a 3-step execution plan, identify required context and tool dependencies, and propose alternative recovery paths before starting.
@@ -49,7 +49,7 @@ Every failure is a chance to make the system stronger:
 A missing API key or credit MUST NEVER produce a BLOCKED / "user must get key" outcome. Every data point ORACLE needs (odds, stats, xG, lineups, injuries, results) can be acquired by querying Google.com's "AI Mode" through Playwright — the same pattern as the SportyBet sidecar scraper (`tools/scrape_fixtures.py`). Treat a missing key as "use the Playwright/Google-AI-Mode fallback tier," not as a terminal state. When planning, any step depending on a key must include the scrape fallback inline.
 
 ### 7. Real-time research before any plan or decision
-Before making ANY plan or decision, carry out proper real-time research via web searches from MULTIPLE independent sources AND recent research papers. Newer/better methodologies, technologies, and papers (including football-prediction methods) ship every day; in-distribution knowledge goes stale fast. Cite sources, cross-check claims across ≥2 sources, and never assert a fact (or call something fabricated) from memory without verifying first. This is mandatory, not optional, even when confident.
+Before making ANY plan or decision, carry out proper real-time research via web searches from MULTIPLE independent sources AND recent research papers. Newer/better methodologies, technologies, skills (https://www.skills.sh/) and papers (including football-prediction methods) ship every day; in-distribution knowledge goes stale fast. Cite sources, cross-check claims across ≥2 sources, and never assert a fact (or call something fabricated) from memory without verifying first. This is mandatory, not optional, even when confident.
 
 ---
 
@@ -170,6 +170,7 @@ When preparing a Pull Request or reviewing code, ensure the following criteria a
   1. Does the code pass the complete local pipeline (`pnpm turbo run typecheck test build`)?
   2. Are there any console logs left behind? (Remove or convert to system logs).
   3. Are new feature additions covered by unit or integration tests?
+  4. If this PR touches `packages/engine/src/{math,goalsV3,marketsV3,safety,calibration,ratings,rag,swarm,gbm}/**`, update `.claude/skills/oracle-engine/SKILL.md`'s module-index table and/or add a changelog row there.
 - **PR Description Template:** Always provide a brief summary of *What* changed, *Why* it changed, and a *How to Test* section.
 
 ---
@@ -204,6 +205,7 @@ Key routing rules:
 - Save progress → invoke /context-save
 - Resume context → invoke /context-restore
 - Author a backlog-ready spec/issue → invoke /spec
+- Prediction math / engine internals (`packages/engine/src/{math,goalsV3,marketsV3,safety,calibration,ratings,rag,swarm,gbm}/**`) → invoke `oracle-engine` skill first
 
 ## GBrain Configuration (configured by /setup-gbrain)
 
