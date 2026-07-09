@@ -123,6 +123,14 @@ try:
 except ImportError:  # repo root on sys.path instead of tools/
     from tools.lib.team_names import TEAM_ALIASES as _COUNTRY_ALIASES
 
+# PR-25 item 2: referee cards-rate normaliser (compute_referee_cards.py) —
+# needed to key from a referee's full name (fetch_referee_assignments.py's
+# premierleague.com scrape) into the lake's abbreviated-name cards rates.
+try:
+    from compute_referee_cards import normalise_referee as _normalise_referee
+except ImportError:  # repo root on sys.path instead of tools/
+    from tools.compute_referee_cards import normalise_referee as _normalise_referee
+
 # Women/U-age suffix patterns stripped before dedup
 _WOMEN_RE = re.compile(r"\s+(women|w|ladies)$", re.IGNORECASE)
 _AGE_RE   = re.compile(r"\s+u\d{2}$", re.IGNORECASE)
@@ -1020,6 +1028,85 @@ def _weather_for(table: dict[tuple[str, str], dict], home_team: str, kickoff_utc
     if not date_iso:
         return None
     return table.get((normalise(home_team), date_iso))
+
+
+# PR-25 item 2: referee assignment + cards-rate (EPL only — see
+# tools/fetch_referee_assignments.py's module docstring for the premierleague.
+# com scrape + its "no automated discovery yet" limitation, and
+# tools/compute_referee_cards.py for the lake-computed shrunk cards rate).
+# Both tables are optional/best-effort — a fixture with no referee
+# assignment (any non-EPL league, or a week the scraper wasn't run) simply
+# gets no referee block, same fail-open convention as xg/availability/weather.
+_REFEREE_ASSIGNMENTS_PATH = Path(".tmp/oracle-store/referee_assignments.json")
+_REFEREE_CARDS_PATH = Path(".tmp/oracle-store/referee_cards.json")
+
+
+def _load_referee_assignments_table() -> dict[tuple[str, str], str]:
+    """Load referee_assignments.json, keyed by (normalise(home),
+    normalise(away)) -> raw referee display name. Missing/corrupt file or an
+    empty assignments list (e.g. --url never given, or the scrape failed
+    open) -> empty dict, never fatal."""
+    try:
+        data = json.loads(_REFEREE_ASSIGNMENTS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    table: dict[tuple[str, str], str] = {}
+    for a in data.get("assignments") or []:
+        home, away, ref = a.get("home"), a.get("away"), a.get("referee")
+        if not home or not away or not ref:
+            continue
+        table[(normalise(home), normalise(away))] = ref
+    return table
+
+
+def _load_referee_cards_table() -> tuple[dict[str, dict], dict[str, float]]:
+    """Load referee_cards.json (tools/compute_referee_cards.py). Returns
+    (by_key, league_means) in the SAME shapes that tool writes — by_key keyed
+    by "{league}|{normalise_referee(name)}", league_means keyed by league name
+    for the fallback path below. Missing/corrupt file -> both empty."""
+    try:
+        data = json.loads(_REFEREE_CARDS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, {}
+    by_key = data.get("byKey") if isinstance(data.get("byKey"), dict) else {}
+    league_means = data.get("leagueMeans") if isinstance(data.get("leagueMeans"), dict) else {}
+    return by_key, league_means
+
+
+def _referee_for(
+    assignments: dict[tuple[str, str], str],
+    cards_by_key: dict[str, dict],
+    league_means: dict[str, float],
+    home: str,
+    away: str,
+    league: str,
+) -> Optional[dict]:
+    """Look up this fixture's assigned referee + shrunk cards rate.
+
+    None when no assignment exists for this fixture (the common case for any
+    non-EPL league, or any week the appointment scraper wasn't run/found
+    nothing) — the caller degrades to no referee block, never a crash.
+
+    When an assignment DOES exist but the referee has no entry in the lake's
+    cards table (e.g. a newly-promoted official with zero backfill history),
+    falls back to that league's overall mean cards rate (cardsRateSrc:
+    "league_mean_fallback") rather than dropping the referee entirely — a
+    referee IS being appointed either way, so "average referee" is a better
+    prior than no signal at all. Only drops to a null rate (rare — would need
+    the whole league missing from the lake) while still keeping the name,
+    since the assignment itself is still useful context even without a rate.
+    """
+    ref = assignments.get((normalise(home), normalise(away)))
+    if not ref:
+        return None
+    key = f"{league}|{_normalise_referee(ref)}"
+    entry = cards_by_key.get(key)
+    if entry and isinstance(entry.get("shrunkRate"), (int, float)):
+        return {"name": ref, "cardsRate": entry["shrunkRate"], "cardsRateSrc": "empirical"}
+    mean = league_means.get(league)
+    if isinstance(mean, (int, float)):
+        return {"name": ref, "cardsRate": mean, "cardsRateSrc": "league_mean_fallback"}
+    return {"name": ref, "cardsRate": None, "cardsRateSrc": None}
 
 
 def _sb_get(url: str) -> Optional[dict]:
@@ -2184,6 +2271,10 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
     # PR-25: sequential + disk-cached, so this runs to completion BEFORE the
     # threaded pool below starts — see _load_weather_table's docstring for why.
     weather_table = _load_weather_table(events)
+    # PR-25 item 2: referee assignment + cards-rate (EPL only, best-effort —
+    # both tables degrade to empty when absent, same as the tables above).
+    referee_assignments_table = _load_referee_assignments_table()
+    referee_cards_by_key, referee_league_means = _load_referee_cards_table()
 
     def _xg_block(ev: dict) -> dict:
         return {
@@ -2200,25 +2291,37 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
     def _weather_block(ev: dict) -> Optional[dict]:
         return _weather_for(weather_table, ev.get("home", ""), ev.get("kickoff_utc", ""))
 
+    def _referee_block(ev: dict) -> Optional[dict]:
+        return _referee_for(
+            referee_assignments_table, referee_cards_by_key, referee_league_means,
+            ev.get("home", ""), ev.get("away", ""), ev.get("league", ""),
+        )
+
     def _worker(ev: dict) -> dict:
         eid = ev.get("eventId", "")
         xg = _xg_block(ev)
         availability = _availability_block(ev)
         weather = _weather_block(ev)
+        referee = _referee_block(ev)
         if not eid:
             return {
                 **ev, "odds": None, "stats": None, "statscoverage": None,
                 "xg": xg, "availability": availability, "weather": weather,
+                "referee": referee,
             }
         try:
             detail = _fetch_fixture_detail(
                 eid, ev.get("kickoff_utc"), ev.get("home", ""), ev.get("away", "")
             )
-            return {**ev, **detail, "xg": xg, "availability": availability, "weather": weather}
+            return {
+                **ev, **detail, "xg": xg, "availability": availability,
+                "weather": weather, "referee": referee,
+            }
         except Exception:
             return {
                 **ev, "odds": None, "stats": None, "statscoverage": None,
                 "xg": xg, "availability": availability, "weather": weather,
+                "referee": referee,
             }
 
     enriched: list[dict] = [{}] * len(events)
@@ -2236,6 +2339,7 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
                     "xg": _xg_block(events[idx]),
                     "availability": _availability_block(events[idx]),
                     "weather": _weather_block(events[idx]),
+                    "referee": _referee_block(events[idx]),
                 }
             done += 1
             if done % 50 == 0:

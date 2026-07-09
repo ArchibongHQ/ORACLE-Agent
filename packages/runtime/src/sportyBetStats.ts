@@ -232,6 +232,17 @@ export interface StatsOverride {
    *  availability is orthogonal to season sample size. */
   homeAvailabilityMult?: number;
   awayAvailabilityMult?: number;
+  /** [PR-25 item 2] Assigned referee's lake-computed shrunk cards-per-game
+   *  rate (compute_referee_cards.py) — FIXTURE-level, not home/away split
+   *  (one referee officiates both teams). Ungated by MIN_PLAYED_FOR_OVERRIDE
+   *  like restH/restA above: this is independent external data about the
+   *  official, not a team-sample-size statistic. Shadow-diagnostic only
+   *  (marketsV3/refereeCardsShadow.ts) — never consumed by the live cards
+   *  Poisson model (engines/cards.ts, cardsAvgH/cardsAvgA). Absent whenever
+   *  no assignment was scraped for this fixture (EPL-only scraper). */
+  refereeCardsRate?: number;
+  refereeName?: string;
+  refereeCardsRateSrc?: "empirical" | "league_mean_fallback";
 }
 
 /** Resolve the credibility-shrinkage prior for a league.
@@ -530,6 +541,19 @@ export function buildStatsOverride(
   const awayRest = stats.congestion?.away?.rest_days;
   if (finiteOrZero(homeRest)) override.restH = homeRest;
   if (finiteOrZero(awayRest)) override.restA = awayRest;
+
+  // [PR-25 item 2] Assigned referee's cards rate — independent external data
+  // about the official, not a team-sample statistic, so ungated like rest
+  // days above. Fixture-level (no home/away split — one referee, both
+  // teams). Shadow-diagnostic only; see StatsOverride.refereeCardsRate.
+  const referee = stats.referee;
+  if (referee?.name && finiteOrZero(referee.cardsRate)) {
+    override.refereeCardsRate = referee.cardsRate;
+    override.refereeName = referee.name;
+    if (referee.cardsRateSrc === "empirical" || referee.cardsRateSrc === "league_mean_fallback") {
+      override.refereeCardsRateSrc = referee.cardsRateSrc;
+    }
+  }
 
   // ── all-markets v3 typed market-specific stats (§0.3 market-specific tier).
   // Each family gates on its own sample: scoringConceding rates on the

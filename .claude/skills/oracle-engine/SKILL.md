@@ -233,6 +233,37 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-09** — PR-25 item 2: referee-assignment fetcher + cards shadow
+  diagnostic. `tools/compute_referee_cards.py` (new) aggregates
+  `.tmp/backfill/*.csv`'s existing `Referee`/`HY`/`AY`/`HR`/`AR` columns
+  (zero new scraping) into a per-(league, referee) empirical-Bayes shrunk
+  cards-per-game rate (count-based, NOT points-weighted — see the file's
+  header for why that matters for unit-compatibility with the shadow
+  diagnostic below), keyed by a first-initial+surname normaliser that
+  bridges football-data.co.uk's abbreviated names ("R Jones") and
+  premierleague.com's full names ("Rob Jones"). `tools/fetch_referee_
+  assignments.py` (new) scrapes premierleague.com's "Match Officials for
+  Matchweek N" articles (EPL only) — Playwright-required despite the
+  referee text being static HTML, because the fixture/team-name half of
+  each assignment only resolves via a client-side-rendered
+  `embeddable-match-card` widget (verified live against a real matchweek
+  page); no automated "find this week's article" discovery yet (documented
+  limitation, not silently glossed over — see that file's header). Both
+  fail-open (empty output, exit 0) per this repo's "missing data is never a
+  blocker" convention. `scrape_fixtures.py`'s `enrich_sportybet_events` now
+  merges a fixture-level (not home/away-split — one referee, both teams)
+  `referee` block into the sidecar the same way as the existing xg/
+  availability/weather tables. `sportyBetStats.ts`'s `StatsOverride` gained
+  `refereeCardsRate`/`refereeName`/`refereeCardsRateSrc`, ungated like
+  restH/restA (independent external data, not a team-sample statistic).
+  New `marketsV3/refereeCardsShadow.ts` (`shadowRefereeCards`) — shadow-only
+  (see `finishingRegression.ts`/`skewShrink.ts` precedent), compares the
+  live cards Poisson model's total mean (`V3CardsMeans.total`) against the
+  referee's independent rate and flags >15% divergence;
+  `analyzeFixtureMarketsV3` computes it unconditionally (no new flag) and
+  attaches it as `V3AllMarketsResult.refereeShadow` — never affects
+  `ctx.cards`/`evMarkets`/`best`. Coverage caveat: EPL-only, so this fires
+  far less often than skewShrink/finishingRegression.
 - **2026-07-09** — PR-25 item 4: npxG/xAG as distinct shadow signals.
   `tools/build_xg_table.py` `_load_fbref_xg()` now also derives per-match
   `npxgf`/`xagf` (non-penalty xG / expected-assisted-goals) from

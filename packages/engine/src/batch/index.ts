@@ -135,6 +135,8 @@ export function buildV3Input(
       : {}),
     // PR-22: shots-on-target stats — same withhold-on-off rollback surface.
     ...(config?.v3ShotsOu !== false ? { sotForH: t.sotForH, sotForA: t.sotForA } : {}),
+    // PR-25 item 2, shadow-only — feeds refereeShadow, never ctx.cards/pricing.
+    refereeCardsRate: t.refereeCardsRate,
     penaltyFlags: {
       // Desktop-audit concept #3: graduated xG-missing penalty. Mutually
       // exclusive with xgMissingLargeSample — full -2pt only when the
