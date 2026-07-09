@@ -6,13 +6,14 @@ import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
 import { describe, expect, it, vi } from "vitest";
 import type { FixtureJobError, FixtureJobSuccess } from "../src/batch/index.js";
 import {
+  buildV3Input,
   isRetriableNetworkError,
   parseFixtureList,
   runBatch,
   withRetry,
 } from "../src/batch/index.js";
 import { ExecutionEngine } from "../src/execution/index.js";
-import type { RunResult } from "../src/types.js";
+import type { AllMarketEntry, RunState } from "../src/types.js";
 
 const INSTANT_BACKOFF = () => 0; // eliminates delay in retry tests
 
@@ -434,4 +435,71 @@ describe("runBatch — concurrency safety", () => {
     expect(result.jobs[1]?.home).toBe("Real Madrid");
     expect(result.jobs[2]?.home).toBe("Bayern");
   }, 30_000);
+});
+
+// ── buildV3Input — v3CornersCards/v3ShotsOu rollback-surface gating ────────
+// (review-caught gap: only the env-var→boolean parse was tested, never that
+// buildV3Input actually withholds the fields when the flag is off.)
+
+describe("buildV3Input — corners/cards/shots rollback surface", () => {
+  const job = { home: "Home FC", away: "Away FC", league: "Premier League", kickoff: "2026-08-01" };
+  const allMarkets: AllMarketEntry[] = [{ id: "1", name: "1X2", outcomes: [] }];
+  const state: RunState = {
+    telemetry: {
+      cornersForH: 5.2,
+      cornersForA: 4.1,
+      cornersAgainstH: 3.8,
+      cornersAgainstA: 4.9,
+      cardsAvgH: 2.1,
+      cardsAvgA: 1.8,
+      sotForH: 5.4,
+      sotForA: 3.9,
+    },
+  };
+
+  it("threads corners/cards/shots stats through by default (flags undefined ⇒ on)", () => {
+    const input = buildV3Input(job, state, allMarkets);
+    expect(input).toMatchObject({
+      cornersForH: 5.2,
+      cornersForA: 4.1,
+      cornersAgainstH: 3.8,
+      cornersAgainstA: 4.9,
+      cardsAvgH: 2.1,
+      cardsAvgA: 1.8,
+      sotForH: 5.4,
+      sotForA: 3.9,
+    });
+  });
+
+  it("withholds corners/cards when v3CornersCards=false (rollback surface actually works)", () => {
+    const input = buildV3Input(job, state, allMarkets, { v3CornersCards: false });
+    expect(input?.cornersForH).toBeUndefined();
+    expect(input?.cornersForA).toBeUndefined();
+    expect(input?.cornersAgainstH).toBeUndefined();
+    expect(input?.cornersAgainstA).toBeUndefined();
+    expect(input?.cardsAvgH).toBeUndefined();
+    expect(input?.cardsAvgA).toBeUndefined();
+    // Shots is a separate flag — must be unaffected by v3CornersCards alone.
+    expect(input?.sotForH).toBe(5.4);
+    expect(input?.sotForA).toBe(3.9);
+  });
+
+  it("withholds shots when v3ShotsOu=false, independently of v3CornersCards", () => {
+    const input = buildV3Input(job, state, allMarkets, { v3ShotsOu: false });
+    expect(input?.sotForH).toBeUndefined();
+    expect(input?.sotForA).toBeUndefined();
+    // Corners/cards is a separate flag — must be unaffected by v3ShotsOu alone.
+    expect(input?.cornersForH).toBe(5.2);
+    expect(input?.cardsAvgH).toBe(2.1);
+  });
+
+  it("withholds all three when both flags are false", () => {
+    const input = buildV3Input(job, state, allMarkets, {
+      v3CornersCards: false,
+      v3ShotsOu: false,
+    });
+    expect(input?.cornersForH).toBeUndefined();
+    expect(input?.cardsAvgH).toBeUndefined();
+    expect(input?.sotForH).toBeUndefined();
+  });
 });

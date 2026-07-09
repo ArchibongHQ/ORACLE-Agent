@@ -42,8 +42,11 @@ import { computeMarketExecutorConcurrency } from "./marketExecutorConcurrency.js
  *  allMarkets catalogue already extracted for the Q4 executor. Returns null
  *  when there's nothing to analyze (no catalogue) — the caller fails open to
  *  the legacy eligible list in that case, same as every other soft-fail path
- *  in this pipeline. */
-function buildV3Input(
+ *  in this pipeline. Exported for direct unit testing of the
+ *  v3CornersCards/v3ShotsOu rollback-surface gating (review-caught gap —
+ *  previously only the env-var→boolean parse was tested, not this function's
+ *  actual withhold behavior). */
+export function buildV3Input(
   job: { home: string; away: string; league: string; kickoff: string },
   state: RunState,
   allMarkets: AllMarketEntry[] | undefined,
