@@ -81,10 +81,11 @@ def _fdco_from_filename(name: str) -> str:
     return stem.split("_", 1)[1] if "_" in stem else ""
 
 
-def season_gpg(path: Path) -> tuple[float, int]:
-    """Return (goals_per_game, matches) for one season CSV, skipping rows with
-    a blank/non-numeric FTHG or FTAG (postponed/void fixtures)."""
-    total_goals = 0.0
+def _read_season(path: Path) -> tuple[float, float, int]:
+    """Return (home_goals_per_game, away_goals_per_game, matches) for one season
+    CSV, skipping rows with a blank/non-numeric FTHG or FTAG (postponed/void)."""
+    home_goals = 0.0
+    away_goals = 0.0
     matches = 0
     with open(path, encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -94,36 +95,59 @@ def season_gpg(path: Path) -> tuple[float, int]:
             if not fthg or not ftag:
                 continue
             try:
-                total_goals += float(fthg) + float(ftag)
+                h = float(fthg)
+                a = float(ftag)
             except ValueError:
                 continue
+            home_goals += h
+            away_goals += a
             matches += 1
-    return (total_goals / matches if matches else 0.0), matches
+    if not matches:
+        return 0.0, 0.0, 0
+    return home_goals / matches, away_goals / matches, matches
+
+
+def season_gpg(path: Path) -> tuple[float, int]:
+    """Return (total_goals_per_game, matches) for one season CSV."""
+    home, away, matches = _read_season(path)
+    return (home + away), matches
+
+
+# HFA is applied in lambda.ts as λH *= m, λA /= m from a symmetric baseline, so
+# the observed home/away goal ratio ≈ m². Fit m = sqrt(home_gpg / away_gpg),
+# clamped to a sane band (a data glitch or a tiny sample must not produce an
+# absurd multiplier). 1.0 = no home edge; 1.30 is already an extreme HFA league.
+HFA_MIN = 1.0
+HFA_MAX = 1.30
 
 
 def compute_baselines(
     backfill_dir: Path, seasons: int = 5
-) -> tuple[dict[str, float], dict[str, dict], list[str]]:
-    """Compute recency-weighted goals-per-game per league from a backfill dir.
+) -> tuple[dict[str, float], dict[str, float], dict[str, dict], list[str]]:
+    """Compute recency-weighted goals-per-game AND per-league HFA from a backfill
+    dir.
 
-    For each league, uses the most-recent `seasons` seasons available and takes
-    a linear recency-weighted mean (most recent season weighted highest). Returns
-    (by_name, detail, seasons_used_global)."""
-    # (fdco, season) -> (gpg, matches)
-    per_season: dict[str, dict[str, tuple[float, int]]] = defaultdict(dict)
+    For each league, uses the most-recent `seasons` seasons available and takes a
+    linear recency-weighted mean (most recent season weighted highest). Baseline
+    L = weighted total goals/game; HFA = sqrt(weighted home gpg / weighted away
+    gpg), clamped to [HFA_MIN, HFA_MAX]. Returns
+    (by_name, hfa_by_name, detail, seasons_used_global)."""
+    # (fdco, season) -> (home_gpg, away_gpg, matches)
+    per_season: dict[str, dict[str, tuple[float, float, int]]] = defaultdict(dict)
     if not backfill_dir.is_dir():
-        return {}, {}, []
+        return {}, {}, {}, []
 
     for path in sorted(backfill_dir.glob("*.csv")):
         fdco = _fdco_from_filename(path.name)
         season = _season_from_filename(path.name)
         if fdco not in FDCO_TO_NAME or not season:
             continue
-        gpg, matches = season_gpg(path)
+        home, away, matches = _read_season(path)
         if matches:
-            per_season[fdco][season] = (gpg, matches)
+            per_season[fdco][season] = (home, away, matches)
 
     by_name: dict[str, float] = {}
+    hfa_by_name: dict[str, float] = {}
     detail: dict[str, dict] = {}
     seasons_used_global: set[str] = set()
 
@@ -134,32 +158,40 @@ def compute_baselines(
         # linear recency weights: oldest of the window = 1 ... newest = len
         weights = list(range(1, len(recent) + 1))
         wsum = sum(weights)
-        weighted = sum(
-            season_map[s][0] * w for s, w in zip(recent, weights)
-        ) / wsum
-        by_name[name] = round(weighted, 3)
+        home_w = sum(season_map[s][0] * w for s, w in zip(recent, weights)) / wsum
+        away_w = sum(season_map[s][1] * w for s, w in zip(recent, weights)) / wsum
+        by_name[name] = round(home_w + away_w, 3)
+        hfa = (home_w / away_w) ** 0.5 if away_w > 0 else HFA_MIN
+        hfa_by_name[name] = round(min(HFA_MAX, max(HFA_MIN, hfa)), 3)
         detail[name] = {
-            s: {"gpg": round(season_map[s][0], 3), "matches": season_map[s][1]}
+            s: {
+                "gpg": round(season_map[s][0] + season_map[s][1], 3),
+                "home_gpg": round(season_map[s][0], 3),
+                "away_gpg": round(season_map[s][1], 3),
+                "matches": season_map[s][2],
+            }
             for s in recent
         }
 
-    return by_name, detail, sorted(seasons_used_global)
+    return by_name, hfa_by_name, detail, sorted(seasons_used_global)
 
 
-def build_report(by_name: dict[str, float]) -> list[str]:
-    """Lines comparing computed baselines to the static reference table."""
-    lines = ["[baselines] computed vs static (goals/game):"]
+def build_report(by_name: dict[str, float], hfa_by_name: dict[str, float]) -> list[str]:
+    """Lines comparing computed baselines to the static reference table, plus the
+    fitted per-league HFA multiplier (static global default is 1.10)."""
+    lines = ["[baselines] computed vs static (goals/game) + fitted HFA:"]
     for name in sorted(by_name):
         computed = by_name[name]
+        hfa = hfa_by_name.get(name, HFA_MIN)
         static = STATIC_REFERENCE.get(name)
         if static is None:
-            lines.append(f"  {name:<24} {computed:>5.2f}  (no static entry)")
+            lines.append(f"  {name:<24} {computed:>5.2f}  (no static entry)   hfa={hfa:.3f}")
         else:
             delta = computed - static
             flag = "  <-- STALE" if abs(delta) >= 0.10 else ""
             lines.append(
                 f"  {name:<24} {computed:>5.2f}  static={static:>4.2f}  "
-                f"d={delta:+.2f}{flag}"
+                f"d={delta:+.2f}   hfa={hfa:.3f}{flag}"
             )
     return lines
 
@@ -174,14 +206,14 @@ def main() -> None:
                         help="print without writing the JSON")
     args = parser.parse_args()
 
-    by_name, detail, seasons_used = compute_baselines(BACKFILL_DIR, args.seasons)
+    by_name, hfa_by_name, detail, seasons_used = compute_baselines(BACKFILL_DIR, args.seasons)
     if not by_name:
         print(f"[baselines] ERROR: no usable CSVs in {BACKFILL_DIR}", file=sys.stderr)
         sys.exit(1)
 
     print(f"[baselines] {len(by_name)} leagues, seasons={seasons_used}")
     if args.report:
-        for line in build_report(by_name):
+        for line in build_report(by_name, hfa_by_name):
             print(line)
 
     if args.dry_run:
@@ -193,6 +225,7 @@ def main() -> None:
         "source": str(BACKFILL_DIR.relative_to(ROOT)),
         "seasonsUsed": seasons_used,
         "byName": by_name,
+        "hfaByName": hfa_by_name,
         "detail": detail,
     }
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)

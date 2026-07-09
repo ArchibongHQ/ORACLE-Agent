@@ -267,6 +267,13 @@ export interface OracleConfig {
   // the audit P0-2 staleness fix. Loaded only when ORACLE_V3_LAKE_BASELINES is
   // on; undefined otherwise ⇒ byte-identical to the static-only behavior.
   v3LakeBaselines?: Record<string, number>;
+  // Lake-fitted per-league HFA multipliers (goals-model home-edge m = sqrt(home
+  // gpg / away gpg), from tools/compute_league_baselines.py's hfaByName). When
+  // present, the all-markets λ core uses the fixture league's fitted m instead
+  // of the global v3Hfa (falls back to v3Hfa for leagues absent from the map).
+  // Loaded only when ORACLE_V3_LAKE_HFA is on (full-audit P3). Undefined ⇒ the
+  // global v3Hfa applies everywhere, as before.
+  v3HfaByLeague?: Record<string, number>;
   // v4 gate deltas: heightened EV bars (S {5%,7%}, M {8%}, L {9%,20%}, X excluded),
   // exact-goals/multigoals routing + odds-band classing, sample-scaled empirical blend,
   // sanity checks. Default true. Set ORACLE_V3_GATES_V4=off to restore v3 semantics.

@@ -49,6 +49,7 @@ function buildV3Input(
   allMarkets: AllMarketEntry[] | undefined,
   config?: {
     v3Hfa?: number;
+    v3HfaByLeague?: Record<string, number>;
     v3VenueSplitUsed?: boolean;
     v3LambdaV5?: boolean;
     v3LakeBaselines?: Record<string, number>;
@@ -145,7 +146,9 @@ function buildV3Input(
       restEstimated: t.restH == null || t.restA == null,
       smallSample: (t.nHome ?? 99) < 5 || (t.nAway ?? 99) < 5,
     },
-    hfa: config?.v3Hfa,
+    // Full-audit P3: prefer the fixture league's lake-fitted HFA when present
+    // (ORACLE_V3_LAKE_HFA=on), else the global v3Hfa. Undefined map ⇒ global.
+    hfa: config?.v3HfaByLeague?.[job.league] ?? config?.v3Hfa,
     venueSplitUsed: config?.v3VenueSplitUsed,
     lambdaV5: config?.v3LambdaV5,
     // Lake-computed league baselines (audit P0-2) — undefined unless

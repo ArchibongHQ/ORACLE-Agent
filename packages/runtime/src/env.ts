@@ -135,25 +135,23 @@ function isRailway(env: Record<string, string>): boolean {
   return !!env.RAILWAY_ENVIRONMENT || !!env.RAILWAY_PROJECT_ID;
 }
 
-/** Build an OracleConfig from a parsed env record. Defaults: bankroll=1000, CONFIDENCE_WEIGHTED.
- *  On Railway, resource-throttled local defaults are automatically promoted to cloud values
- *  unless the env var is explicitly overridden in the Railway Variables panel. */
-/** Lake-computed league baselines (audit P0-2), produced by
- *  tools/compute_league_baselines.py at .tmp/oracle-store/league_baselines.json.
- *  Returns the goals/game-by-league-name map, or undefined on any miss (missing
- *  file, malformed JSON, no positive-finite values) so the engine falls back to
- *  its static V3_LEAGUE_BASELINES table. Never throws. Path is cwd-relative (the
- *  worker runs from repo root), matching the other .tmp artifact readers in
- *  runtime (dailyStore, analyze). */
-export function loadLakeBaselines(
-  path = ".tmp/oracle-store/league_baselines.json"
+/** Read one positive-finite `Record<string, number>` field out of the lake
+ *  artifact tools/compute_league_baselines.py writes at
+ *  .tmp/oracle-store/league_baselines.json. Returns undefined on any miss
+ *  (missing file, malformed JSON, no usable values) so the engine falls back to
+ *  its static defaults. Never throws. Path is cwd-relative (the worker runs from
+ *  repo root), matching the other .tmp artifact readers in runtime (dailyStore,
+ *  analyze). */
+function loadLakeField(
+  path: string,
+  field: "byName" | "hfaByName"
 ): Record<string, number> | undefined {
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { byName?: Record<string, unknown> };
-    const raw = parsed.byName;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const raw = parsed[field];
     if (!raw || typeof raw !== "object") return undefined;
     const out: Record<string, number> = {};
-    for (const [league, val] of Object.entries(raw)) {
+    for (const [league, val] of Object.entries(raw as Record<string, unknown>)) {
       if (typeof val === "number" && Number.isFinite(val) && val > 0) out[league] = val;
     }
     return Object.keys(out).length ? out : undefined;
@@ -162,6 +160,23 @@ export function loadLakeBaselines(
   }
 }
 
+/** Lake-computed league goal baselines (audit P0-2) — the `byName` map. */
+export function loadLakeBaselines(
+  path = ".tmp/oracle-store/league_baselines.json"
+): Record<string, number> | undefined {
+  return loadLakeField(path, "byName");
+}
+
+/** Lake-fitted per-league HFA multipliers (full-audit P3) — the `hfaByName` map. */
+export function loadLakeHfa(
+  path = ".tmp/oracle-store/league_baselines.json"
+): Record<string, number> | undefined {
+  return loadLakeField(path, "hfaByName");
+}
+
+/** Build an OracleConfig from a parsed env record. Defaults: bankroll=1000, CONFIDENCE_WEIGHTED.
+ *  On Railway, resource-throttled local defaults are automatically promoted to cloud values
+ *  unless the env var is explicitly overridden in the Railway Variables panel. */
 export function buildConfig(env: Record<string, string>): OracleConfig {
   const hw = detectHardware();
   const gpuCapable = isGpuCapable(hw);
@@ -197,6 +212,19 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
       n > 0
         ? `[config] ORACLE_V3_LAKE_BASELINES on — ${n} lake baselines override the static table\n`
         : `[config] ORACLE_V3_LAKE_BASELINES on but no usable .tmp/oracle-store/league_baselines.json — static table retained\n`
+    );
+  }
+
+  // Full-audit P3: lake-fitted per-league HFA overrides the global v3Hfa only
+  // when ORACLE_V3_LAKE_HFA=on. Default off ⇒ undefined ⇒ global v3Hfa applies.
+  const lakeHfaOn = env.ORACLE_V3_LAKE_HFA?.toLowerCase() === "on";
+  const v3HfaByLeague = lakeHfaOn ? loadLakeHfa() : undefined;
+  if (lakeHfaOn) {
+    const n = v3HfaByLeague ? Object.keys(v3HfaByLeague).length : 0;
+    process.stdout.write(
+      n > 0
+        ? `[config] ORACLE_V3_LAKE_HFA on — ${n} per-league HFA multipliers override the global v3Hfa\n`
+        : `[config] ORACLE_V3_LAKE_HFA on but no usable hfaByName in .tmp/oracle-store/league_baselines.json — global v3Hfa retained\n`
     );
   }
 
@@ -296,6 +324,9 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // Audit P0-2: lake-computed baselines (loaded above, gated on
     // ORACLE_V3_LAKE_BASELINES=on). Undefined ⇒ static V3_LEAGUE_BASELINES only.
     v3LakeBaselines,
+    // Full-audit P3: lake-fitted per-league HFA (gated on ORACLE_V3_LAKE_HFA=on).
+    // Undefined ⇒ global v3Hfa applies everywhere.
+    v3HfaByLeague,
     // v4 gate deltas: heightened EV bars, exact-goals/multigoals routing, sanity checks.
     // ORACLE_V3_GATES_V4=off to restore v3 semantics (default on).
     v3GatesV4: env.ORACLE_V3_GATES_V4?.toLowerCase() !== "off",

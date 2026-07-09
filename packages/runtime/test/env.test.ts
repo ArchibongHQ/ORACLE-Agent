@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildConfig, loadLakeBaselines } from "../src/env.js";
+import { buildConfig, loadLakeBaselines, loadLakeHfa } from "../src/env.js";
 
 describe("buildConfig maxFixturesPerRun", () => {
   it("defaults to 50 when unset", () => {
@@ -266,5 +266,43 @@ describe("loadLakeBaselines (audit P0-2)", () => {
 describe("buildConfig v3LakeBaselines gating", () => {
   it("is undefined by default (flag off ⇒ static table only)", () => {
     expect(buildConfig({}).v3LakeBaselines).toBeUndefined();
+  });
+});
+
+describe("loadLakeHfa (full-audit P3)", () => {
+  const withTempJson = (content: string, fn: (path: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "lake-hfa-"));
+    const path = join(dir, "league_baselines.json");
+    writeFileSync(path, content, "utf8");
+    try {
+      fn(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("returns the hfaByName map, keeping only positive-finite values", () => {
+    withTempJson(
+      JSON.stringify({ hfaByName: { "Premier League": 1.08, "La Liga": 1.13, Bad: 0 } }),
+      (path) => {
+        expect(loadLakeHfa(path)).toEqual({ "Premier League": 1.08, "La Liga": 1.13 });
+      }
+    );
+  });
+
+  it("returns undefined when hfaByName is absent (baselines-only artifact)", () => {
+    withTempJson(JSON.stringify({ byName: { "Premier League": 2.98 } }), (path) => {
+      expect(loadLakeHfa(path)).toBeUndefined();
+    });
+  });
+
+  it("returns undefined for a missing file", () => {
+    expect(loadLakeHfa("/no/such/league_baselines.json")).toBeUndefined();
+  });
+});
+
+describe("buildConfig v3HfaByLeague gating", () => {
+  it("is undefined by default (flag off ⇒ global v3Hfa applies)", () => {
+    expect(buildConfig({}).v3HfaByLeague).toBeUndefined();
   });
 });
