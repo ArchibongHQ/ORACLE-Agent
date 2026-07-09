@@ -158,6 +158,13 @@ export interface V3LambdaInput {
    *  of an LLM guess. Clamped to [0.5, 1.0]; absent/undefined ⇒ 1.0 (no-op). */
   homeAvailabilityMult?: number | null;
   awayAvailabilityMult?: number | null;
+  /** Non-penalty xG-for, season aggregate — FBref-only (PR-25 item 4). NOT
+   *  consumed by computeV3Lambdas itself; carried here purely so
+   *  analyzeFixtureMarketsV3 can shadow-evaluate it against
+   *  homeScoredPer90/awayScoredPer90 (see marketsV3/finishingRegression.ts) —
+   *  a diagnostic input, not a lambda input. */
+  homeNpxgf?: number | null;
+  awayNpxgf?: number | null;
 }
 
 export interface V3Lambdas {

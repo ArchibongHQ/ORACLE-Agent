@@ -213,6 +213,15 @@ export interface StatsOverride {
   xgaH?: number;
   xgfA?: number;
   xgaA?: number;
+  /** Non-penalty xG-for / expected-assisted-goals-for, per-match rate — FBref-
+   *  only (PR-25 item 4, build_xg_table.py's _load_fbref_xg), absent for every
+   *  other xG source. Not consumed by the live λ core — shadow-diagnostic only
+   *  (marketsV3/finishingRegression.ts), promote on ledger evidence like every
+   *  other new signal this audit introduced. */
+  npxgfH?: number;
+  npxgfA?: number;
+  xagfH?: number;
+  xagfA?: number;
   nHome?: number;
   nAway?: number;
   /** Match-day squad availability multiplier (tools/fetch_squad_availability.py
@@ -377,6 +386,10 @@ export function buildStatsOverride(
   if (finite(stats.xg?.home?.xga)) override.xgaH = stats.xg?.home?.xga;
   if (finite(stats.xg?.away?.xgf)) override.xgfA = stats.xg?.away?.xgf;
   if (finite(stats.xg?.away?.xga)) override.xgaA = stats.xg?.away?.xga;
+  if (finite(stats.xg?.home?.npxgf)) override.npxgfH = stats.xg?.home?.npxgf;
+  if (finite(stats.xg?.away?.npxgf)) override.npxgfA = stats.xg?.away?.npxgf;
+  if (finite(stats.xg?.home?.xagf)) override.xagfH = stats.xg?.home?.xagf;
+  if (finite(stats.xg?.away?.xagf)) override.xagfA = stats.xg?.away?.xagf;
   if (homePlayed > 0) override.nHome = homePlayed;
   if (awayPlayed > 0) override.nAway = awayPlayed;
   // Match-day squad availability (§8.2, PR-6) — feeds V3LambdaInput's λ
