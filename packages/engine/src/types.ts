@@ -400,6 +400,12 @@ export interface RunState {
     /** §3.9 cards module (Poisson) inputs: total cards per game. */
     cardsAvgH?: number;
     cardsAvgA?: number;
+    /** PR-25 item 2, shadow-diagnostic only (marketsV3/refereeCardsShadow.ts)
+     *  — the assigned referee's lake-computed shrunk cards-per-game rate.
+     *  FIXTURE-level, not home/away split (one referee, both teams). Never
+     *  feeds cardsAvgH/cardsAvgA above or the live cards Poisson mean. */
+    refereeCardsRate?: number;
+    refereeName?: string;
     /** PR-22 shots-on-target module (Negative Binomial) inputs, per game. */
     sotForH?: number;
     sotForA?: number;

@@ -43,6 +43,7 @@ import {
   type V3Route,
 } from "./feedDictionary.js";
 import { buildV3Grid, buildV3HalfGrid } from "./grid.js";
+import { type RefereeCardsShadowResult, shadowRefereeCards } from "./refereeCardsShadow.js";
 import { type DualSplit, deriveDualSplit } from "./split.js";
 
 export interface V3EmpiricalInputs {
@@ -118,6 +119,11 @@ export interface V3AllMarketsInput {
    *  scoreline frequencies (CalibrationMetrics.dynamicRhoParams, §8.1 NR-MLE).
    *  Falls back to the static getLeagueParams(league).baseRho when absent. */
   dynamicRho?: number;
+  /** PR-25 item 2, shadow-only (see refereeCardsShadow.ts header) — the
+   *  assigned referee's lake-computed shrunk cards-per-game rate
+   *  (StatsOverride.refereeCardsRate). Never affects cardsAvgH/cardsAvgA,
+   *  ctx.cards, or any priced cards outcome above — diagnostic-only input. */
+  refereeCardsRate?: number;
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -145,6 +151,12 @@ export interface V3AllMarketsResult {
    *  whichever candidates they need into decide(). */
   evMarkets: EVMarket[];
   best: EVMarket | null;
+  /** PR-25 item 2, shadow-only (see refereeCardsShadow.ts header) — never
+   *  affects ctx.cards/evMarkets/best above. Null when either the cards
+   *  module is dormant (no cardsAvgH/cardsAvgA), no referee was
+   *  assigned/scraped for this fixture, or the divergence is below the
+   *  module's report threshold. */
+  refereeShadow: RefereeCardsShadowResult | null;
 }
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
@@ -349,6 +361,11 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
 
   evMarkets.sort((a, b) => b.rankingScore - a.rankingScore);
 
+  const refereeShadow = shadowRefereeCards({
+    modelCardsMean: ctx.cards?.total,
+    refereeCardsRate: input.refereeCardsRate,
+  });
+
   return {
     lambdas,
     split,
@@ -359,5 +376,6 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     capped,
     evMarkets,
     best: evMarkets[0] ?? null,
+    refereeShadow,
   };
 }

@@ -342,6 +342,30 @@ export interface SportyBetStats {
    *  Absent for any team outside fetch_weather.py's curated TEAM_CITY map,
    *  or when ORACLE_FETCH_WEATHER=off. */
   weather?: SportyBetWeatherEntry | null;
+  /** [PR-25 item 2] Assigned match referee + lake-computed cards rate
+   *  (tools/fetch_referee_assignments.py's premierleague.com scrape,
+   *  EPL-only, + tools/compute_referee_cards.py's shrunk cards-per-game
+   *  rate). One block per FIXTURE, not split by side — a single referee
+   *  officiates both teams, unlike xG/cards averages which are per-team.
+   *  Absent whenever no assignment was scraped for this fixture (any
+   *  non-EPL league today, or a week the appointment scraper wasn't run) —
+   *  shadow-diagnostic only (marketsV3/refereeCardsShadow.ts), never
+   *  consumed by the live cards Poisson model (engines/cards.ts). */
+  referee?: SportyBetRefereeEntry | null;
+}
+
+/** [PR-25 item 2] One fixture's assigned referee — see SportyBetStats.referee. */
+export interface SportyBetRefereeEntry {
+  name: string;
+  /** Shrunk cards-per-game rate (yellow + red count, empirical-Bayes
+   *  shrunk toward the league mean — see compute_referee_cards.py). Null
+   *  when the referee has zero lake history AND the whole league is absent
+   *  from the lake (both fallbacks exhausted). */
+  cardsRate?: number | null;
+  /** "empirical" when the referee has their own lake-computed shrunk rate;
+   *  "league_mean_fallback" when they're unknown to the lake but the
+   *  league's overall mean was used instead; null when neither exists. */
+  cardsRateSrc?: "empirical" | "league_mean_fallback" | null;
 }
 
 export interface SportyBetAvailabilityEntry {
@@ -560,16 +584,19 @@ export async function loadSportyBetIndex(
             | null
             | undefined;
           const weatherBlock = ev.weather as SportyBetWeatherEntry | null | undefined;
+          const refereeBlock = ev.referee as SportyBetRefereeEntry | null | undefined;
           const stats: SportyBetStats | null =
             baseStats != null ||
             xgBlock != null ||
             availabilityBlock != null ||
-            weatherBlock != null
+            weatherBlock != null ||
+            refereeBlock != null
               ? {
                   ...(baseStats ?? {}),
                   ...(xgBlock != null ? { xg: xgBlock } : {}),
                   ...(availabilityBlock != null ? { availability: availabilityBlock } : {}),
                   ...(weatherBlock != null ? { weather: weatherBlock } : {}),
+                  ...(refereeBlock != null ? { referee: refereeBlock } : {}),
                 }
               : null;
           detail = {
