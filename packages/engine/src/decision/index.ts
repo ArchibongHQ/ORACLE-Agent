@@ -104,6 +104,7 @@ function buildPrompt(eligibleBets: EVMarket[], ctx: DecisionContext): string {
     drawRisk,
     betTrigger,
     portfolioCorrelation,
+    hoursToKO,
     softContext,
   } = ctx;
 
@@ -132,12 +133,13 @@ Convergence: ${convergenceTier} (${convergenceScore}/100)
 ML Filter: ${mlAllowed ? "PASS" : "BLOCKED"}  |  Draw Risk: ${drawRisk}
 Ante-Post Debate Trigger: ${betTrigger}
 Portfolio Correlation: ${portfolioCorrelation !== null ? portfolioCorrelation.toFixed(3) : "N/A"}
+Hours to Kickoff: ${hoursToKO !== undefined ? hoursToKO.toFixed(1) : "unknown"}
 
 === ELIGIBLE BETS (ranked by model score) ===
 ${betLines || "NONE"}
 ${softLines ? `\n=== SOFT CONTEXT ===\n${softLines}` : ""}
 === DECISION RULES ===
-Accept (STRONG) when: convergence STRONG or MODERATE, mlAllowed=true, ev>4%, hoursToKO>4
+Accept (STRONG) when: convergence STRONG or MODERATE, mlAllowed=true, ev>4%, hoursToKO>1
 Grade LEAN when: betTrigger=RED without strong independent evidence, mlAllowed=false, portfolioCorrelation>0.6, or ev<5%
 Grade NO_EDGE when: ev<=0 — still return the best-ranked market in primaryPick
 MoneyLine picks forbidden when drawRisk=VERY_HIGH

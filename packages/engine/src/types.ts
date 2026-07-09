@@ -605,6 +605,12 @@ export interface DecisionContext {
   drawRisk: string;
   betTrigger: string;
   portfolioCorrelation: number | null;
+  /** Hours from now to kickoff (RunState.telemetry.hoursToKO passthrough) —
+   *  surfaced in the prompt's RISK SIGNALS block so the "Accept when
+   *  hoursToKO>1" decision rule (oracle_decision_rubric.md) is actually
+   *  evaluable by the LLM instead of referencing a value it's never given.
+   *  Undefined when the telemetry source didn't populate it. */
+  hoursToKO?: number;
   softContext?: SoftContextItem[];
   /** Raw structured per-category fixture data (form/standings/goals/h2h/xg/
    *  overunder/congestion/possessionValue + H2H scorelines where available) —

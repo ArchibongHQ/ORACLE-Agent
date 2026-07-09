@@ -622,6 +622,7 @@ export async function runBatch(
             drawRisk: String(mlResult?.drawRisk ?? "MEDIUM"),
             betTrigger: String(debateRes?.betTrigger ?? "YELLOW"),
             portfolioCorrelation: runResult.portfolioCorrelation,
+            hoursToKO: state.telemetry?.hoursToKO,
             softContext: state.telemetry?.softContext as SoftContextItem[] | undefined,
             rawStatsBlock: state.telemetry?.rawStatsBlock as Record<string, unknown> | undefined,
             allMarkets,
