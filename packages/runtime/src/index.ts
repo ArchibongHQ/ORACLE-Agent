@@ -131,6 +131,27 @@ export {
 } from "./marketsV3/pipeline.js";
 export type { SlateGateOutcome, SlateGateSummary } from "./marketsV3/slateGate.js";
 export { formatSlateGateLog, prefilterMarketsV3Jobs } from "./marketsV3/slateGate.js";
+// [refactor P1-3] feed-integrity stage (Rule 0.14) + consolidated SRL patterns
+export type {
+  FeedIntegrityVerdict,
+  FixtureIntegrityResult,
+  MarketsBlockEntry,
+  SlateIntegrityReport,
+} from "./feedIntegrity.js";
+export {
+  checkFixtureIntegrity,
+  crossCheckHeadline1x2,
+  detectSrlTwin,
+  runFeedIntegrity,
+  scanDuplicateBlocks,
+} from "./feedIntegrity.js";
+export {
+  isSrlTeamName,
+  isSrlVirtualLabel,
+  SRL_TEAM_SUFFIX_RE,
+  SRL_VIRTUAL_RE,
+  stripSrlSuffix,
+} from "./srlPatterns.js";
 export type { MarketsV3SlateOutputs, SlateMarketCoverage } from "./marketsV3/slateOutputs.js";
 export {
   buildMarketsV3SlateOutputs,

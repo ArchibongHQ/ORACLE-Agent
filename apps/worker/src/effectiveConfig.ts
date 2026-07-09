@@ -28,6 +28,13 @@ export function printEffectiveConfig(
     marketsCoverageNote: cfg.marketsCoverageNote,
     catalogOverlay: cfg.catalogOverlay,
     calibrationLedger: cfg.calibrationLedger,
+    // [refactor wave 1] P0-2 blend / P0-3 safety posture / P1-3 feed integrity /
+    // P1-4 sharp-feed latch — a misconfigured deploy of the refactor flags must
+    // be visible from the first log line, same rationale as PR-11.
+    v3Blend: cfg.v3Blend,
+    safetyMode: cfg.safetyMode,
+    feedIntegrity: cfg.feedIntegrity,
+    sharpFeedVerified: cfg.sharpFeedVerified,
     enableGoalsOnlyMode: cfg.enableGoalsOnlyMode,
     enableNewsIntel: cfg.enableNewsIntel,
     enableLlmMarketExecutor: cfg.enableLlmMarketExecutor,
