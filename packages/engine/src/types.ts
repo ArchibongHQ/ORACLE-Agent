@@ -439,6 +439,13 @@ export interface RunState {
     xgaH?: number;
     xgfA?: number;
     xgaA?: number;
+    /** Non-penalty xG-for / expected-assisted-goals-for, per-match rate —
+     *  FBref-only (PR-25 item 4). Shadow-diagnostic input only (see
+     *  marketsV3/finishingRegression.ts) — not consumed by the live λ core. */
+    npxgfH?: number;
+    npxgfA?: number;
+    xagfH?: number;
+    xagfA?: number;
     nHome?: number;
     nAway?: number;
     /** Match-day squad availability multiplier (§8.2, PR-6) — see

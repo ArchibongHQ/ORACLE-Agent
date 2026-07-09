@@ -42,6 +42,10 @@ import {
   routeMarket,
   type V3Route,
 } from "./feedDictionary.js";
+import {
+  type FinishingRegressionResult,
+  shadowFinishingRegression,
+} from "./finishingRegression.js";
 import { buildV3Grid, buildV3HalfGrid } from "./grid.js";
 import { type RefereeCardsShadowResult, shadowRefereeCards } from "./refereeCardsShadow.js";
 import { type DualSplit, deriveDualSplit } from "./split.js";
@@ -157,6 +161,10 @@ export interface V3AllMarketsResult {
    *  assigned/scraped for this fixture, or the divergence is below the
    *  module's report threshold. */
   refereeShadow: RefereeCardsShadowResult | null;
+  /** PR-25 item 4, shadow-only (see finishingRegression.ts header) — never
+   *  affects lambdas/evMarkets/best above. Empty candidates when neither side
+   *  has FBref npxG coverage or neither diverges past the threshold. */
+  finishingShadow: FinishingRegressionResult;
 }
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
@@ -366,6 +374,13 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     refereeCardsRate: input.refereeCardsRate,
   });
 
+  const finishingShadow = shadowFinishingRegression({
+    homeNpxgf: input.lambdaInput.homeNpxgf,
+    homeScoredPer90: input.lambdaInput.homeScoredPer90,
+    awayNpxgf: input.lambdaInput.awayNpxgf,
+    awayScoredPer90: input.lambdaInput.awayScoredPer90,
+  });
+
   return {
     lambdas,
     split,
@@ -377,5 +392,6 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     evMarkets,
     best: evMarkets[0] ?? null,
     refereeShadow,
+    finishingShadow,
   };
 }

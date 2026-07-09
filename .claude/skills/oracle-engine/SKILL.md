@@ -264,6 +264,21 @@ before assuming it affects picks.
   attaches it as `V3AllMarketsResult.refereeShadow` — never affects
   `ctx.cards`/`evMarkets`/`best`. Coverage caveat: EPL-only, so this fires
   far less often than skewShrink/finishingRegression.
+- **2026-07-09** — PR-25 item 4: npxG/xAG as distinct shadow signals.
+  `tools/build_xg_table.py` `_load_fbref_xg()` now also derives per-match
+  `npxgf`/`xagf` (non-penalty xG / expected-assisted-goals) from
+  `fetch_fbref.py`'s already-computed columns — zero new scraping.
+  `scrape_fixtures.py` `_xg_for()` passes them through into the sidecar's xg
+  block; `sportyBetStats.ts` surfaces `npxgfH/A`/`xagfH/A` on `StatsOverride`;
+  `goalsV3/lambda.ts` `V3LambdaInput` carries `homeNpxgf`/`awayNpxgf` (NOT
+  consumed by `computeV3Lambdas` — diagnostic input only). New
+  `marketsV3/finishingRegression.ts` (`shadowFinishingRegression`) shadow-
+  evaluates a team's actual scoring rate against its FBref npxG rate and
+  flags >25% divergence; `analyzeFixtureMarketsV3` computes it unconditionally
+  (no new flag, matching `skewShrink.ts`'s precedent) and attaches it as
+  `V3AllMarketsResult.finishingShadow` — never affects lambdas/evMarkets/best.
+  Coverage caveat: npxgf/xagf are FBref-only, absent for Understat/FotMob/
+  Sofascore/AI-mode teams, so this fires far less often than skewShrink.
 - **2026-07-08** — full-audit P3 per-league HFA. `tools/compute_league_baselines
   .py` now also fits per-league HFA (m = √(home gpg / away gpg), clamped
   [1.0, 1.30]) into the same JSON's `hfaByName`; `runtime/env.ts` `loadLakeHfa()`

@@ -454,6 +454,30 @@ describe("buildStatsOverride — all-markets v3 additions", () => {
     expect(override?.ouO35H).toBeUndefined();
   });
 
+  it("populates sotForH/A from possessionValue.shots_on_target_avg under the sample gate (PR-22)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      possessionValue: {
+        home: { shots_on_target_avg: 5.4 },
+        away: { shots_on_target_avg: 3.9 },
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({ sotForH: 5.4, sotForA: 3.9 });
+  });
+
+  it("omits sotForH/A when the sample gate fails, even with possessionValue present", () => {
+    const d = detail({
+      standings: { home: { played: 2 }, away: { played: 2 } },
+      possessionValue: {
+        home: { shots_on_target_avg: 5.4 },
+        away: { shots_on_target_avg: 3.9 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.sotForH).toBeUndefined();
+    expect(override?.sotForA).toBeUndefined();
+  });
+
   it("sums yellow+red into cardsAvg and types O1.5/O2.5/O3.5 hit-rates under the sample gate (PR-4)", () => {
     const d = detail({
       standings: { home: { played: 10 }, away: { played: 10 } },
@@ -515,6 +539,35 @@ describe("buildStatsOverride — v3 raw lambda inputs (§3.1, ungated by MIN_PLA
     const override = buildStatsOverride(d);
     expect(override?.scoredPer90H).toBeUndefined();
     expect(override?.xgfH).toBeUndefined();
+  });
+
+  it("passes through npxgf/xagf (PR-25 item 4) when present, ungated by MIN_PLAYED", () => {
+    const d = detail({
+      standings: { home: { played: 2 }, away: { played: 3 } }, // below MIN_PLAYED_FOR_OVERRIDE(4)
+      xg: {
+        home: { xgf: 1.5, xga: 0.9, npxgf: 1.3, xagf: 1.1 },
+        away: { xgf: 0.9, xga: 1.3, npxgf: 0.8, xagf: 0.7 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override).toMatchObject({
+      npxgfH: 1.3,
+      xagfH: 1.1,
+      npxgfA: 0.8,
+      xagfA: 0.7,
+    });
+  });
+
+  it("omits npxgf/xagf when absent from the source (Understat/FotMob-only teams)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      xg: { home: { xgf: 1.5, xga: 0.9 }, away: { xgf: 0.9, xga: 1.3 } },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.npxgfH).toBeUndefined();
+    expect(override?.xagfH).toBeUndefined();
+    expect(override?.npxgfA).toBeUndefined();
+    expect(override?.xagfA).toBeUndefined();
   });
 
   it("recency-blends scoredPer90H/A from recentGoals when present (PR-5, §8.1)", () => {

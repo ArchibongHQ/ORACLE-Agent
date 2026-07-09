@@ -167,8 +167,19 @@ def _load_fbref_xg() -> dict[str, dict]:
     no team-conceded figure, so xga is left None — the TS override then uses xGF
     only at medium confidence. Most-recent season per team wins.
 
+    PR-25 item 4: fetch_fbref.py's aggregate CSV also carries npxg (non-penalty
+    xG — a truer open-play scoring-threat signal, since penalties are a discrete,
+    taker-dependent event npxG deliberately strips out) and xag (expected-assisted-
+    goals — a team creativity signal, independent of finishing quality) per
+    team-season. Both are DISTINCT from xgf, not a replacement for it, so they're
+    surfaced as their own optional per-match rate fields (npxgf/xagf) rather than
+    folded into xgf. Same matches-played denominator as xgf; absent (not zero)
+    when the source row has no xG coverage at all (fetch_fbref.py leaves npxg/xag
+    blank in that case too).
+
     Returns: { "<normalised team>": {"xgf": float, "xga": None, "n": int,
-                                     "div": str, "src": "fbref"} }
+                                     "div": str, "src": "fbref",
+                                     "npxgf": float | absent, "xagf": float | absent} }
     """
     if not FBREF_CSV.exists():
         return {}
@@ -199,6 +210,18 @@ def _load_fbref_xg() -> dict[str, dict]:
                     "div": (r.get("fdco_league") or "").strip(),
                     "src": "fbref",
                 }
+                npxg_raw = (r.get("npxg") or "").strip()
+                if npxg_raw:
+                    try:
+                        rec["npxgf"] = round(float(npxg_raw) / matches, 4)
+                    except (ValueError, TypeError):
+                        pass
+                xag_raw = (r.get("xag") or "").strip()
+                if xag_raw:
+                    try:
+                        rec["xagf"] = round(float(xag_raw) / matches, 4)
+                    except (ValueError, TypeError):
+                        pass
                 prev = best.get(key)
                 if prev is None or season > prev[0]:
                     best[key] = (season, rec)

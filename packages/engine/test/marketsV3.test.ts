@@ -415,6 +415,171 @@ describe("priceExoticsOutcome — exact-goals & multigoals (PR-3)", () => {
   });
 });
 
+// ── priceHtFt (§3.8 joint half1×half2 grid) — previously zero test coverage,
+// review-caught gap. Ctx reuses the same fixture as the exact-goals block
+// above (different halfStats means so HT and FT aren't degenerate copies of
+// each other, which would hide an indexing bug). ──────────────────────────
+
+describe("priceExoticsOutcome — ht_ft (joint half1×half2 grid)", () => {
+  const half1 = buildV3HalfGrid(0.6, 0.4); // 1H: home-leaning
+  const half2 = buildV3HalfGrid(0.5, 0.7); // 2H: away-leaning — deliberately different
+  const ctx: V3EngineCtx = {
+    statsGrid: buildV3Grid(1.5, 1.2, 0.08),
+    shapeGrid: buildV3Grid(1.5, 1.2, 0.08),
+    mu: 2.7,
+    split: {} as V3EngineCtx["split"],
+    fhShare: 0.44,
+    fhShareIsDefault: true,
+    halfStats: [half1, half2],
+    halfShape: [half1, half2],
+    empirical: {},
+  };
+
+  // Independent re-derivation of the joint sum, mirroring priceHtFt's own
+  // nested-loop shape but written separately so a shared bug wouldn't hide
+  // behind identical code — the point of a regression test.
+  function jointHtFt(ht: "home" | "draw" | "away", ft: "home" | "draw" | "away"): number {
+    const matches = (side: "home" | "draw" | "away", h: number, a: number) =>
+      side === "home" ? h > a : side === "draw" ? h === a : h < a;
+    let p = 0;
+    for (let i1 = 0; i1 < half1.length; i1++) {
+      for (let j1 = 0; j1 < (half1[i1]?.length ?? 0); j1++) {
+        const p1 = half1[i1]?.[j1] ?? 0;
+        if (!p1 || !matches(ht, i1, j1)) continue;
+        for (let i2 = 0; i2 < half2.length; i2++) {
+          for (let j2 = 0; j2 < (half2[i2]?.length ?? 0); j2++) {
+            const p2 = half2[i2]?.[j2] ?? 0;
+            if (!p2) continue;
+            if (matches(ft, i1 + i2, j1 + j2)) p += p1 * p2;
+          }
+        }
+      }
+    }
+    return p;
+  }
+
+  it('prices "Home/Home" against an independently-derived joint sum', () => {
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "ht_ft" },
+      "HT/FT",
+      "Home/Home"
+    );
+    expect(price?.p).toBeCloseTo(jointHtFt("home", "home"), 10);
+  });
+
+  it('prices a cross combo ("Away/Home" — 1H away lead, FT home win)', () => {
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "ht_ft" },
+      "HT/FT",
+      "Away/Home"
+    );
+    expect(price?.p).toBeCloseTo(jointHtFt("away", "home"), 10);
+  });
+
+  it("all 9 HT/FT combinations sum to ~1 (probability mass conserved)", () => {
+    const sides = ["home", "draw", "away"] as const;
+    let total = 0;
+    for (const ht of sides) {
+      for (const ft of sides) {
+        const price = priceExoticsOutcome(
+          ctx,
+          { engine: "exotics", family: "ht_ft" },
+          "HT/FT",
+          `${ht}/${ft}`
+        );
+        total += price?.p ?? 0;
+      }
+    }
+    expect(total).toBeCloseTo(1, 6);
+  });
+
+  it("returns null for a malformed desc", () => {
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "ht_ft" },
+      "HT/FT",
+      "nonsense"
+    );
+    expect(price).toBeNull();
+  });
+});
+
+// ── priceCombo (§3.8 joint two-predicate grid) — previously zero test
+// coverage, review-caught gap. ─────────────────────────────────────────────
+
+describe("priceExoticsOutcome — combo (1X2 & O/U, 1X2 & GG/NG, O/U & GG/NG)", () => {
+  const ctx: V3EngineCtx = (() => {
+    const statsGrid = buildV3Grid(1.5, 1.2, 0.08);
+    const half = buildV3HalfGrid(0.75, 0.6);
+    return {
+      statsGrid,
+      shapeGrid: statsGrid,
+      mu: 2.7,
+      split: {} as V3EngineCtx["split"],
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      halfStats: [half, half],
+      halfShape: [half, half],
+      empirical: {},
+    };
+  })();
+
+  it('prices "Home & Over 1.5" (1X2 & Over/Under market) against a manual joint sum', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h > a && h + a > 1.5);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "combo" },
+      "1X2 & Over/Under",
+      "Home & Over 1.5"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it('prices "Away & no" (1X2 & GG/NG market) against a manual joint sum', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h < a && !(h > 0 && a > 0));
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "combo" },
+      "1X2 & GG/NG",
+      "Away & no"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it('prices "Under 2.5 & yes" (O/U & BTTS market) against a manual joint sum', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h + a < 2.5 && h > 0 && a > 0);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "combo" },
+      "Over/Under & BTTS",
+      "Under 2.5 & yes"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it("returns null when the desc doesn't split into exactly two legs", () => {
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "combo" },
+      "1X2 & Over/Under",
+      "Home & Over 1.5 & extra"
+    );
+    expect(price).toBeNull();
+  });
+
+  it("returns null when the market name doesn't match any recognized combo pairing", () => {
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "combo" },
+      "Some Unrecognized Combo Market",
+      "Home & Over 1.5"
+    );
+    expect(price).toBeNull();
+  });
+});
+
 // ── engines/types.ts — sample-scaled empirical blend (PR-3) ────────────────
 
 describe("blendEmpirical — sample-scaled weight (PR-3)", () => {
@@ -951,6 +1116,29 @@ describe("analyzeFixtureMarketsV3 (orchestrator)", () => {
       allMarkets: [],
     });
     expect(result).toBeNull();
+  });
+
+  it("attaches an empty finishingShadow when no side has npxG coverage (PR-25 item 4)", async () => {
+    const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+    const result = analyzeFixtureMarketsV3({ ...baseInput, allMarkets: [] });
+    expect(result?.finishingShadow.candidates).toEqual([]);
+  });
+
+  it("flags a finishing-luck divergence when npxG coverage is present and diverges", async () => {
+    const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+    const result = analyzeFixtureMarketsV3({
+      ...baseInput,
+      lambdaInput: {
+        ...baseInput.lambdaInput,
+        homeNpxgf: 0.8, // homeScoredPer90 (1.7) vs npxgf (0.8) — well over the 25% default threshold
+      },
+      allMarkets: [],
+    });
+    expect(result?.finishingShadow.candidates).toHaveLength(1);
+    expect(result?.finishingShadow.candidates[0]).toMatchObject({
+      side: "home",
+      direction: "overperforming",
+    });
   });
 
   it("routes a small realistic catalogue end-to-end and surfaces gate-surviving candidates", async () => {
