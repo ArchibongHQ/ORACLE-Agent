@@ -18,9 +18,14 @@ const __dir = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(__dir, "../../..");
 
 export const env = loadEnv(join(ROOT, ".env"));
-export const config = buildConfig(env);
-export const goalsV3Config = buildGoalsV3Config(env);
 export const STORE_PATH = join(ROOT, ".tmp/oracle-store");
+// Absolute, not the bare ".tmp/oracle-store/league_baselines.json" default —
+// this process's cwd is the Servy StartupDirectory (apps/worker), not the repo
+// root tools/compute_league_baselines.py writes to, so the bare relative
+// default would silently miss the file even with ORACLE_V3_LAKE_BASELINES/
+// ORACLE_V3_LAKE_HFA=on.
+export const config = buildConfig(env, join(STORE_PATH, "league_baselines.json"));
+export const goalsV3Config = buildGoalsV3Config(env);
 // PR-21: relative to ROOT (not ROOT-joined) — dailyAcquisition.ts's weekly
 // build_market_catalog.py --json-out call passes this as-is (its subprocess
 // cwd is already ROOT), while index.ts's startup loadCatalogOverlay call

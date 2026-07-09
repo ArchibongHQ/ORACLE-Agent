@@ -54,7 +54,10 @@ function today(): string {
 }
 
 function loadConfig(noLlm: boolean): OracleConfig {
-  const config = buildConfig(loadEnv(join(ROOT, ".env")));
+  const config = buildConfig(
+    loadEnv(join(ROOT, ".env")),
+    join(ROOT, ".tmp/oracle-store/league_baselines.json")
+  );
   if (noLlm) return { ...config, claudeApiKey: "", geminiApiKey: "" };
   return config;
 }

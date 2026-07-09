@@ -263,7 +263,10 @@ export function startServer(opts: ServerOptions = {}): http.Server {
   const host = opts.host ?? process.env.HOST ?? "0.0.0.0";
   const deps: WebDeps = opts.deps ?? {
     storage: new GBrainAdapter(join(ROOT, ".tmp/gbrain")),
-    config: buildConfig(loadEnv(join(ROOT, ".env"))),
+    config: buildConfig(
+      loadEnv(join(ROOT, ".env")),
+      join(ROOT, ".tmp/oracle-store/league_baselines.json")
+    ),
   };
 
   const server = http.createServer((req, res) => {

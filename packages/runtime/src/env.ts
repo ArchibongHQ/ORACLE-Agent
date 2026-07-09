@@ -176,8 +176,15 @@ export function loadLakeHfa(
 
 /** Build an OracleConfig from a parsed env record. Defaults: bankroll=1000, CONFIDENCE_WEIGHTED.
  *  On Railway, resource-throttled local defaults are automatically promoted to cloud values
- *  unless the env var is explicitly overridden in the Railway Variables panel. */
-export function buildConfig(env: Record<string, string>): OracleConfig {
+ *  unless the env var is explicitly overridden in the Railway Variables panel.
+ *  `leagueBaselinesPath` overrides where the lake-baselines/HFA artifact is read from — pass an
+ *  absolute path when the caller's process.cwd() isn't the repo root (e.g. the worker's Servy
+ *  service runs with cwd=apps/worker, so the bare relative default would silently miss the file
+ *  tools/compute_league_baselines.py writes at <repo root>/.tmp/oracle-store/). */
+export function buildConfig(
+  env: Record<string, string>,
+  leagueBaselinesPath?: string
+): OracleConfig {
   const hw = detectHardware();
   const gpuCapable = isGpuCapable(hw);
   const cloud = isRailway(env);
@@ -205,7 +212,11 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
   // in the effective-config log and warns if the flag is on but the artifact is
   // missing (run tools/compute_league_baselines.py first).
   const lakeBaselinesOn = env.ORACLE_V3_LAKE_BASELINES?.toLowerCase() === "on";
-  const v3LakeBaselines = lakeBaselinesOn ? loadLakeBaselines() : undefined;
+  const v3LakeBaselines = lakeBaselinesOn
+    ? leagueBaselinesPath
+      ? loadLakeBaselines(leagueBaselinesPath)
+      : loadLakeBaselines()
+    : undefined;
   if (lakeBaselinesOn) {
     const n = v3LakeBaselines ? Object.keys(v3LakeBaselines).length : 0;
     process.stdout.write(
@@ -218,7 +229,11 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
   // Full-audit P3: lake-fitted per-league HFA overrides the global v3Hfa only
   // when ORACLE_V3_LAKE_HFA=on. Default off ⇒ undefined ⇒ global v3Hfa applies.
   const lakeHfaOn = env.ORACLE_V3_LAKE_HFA?.toLowerCase() === "on";
-  const v3HfaByLeague = lakeHfaOn ? loadLakeHfa() : undefined;
+  const v3HfaByLeague = lakeHfaOn
+    ? leagueBaselinesPath
+      ? loadLakeHfa(leagueBaselinesPath)
+      : loadLakeHfa()
+    : undefined;
   if (lakeHfaOn) {
     const n = v3HfaByLeague ? Object.keys(v3HfaByLeague).length : 0;
     process.stdout.write(

@@ -267,6 +267,30 @@ describe("buildConfig v3LakeBaselines gating", () => {
   it("is undefined by default (flag off ⇒ static table only)", () => {
     expect(buildConfig({}).v3LakeBaselines).toBeUndefined();
   });
+
+  it("reads from an explicit leagueBaselinesPath override, not just cwd-relative", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lake-buildconfig-"));
+    const path = join(dir, "league_baselines.json");
+    writeFileSync(path, JSON.stringify({ byName: { "Premier League": 2.98 } }), "utf8");
+    try {
+      const cfg = buildConfig({ ORACLE_V3_LAKE_BASELINES: "on" }, path);
+      expect(cfg.v3LakeBaselines).toEqual({ "Premier League": 2.98 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the bare cwd-relative default when no override path is given", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lake-buildconfig-nocwdfile-"));
+    const prevCwd = process.cwd();
+    process.chdir(dir);
+    try {
+      expect(buildConfig({ ORACLE_V3_LAKE_BASELINES: "on" }).v3LakeBaselines).toBeUndefined();
+    } finally {
+      process.chdir(prevCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("loadLakeHfa (full-audit P3)", () => {
@@ -304,5 +328,17 @@ describe("loadLakeHfa (full-audit P3)", () => {
 describe("buildConfig v3HfaByLeague gating", () => {
   it("is undefined by default (flag off ⇒ global v3Hfa applies)", () => {
     expect(buildConfig({}).v3HfaByLeague).toBeUndefined();
+  });
+
+  it("reads from an explicit leagueBaselinesPath override, not just cwd-relative", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lake-hfa-buildconfig-"));
+    const path = join(dir, "league_baselines.json");
+    writeFileSync(path, JSON.stringify({ hfaByName: { "Premier League": 1.08 } }), "utf8");
+    try {
+      const cfg = buildConfig({ ORACLE_V3_LAKE_HFA: "on" }, path);
+      expect(cfg.v3HfaByLeague).toEqual({ "Premier League": 1.08 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
