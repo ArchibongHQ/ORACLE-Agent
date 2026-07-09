@@ -271,8 +271,8 @@ export {
 export type { SkewShrinkCandidate, SkewShrinkResult } from "./marketsV3/skewShrink.js";
 export {
   formatSkewShrinkShadow,
-  shadowSkewShrink,
   SKEW_SHRINK_FRACTION_DEFAULT,
+  shadowSkewShrink,
 } from "./marketsV3/skewShrink.js";
 export type { DualSplit } from "./marketsV3/split.js";
 export { deriveDualSplit, SHAPE_DISAGREEMENT_DELTA } from "./marketsV3/split.js";
