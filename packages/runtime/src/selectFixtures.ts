@@ -181,6 +181,15 @@ export interface SportyBetXgEntry {
   venueXgf?: number | null;
   venueXga?: number | null;
   venueN?: number;
+  /** Non-penalty xG-for (per-match rate) — FBref-only (PR-25 item 4), absent
+   *  for Understat/FotMob/Sofascore/AI-mode records. Distinct signal from
+   *  xgf, not a replacement: strips penalty conversions to isolate open-play
+   *  scoring threat (a team can carry a high xgf on penalty volume alone). */
+  npxgf?: number | null;
+  /** Expected-assisted-goals-for (per-match rate) — FBref-only, same coverage
+   *  caveat as npxgf. A team-creativity signal (chance quality created via
+   *  the final pass), independent of finishing quality. */
+  xagf?: number | null;
 }
 
 /** Stats block from Sportradar gismo (sidecar v2). All sub-fields optional. */

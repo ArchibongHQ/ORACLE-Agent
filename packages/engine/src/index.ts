@@ -205,6 +205,16 @@ export {
   routeCoverage,
   routeMarket,
 } from "./marketsV3/feedDictionary.js";
+export type {
+  FinishingRegressionCandidate,
+  FinishingRegressionInput,
+  FinishingRegressionResult,
+} from "./marketsV3/finishingRegression.js";
+export {
+  FINISHING_REGRESSION_THRESHOLD_DEFAULT,
+  formatFinishingRegressionShadow,
+  shadowFinishingRegression,
+} from "./marketsV3/finishingRegression.js";
 export type { ResultProbs } from "./marketsV3/grid.js";
 export {
   buildV3Grid,

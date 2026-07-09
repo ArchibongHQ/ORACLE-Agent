@@ -851,6 +851,15 @@ def _xg_for(table: dict[str, dict], team: str, venue: Optional[str] = None) -> O
     }
     if rec.get("xga_src") == "estimated":
         out["xgaSrc"] = "estimated"
+    # PR-25 item 4: non-penalty xG / expected-assisted-goals, FBref-only (see
+    # build_xg_table.py's _load_fbref_xg) — distinct signals, not a replacement
+    # for xgf/xga, so pass through only when present rather than defaulting.
+    npxgf = rec.get("npxgf")
+    if isinstance(npxgf, (int, float)):
+        out["npxgf"] = float(npxgf)
+    xagf = rec.get("xagf")
+    if isinstance(xagf, (int, float)):
+        out["xagf"] = float(xagf)
     venue_rec = rec.get(venue) if venue in ("home", "away") else None
     if isinstance(venue_rec, dict) and isinstance(venue_rec.get("xgf"), (int, float)):
         out["venueXgf"] = float(venue_rec["xgf"])

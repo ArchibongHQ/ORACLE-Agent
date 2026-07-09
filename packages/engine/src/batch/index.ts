@@ -90,6 +90,8 @@ function buildV3Input(
       nAway: t.nAway ?? null,
       homeXg: t.xgfH != null ? { xgf: t.xgfH, xga: t.xgaH } : null,
       awayXg: t.xgfA != null ? { xgf: t.xgfA, xga: t.xgaA } : null,
+      homeNpxgf: t.npxgfH ?? null,
+      awayNpxgf: t.npxgfA ?? null,
       // §8.2 (PR-6): tool-derived squad availability, not an LLM guess — was
       // wired into the goals-only pipeline only; the all-markets pipeline
       // silently priced every non-goals market without it until now.

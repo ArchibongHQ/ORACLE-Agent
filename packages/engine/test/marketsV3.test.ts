@@ -953,6 +953,29 @@ describe("analyzeFixtureMarketsV3 (orchestrator)", () => {
     expect(result).toBeNull();
   });
 
+  it("attaches an empty finishingShadow when no side has npxG coverage (PR-25 item 4)", async () => {
+    const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+    const result = analyzeFixtureMarketsV3({ ...baseInput, allMarkets: [] });
+    expect(result?.finishingShadow.candidates).toEqual([]);
+  });
+
+  it("flags a finishing-luck divergence when npxG coverage is present and diverges", async () => {
+    const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+    const result = analyzeFixtureMarketsV3({
+      ...baseInput,
+      lambdaInput: {
+        ...baseInput.lambdaInput,
+        homeNpxgf: 0.8, // homeScoredPer90 (1.7) vs npxgf (0.8) — well over the 25% default threshold
+      },
+      allMarkets: [],
+    });
+    expect(result?.finishingShadow.candidates).toHaveLength(1);
+    expect(result?.finishingShadow.candidates[0]).toMatchObject({
+      side: "home",
+      direction: "overperforming",
+    });
+  });
+
   it("routes a small realistic catalogue end-to-end and surfaces gate-surviving candidates", async () => {
     const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
     const allMarkets: AllMarketEntry[] = [
