@@ -20,7 +20,7 @@ These are enforced in code — no LLM instruction can bypass them:
 
 - `convergenceScore.tier` is `STRONG` or `MODERATE`
 - `mlFilter.mlAllowed === true`
-- `hoursToKO > 4` (pre-match window)
+- `hoursToKO > 1` (pre-match window)
 - `evMarkets` has ≥ 1 market clearing its class's EV gate — per-class thresholds
   live in `marketsV3/evGate.ts:61-69` (`CLASS_GATE`: S ev%≥0.04, M edge-only,
   L ev%≥0.15, X ev%≥0.20 & odds≤15), not a single blanket number. See

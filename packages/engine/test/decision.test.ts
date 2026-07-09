@@ -189,6 +189,55 @@ describe("decide — LLM path", () => {
     vi.doUnmock("@oracle/llm");
   });
 
+  it("surfaces hoursToKO in the draft prompt's RISK SIGNALS block when present", async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const mockResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.78,
+      rationale: "Strong convergence with high xG from both teams.",
+      rejectedAndWhy: [],
+    };
+    const callClaudeCode = vi.fn().mockResolvedValue(JSON.stringify(mockResponse));
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+
+    const ctxWithHours: DecisionContext = { ...BASE_CTX, hoursToKO: 2.5 };
+    await decide([makeMarket()], ctxWithHours, { claudeApiKey: "test-key" });
+
+    // calls[0] = draft prompt (buildPrompt); calls[1] = arbiter prompt (buildArbiterPrompt)
+    const prompt = callClaudeCode.mock.calls[0]?.[0] as string | undefined;
+    expect(prompt).toContain("Hours to Kickoff: 2.5");
+    expect(prompt).toContain("hoursToKO>1");
+    vi.doUnmock("@oracle/llm");
+    delete process.env.ORACLE_LOCAL_DECISION;
+  });
+
+  it('renders hoursToKO as "unknown" in the prompt when absent from the context', async () => {
+    process.env.ORACLE_LOCAL_DECISION = "true";
+    const mockResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.78,
+      rationale: "Strong convergence with high xG from both teams.",
+      rejectedAndWhy: [],
+    };
+    const callClaudeCode = vi.fn().mockResolvedValue(JSON.stringify(mockResponse));
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode,
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+
+    await decide([makeMarket()], BASE_CTX, { claudeApiKey: "test-key" });
+
+    const prompt = callClaudeCode.mock.calls[0]?.[0] as string | undefined;
+    expect(prompt).toContain("Hours to Kickoff: unknown");
+    vi.doUnmock("@oracle/llm");
+    delete process.env.ORACLE_LOCAL_DECISION;
+  });
+
   it("falls back to deterministic when callClaude throws and no Gemini key", async () => {
     vi.doMock("@oracle/llm", () => ({
       callClaude: vi.fn().mockRejectedValue(new Error("API error")),
