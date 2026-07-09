@@ -455,6 +455,37 @@ describe("selectGoalsAccumulator", () => {
       expect(res.shortSlipLegs.length).toBeLessThanOrEqual(res.legs.length || 10);
     });
   });
+
+  describe("mini-ACCA kickoff-gap (audit fix: was v3-only, now unconditional)", () => {
+    it("rejects a same-kickoff-window leg even though it's a different league, in legacy (non-v3) mode", () => {
+      const detailByKey = detailMap([
+        ["A", "B", richDetail()],
+        ["C", "D", richDetail()],
+        ["E", "F", richDetail()],
+      ]);
+      const jobs = [
+        // Highest edge (mp-ip=0.15), kicks off 15:00.
+        okJob("A", "B", [evm("Over 1.5", 0.9, 0.75)], "Premier League", "2026-06-15T15:00:00Z"),
+        // 2nd-highest edge (0.10), DIFFERENT league, but only 1h after A-B —
+        // must NOT both land in the mini-ACCA now that the gap is
+        // unconditional. Before this fix (gap=0 in non-v3 mode),
+        // computeMiniAccaStats's jointProb() would then see a real non-zero
+        // cross-league same-window correlation (pairwiseCrossFixtureCorrelation's
+        // SAME_WINDOW_BONUS is NOT conditional on same-league) and inflate
+        // miniAccaCombinedProb above the independent product it's supposed
+        // to represent.
+        okJob("C", "D", [evm("Over 1.5", 0.85, 0.75)], "La Liga", "2026-06-15T16:00:00Z"),
+        // 3rd-highest edge (0.05), DIFFERENT league AND >3h clear of A-B —
+        // should fill the 2nd mini-ACCA slot instead.
+        okJob("E", "F", [evm("Over 1.5", 0.8, 0.75)], "Bundesliga", "2026-06-15T20:00:00Z"),
+      ];
+      const res = selectGoalsAccumulator(jobs, { detailByKey });
+      const miniAccaFixtures = res.miniAccaLegs.map((l) => `${l.home}-${l.away}`);
+      expect(miniAccaFixtures).toContain("A-B");
+      expect(miniAccaFixtures).not.toContain("C-D"); // clashes with A-B's kickoff window
+      expect(miniAccaFixtures).toContain("E-F"); // clear window, different league — admitted instead
+    });
+  });
 });
 
 describe("GOALS_MARKETS", () => {

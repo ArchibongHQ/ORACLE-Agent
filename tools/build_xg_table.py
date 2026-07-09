@@ -283,22 +283,35 @@ def main() -> None:
             table[key] = rec
             sofascore_added += 1
 
-    fbref = _load_fbref_xg()
-    added = 0
-    for key, rec in fbref.items():
+    fbref_added = 0
+    for key, rec in _load_fbref_xg().items():
         if key not in table:
             table[key] = rec
-            added += 1
+            fbref_added += 1
+
+    # PR-19: Google-AI-Mode fallback — last-resort, lowest-confidence tier.
+    # Same fill-only-if-absent semantics as every tier above: a team already
+    # covered by a real source is NEVER overwritten by an ai_mode row, so a
+    # team gaining Understat/FotMob coverage later automatically shadows its
+    # google_ai entry on the next rebuild.
+    ai_mode_added = 0
+    for key, rec in _load_json_xg_table(XG_DIR / "ai_mode_xg.json").items():
+        if key not in table:
+            table[key] = rec
+            ai_mode_added += 1
 
     xga_filled = _estimate_missing_xga(table)
 
     if not table:
-        print("[xg-table] no Understat/FotMob/Sofascore/FBref data found — writing empty table (fail-open)")
+        print("[xg-table] no Understat/FotMob/Sofascore/FBref/AI-mode data found — writing empty table (fail-open)")
     else:
+        # Every tier prints its count even at zero — a silent 0 (e.g. the
+        # FotMob extractor breaking against a live payload shape change) must
+        # be a visible daily symptom, not silence.
         print(
             f"[xg-table] understat={understat_n} teams, fotmob-added={fotmob_added}, "
-            f"sofascore-added={sofascore_added}, fbref-added={added} teams, "
-            f"xga-estimated={xga_filled}"
+            f"sofascore-added={sofascore_added}, fbref-added={fbref_added} teams, "
+            f"ai-mode-added={ai_mode_added} teams, xga-estimated={xga_filled}"
         )
 
     if args.dry_run:

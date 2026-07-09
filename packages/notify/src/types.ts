@@ -61,6 +61,12 @@ export interface BatchSummary {
    *  never suppresses picks. Present on main-batch and goals-lottery summaries
    *  only when v3 outputs/sanity ran for that batch. */
   sanityNote?: string;
+  /** PR-20: one-line slate-wide market-coverage tally (packages/runtime's
+   *  rollupCoverage/formatMarketCoverageNote) — "markets: N total / N routed /
+   *  N priced / N gate-passed; top unrouted: …". Reports the recoverable skip
+   *  tail's size, never suppresses picks. Present only when v3 ran with
+   *  ORACLE_MARKETS_COVERAGE on (default). */
+  marketCoverageNote?: string;
 }
 
 /** Build the "which model did the final analysis" attribution line for a goals
@@ -179,6 +185,7 @@ export function formatSummaryText(s: BatchSummary): string {
   }
   if (s.analysisModelNote) lines.push(`\n${s.analysisModelNote}`);
   if (s.sanityNote) lines.push(`\n${s.sanityNote}`);
+  if (s.marketCoverageNote) lines.push(`\n${s.marketCoverageNote}`);
   if (s.arbiterStatus) {
     lines.push(
       s.arbiterStatus === "verified"
@@ -231,6 +238,7 @@ ${
 }
 ${s.analysisModelNote ? `<p><em>${s.analysisModelNote}</em></p>` : ""}
 ${s.sanityNote ? `<p><em>${s.sanityNote}</em></p>` : ""}
+${s.marketCoverageNote ? `<p><em>${s.marketCoverageNote}</em></p>` : ""}
 ${
   s.bookingCode
     ? `<p><strong>🎟 SportyBet Booking Code: <code>${s.bookingCode}</code></strong><br>

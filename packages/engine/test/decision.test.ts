@@ -1,5 +1,11 @@
 /** Phase 4 decision layer tests.
- *  LLM path: mocked via vi.mock('@oracle/llm'). Fallback path: real deterministic logic. */
+ *  LLM path: mocked via vi.mock('@oracle/llm'). Fallback path: real deterministic logic.
+ *  PR-23: the all-markets LLM executor (marketExecutor.js) is mocked at module
+ *  level (same pattern marketsV3BatchIntegration.test.ts already uses for it)
+ *  so the "unmapped" scope's splice-not-draft behavior is testable without a
+ *  real local Claude Code CLI. Existing tests never set marketExecutorRisk +
+ *  enableLlmMarketExecutor together, so this mock is never invoked by them —
+ *  purely additive. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionContext } from "../src/decision/index.js";
 import {
@@ -8,7 +14,22 @@ import {
   gradeFromEV,
   validateSelection,
 } from "../src/decision/index.js";
+import type {
+  MarketExecutorResult,
+  MarketExecutorRiskParams,
+} from "../src/decision/marketExecutor.js";
 import type { DecisionOutput, EVMarket } from "../src/types.js";
+
+const runAllMarketsLlmExecutorMock = vi.fn();
+vi.mock("../src/decision/marketExecutor.js", async () => {
+  const actual = await vi.importActual<typeof import("../src/decision/marketExecutor.js")>(
+    "../src/decision/marketExecutor.js"
+  );
+  return {
+    ...actual,
+    runAllMarketsLlmExecutor: (...args: unknown[]) => runAllMarketsLlmExecutorMock(...args),
+  };
+});
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -1078,5 +1099,144 @@ describe("decide — PR-8 demote/gate opts", () => {
       skipArbiter: true,
     });
     expect(callClaudeCode).toHaveBeenCalledTimes(1); // Tier-1 draft attempted
+  });
+});
+
+// ── PR-23: unmapped-tail LLM executor scope ─────────────────────────────────
+
+const EXECUTOR_RISK: MarketExecutorRiskParams = {
+  dqs: 0.85,
+  councilPenalty: false,
+  varMultiplier: 1.0,
+  drawdownPenalty: 1.0,
+  calibFactor: 1.0,
+  bankroll: 1000,
+};
+
+function makeExecutorResult(overrides: Partial<EVMarket> = {}): MarketExecutorResult {
+  const market = makeMarket({
+    cat: "LLM Market Executor",
+    label: "Executor pick",
+    market: "LLM Market Executor",
+    side: "Executor pick",
+    ...overrides,
+  });
+  return {
+    market,
+    decision: {
+      primaryPick: {
+        market: market.market,
+        side: market.side,
+        odds: market.odds,
+        stake: market.stake,
+      },
+      confidence: market.mp,
+      grade: "STRONG",
+      rationale: "Executor rationale",
+      rejectedAndWhy: [],
+    },
+    replay: {
+      prompt: "prompt",
+      rawResponse: "raw",
+      model: "claude-code-market-executor",
+      temperature: "default",
+    },
+  };
+}
+
+describe("decide — PR-23 unmapped-tail LLM executor scope", () => {
+  beforeEach(() => {
+    runAllMarketsLlmExecutorMock.mockReset();
+  });
+
+  it('"full" scope (pre-PR-23 behavior, unchanged): the executor\'s pick becomes the draft directly, even when a higher-EV eligible bet already exists', async () => {
+    runAllMarketsLlmExecutorMock.mockResolvedValue(makeExecutorResult({ ev: 0.02 })); // LOW ev
+    const higherEvExisting = makeMarket({ label: "v3 pick", ev: 0.5 }); // deliberately higher
+
+    const { decision } = await decide(
+      [higherEvExisting],
+      BASE_CTX,
+      { enableLlmMarketExecutor: true, llmExecutorScope: "full" },
+      false,
+      EXECUTOR_RISK,
+      { skipArbiter: true }
+    );
+
+    expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
+    // "full" scope: executor wins outright regardless of EV — draft is forced, not ranked.
+    expect(decision.rationale).toBe("Executor rationale");
+    expect(decision.primaryPick.market).toBe("LLM Market Executor");
+  });
+
+  it('"unmapped" scope: splices the executor pick into effectiveEligible instead of forcing the draft — the higher-EV existing candidate still wins', async () => {
+    runAllMarketsLlmExecutorMock.mockResolvedValue(makeExecutorResult({ ev: 0.02 })); // LOW ev
+    const higherEvExisting = makeMarket({ label: "v3 pick", ev: 0.5, market: "Goals O/U" });
+
+    const { decision, eligibleBets } = await decide(
+      [higherEvExisting],
+      BASE_CTX,
+      { enableLlmMarketExecutor: true, llmExecutorScope: "unmapped" },
+      false, // llmEligible
+      EXECUTOR_RISK,
+      { skipDraftLlm: true, skipArbiter: true } // mirrors batch/index.ts under usedV3=true
+    );
+
+    expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1); // ran despite skipDraftLlm
+    // The pre-existing higher-EV candidate wins the deterministic sort — NOT
+    // force-drafted to the executor's (lower-EV) pick.
+    expect(decision.primaryPick.market).toBe("Goals O/U");
+    expect(decision.rationale).not.toBe("Executor rationale");
+    // But the executor's market IS spliced into the widened eligible list —
+    // "splice, don't replace": callers (batch/index.ts) still see it.
+    expect(eligibleBets?.some((m) => m.market === "LLM Market Executor")).toBe(true);
+  });
+
+  it('"unmapped" scope: when the executor pick genuinely has the higher EV, it wins the deterministic sort on its own merit', async () => {
+    runAllMarketsLlmExecutorMock.mockResolvedValue(makeExecutorResult({ ev: 0.9 })); // HIGH ev
+    const lowerEvExisting = makeMarket({ label: "v3 pick", ev: 0.05, market: "Goals O/U" });
+
+    const { decision } = await decide(
+      [lowerEvExisting],
+      BASE_CTX,
+      { enableLlmMarketExecutor: true, llmExecutorScope: "unmapped" },
+      false,
+      EXECUTOR_RISK,
+      { skipDraftLlm: true, skipArbiter: true }
+    );
+
+    expect(decision.primaryPick.market).toBe("LLM Market Executor");
+  });
+
+  it('"unmapped" scope: forceDeterministic (fixture not llmEligible) still skips the executor entirely — the plan\'s "skip when !llmEligible" rule', async () => {
+    const { decision } = await decide(
+      [makeMarket()],
+      BASE_CTX,
+      { enableLlmMarketExecutor: true, llmExecutorScope: "unmapped" },
+      true, // forceDeterministic = !llmEligible
+      EXECUTOR_RISK,
+      { skipArbiter: true }
+    );
+
+    expect(runAllMarketsLlmExecutorMock).not.toHaveBeenCalled();
+    expect(decision.primaryPick.market).toBe("Goals O/U"); // the one real eligible bet
+  });
+
+  it('"unmapped" scope: an empty tail (executor returns null — its own !ctx.allMarkets?.length fail-open) leaves the existing candidate untouched', async () => {
+    runAllMarketsLlmExecutorMock.mockResolvedValue(null);
+
+    const { decision, eligibleBets } = await decide(
+      [makeMarket({ market: "Goals O/U" })],
+      BASE_CTX,
+      { enableLlmMarketExecutor: true, llmExecutorScope: "unmapped" },
+      false,
+      EXECUTOR_RISK,
+      { skipDraftLlm: true, skipArbiter: true }
+    );
+
+    expect(decision.primaryPick.market).toBe("Goals O/U");
+    // Per DecisionResult.eligibleBets's contract: undefined (not an empty-ish
+    // array) means "nothing was spliced, fall back to your own input list" —
+    // it's only ever set when the executor actually validated a candidate.
+    expect(eligibleBets).toBeUndefined();
   });
 });

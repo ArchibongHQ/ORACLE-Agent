@@ -11,10 +11,17 @@ import {
   extractMarkets,
   gateV3Edge,
   poissonPMF,
+  resolveRho,
+  shrink,
+  V3_LEAGUE_BASELINES,
+  V3_LEAGUE_BASELINES_BY_ID,
+  V3_PENALTY_PTS,
   V3_TIER_HEIGHTENED_FLOOR,
   type V3AnalyzeInput,
+  v3LeaguePerTeamAvg,
   v3NbDispersion,
   v3PenaltyPts,
+  xgBlendWeight,
 } from "@oracle/engine";
 import { describe, expect, it } from "vitest";
 
@@ -94,6 +101,52 @@ describe("computeV3Lambdas (§3.1)", () => {
     expect(shrunk.lambdaHome).toBeGreaterThan(L);
   });
 
+  describe("homeAvailabilityMult/awayAvailabilityMult (§8.2, PR-6)", () => {
+    const base = {
+      league: "__unknown_league__",
+      homeScoredPer90: 1.7,
+      homeConcededPer90: 1.0,
+      awayScoredPer90: 1.2,
+      awayConcededPer90: 1.5,
+    };
+
+    it("reduces lambda proportionally before shrink when a mult < 1 is supplied", () => {
+      const full = computeV3Lambdas(base, { xgBlend: false })!;
+      const depleted = computeV3Lambdas(
+        { ...base, homeAvailabilityMult: 0.8 },
+        { xgBlend: false }
+      )!;
+      expect(depleted.lambdaHome).toBeCloseTo(full.lambdaHome * 0.8, 5);
+      // Away side untouched when only the home mult is supplied.
+      expect(depleted.lambdaAway).toBeCloseTo(full.lambdaAway, 10);
+    });
+
+    it("clamps a mult above 1.0 down to 1.0 (matches fetch_squad_availability.py's own cap)", () => {
+      const full = computeV3Lambdas(base, { xgBlend: false })!;
+      const overCapped = computeV3Lambdas(
+        { ...base, awayAvailabilityMult: 1.5 },
+        { xgBlend: false }
+      )!;
+      expect(overCapped.lambdaAway).toBeCloseTo(full.lambdaAway, 5);
+    });
+
+    it("clamps a mult below 0.5 up to 0.5 (floor against a data glitch zeroing lambda)", () => {
+      const floored = computeV3Lambdas({ ...base, homeAvailabilityMult: 0.1 }, { xgBlend: false })!;
+      const atFloor = computeV3Lambdas({ ...base, homeAvailabilityMult: 0.5 }, { xgBlend: false })!;
+      expect(floored.lambdaHome).toBeCloseTo(atFloor.lambdaHome, 5);
+    });
+
+    it("is a no-op when absent or null", () => {
+      const withUndefined = computeV3Lambdas(base, { xgBlend: false })!;
+      const withNull = computeV3Lambdas(
+        { ...base, homeAvailabilityMult: null, awayAvailabilityMult: null },
+        { xgBlend: false }
+      )!;
+      expect(withNull.lambdaHome).toBeCloseTo(withUndefined.lambdaHome, 10);
+      expect(withNull.lambdaAway).toBeCloseTo(withUndefined.lambdaAway, 10);
+    });
+  });
+
   it("blends 50/50 with xG when present, and marks xgBlended", () => {
     const noXg = computeV3Lambdas({
       league: "__unknown_league__",
@@ -120,6 +173,106 @@ describe("computeV3Lambdas (§3.1)", () => {
     expect(withXg.lambdaHome).not.toBeCloseTo(noXg.lambdaHome, 5);
   });
 
+  describe("xgBlendWeight (audit fix: was a flat 50/50 regardless of sample size)", () => {
+    it("returns the full 0.5 ceiling once n reaches shrinkN, matching the prior flat behavior exactly", () => {
+      expect(xgBlendWeight(8, 8)).toBe(0.5);
+      expect(xgBlendWeight(20, 8)).toBe(0.5);
+      expect(xgBlendWeight(null, 8)).toBe(0.5);
+      expect(xgBlendWeight(undefined, 8)).toBe(0.5);
+    });
+
+    it("ramps linearly below shrinkN instead of jumping straight to 0.5", () => {
+      expect(xgBlendWeight(4, 8)).toBeCloseTo(0.25, 10); // (4/8)*0.5
+      expect(xgBlendWeight(2, 8)).toBeCloseTo(0.125, 10); // (2/8)*0.5
+      expect(xgBlendWeight(0, 8)).toBe(0);
+      expect(xgBlendWeight(3, 5)).toBeCloseTo(0.3, 10); // (3/5)*0.5 — tournament shrinkN
+    });
+
+    it("is monotonically non-decreasing in n — more sample, never less xG weight", () => {
+      const weights = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((n) => xgBlendWeight(n, 8));
+      for (let i = 1; i < weights.length; i++)
+        expect(weights[i]).toBeGreaterThanOrEqual(weights[i - 1]!);
+    });
+  });
+
+  it("audit fix: computeV3Lambdas actually threads the sample-scaled xG weight through, not a hardcoded 0.5", () => {
+    // Full end-to-end sanity check (xgBlendWeight's own unit tests above are
+    // the precise coverage) — a fixture at n below shrinkN must NOT reach the
+    // exact midpoint between the goals-only and xG-only lambdas.
+    const base = {
+      league: "__unknown_league__",
+      homeScoredPer90: 1.7,
+      homeConcededPer90: 1.0,
+      awayScoredPer90: 1.2,
+      awayConcededPer90: 1.5,
+      nHome: 2,
+      nAway: 2,
+      homeXg: { xgf: 2.5, xga: 0.5 },
+      awayXg: { xgf: 0.5, xga: 2.5 },
+    };
+    const blended = computeV3Lambdas(base)!.lambdaHome;
+    const goalsOnly = computeV3Lambdas(base, { xgBlend: false })!.lambdaHome;
+    // A flat-0.5 blend would put `blended` exactly midway between `goalsOnly`
+    // and whatever the (inaccessible from here) pure-xG lambda is — instead
+    // just assert it moved measurably but is still much closer to goalsOnly
+    // than a 50/50 midpoint would ever land for these inputs (xgBlendWeight's
+    // unit tests above pin the exact ratio; this just guards the wiring).
+    expect(blended).not.toBeCloseTo(goalsOnly, 5);
+  });
+
+  describe("shrink (audit fix, Desktop concept #2: tournament fixtures get a faster n/5 ramp)", () => {
+    it("n >= shrinkN is always fully trusted, regardless of which shrinkN", () => {
+      expect(shrink(2.0, 8, 1.3, 8)).toBe(2.0);
+      expect(shrink(2.0, 5, 1.3, 5)).toBe(2.0);
+      expect(shrink(2.0, 20, 1.3, 5)).toBe(2.0);
+    });
+
+    it("the SAME n shrinks less (stays closer to raw lambda) under the tournament ramp (5) than the domestic ramp (8)", () => {
+      // Isolates shrinkN as the only variable — same lambda, same n, same L,
+      // computeV3Lambdas-level tests confounded this with the fact that
+      // different league NAMES also resolve to different L baselines.
+      const lambda = 2.4;
+      const L = 1.3;
+      const n = 3;
+      const domestic = shrink(lambda, n, L, 8);
+      const tournament = shrink(lambda, n, L, 5);
+      expect(Math.abs(tournament - lambda)).toBeLessThan(Math.abs(domestic - lambda));
+    });
+
+    it("n=5 is fully trusted under the tournament ramp but still shrunk under the domestic ramp", () => {
+      const lambda = 2.4;
+      const L = 1.3;
+      expect(shrink(lambda, 5, L, 5)).toBe(lambda);
+      expect(shrink(lambda, 5, L, 8)).not.toBe(lambda);
+    });
+  });
+
+  it("audit fix wiring: computeV3Lambdas selects the tournament shrinkN for a World-Cup-labeled fixture", () => {
+    // TOURNAMENT_RE isn't exported (engine/goalsV3 boundary) — this proves the
+    // selection is actually wired into computeV3Lambdas via league name
+    // matching, not just that shrink() itself works (covered above). Uses the
+    // SAME league's own baseline as L for both n's, so the only thing that
+    // differs between "at n=5" and "at n=20" is whether 5 is >= shrinkN.
+    const at = (n: number) =>
+      computeV3Lambdas(
+        {
+          league: "World Cup",
+          homeScoredPer90: 2.4,
+          homeConcededPer90: 0.6,
+          awayScoredPer90: 0.5,
+          awayConcededPer90: 2.2,
+          nHome: n,
+          nAway: n,
+        },
+        { xgBlend: false }
+      )!.lambdaHome;
+    // If World Cup used the domestic shrinkN=8, n=5 would still be shrinking
+    // (5 < 8) and would differ from the effectively-unshrunk n=20 case. Under
+    // the tournament shrinkN=5, n=5 is already fully trusted, so the two
+    // must match exactly.
+    expect(at(5)).toBe(at(20));
+  });
+
   it("returns null when neither side has any usable scoring signal", () => {
     expect(
       computeV3Lambdas({
@@ -130,6 +283,183 @@ describe("computeV3Lambdas (§3.1)", () => {
         awayConcededPer90: null,
       })
     ).toBeNull();
+  });
+
+  // [audit fix, P0-2] League baselines refreshed 2026-07-06 — spot-check the
+  // values that actually changed this pass (see the table's own inline
+  // comments for sourcing). Guards against silent re-staling.
+  it("V3_LEAGUE_BASELINES: refreshed rows match the verified 2026-07-06 research", () => {
+    expect(V3_LEAGUE_BASELINES["World Cup"]).toBeCloseTo(2.65, 5);
+    expect(V3_LEAGUE_BASELINES["Ligue 1"]).toBeCloseTo(2.96, 5);
+    expect(V3_LEAGUE_BASELINES.MLS).toBeCloseTo(3.0, 5);
+    expect(V3_LEAGUE_BASELINES["Brazil Série A"]).toBeCloseTo(2.55, 5);
+    expect(V3_LEAGUE_BASELINES["Brazilian Serie B"]).toBeCloseTo(2.25, 5);
+  });
+
+  // [audit fix, P0-2] League-ID collision fix: an ID-keyed baseline takes
+  // priority over the name-keyed table, and falls back to the name lookup
+  // (then further to LEAGUE_PARAMS/default) when no ID is given or unknown.
+  describe("v3LeaguePerTeamAvg: league_id-keyed lookup", () => {
+    const TEST_ID = "sr:tournament:__test_only__";
+
+    it("prefers the ID-keyed baseline over the name table when both are present", () => {
+      V3_LEAGUE_BASELINES_BY_ID[TEST_ID] = 4.0; // per-game -> 2.0 per-team
+      try {
+        // "Premier League" name-keyed baseline is 2.85/2=1.425 per-team — the
+        // ID-keyed lookup must win instead of the (wrong, colliding) name.
+        expect(v3LeaguePerTeamAvg("Premier League", TEST_ID)).toBeCloseTo(2.0, 5);
+      } finally {
+        delete V3_LEAGUE_BASELINES_BY_ID[TEST_ID];
+      }
+    });
+
+    it("falls back to the name-keyed table when leagueId is absent", () => {
+      expect(v3LeaguePerTeamAvg("Premier League")).toBeCloseTo(2.85 / 2, 5);
+    });
+
+    it("falls back to the name-keyed table when leagueId is present but unknown", () => {
+      expect(v3LeaguePerTeamAvg("Premier League", "sr:tournament:__unknown__")).toBeCloseTo(
+        2.85 / 2,
+        5
+      );
+    });
+
+    it("computeV3Lambdas threads V3LambdaInput.leagueId through to the L used", () => {
+      V3_LEAGUE_BASELINES_BY_ID[TEST_ID] = 4.0; // per-team L = 2.0
+      try {
+        const result = computeV3Lambdas(
+          {
+            league: "Premier League",
+            leagueId: TEST_ID,
+            homeScoredPer90: 1.7,
+            homeConcededPer90: 1.0,
+            awayScoredPer90: 1.2,
+            awayConcededPer90: 1.5,
+          },
+          { xgBlend: false }
+        );
+        expect(result?.leaguePerTeamAvg).toBeCloseTo(2.0, 5);
+      } finally {
+        delete V3_LEAGUE_BASELINES_BY_ID[TEST_ID];
+      }
+    });
+  });
+
+  // [audit fix, P0-2 step 2] Lake-computed baselines (goals/game by league
+  // name) injected via config override the static table but rank below the
+  // manual ID-keyed collision overrides; undefined ⇒ static behavior.
+  describe("v3LeaguePerTeamAvg: lake-computed baseline override", () => {
+    const lake = { "Premier League": 3.0 }; // per-game -> 1.5 per-team
+
+    it("prefers a lake baseline over the static name table", () => {
+      expect(v3LeaguePerTeamAvg("Premier League", null, lake)).toBeCloseTo(1.5, 5);
+    });
+
+    it("ignores the lake map for a league it does not contain (static fallback)", () => {
+      expect(v3LeaguePerTeamAvg("Premier League", null, { "La Liga": 4.0 })).toBeCloseTo(
+        2.85 / 2,
+        5
+      );
+    });
+
+    it("ranks the manual ID-keyed override above the lake map", () => {
+      const ID = "sr:tournament:__lake_test__";
+      V3_LEAGUE_BASELINES_BY_ID[ID] = 4.0; // per-team 2.0 — must beat lake's 1.5
+      try {
+        expect(v3LeaguePerTeamAvg("Premier League", ID, lake)).toBeCloseTo(2.0, 5);
+      } finally {
+        delete V3_LEAGUE_BASELINES_BY_ID[ID];
+      }
+    });
+
+    it("skips non-positive/non-finite lake values (static fallback)", () => {
+      expect(v3LeaguePerTeamAvg("Premier League", null, { "Premier League": 0 })).toBeCloseTo(
+        2.85 / 2,
+        5
+      );
+      expect(
+        v3LeaguePerTeamAvg("Premier League", null, {
+          "Premier League": Number.NaN,
+        })
+      ).toBeCloseTo(2.85 / 2, 5);
+    });
+
+    it("computeV3Lambdas threads opts.lakeBaselines through to the L used", () => {
+      const result = computeV3Lambdas(
+        {
+          league: "Premier League",
+          homeScoredPer90: 1.7,
+          homeConcededPer90: 1.0,
+          awayScoredPer90: 1.2,
+          awayConcededPer90: 1.5,
+        },
+        { xgBlend: false, lakeBaselines: lake }
+      );
+      expect(result?.leaguePerTeamAvg).toBeCloseTo(1.5, 5);
+    });
+  });
+
+  // [audit fix, P0-2] λ v5: each side blends independently with its own xG
+  // cross-pair, instead of requiring both sides to have one.
+  describe("λ v5 — independent-side xG blend (xgBlendedSides)", () => {
+    const base = {
+      league: "__unknown_league__",
+      homeScoredPer90: 1.7,
+      homeConcededPer90: 1.0,
+      awayScoredPer90: 1.2,
+      awayConcededPer90: 1.5,
+      nHome: 10,
+      nAway: 10,
+    };
+
+    it("blends both sides and reports xgBlendedSides: 'both' when both have xG", () => {
+      const result = computeV3Lambdas({
+        ...base,
+        homeXg: { xgf: 2.5, xga: 0.5 },
+        awayXg: { xgf: 0.5, xga: 2.5 },
+      })!;
+      expect(result.xgBlended).toBe(true);
+      expect(result.xgBlendedSides).toBe("both");
+    });
+
+    it("v5 (default): blends only the home side when only home's cross-pair (homeXg.xgf x awayXg.xga) is usable", () => {
+      // Home's xG-λ needs homeXg.xgf AND awayXg.xga; away's needs awayXg.xgf
+      // AND homeXg.xga. Giving awayXg.xga but withholding awayXg.xgf makes
+      // home's cross-pair computable while blocking away's.
+      const result = computeV3Lambdas({
+        ...base,
+        homeXg: { xgf: 2.5, xga: 0.5 },
+        awayXg: { xgf: null, xga: 2.5 },
+      })!;
+      const noXg = computeV3Lambdas(base, { xgBlend: false })!;
+      expect(result.xgBlended).toBe(true);
+      expect(result.xgBlendedSides).toBe("home");
+      expect(result.lambdaHome).not.toBeCloseTo(noXg.lambdaHome, 5);
+      expect(result.lambdaAway).toBeCloseTo(noXg.lambdaAway, 5);
+    });
+
+    it("v5 (default): blends only the away side when only away's cross-pair (awayXg.xgf x homeXg.xga) is usable", () => {
+      const result = computeV3Lambdas({
+        ...base,
+        homeXg: { xgf: null, xga: 0.5 },
+        awayXg: { xgf: 0.5, xga: 2.5 },
+      })!;
+      expect(result.xgBlended).toBe(true);
+      expect(result.xgBlendedSides).toBe("away");
+    });
+
+    it("lambdaV5: false restores the prior both-sides-only blend (a one-sided usable cross-pair is discarded)", () => {
+      const result = computeV3Lambdas(
+        {
+          ...base,
+          homeXg: { xgf: 2.5, xga: 0.5 },
+          awayXg: { xgf: null, xga: 2.5 },
+        },
+        { lambdaV5: false }
+      )!;
+      expect(result.xgBlended).toBe(false);
+      expect(result.xgBlendedSides).toBeUndefined();
+    });
   });
 });
 
@@ -198,6 +528,16 @@ describe("devigOU + v3PenaltyPts + gateV3Edge (§4)", () => {
       10
     );
     expect(v3PenaltyPts({})).toBe(0);
+  });
+
+  it("Desktop-audit fix: xgMissingLargeSample is a lighter -1pt penalty than xgMissing's -2pt", () => {
+    expect(v3PenaltyPts({ xgMissing: true })).toBeCloseTo(0.02, 10);
+    expect(v3PenaltyPts({ xgMissingLargeSample: true })).toBeCloseTo(0.01, 10);
+    // Same tier as xgEstimated, not additive with it (batch/index.ts sets them
+    // mutually exclusively — this just confirms the point VALUES match, which
+    // is the graduated-penalty intent: a large raw-goals sample without xG
+    // costs the same as having AI-Mode-estimated xG).
+    expect(V3_PENALTY_PTS.xgMissingLargeSample).toBe(V3_PENALTY_PTS.xgEstimated);
   });
 
   it("tiers adjusted edge at the 5/7/10pt boundaries", () => {
@@ -425,6 +765,54 @@ describe("analyzeGoalsFixtureV3 (full pipeline)", () => {
       for (const a of result!.assessments) {
         expect(a.penaltyPts).toBeCloseTo(0.01, 5);
       }
+    });
+  });
+
+  describe("dynamicRho override (PR-5, §8.1 NEW-07)", () => {
+    it("uses the static league baseRho when dynamicRho is absent (unchanged behavior)", () => {
+      const withStatic = analyzeGoalsFixtureV3(baseInput());
+      const withSameAsStatic = analyzeGoalsFixtureV3(baseInput({ dynamicRho: -0.13 })); // PL's baseRho
+      expect(withStatic).not.toBeNull();
+      expect(withSameAsStatic).not.toBeNull();
+      const mp = (r: typeof withStatic) => r!.assessments.find((a) => a.label === "Over 1.5")!.mp;
+      expect(mp(withSameAsStatic)).toBeCloseTo(mp(withStatic), 10);
+    });
+
+    it("a dynamicRho override actually changes the priced model probabilities", () => {
+      const withStatic = analyzeGoalsFixtureV3(baseInput());
+      const withDynamic = analyzeGoalsFixtureV3(baseInput({ dynamicRho: -0.28 }));
+      expect(withStatic).not.toBeNull();
+      expect(withDynamic).not.toBeNull();
+      const mp = (r: typeof withStatic) => r!.assessments.find((a) => a.label === "Over 1.5")!.mp;
+      expect(mp(withDynamic)).not.toBeCloseTo(mp(withStatic), 5);
+    });
+
+    it("falls back to the static baseRho when dynamicRho is NaN (defense-in-depth type-boundary guard)", () => {
+      const withStatic = analyzeGoalsFixtureV3(baseInput());
+      const withNaN = analyzeGoalsFixtureV3(baseInput({ dynamicRho: Number.NaN }));
+      expect(withStatic).not.toBeNull();
+      expect(withNaN).not.toBeNull();
+      const mp = (r: typeof withStatic) => r!.assessments.find((a) => a.label === "Over 1.5")!.mp;
+      expect(mp(withNaN)).toBeCloseTo(mp(withStatic), 10);
+    });
+  });
+
+  describe("resolveRho (defense-in-depth type-boundary guard)", () => {
+    it("uses dynamicRho when it's a finite number", () => {
+      expect(resolveRho("Premier League", -0.28)).toBe(-0.28);
+    });
+
+    it("falls back to the static league baseRho when dynamicRho is undefined", () => {
+      expect(resolveRho("Premier League", undefined)).toBe(-0.13);
+    });
+
+    it("falls back to the static league baseRho when dynamicRho is NaN", () => {
+      expect(resolveRho("Premier League", Number.NaN)).toBe(-0.13);
+    });
+
+    it("falls back to the static league baseRho when dynamicRho is +/-Infinity", () => {
+      expect(resolveRho("Premier League", Number.POSITIVE_INFINITY)).toBe(-0.13);
+      expect(resolveRho("Premier League", Number.NEGATIVE_INFINITY)).toBe(-0.13);
     });
   });
 

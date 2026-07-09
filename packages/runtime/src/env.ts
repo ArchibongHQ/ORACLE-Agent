@@ -135,6 +135,45 @@ function isRailway(env: Record<string, string>): boolean {
   return !!env.RAILWAY_ENVIRONMENT || !!env.RAILWAY_PROJECT_ID;
 }
 
+/** Read one positive-finite `Record<string, number>` field out of the lake
+ *  artifact tools/compute_league_baselines.py writes at
+ *  .tmp/oracle-store/league_baselines.json. Returns undefined on any miss
+ *  (missing file, malformed JSON, no usable values) so the engine falls back to
+ *  its static defaults. Never throws. Path is cwd-relative (the worker runs from
+ *  repo root), matching the other .tmp artifact readers in runtime (dailyStore,
+ *  analyze). */
+function loadLakeField(
+  path: string,
+  field: "byName" | "hfaByName"
+): Record<string, number> | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const raw = parsed[field];
+    if (!raw || typeof raw !== "object") return undefined;
+    const out: Record<string, number> = {};
+    for (const [league, val] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof val === "number" && Number.isFinite(val) && val > 0) out[league] = val;
+    }
+    return Object.keys(out).length ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Lake-computed league goal baselines (audit P0-2) — the `byName` map. */
+export function loadLakeBaselines(
+  path = ".tmp/oracle-store/league_baselines.json"
+): Record<string, number> | undefined {
+  return loadLakeField(path, "byName");
+}
+
+/** Lake-fitted per-league HFA multipliers (full-audit P3) — the `hfaByName` map. */
+export function loadLakeHfa(
+  path = ".tmp/oracle-store/league_baselines.json"
+): Record<string, number> | undefined {
+  return loadLakeField(path, "hfaByName");
+}
+
 /** Build an OracleConfig from a parsed env record. Defaults: bankroll=1000, CONFIDENCE_WEIGHTED.
  *  On Railway, resource-throttled local defaults are automatically promoted to cloud values
  *  unless the env var is explicitly overridden in the Railway Variables panel. */
@@ -157,6 +196,35 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     process.stdout.write(
       `[config] Railway environment detected — cloud defaults active` +
         ` (concurrency=${batchConcurrency}, swarm=${enableSwarmFlag})\n`
+    );
+  }
+
+  // Audit P0-2: lake-computed league baselines override the static table only
+  // when ORACLE_V3_LAKE_BASELINES=on. Default off ⇒ undefined ⇒ static-only
+  // (byte-identical to prior behavior). The startup line makes the flip visible
+  // in the effective-config log and warns if the flag is on but the artifact is
+  // missing (run tools/compute_league_baselines.py first).
+  const lakeBaselinesOn = env.ORACLE_V3_LAKE_BASELINES?.toLowerCase() === "on";
+  const v3LakeBaselines = lakeBaselinesOn ? loadLakeBaselines() : undefined;
+  if (lakeBaselinesOn) {
+    const n = v3LakeBaselines ? Object.keys(v3LakeBaselines).length : 0;
+    process.stdout.write(
+      n > 0
+        ? `[config] ORACLE_V3_LAKE_BASELINES on — ${n} lake baselines override the static table\n`
+        : `[config] ORACLE_V3_LAKE_BASELINES on but no usable .tmp/oracle-store/league_baselines.json — static table retained\n`
+    );
+  }
+
+  // Full-audit P3: lake-fitted per-league HFA overrides the global v3Hfa only
+  // when ORACLE_V3_LAKE_HFA=on. Default off ⇒ undefined ⇒ global v3Hfa applies.
+  const lakeHfaOn = env.ORACLE_V3_LAKE_HFA?.toLowerCase() === "on";
+  const v3HfaByLeague = lakeHfaOn ? loadLakeHfa() : undefined;
+  if (lakeHfaOn) {
+    const n = v3HfaByLeague ? Object.keys(v3HfaByLeague).length : 0;
+    process.stdout.write(
+      n > 0
+        ? `[config] ORACLE_V3_LAKE_HFA on — ${n} per-league HFA multipliers override the global v3Hfa\n`
+        : `[config] ORACLE_V3_LAKE_HFA on but no usable hfaByName in .tmp/oracle-store/league_baselines.json — global v3Hfa retained\n`
     );
   }
 
@@ -223,7 +291,12 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // through one Opus agent over the full raw allMarkets catalogue (no family
     // privileged), validated against real odds + audited by the arbiter, instead
     // of the family-gated deterministic cascade. Off → deterministic fallback.
-    enableLlmMarketExecutor: env.ENABLE_LLM_MARKET_EXECUTOR?.toLowerCase() === "true",
+    // PR-23: ENABLE_LLM_MARKET_EXECUTOR is now tri-state ("true"/"unmapped"/
+    // anything else) — llmExecutorScope carries the parsed value,
+    // enableLlmMarketExecutor stays a plain boolean (true for both "full" and
+    // "unmapped") since most call sites only ever need the on/off signal.
+    enableLlmMarketExecutor: parseLlmExecutorScope(env.ENABLE_LLM_MARKET_EXECUTOR) !== "off",
+    llmExecutorScope: parseLlmExecutorScope(env.ENABLE_LLM_MARKET_EXECUTOR),
     // v3 cap/noise gates on goals-family markets in the MAIN batch (see
     // OracleConfig.enableV3MainGates docstring). Shares the same threshold env
     // keys as the goals-only v3 batch (buildGoalsV3Config) so one number pair
@@ -244,6 +317,16 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // field advantage via true home/away splits (suppress HFA multiplier).
     // ORACLE_V3_VENUE_SPLIT=on to enable (default off = team-overall stats).
     v3VenueSplitUsed: env.ORACLE_V3_VENUE_SPLIT?.toLowerCase() === "on",
+    // λ v5 independent-side xG blend (goalsV3/lambda.ts) — default on, was an
+    // unwired always-on option prior to this flag existing. Set
+    // ORACLE_V3_LAMBDA_V5=off to restore the prior both-sides-only blend.
+    v3LambdaV5: env.ORACLE_V3_LAMBDA_V5?.toLowerCase() !== "off",
+    // Audit P0-2: lake-computed baselines (loaded above, gated on
+    // ORACLE_V3_LAKE_BASELINES=on). Undefined ⇒ static V3_LEAGUE_BASELINES only.
+    v3LakeBaselines,
+    // Full-audit P3: lake-fitted per-league HFA (gated on ORACLE_V3_LAKE_HFA=on).
+    // Undefined ⇒ global v3Hfa applies everywhere.
+    v3HfaByLeague,
     // v4 gate deltas: heightened EV bars, exact-goals/multigoals routing, sanity checks.
     // ORACLE_V3_GATES_V4=off to restore v3 semantics (default on).
     v3GatesV4: env.ORACLE_V3_GATES_V4?.toLowerCase() !== "off",
@@ -260,9 +343,17 @@ export function buildConfig(env: Record<string, string>): OracleConfig {
     // PR-5b: outputs assembly — off keeps the exact legacy 39-cap trim untouched
     // (regression pin). Only relevant when enableMarketsV3 === "on".
     marketsV3Outputs: env.ORACLE_MARKETS_V3_OUTPUTS?.toLowerCase() !== "off",
+    // PR-20: slate-wide route-coverage rollup — telemetry only, default on.
+    marketsCoverageNote: env.ORACLE_MARKETS_COVERAGE?.toLowerCase() !== "off",
+    // PR-21: runtime catalog overlay — default OFF (see OracleConfig.catalogOverlay).
+    catalogOverlay: env.ORACLE_CATALOG_OVERLAY?.toLowerCase() === "on",
     // PR-6: corners/cards O/U pricing — off withholds the stats so the modules
     // stay dormant (byte-identical to pre-PR-6).
     v3CornersCards: env.ORACLE_V3_CORNERS_CARDS?.toLowerCase() !== "off",
+    // PR-22: 1x2/handicap/range/odd-even corners/cards variants — default on.
+    v3CornersCardsExt: env.ORACLE_V3_CORNERS_CARDS_EXT?.toLowerCase() !== "off",
+    // PR-22: shots-on-target O/U module — default on.
+    v3ShotsOu: env.ORACLE_V3_SHOTS_OU?.toLowerCase() !== "off",
     // PR-6: R10 goals cross-check on the all-markets batch — off skips the hook.
     v3GoalsCrossCheck: env.ORACLE_V3_GOALS_CROSSCHECK?.toLowerCase() !== "off",
     // PR-7: calibration feedback loop (off|shadow|on, default shadow). Write side
@@ -296,6 +387,16 @@ function parseMarketsV3Mode(raw: string | undefined): "on" | "shadow" | "off" {
   const v = raw?.toLowerCase().trim();
   if (v === "off" || v === "shadow") return v;
   return "on";
+}
+
+// PR-23: tri-state ENABLE_LLM_MARKET_EXECUTOR. "true" ("full") preserves the
+// pre-PR-23 behavior exactly; "unmapped" is the new skip-tail-only scope;
+// anything else (including unset) is "off" — same default as before.
+function parseLlmExecutorScope(raw: string | undefined): "full" | "unmapped" | "off" {
+  const v = raw?.toLowerCase().trim();
+  if (v === "true") return "full";
+  if (v === "unmapped") return "unmapped";
+  return "off";
 }
 
 /** goals-market-analysis-prompt-v3 settings scoped to the goals-only batch

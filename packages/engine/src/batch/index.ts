@@ -11,6 +11,7 @@ import {
 } from "../decision/index.js";
 import type { MarketExecutorRiskParams } from "../decision/marketExecutor.js";
 import { ExecutionEngine } from "../execution/index.js";
+import { SHRINK_N } from "../goalsV3/lambda.js";
 import { devigThreeWay, FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import {
   analyzeFixtureMarketsV3,
@@ -18,6 +19,7 @@ import {
   type V3MarketOutcomeAssessment,
 } from "../marketsV3/analyzeFixtureMarkets.js";
 import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
+import { computeTailMarkets, type RouteCoverage } from "../marketsV3/feedDictionary.js";
 import type { V3OutputCandidate } from "../marketsV3/outputs.js";
 import type {
   AgentError,
@@ -47,9 +49,14 @@ function buildV3Input(
   allMarkets: AllMarketEntry[] | undefined,
   config?: {
     v3Hfa?: number;
+    v3HfaByLeague?: Record<string, number>;
     v3VenueSplitUsed?: boolean;
+    v3LambdaV5?: boolean;
+    v3LakeBaselines?: Record<string, number>;
     v3GatesV4?: boolean;
     v3CornersCards?: boolean;
+    v3CornersCardsExt?: boolean;
+    v3ShotsOu?: boolean;
   }
 ): V3AllMarketsInput | null {
   if (!allMarkets?.length) return null;
@@ -83,6 +90,11 @@ function buildV3Input(
       nAway: t.nAway ?? null,
       homeXg: t.xgfH != null ? { xgf: t.xgfH, xga: t.xgaH } : null,
       awayXg: t.xgfA != null ? { xgf: t.xgfA, xga: t.xgaA } : null,
+      // §8.2 (PR-6): tool-derived squad availability, not an LLM guess — was
+      // wired into the goals-only pipeline only; the all-markets pipeline
+      // silently priced every non-goals market without it until now.
+      homeAvailabilityMult: t.homeAvailabilityMult ?? null,
+      awayAvailabilityMult: t.awayAvailabilityMult ?? null,
     },
     devigged1x2,
     allMarkets,
@@ -116,20 +128,43 @@ function buildV3Input(
           cardsAvgA: t.cardsAvgA,
         }
       : {}),
+    // PR-22: shots-on-target stats — same withhold-on-off rollback surface.
+    ...(config?.v3ShotsOu !== false ? { sotForH: t.sotForH, sotForA: t.sotForA } : {}),
     penaltyFlags: {
-      xgMissing: t.xgMode == null,
+      // Desktop-audit concept #3: graduated xG-missing penalty. Mutually
+      // exclusive with xgMissingLargeSample — full -2pt only when the
+      // raw-goals sample is ALSO thin (n<SHRINK_N either side); once both
+      // sides clear SHRINK_N the raw-goals lambda is already fully trusted
+      // (shrink() applies zero pull toward the league mean), so losing xG's
+      // smoothing costs less: -1pt, same tier as xgEstimated.
+      xgMissing: t.xgMode == null && ((t.nHome ?? 0) < SHRINK_N || (t.nAway ?? 0) < SHRINK_N),
+      xgMissingLargeSample:
+        t.xgMode == null && (t.nHome ?? 0) >= SHRINK_N && (t.nAway ?? 0) >= SHRINK_N,
       xgEstimated: t.xgMode === "estimated",
       h2hMissing: !((h2hBlock?.total ?? 0) > 0),
       lineupsUnconfirmed: !hasLineups,
       restEstimated: t.restH == null || t.restA == null,
       smallSample: (t.nHome ?? 99) < 5 || (t.nAway ?? 99) < 5,
     },
-    hfa: config?.v3Hfa,
+    // Full-audit P3: prefer the fixture league's lake-fitted HFA when present
+    // (ORACLE_V3_LAKE_HFA=on), else the global v3Hfa. Undefined map ⇒ global.
+    hfa: config?.v3HfaByLeague?.[job.league] ?? config?.v3Hfa,
     venueSplitUsed: config?.v3VenueSplitUsed,
+    lambdaV5: config?.v3LambdaV5,
+    // Lake-computed league baselines (audit P0-2) — undefined unless
+    // ORACLE_V3_LAKE_BASELINES is on, so the static table stays authoritative
+    // by default.
+    lakeBaselines: config?.v3LakeBaselines,
     // Heightened bars are per-fixture (§1.2 youth/women/friendly/cup-final),
     // stamped as telemetry.v3Heightened by the PR-5a slate pre-filter — the
     // gates-v4 flag only enables the mechanism, it never heightens the slate.
     heightened: config?.v3GatesV4 !== false && t.v3Heightened === true,
+    // Same ledger.metrics.dynamicRhoParams read the legacy engine already does
+    // at execution/index.ts:1524 — only populated (mode="on") once calibration
+    // has ≥30 resolved fixtures for this league; undefined otherwise, so the
+    // v3 gate falls back to the static getLeagueParams baseRho unchanged.
+    dynamicRho: state.ledger?.metrics?.dynamicRhoParams?.[job.league],
+    v3CornersCardsExt: config?.v3CornersCardsExt,
   };
 }
 
@@ -230,11 +265,29 @@ export interface FixtureJob {
   home: string;
   away: string;
   league: string;
+  /** Canonical league ID (Sportradar tournament ID), when the source
+   *  captured one — see goalsV3/lambda.ts's V3_LEAGUE_BASELINES_BY_ID. */
+  leagueId?: string;
   kickoff: string; // ISO-8601 or YYYY-MM-DDTHH:mm:ssZ
   state?: RunState; // optional pre-populated telemetry / odds
 }
 
-export type V3AssessmentStat = { family: string; desc: string; outcome: string; rawEdge: number };
+export type V3AssessmentStat = {
+  family: string;
+  desc: string;
+  outcome: string;
+  rawEdge: number;
+  /** adjustedEdge + cls (audit fix, Desktop concept #4): the minimum extra
+   *  fields needed to shadow-evaluate a skew-shrunk assessment against its
+   *  own class gate's minAdjEdge (CLASS_GATE[cls].minAdjEdge — minAdjEvPct
+   *  is NOT re-checked, since that needs q/adjEvPct which aren't carried
+   *  here) without storing the full modelP/q/odds/penaltyPts the live
+   *  assessment carried — see marketsV3/skewShrink.ts's header comment for
+   *  why rawEdge alone is enough to derive the shrunk adjustedEdge
+   *  algebraically. */
+  adjustedEdge: number;
+  cls: string;
+};
 
 export interface FixtureJobSuccess {
   status: "ok";
@@ -272,6 +325,11 @@ export interface FixtureJobSuccess {
    *  assessment for this fixture (done/capped/discarded alike) — slate sanity
    *  check input (packages/marketsV3/sanity.ts's slateSanityChecks). */
   v3AssessmentStats?: V3AssessmentStat[];
+  /** PR-20: this fixture's full route-coverage tally (routed/skipped/unrouted
+   *  by engine and reason), present whenever v3 ran (same condition as
+   *  v3Best/v3AssessmentStats) — feeds the slate-level rollupCoverage()
+   *  (packages/runtime/src/marketsV3/slateOutputs.ts). */
+  v3Coverage?: RouteCoverage;
 }
 
 export interface FixtureJobError {
@@ -363,7 +421,7 @@ function classifyError(msg: string): AgentErrorCode {
   return "INTERNAL";
 }
 
-function makeFixtureId(home: string, away: string, kickoff: string): string {
+export function makeFixtureId(home: string, away: string, kickoff: string): string {
   const slug = (s: string) =>
     s
       .toLowerCase()
@@ -385,19 +443,34 @@ function makeAnalysisId(
   return `${fixtureId}:${rankingMode}:${calibrationSnapshotId}`;
 }
 
-/** Retries fn up to maxRetries times on RATE_LIMITED errors with exponential backoff. */
-async function withRetry<T>(
+/** [PR-10, generalized retry] Matches transient DNS/transport failures — the
+ *  same failure class observed for both Telegram sends and SportyBet scrapes
+ *  (host-wide intermittent DNS; see oracle_dns_and_llm_session_limit_investigation).
+ *  A delayed retry helps here (the resolver gets time to recover); an
+ *  immediate alternate-transport fallback alone does not. */
+export function isRetriableNetworkError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(msg);
+}
+
+/** Retries fn up to maxRetries times with exponential backoff, on whichever
+ *  errors shouldRetry accepts. Defaults to the original RATE_LIMITED-only
+ *  predicate so the existing call site below is unchanged; pass a different
+ *  predicate (e.g. isRetriableNetworkError) to reuse this for other transient
+ *  failure classes instead of writing a bespoke retry wrapper per caller. */
+export async function withRetry<T>(
   fn: () => Promise<T>,
   maxRetries: number,
-  backoffMs: (attempt: number) => number
+  backoffMs: (attempt: number) => number,
+  shouldRetry: (err: unknown) => boolean = (err) =>
+    classifyError(err instanceof Error ? err.message : String(err)) === "RATE_LIMITED"
 ): Promise<T> {
   let attempt = 0;
   while (true) {
     try {
       return await fn();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (classifyError(msg) !== "RATE_LIMITED" || attempt >= maxRetries) throw err;
+      if (!shouldRetry(err) || attempt >= maxRetries) throw err;
       await new Promise<void>((r) => setTimeout(r, backoffMs(attempt)));
       attempt++;
     }
@@ -564,6 +637,7 @@ export async function runBatch(
           let usedV3 = false;
           let v3Best: V3OutputCandidate | undefined;
           let v3AssessmentStats: V3AssessmentStat[] | undefined;
+          let v3Coverage: RouteCoverage | undefined;
           if (config.enableMarketsV3 && config.enableMarketsV3 !== "off") {
             const v3Input = buildV3Input(job, state, allMarkets, config);
             const v3Result = v3Input ? analyzeFixtureMarketsV3(v3Input) : null;
@@ -585,6 +659,7 @@ export async function runBatch(
             // transparency is free; the WORKER decides whether to ACT on
             // v3Best/v3AssessmentStats (gated there on enableMarketsV3 === "on").
             if (v3Result) {
+              v3Coverage = v3Result.coverage;
               const bestAssessment = v3Result.assessments
                 .filter((a) => a.outcome === "done")
                 .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
@@ -608,6 +683,8 @@ export async function runBatch(
                 desc: a.desc,
                 outcome: a.outcome,
                 rawEdge: a.rawEdge,
+                adjustedEdge: a.adjustedEdge,
+                cls: a.cls,
               }));
             }
           }
@@ -618,7 +695,16 @@ export async function runBatch(
           // the same fixture would be pure waste. Legacy behavior (including
           // an operator-enabled Q4 executor) is untouched when v3 is off,
           // shadow, or produced nothing for this fixture.
-          const decideConfig = usedV3 ? { ...config, enableLlmMarketExecutor: false } : config;
+          //
+          // PR-23: under "unmapped" scope, don't demote — instead narrow what
+          // the executor sees (via a scoped decisionCtx at the decide() call
+          // below) to just this fixture's recoverable skip-tail, so it sweeps
+          // markets v3 couldn't price rather than re-analyzing the whole
+          // catalogue v3 already handled. "full" scope keeps the original
+          // demote (a second full-catalogue pass is still pure waste there).
+          const unmappedTailScope = usedV3 && config.llmExecutorScope === "unmapped";
+          const decideConfig =
+            usedV3 && !unmappedTailScope ? { ...config, enableLlmMarketExecutor: false } : config;
 
           // Risk multipliers the engine already computed for THIS fixture, reused
           // so the all-markets LLM executor tier's Kelly stake (Q4b) is consistent
@@ -726,6 +812,17 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             /* non-fatal — llm module unavailable */
           }
 
+          // PR-23: the executor only ever reads ctx.allMarkets (buildPrompt's
+          // draft-cascade prompt does not) — narrowing it here is sufficient
+          // to scope the sweep, no other decide() behavior is affected. An
+          // empty tail (v3 routed/priced everything) or a non-llmEligible
+          // fixture both naturally no-op: runAllMarketsLlmExecutor's own
+          // `!ctx.allMarkets?.length` guard covers the former, decide()'s
+          // existing `!useDeterministicDraft` gate covers the latter.
+          const decisionCtxForDecide = unmappedTailScope
+            ? { ...decisionCtx, allMarkets: computeTailMarkets(allMarkets ?? []) }
+            : decisionCtx;
+
           const {
             decision: rawDecision,
             replay: decisionReplay,
@@ -733,7 +830,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             eligibleBets: executedEligible,
           } = await decide(
             eligible,
-            decisionCtx,
+            decisionCtxForDecide,
             decideConfig,
             !llmEligible, // force deterministic for fixtures outside the top-N
             marketExecutorRisk,
@@ -750,6 +847,15 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           const effectiveEligible = executedEligible ?? eligible;
           const mlFilter = { mlAllowed: decisionCtx.mlAllowed, drawRisk: decisionCtx.drawRisk };
           const decision = validateSelection(rawDecision, effectiveEligible, mlFilter);
+          // PR-23 review fix: effectiveEligible[0] is only the true top-EV pick
+          // in "full" scope (direct-draft-forcing). Under "unmapped" scope the
+          // executor candidate is spliced to index 0 regardless of its own EV
+          // rank (decision/index.ts), so array position no longer implies EV
+          // rank. Sort explicitly wherever "the top pick" is needed instead of
+          // trusting array order; effectiveEligible itself stays untouched
+          // (unsorted) since validateSelection/eligibleBets consumers below
+          // don't assume any particular order.
+          const evSortedEligible = [...effectiveEligible].sort((a, b) => b.ev - a.ev);
 
           // B2: optional CVL adversarial verification
           let cvlStatus: "APPROVED" | "OVERRIDE" | "VETO" | "SKIPPED" | undefined;
@@ -768,7 +874,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
               rawDecision.grade !== "NO_EDGE"
             ) {
               const { callVerification } = await import("@oracle/llm");
-              const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(effectiveEligible.slice(0, 3))}`;
+              const cvlPrompt = `Primary pick: ${JSON.stringify(rawDecision.primaryPick)}. Rationale: ${rawDecision.rationale}. EV markets: ${JSON.stringify(evSortedEligible.slice(0, 3))}`;
               const llmCtx = {
                 config: {
                   claudeApiKey: config.claudeApiKey,
@@ -791,7 +897,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
           }
 
           // Log when LLM disagrees with deterministic top (SkillOpt training signal)
-          await logPickDisagreement(deps.storage, rawDecision, effectiveEligible[0] ?? null, {
+          await logPickDisagreement(deps.storage, rawDecision, evSortedEligible[0] ?? null, {
             ...job,
             fixtureId,
           });
@@ -824,6 +930,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             agentVerification: filteredResult.agentVerification,
             v3Best,
             v3AssessmentStats,
+            v3Coverage,
           };
         },
         maxRetries,

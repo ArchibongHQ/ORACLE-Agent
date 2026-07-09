@@ -5,9 +5,14 @@
  *      λ_away = (A_scored/90 ÷ L) × (H_conceded/90 ÷ L) × L
  *  where L = league average goals per TEAM per game. Falls back to the simple
  *  average ((scored + opp conceded) / 2) when a factor is missing. Small-sample
- *  regression (n < 8): λ_adj = λ_raw × (n/8) + L × (1 − n/8). Optional 50/50
- *  blend with an xG-based λ computed through the same formula (xG is more
- *  stable on small samples — spec §3.1 refinement).
+ *  regression: λ_adj = λ_raw × (n/shrinkN) + L × (1 − n/shrinkN), shrinkN = 8
+ *  for domestic fixtures, 5 for tournament fixtures (TOURNAMENT_RE — a
+ *  tournament team may never accumulate 8 tournament-specific matches, so it
+ *  should converge to its own small sample faster than a league season can
+ *  afford to). Optional xG-based λ blend through the same formula, weighted
+ *  by the same n/shrinkN ramp up to a 0.5 ceiling (xgBlendWeight) — a thin xG
+ *  sample gets less say in the blend than a full one, same reasoning as the
+ *  goals-λ shrink (audit fix: was a flat 50/50 regardless of sample size).
  *
  *  Pure math, no I/O, no runtime imports. */
 
@@ -16,24 +21,41 @@ import { clamp } from "../math/index.js";
 
 /** v3 §3.4 league baselines — goals per GAME (halve for per-team L). Spec table
  *  verbatim; entries the engine's LEAGUE_PARAMS also covers defer to the spec
- *  here because the v3 gate math was calibrated against these totals. */
+ *  here because the v3 gate math was calibrated against these totals.
+ *
+ *  NOTE — this table and `execution/index.ts`'s LEAGUE_PARAMS are two
+ *  independently-maintained sources for the same leagues and can (and do,
+ *  e.g. Premier League: 2.85 goals/game here vs (1.48+1.22)*2=2.70 there)
+ *  disagree — `v3LeaguePerTeamAvg` below prefers THIS table when a league
+ *  appears in both. Not unified (LEAGUE_PARAMS also carries baseRho/kFactor/
+ *  drawRate for a different subsystem) — if you refresh one, sanity-check the
+ *  other hasn't drifted further apart for the same league.
+ *
+ *  Refreshed 2026-07-06 against live season data (multiple sources
+ *  cross-checked; see oracle_full_system_audit_2026_07_06.md P0-2). Values
+ *  within ~2% of a real season figure were left as-is (noise); anything
+ *  further off was updated. Rows without a verified current-season figure
+ *  this pass are left unchanged — don't assume they're current. */
 export const V3_LEAGUE_BASELINES: Record<string, number> = {
-  "World Cup": 2.75,
-  "Premier League": 2.85,
-  Bundesliga: 3.15,
-  "La Liga": 2.65,
-  "Serie A": 2.6,
-  "Ligue 1": 2.75,
+  // Recent editions: 2014 = 2.7, 2018 = 2.6, 2022 = 2.7 goals/game (48-team
+  // format unverified) — 2.75 was the all-time average, skewed by pre-1970
+  // tournaments. Serves as the n<8 shrink prior for WC fixtures via `L`.
+  "World Cup": 2.65,
+  "Premier League": 2.85, // 2024-25 actual ≈2.88, 2023-24 outlier 3.28 — within noise
+  Bundesliga: 3.15, // 2024-25 actual ≈3.14-3.22 — within noise
+  "La Liga": 2.65, // 2024-25 actual ≈2.62 — within noise
+  "Serie A": 2.6, // 2024-25 actual ≈2.56 — within noise
+  "Ligue 1": 2.96, // was 2.75; 2024-25 actual ≈2.96 (verified 2026-07-06)
   Eredivisie: 3.2,
   Championship: 2.55,
-  "Brazilian Serie B": 2.4,
-  "Brazil Série A": 2.7,
+  "Brazilian Serie B": 2.25, // was 2.4; 2025 actual ≈2.22 (verified 2026-07-06)
+  "Brazil Série A": 2.55, // was 2.7; 2025 actual ≈2.52 (verified 2026-07-06)
   "Botola Pro": 2.3,
   "USL League Two": 3.0,
   "USL League One": 2.8,
   "Copa Chile": 2.6,
   "Liga MX": 2.65,
-  MLS: 2.8,
+  MLS: 3.0, // was 2.8; 2025 actual ≈3.01 (verified 2026-07-06)
   "A-League": 2.75,
   J1: 2.65,
   "Saudi Pro League": 2.6,
@@ -45,15 +67,60 @@ export const V3_LEAGUE_BASELINES: Record<string, number> = {
  *  engine's LEAGUE_PARAMS knows the league. */
 export const V3_DEFAULT_LEAGUE_GPG = 2.6;
 
+/** Baselines keyed by canonical league ID (Sportradar tournament ID, e.g.
+ *  "sr:tournament:17") instead of the free-text label — closes the
+ *  label-collision gap where two unrelated competitions sharing a generic
+ *  name (e.g. a lower-tier "Premier League") would otherwise silently share
+ *  the wrong baseline. Empty until specific colliding IDs are observed and
+ *  verified; `tools/scrape_fixtures.py` captures `tournament.id` end-to-end
+ *  through the lake as of 2026-07-06 (P0-2), so entries can be added here as
+ *  they're identified without any further plumbing. Takes priority over the
+ *  name-keyed table below when a fixture carries a leagueId. */
+export const V3_LEAGUE_BASELINES_BY_ID: Record<string, number> = {};
+
 /** League average goals per TEAM per game (the `L` of §3.1). Lookup order:
- *  v3 spec table → engine LEAGUE_PARAMS (homeAvg + awayAvg is the league's
- *  per-game total) → 2.60 default. */
-export function v3LeaguePerTeamAvg(league: string): number {
+ *  ID-keyed table (when leagueId is known) → v3 spec name table → engine
+ *  LEAGUE_PARAMS (homeAvg + awayAvg is the league's per-game total) → 2.60
+ *  default. */
+export function v3LeaguePerTeamAvg(
+  league: string,
+  leagueId?: string | null,
+  lakeBaselines?: Record<string, number> | null
+): number {
+  if (leagueId) {
+    const byId = V3_LEAGUE_BASELINES_BY_ID[leagueId];
+    if (byId) return byId / 2;
+  }
+  // Lake-computed baseline (goals/game keyed by league name, from
+  // tools/compute_league_baselines.py) when supplied — the audit P0-2 refresh
+  // path. Ranks below the manual ID-keyed collision overrides (those are
+  // deliberate, name-lookup can't disambiguate a collision) but ABOVE the
+  // static spec table, so a stale hardcoded value can't shadow a fresh lake
+  // figure; the static table stays the fallback for leagues absent from the
+  // lake. Injected via config (ORACLE_V3_LAKE_BASELINES, default off), so
+  // undefined ⇒ byte-identical to the prior static-only behavior.
+  if (lakeBaselines) {
+    const lake = lakeBaselines[league];
+    if (typeof lake === "number" && Number.isFinite(lake) && lake > 0) return lake / 2;
+  }
   const spec = V3_LEAGUE_BASELINES[league];
   if (spec) return spec / 2;
   const lp = getLeagueParams(league);
   if (lp) return (lp.homeAvg + lp.awayAvg) / 2;
   return V3_DEFAULT_LEAGUE_GPG / 2;
+}
+
+/** Resolve the Dixon-Coles rho to price a fixture with: the calibration-
+ *  ledger-derived dynamic rho (CalibrationMetrics.dynamicRhoParams, §8.1
+ *  NR-MLE) when it's a finite number, else the static per-league baseRho.
+ *  Defense-in-depth type-boundary guard — estimateDynamicRho itself already
+ *  clamps to [-0.3, 0.02] and falls back to baseRho on any degenerate input,
+ *  so no reachable writer produces a bad value today, but dynamicRho crosses
+ *  a module boundary (calibration ledger → goalsV3/marketsV3) with no
+ *  independent check of its own before this fix. */
+export function resolveRho(league: string, dynamicRho?: number | null): number {
+  if (typeof dynamicRho === "number" && Number.isFinite(dynamicRho)) return dynamicRho;
+  return getLeagueParams(league).baseRho;
 }
 
 /** Per-team xG rates (per match, from the rolling xG table). `estimated` marks
@@ -67,6 +134,11 @@ export interface V3TeamXg {
 
 export interface V3LambdaInput {
   league: string;
+  /** Canonical league ID (Sportradar tournament ID), when the source captured
+   *  one — see V3_LEAGUE_BASELINES_BY_ID. Optional/backward-compatible: older
+   *  lake partitions and non-SportyBet sources (e.g. the ESPN scraper) won't
+   *  have one, and fall back to name-based lookup. */
+  leagueId?: string | null;
   homeScoredPer90?: number | null;
   homeConcededPer90?: number | null;
   awayScoredPer90?: number | null;
@@ -78,6 +150,14 @@ export interface V3LambdaInput {
    *  away team's away split — falls back to season aggregate upstream). */
   homeXg?: V3TeamXg | null;
   awayXg?: V3TeamXg | null;
+  /** Match-day squad availability multiplier (tools/fetch_squad_availability.py
+   *  §8.2 — matchday squad value / rolling peak squad value, 1.0 = full
+   *  strength), applied to the raw λ before small-sample shrinkage — same
+   *  "reduce expected goals for a depleted squad" shape as the legacy engine's
+   *  adjH*(1-injPen), but sourced from real Kaggle Transfermarkt data instead
+   *  of an LLM guess. Clamped to [0.5, 1.0]; absent/undefined ⇒ 1.0 (no-op). */
+  homeAvailabilityMult?: number | null;
+  awayAvailabilityMult?: number | null;
 }
 
 export interface V3Lambdas {
@@ -88,19 +168,65 @@ export interface V3Lambdas {
   method: "multiplicative" | "simple-average";
   /** True when small-sample regression (n < 8) moved either λ. */
   shrunk: boolean;
-  /** True when the 50/50 xG blend was applied. */
+  /** True when the 50/50 xG blend was applied (either side). */
   xgBlended: boolean;
+  /** λ v5: which sides actually blended — "home"/"away" = partial blend (the
+   *  other side had no usable xG cross-pair; flag xgPartial penalty upstream). */
+  xgBlendedSides?: "both" | "home" | "away";
   /** Per-team L used (league goals per team per game). */
   leaguePerTeamAvg: number;
   /** True when HFA (home-field advantage) was applied to λ. */
   hfaApplied?: boolean;
 }
 
-const SHRINK_N = 8;
+/** Exported: edgeGate.ts's graduated xG-missing penalty (Desktop-audit concept
+ *  #3) uses this same threshold to decide whether a fixture's raw-goals
+ *  sample is already large enough that missing xG costs less — n>=SHRINK_N
+ *  is exactly the point shrink() below stops pulling lambda toward the
+ *  league mean, i.e. "the raw-goals estimate is already fully trusted on its
+ *  own," which is the same condition that makes losing xG's small-sample
+ *  smoothing benefit less costly. */
+export const SHRINK_N = 8;
+/** Desktop-audit concept #2 (accepted): tournament fixtures (World Cup,
+ *  continental championships, etc.) have a much smaller natural sample size
+ *  per team than a domestic league season — a team may only ever play 5-7
+ *  World Cup matches total, so waiting for n=8 the way a 38-game league
+ *  season can afford to means these fixtures almost never leave the
+ *  shrink-toward-league-mean regime. Converge to the fixture's own small
+ *  sample faster instead: full weight (n>=5) trusts the raw λ, same as the
+ *  domestic path does at n>=8. */
+const SHRINK_N_TOURNAMENT = 5;
+/** Cross-boundary duplicate of packages/runtime/src/selectGoals.ts's
+ *  INTL_TOURNAMENT_RE — this file is pure math with no I/O/runtime imports
+ *  (see file header), so it can't be imported directly. Keep the two
+ *  patterns in sync if either changes (same convention as tools/
+ *  acquire_daily.py's _SRL_VIRTUAL_RE mirroring goalsV3/eligibility.ts). */
+const TOURNAMENT_RE =
+  /world\s*cup|euro(?:pean\s*championship)|uefa\s*euro\s*20\d{2}|euro\s*20\d{2}|copa\s*am[ée]rica|copa\s*chile|copa\s*venezuela|nations\s*league|africa(?:n)?\s*cup\s*of\s*nations|afcon|asian\s*cup|gold\s*cup|concacaf/i;
+/** Max weight the xG-based λ can receive in the blend below, reached once
+ *  n >= shrinkN (today's prior behavior at full sample size — unchanged).
+ *  Below that, xG weight ramps down proportionally with n instead of jumping
+ *  straight to 0.5, since a handful of xG-tracked matches is no more
+ *  trustworthy than a handful of goals matches. */
+const XG_BLEND_MAX_WEIGHT = 0.5;
+
+/** 0..XG_BLEND_MAX_WEIGHT, linear in n/shrinkN. n>=shrinkN keeps today's flat
+ *  0.5 exactly (no behavior change for well-sampled fixtures); n<shrinkN
+ *  shrinks the xG side's influence instead of always granting it half the
+ *  blend regardless of how thin the underlying sample is. */
+export function xgBlendWeight(n: number | null | undefined, shrinkN: number): number {
+  if (typeof n !== "number" || !Number.isFinite(n) || n >= shrinkN) return XG_BLEND_MAX_WEIGHT;
+  return (Math.max(0, n) / shrinkN) * XG_BLEND_MAX_WEIGHT;
+}
 /** λ sanity clamp — a team model outside this range is a data artifact, not a
  *  forecast (0.05 keeps Poisson tails well-defined; 4.5 exceeds any real team). */
 const LAMBDA_MIN = 0.05;
 const LAMBDA_MAX = 4.5;
+/** §8.2 availability multiplier bounds — 1.0 matches fetch_squad_availability.py's
+ *  own min(ratio, 1.0) cap; 0.5 floors a data glitch (or a genuinely gutted XI)
+ *  from ever zeroing a team's λ outright. */
+const AVAILABILITY_MULT_MIN = 0.5;
+const AVAILABILITY_MULT_MAX = 1.0;
 
 function isRate(v: number | null | undefined): v is number {
   return typeof v === "number" && Number.isFinite(v) && v >= 0;
@@ -128,10 +254,18 @@ function simpleAverageLambda(
   return s ?? c;
 }
 
-/** §3.1 small-sample regression toward the league mean (cap n at 8). */
-function shrink(lambda: number, n: number | null | undefined, L: number): number {
-  if (typeof n !== "number" || !Number.isFinite(n) || n >= SHRINK_N) return lambda;
-  const w = Math.max(0, n) / SHRINK_N;
+/** §3.1 small-sample regression toward the league mean. `shrinkN` is the
+ *  sample size at which λ is fully trusted — SHRINK_N (8) for domestic
+ *  fixtures, SHRINK_N_TOURNAMENT (5) for tournament fixtures (see
+ *  TOURNAMENT_RE above). */
+export function shrink(
+  lambda: number,
+  n: number | null | undefined,
+  L: number,
+  shrinkN: number
+): number {
+  if (typeof n !== "number" || !Number.isFinite(n) || n >= shrinkN) return lambda;
+  const w = Math.max(0, n) / shrinkN;
   return lambda * w + L * (1 - w);
 }
 
@@ -143,9 +277,16 @@ function shrink(lambda: number, n: number | null | undefined, L: number): number
  *  discarded such fixtures already. */
 export function computeV3Lambdas(
   input: V3LambdaInput,
-  opts: { xgBlend?: boolean; venueSplitUsed?: boolean; hfa?: number } = {}
+  opts: {
+    xgBlend?: boolean;
+    venueSplitUsed?: boolean;
+    hfa?: number;
+    lambdaV5?: boolean;
+    lakeBaselines?: Record<string, number> | null;
+  } = {}
 ): V3Lambdas | null {
-  const L = v3LeaguePerTeamAvg(input.league);
+  const L = v3LeaguePerTeamAvg(input.league, input.leagueId, opts.lakeBaselines);
+  const shrinkN = TOURNAMENT_RE.test(input.league) ? SHRINK_N_TOURNAMENT : SHRINK_N;
 
   let method: V3Lambdas["method"] = "multiplicative";
   let rawH = multiplicativeLambda(input.homeScoredPer90, input.awayConcededPer90, L);
@@ -157,23 +298,54 @@ export function computeV3Lambdas(
   }
   if (rawH === null || rawA === null) return null;
 
-  const shrunkH = shrink(rawH, input.nHome, L);
-  const shrunkA = shrink(rawA, input.nAway, L);
+  // §8.2: match-day squad availability — applied before shrinkage so a
+  // depleted squad's reduced λ still regresses toward the league mean under
+  // small-sample noise exactly like any other raw λ.
+  if (isRate(input.homeAvailabilityMult))
+    rawH *= clamp(input.homeAvailabilityMult, AVAILABILITY_MULT_MIN, AVAILABILITY_MULT_MAX);
+  if (isRate(input.awayAvailabilityMult))
+    rawA *= clamp(input.awayAvailabilityMult, AVAILABILITY_MULT_MIN, AVAILABILITY_MULT_MAX);
+
+  const shrunkH = shrink(rawH, input.nHome, L, shrinkN);
+  const shrunkA = shrink(rawA, input.nAway, L, shrinkN);
   const shrunk = shrunkH !== rawH || shrunkA !== rawA;
 
-  // Optional 50/50 xG blend (§3.1 refinement): xG-based λ through the same
-  // multiplicative shape — home creation vs away concession and vice versa.
+  // Optional xG blend (§3.1 refinement, audit fix): xG-based λ through the
+  // same multiplicative shape — home creation vs away concession and vice
+  // versa — blended in at a weight that scales with sample size
+  // (xgBlendWeight) instead of a flat 50/50 regardless of how thin the
+  // underlying xG sample is. Reaches the full 0.5 weight (today's prior
+  // behavior, unchanged) once n >= shrinkN; below that it shrinks toward the
+  // pure goals-based shrunkH/shrunkA, same small-sample-noise logic as the
+  // goals-λ shrink above (a handful of xG-tracked matches isn't more
+  // trustworthy just because it's xG). λ v5 (ORACLE_V3_LAMBDA_V5, default
+  // on): each side blends independently when its cross-pair (own xgf ×
+  // opponent xga) exists, instead of discarding all xG unless BOTH sides
+  // have full pairs.
   let lH = shrunkH;
   let lA = shrunkA;
   let xgBlended = false;
+  let xgBlendedSides: V3Lambdas["xgBlendedSides"];
   if (opts.xgBlend !== false) {
-    const xgH = multiplicativeLambda(input.homeXg?.xgf, input.awayXg?.xga, L);
-    const xgA = multiplicativeLambda(input.awayXg?.xgf, input.homeXg?.xga, L);
-    if (xgH !== null && xgA !== null) {
-      lH = (shrunkH + xgH) / 2;
-      lA = (shrunkA + xgA) / 2;
-      xgBlended = true;
+    const v5 = opts.lambdaV5 !== false;
+    const xgHRaw = multiplicativeLambda(input.homeXg?.xgf, input.awayXg?.xga, L);
+    const xgARaw = multiplicativeLambda(input.awayXg?.xgf, input.homeXg?.xga, L);
+    const xgH = v5 && xgHRaw !== null ? shrink(xgHRaw, input.nHome, L, shrinkN) : xgHRaw;
+    const xgA = v5 && xgARaw !== null ? shrink(xgARaw, input.nAway, L, shrinkN) : xgARaw;
+    const blendH = xgH !== null && (v5 || xgA !== null);
+    const blendA = xgA !== null && (v5 || xgH !== null);
+    if (blendH) {
+      const wH = xgBlendWeight(input.nHome, shrinkN);
+      lH = shrunkH * (1 - wH) + (xgH as number) * wH;
     }
+    if (blendA) {
+      const wA = xgBlendWeight(input.nAway, shrinkN);
+      lA = shrunkA * (1 - wA) + (xgA as number) * wA;
+    }
+    xgBlended = blendH || blendA;
+    if (blendH && blendA) xgBlendedSides = "both";
+    else if (blendH) xgBlendedSides = "home";
+    else if (blendA) xgBlendedSides = "away";
   }
 
   // Home-field-advantage adjustment (§3.1a v4 delta): apply HFA multiplier only
@@ -195,6 +367,7 @@ export function computeV3Lambdas(
     method,
     shrunk,
     xgBlended,
+    xgBlendedSides,
     leaguePerTeamAvg: L,
     hfaApplied,
   };

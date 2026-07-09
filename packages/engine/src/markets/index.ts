@@ -33,6 +33,7 @@ export type MarketFamily =
   | "exact_goals"
   | "corners"
   | "cards"
+  | "shots"
   | "odd_even"
   | "clean_sheet"
   | "win_to_nil"
@@ -87,14 +88,52 @@ export const MARKET_BY_ID: ReadonlyMap<string, MarketCatalogEntry> = new Map(
   MARKET_CATALOG.map((e) => [e.id, e])
 );
 
-/** Look up a market by SportyBet id; undefined when not in the catalog. */
+/** PR-21: runtime overlay for markets observed since catalog.generated.ts was
+ *  last regenerated — filled at worker startup (ORACLE_CATALOG_OVERLAY=on)
+ *  from tools/build_market_catalog.py's weekly `--diff-only --json-out` run,
+ *  via extendCatalog() below. Empty (a no-op) when the flag is off or the
+ *  overlay file doesn't exist. The committed catalog is the source of truth
+ *  and always wins on lookup (see extendCatalog) — this only fills the gap
+ *  for ids the last regeneration hadn't seen yet, never overrides one it has. */
+const CATALOG_OVERLAY = new Map<string, MarketCatalogEntry>();
+
+/** Look up a market by SportyBet id — committed catalog first, then the
+ *  runtime overlay; undefined when in neither. */
 export function lookupMarket(id: string | number): MarketCatalogEntry | undefined {
-  return MARKET_BY_ID.get(String(id));
+  const key = String(id);
+  return MARKET_BY_ID.get(key) ?? CATALOG_OVERLAY.get(key);
 }
 
-/** Canonical family for a market id, or undefined when not catalogued. */
+/** Canonical family for a market id, or undefined when not catalogued
+ *  (committed or overlay). */
 export function familyOf(id: string | number): MarketFamily | undefined {
-  return MARKET_BY_ID.get(String(id))?.family;
+  return lookupMarket(id)?.family;
+}
+
+/** PR-21: add newly-observed market entries to the runtime overlay. Committed
+ *  ids are never touched by design — a stale or bad overlay entry can only
+ *  ever fill a genuine gap, never shadow or disagree with reviewed metadata.
+ *  Entries with a blank id or a family outside the known MarketFamily set are
+ *  skipped (not thrown) — this runs at startup/best-effort against an
+ *  external JSON file, never blocking. Returns the count actually added, for
+ *  the caller's startup log line. */
+export function extendCatalog(entries: readonly MarketCatalogEntry[]): number {
+  const knownFamilies = new Set(Object.keys(FAMILY_LABEL));
+  let added = 0;
+  for (const e of entries) {
+    if (!e.id || MARKET_BY_ID.has(e.id) || CATALOG_OVERLAY.has(e.id)) continue;
+    if (!knownFamilies.has(e.family)) continue;
+    CATALOG_OVERLAY.set(e.id, e);
+    added++;
+  }
+  return added;
+}
+
+/** Test-only reset — CATALOG_OVERLAY otherwise persists for the module's
+ *  whole lifetime, same long-lived-process assumption MARKET_BY_ID itself
+ *  makes (it's built once at module load and never rebuilt either). */
+export function _resetCatalogOverlayForTests(): void {
+  CATALOG_OVERLAY.clear();
 }
 
 /** True when the engine has a deterministic model for this market's family. */
@@ -120,6 +159,7 @@ export type FamilyLabel =
   | "Exact Goals"
   | "Corners"
   | "Cards"
+  | "Shots on Target"
   | "Odd/Even"
   | "Clean Sheet"
   | "Win to Nil"
@@ -148,6 +188,7 @@ export const FAMILY_LABEL: Record<MarketFamily, FamilyLabel> = {
   exact_goals: "Exact Goals",
   corners: "Corners",
   cards: "Cards",
+  shots: "Shots on Target",
   odd_even: "Odd/Even",
   clean_sheet: "Clean Sheet",
   win_to_nil: "Win to Nil",

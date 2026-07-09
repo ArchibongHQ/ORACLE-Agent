@@ -12,6 +12,8 @@ export const STORAGE_KEYS = {
   resolutionRecords: "oracle_v2026_resolution",
   // §11A — run manifests
   runManifests: "oracle_v2026_manifests",
+  // PR-8a — T-30m closing-odds re-snapshot (real CLV / steam-signal capture)
+  closingOddsSnapshots: "oracle_v2026_closing_odds",
 } as const;
 
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];

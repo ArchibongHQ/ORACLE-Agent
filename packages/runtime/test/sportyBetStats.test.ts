@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SportyBetEventDetail } from "../src/selectFixtures.js";
 import {
+  blendRecencyScored,
   buildStatsOverride,
   buildStatsSoftContext,
   goalRateNudge,
@@ -333,6 +334,36 @@ describe("buildStatsOverride — all-markets v3 additions", () => {
     });
   });
 
+  it("downgrades a google_ai-sourced xG pair to estimated/medium (PR-19 fallback tier parity)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      xg: {
+        home: { xgf: 1.5, xga: 1.2, src: "google_ai" },
+        away: { xgf: 1.0, xga: 1.1, src: "google_ai" },
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({
+      xH: 1.5,
+      xA: 1.0,
+      xgMode: "estimated",
+      xg_confidence: "medium",
+    });
+  });
+
+  it("downgrades even when only ONE side is google_ai-sourced (OR condition, not AND)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      xg: {
+        home: { xgf: 1.5, xga: 1.2, src: "google_ai" },
+        away: { xgf: 1.0, xga: 1.1 }, // no src tag — real/pre-PR-19 source
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({
+      xgMode: "estimated",
+      xg_confidence: "medium",
+    });
+  });
+
   it("types scoringConceding rates + first-half share through when the venue sample is thick enough", () => {
     const d = detail({
       scoringConceding: {
@@ -484,5 +515,138 @@ describe("buildStatsOverride — v3 raw lambda inputs (§3.1, ungated by MIN_PLA
     const override = buildStatsOverride(d);
     expect(override?.scoredPer90H).toBeUndefined();
     expect(override?.xgfH).toBeUndefined();
+  });
+
+  it("recency-blends scoredPer90H/A from recentGoals when present (PR-5, §8.1)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.0, avg_conceded: 1.0 },
+        away: { avg_scored: 1.0, avg_conceded: 1.0 },
+      },
+      recentGoals: {
+        home: { scored_avg: 2.0, n: 5 },
+        away: { scored_avg: 0.4, n: 5 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    // RECENT_W=0.6: 2.0*0.6 + 1.0*0.4 = 1.6; 0.4*0.6 + 1.0*0.4 = 0.64
+    expect(override?.scoredPer90H).toBeCloseTo(1.6, 5);
+    expect(override?.scoredPer90A).toBeCloseTo(0.64, 5);
+  });
+
+  it("leaves scoredPer90H/A at the season average when no recency signal exists", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.4, avg_conceded: 1.0 },
+        away: { avg_scored: 0.8, avg_conceded: 1.6 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBe(1.4);
+    expect(override?.scoredPer90A).toBe(0.8);
+  });
+
+  it("[PR-14] prefers scoringConceding venue split over season goals aggregate when sample is thick enough", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.0, avg_conceded: 1.0 },
+        away: { avg_scored: 1.0, avg_conceded: 1.0 },
+      },
+      scoringConceding: {
+        home: { matches: 8, scored_avg: 1.7, conceded_avg: 0.6 },
+        away: { matches: 8, scored_avg: 0.5, conceded_avg: 1.9 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBe(1.7);
+    expect(override?.concededPer90H).toBe(0.6);
+    expect(override?.scoredPer90A).toBe(0.5);
+    expect(override?.concededPer90A).toBe(1.9);
+  });
+
+  it("[PR-14] falls back to the season aggregate when scoringConceding's own sample is too thin", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.0, avg_conceded: 1.0 },
+        away: { avg_scored: 1.0, avg_conceded: 1.0 },
+      },
+      scoringConceding: {
+        // Below MIN_PLAYED_FOR_OVERRIDE(4) — too thin to trust.
+        home: { matches: 2, scored_avg: 5.0, conceded_avg: 0.1 },
+        away: { matches: 2, scored_avg: 0.1, conceded_avg: 5.0 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBe(1.0);
+    expect(override?.concededPer90H).toBe(1.0);
+    expect(override?.scoredPer90A).toBe(1.0);
+    expect(override?.concededPer90A).toBe(1.0);
+  });
+
+  it("[PR-14] falls back to the season aggregate when scoringConceding is entirely absent", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      goals: {
+        home: { avg_scored: 1.4, avg_conceded: 1.0 },
+        away: { avg_scored: 0.8, avg_conceded: 1.6 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.scoredPer90H).toBe(1.4);
+    expect(override?.concededPer90H).toBe(1.0);
+    expect(override?.scoredPer90A).toBe(0.8);
+    expect(override?.concededPer90A).toBe(1.6);
+  });
+
+  it("populates home/awayAvailabilityMult from stats.availability (PR-6, §8.2)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      availability: {
+        home: { idx: 0.72, keyPlayerPresent: 0 },
+        away: { idx: 0.95 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.homeAvailabilityMult).toBe(0.72);
+    expect(override?.awayAvailabilityMult).toBe(0.95);
+  });
+
+  it("omits home/awayAvailabilityMult when stats.availability is absent", () => {
+    const d = detail({ standings: { home: { played: 10 }, away: { played: 10 } } });
+    const override = buildStatsOverride(d);
+    expect(override?.homeAvailabilityMult).toBeUndefined();
+    expect(override?.awayAvailabilityMult).toBeUndefined();
+  });
+});
+
+describe("blendRecencyScored (PR-5, §8.1 temporal decay for v3 lambda inputs)", () => {
+  it("returns the season average unchanged when neither recency signal exists", () => {
+    expect(blendRecencyScored(1.4, undefined, undefined)).toBe(1.4);
+  });
+
+  it("returns null/undefined-safe when the season average itself is absent", () => {
+    expect(blendRecencyScored(undefined, 2.0, "WWDLW")).toBeNull();
+    expect(blendRecencyScored(null, 2.0, "WWDLW")).toBeNull();
+  });
+
+  it("prefers the real recentGoals signal at a 60/40 recent/season blend", () => {
+    expect(blendRecencyScored(1.0, 2.0, undefined)).toBeCloseTo(1.6, 5);
+  });
+
+  it("falls back to form-string + applyTemporalDecay when recentGoals is absent", () => {
+    const v = blendRecencyScored(1.4, undefined, "WWDLW");
+    // A W-heavy last-5 pulls the decayed average above the flat season figure.
+    expect(v).not.toBeNull();
+    expect(v as number).toBeGreaterThan(1.4);
+  });
+
+  it("a losing-heavy form string pulls the decayed average below the season figure", () => {
+    const v = blendRecencyScored(1.4, undefined, "LLDLL");
+    expect(v).not.toBeNull();
+    expect(v as number).toBeLessThan(1.4);
   });
 });

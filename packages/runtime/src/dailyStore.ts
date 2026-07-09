@@ -41,6 +41,7 @@ interface FixtureRow {
   home: string;
   away: string;
   league: string | null;
+  league_id: string | null;
   kickoff_utc: string | null;
   market_count: number | bigint | null;
 }
@@ -155,6 +156,7 @@ async function buildDailyIndex(dt: string): Promise<SportyBetIndex | null> {
       away: fx.away,
       marketCount,
       league: fx.league ?? undefined,
+      leagueId: fx.league_id || undefined,
       kickoff_utc: fx.kickoff_utc ?? undefined,
       detail,
     });

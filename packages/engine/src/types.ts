@@ -211,7 +211,22 @@ export interface OracleConfig {
   // Concurrency is hardware-aware locally (computeMarketExecutorConcurrency) and
   // scales to ~1 agent per fixture on VPS, where it also ignores costCeilingUsd
   // (uncapped spend on VPS is an explicit owner choice, not an oversight).
+  // Derived from llmExecutorScope below (true whenever scope !== "off") —
+  // kept as its own field since most call sites only ever need the boolean.
   enableLlmMarketExecutor?: boolean;
+  // PR-23: tri-state scope for the executor above, parsed from the SAME
+  // ENABLE_LLM_MARKET_EXECUTOR env var ("true"⇒"full", "unmapped"⇒"unmapped",
+  // anything else⇒"off"). "full" is the pre-PR-23 behavior verbatim (executor
+  // reasons over the ENTIRE catalogue and its pick becomes the draft
+  // outright — batch/index.ts still demotes it to off when v3 supplied
+  // candidates, since a second full-catalogue pass over an already-priced
+  // fixture is pure waste). "unmapped" is new: batch/index.ts does NOT
+  // demote it when v3 ran — instead it narrows what the executor sees to
+  // just this fixture's recoverable skip-tail (computeTailMarkets in
+  // feedDictionary.ts), and decide() only SPLICES a validated pick into
+  // effectiveEligible rather than forcing it to be the draft, so the
+  // existing EV-ranked cascade/arbiter decides whether it actually wins.
+  llmExecutorScope?: "full" | "unmapped" | "off";
   // goals-market-analysis-prompt-v3 gates applied to goals-family markets
   // (Goals O/U, Team Total, BTTS) in the MAIN batch's scanMarkets admission —
   // the noise gate and the §4.4 implausible-edge cap, without the goals-batch
@@ -239,6 +254,26 @@ export interface OracleConfig {
   // input is season-aggregate stats and HFA multiplier should be applied.
   // Default false (most sources provide team-overall stats, not splits).
   v3VenueSplitUsed?: boolean;
+  // λ v5: each side of the xG blend (goalsV3/lambda.ts) blends independently
+  // when its own cross-pair exists, instead of requiring both sides to have a
+  // full xG pair before blending either; the xG-λ also gets small-sample
+  // shrinkage. Default true. Set ORACLE_V3_LAMBDA_V5=off to restore the prior
+  // both-sides-only, unshrunk xG blend.
+  v3LambdaV5?: boolean;
+  // Lake-computed league baselines (goals/game keyed by canonical league name),
+  // from tools/compute_league_baselines.py via .tmp/oracle-store/league_baselines
+  // .json. When present, computeV3Lambdas prefers these over the static
+  // V3_LEAGUE_BASELINES table (static stays the fallback for absent leagues) —
+  // the audit P0-2 staleness fix. Loaded only when ORACLE_V3_LAKE_BASELINES is
+  // on; undefined otherwise ⇒ byte-identical to the static-only behavior.
+  v3LakeBaselines?: Record<string, number>;
+  // Lake-fitted per-league HFA multipliers (goals-model home-edge m = sqrt(home
+  // gpg / away gpg), from tools/compute_league_baselines.py's hfaByName). When
+  // present, the all-markets λ core uses the fixture league's fitted m instead
+  // of the global v3Hfa (falls back to v3Hfa for leagues absent from the map).
+  // Loaded only when ORACLE_V3_LAKE_HFA is on (full-audit P3). Undefined ⇒ the
+  // global v3Hfa applies everywhere, as before.
+  v3HfaByLeague?: Record<string, number>;
   // v4 gate deltas: heightened EV bars (S {5%,7%}, M {8%}, L {9%,20%}, X excluded),
   // exact-goals/multigoals routing + odds-band classing, sample-scaled empirical blend,
   // sanity checks. Default true. Set ORACLE_V3_GATES_V4=off to restore v3 semantics.
@@ -257,12 +292,35 @@ export interface OracleConfig {
   // enableMarketsV3 === "on". Default true. Set ORACLE_MARKETS_V3_OUTPUTS=off
   // to keep the exact legacy trim (regression pin).
   marketsV3Outputs?: boolean;
+  // PR-20: slate-wide route-coverage rollup (RunManifest.marketCoverage +
+  // BatchSummary.marketCoverageNote) — pure telemetry, never gates a pick.
+  // Default true. ORACLE_MARKETS_COVERAGE=off skips the rollup computation
+  // entirely (byte-identical manifest/summary to pre-PR-20).
+  marketsCoverageNote?: boolean;
+  // PR-21: load the runtime catalog overlay (markets observed since the last
+  // catalog.generated.ts regeneration) at worker startup. Default FALSE —
+  // unlike the other markets-v3 flags this one starts off until PR-20's
+  // coverage data shows the "uncatalogued" skip tail is material; the weekly
+  // diff-only advisory print runs regardless of this flag.
+  catalogOverlay?: boolean;
   // PR-6: corners/cards routing — Over/Under total-line markets priced via the
   // NB (corners) / Poisson (cards) modules when both odds and season stats
   // exist. Default true. ORACLE_V3_CORNERS_CARDS=off withholds the raw stats
   // from buildV3Input so ctx.corners/.cards stay null (dormant, byte-identical
   // to pre-PR-6 — routing itself is unconditional, only ctx population is gated).
   v3CornersCards?: boolean;
+  // PR-22: 1x2/handicap/range/odd-even corners/cards variants (match/team-total
+  // O/U — the pre-PR-22 surface above — are unaffected by this flag). Default
+  // true. ORACLE_V3_CORNERS_CARDS_EXT=off suppresses only the new variants;
+  // routeMarket() still classifies them (coverage stays accurate), pricing
+  // just returns null for that outcome (same "route unconditional, ctx gates
+  // pricing" convention v3CornersCards itself uses).
+  v3CornersCardsExt?: boolean;
+  // PR-22: shots-on-target O/U module (engines/shots.ts). Default true.
+  // ORACLE_V3_SHOTS_OU=off withholds sotForH/A from buildV3Input so
+  // ctx.shots stays null (dormant, byte-identical to pre-PR-22) — same
+  // withhold-not-un-route convention as v3CornersCards.
+  v3ShotsOu?: boolean;
   // PR-6: R10 cross-check — re-verify the fixture's best goals-family v3 pick
   // against the independent goals-only engine (in-process, zero extra LLM
   // cost). Default true. ORACLE_V3_GOALS_CROSSCHECK=off skips the hook
@@ -342,6 +400,9 @@ export interface RunState {
     /** §3.9 cards module (Poisson) inputs: total cards per game. */
     cardsAvgH?: number;
     cardsAvgA?: number;
+    /** PR-22 shots-on-target module (Negative Binomial) inputs, per game. */
+    sotForH?: number;
+    sotForA?: number;
     /** §2 prioritisation / §1.2 heightened-trend inputs: season O/U hit-rates,
      *  venue split (stats_season_overunder). ou25 also feeds the totals engine's
      *  per-line marketStatMissing flag (PR-4). */
@@ -374,6 +435,10 @@ export interface RunState {
     xgaA?: number;
     nHome?: number;
     nAway?: number;
+    /** Match-day squad availability multiplier (§8.2, PR-6) — see
+     *  V3LambdaInput.home/awayAvailabilityMult. */
+    homeAvailabilityMult?: number;
+    awayAvailabilityMult?: number;
     [key: string]: unknown;
   };
   pipeline?: {
@@ -435,7 +500,7 @@ export interface AnalysisRecord {
 }
 
 /** Increment when ResolutionRecord shape changes — write-once per record. */
-export const RESOLUTION_SCHEMA_VERSION = 1;
+export const RESOLUTION_SCHEMA_VERSION = 2;
 
 /** Resolution record written after the match result is known (PRD §10, Appendix B). */
 export interface ResolutionRecord {
@@ -447,9 +512,63 @@ export interface ResolutionRecord {
   awayGoals: number;
   realisedCLV: number | null; // null when liquidityTag !== CLV_ELIGIBLE
   clvSourceQuality: ClvSourceQuality; // provenance tag for the closing-odds proxy (PRD §8.3)
+  /** Real home-side odds velocity (1/snapshotOdds - 1/frozenOddsAtAnalysis), from
+   *  the T-30m closing-odds snapshot (PR-8b) — null when no snapshot was
+   *  captured for this fixture. Schema version 2. Post-hoc observability only,
+   *  computed here (not at analysis time) because a T-30m snapshot by
+   *  construction can't exist before ORACLE's decision is made hours earlier. */
+  realisedSteamVelocity: number | null;
+  /** lstmMarketDecoderProxy's sharpCompression verdict on realisedSteamVelocity
+   *  — null when no snapshot was captured. Schema version 2. */
+  sharpCompressionDetected: boolean | null;
   rpsContribution: number; // rankedProbabilityScore(forecast, actualResult)
   drawCalibrationPoint: { league: string; predicted: number; realised: number } | null;
   resolvedAt: string; // ISO-8601
+}
+
+/** Odds shape captured by the T-30m closing snapshot (PR-8a) — a curated subset
+ *  of scrape_fixtures.py's _parse_odds() output. Declared independently of
+ *  @oracle/runtime's SportyBetOdds (structurally identical core fields) since
+ *  @oracle/engine must not depend on @oracle/runtime. */
+export interface ClosingOddsSnapshotOdds {
+  "1x2"?: {
+    home?: number | string | null;
+    draw?: number | string | null;
+    away?: number | string | null;
+  } | null;
+  ou15?: { over?: number | string | null; under?: number | string | null } | null;
+  ou25?: { over?: number | string | null; under?: number | string | null } | null;
+  ou35?: { over?: number | string | null; under?: number | string | null } | null;
+  btts?: { yes?: number | string | null; no?: number | string | null } | null;
+  dc?: {
+    "1x"?: number | string | null;
+    "12"?: number | string | null;
+    x2?: number | string | null;
+  } | null;
+  dnb?: { home?: number | string | null; away?: number | string | null } | null;
+  ah?: {
+    line?: number | null;
+    home?: number | string | null;
+    away?: number | string | null;
+  } | null;
+}
+
+/** Increment when ClosingOddsSnapshot shape changes. */
+export const CLOSING_ODDS_SCHEMA_VERSION = 1;
+
+/** T-30m re-snapshot for a fixture ORACLE already analyzed (PR-8a). One entry
+ *  per fixtureId (upserted, not appended — apps/worker/src/closingOddsSweep.ts
+ *  dedupes by fixtureId before the write). Consumed by resolveFixtures.ts (real
+ *  CLV, clvSourceQuality "TICK_LEVEL", and a real steam/sharp-compression
+ *  signal on ResolutionRecord — both computed post-hoc at resolve time, since
+ *  the T-30m snapshot by construction can't exist before ORACLE's decision is
+ *  already made hours earlier). */
+export interface ClosingOddsSnapshot {
+  fixtureId: string; // matches AnalysisRecord.fixtureId exactly (makeFixtureId output)
+  eventId: string; // SportyBet/Sportradar match ID used for the scrape
+  kickoff: string; // ISO-8601, copied from the AnalysisRecord at capture time
+  snapshotAt: string; // ISO-8601, when the scrape actually ran
+  odds: ClosingOddsSnapshotOdds;
 }
 
 /** Input to the LLM decision layer (PRD §6, Appendix B). */
@@ -554,6 +673,17 @@ export interface RunManifest {
     halted: boolean;
   };
   errors: AgentError[];
+  /** PR-20: slate-wide route-coverage rollup (packages/runtime's
+   *  rollupCoverage) — additive/optional so existing manifest.json readers and
+   *  the storage-persisted history are unaffected. Absent when v3 didn't run
+   *  or ORACLE_MARKETS_COVERAGE=off. */
+  marketCoverage?: {
+    total: number;
+    routed: number;
+    priced: number;
+    gatePassed: number;
+    topUnrouted: Array<{ name: string; count: number }>;
+  };
 }
 
 /** Output of ExecutionEngine.run(). Index signature allows spread of fixture fields. */

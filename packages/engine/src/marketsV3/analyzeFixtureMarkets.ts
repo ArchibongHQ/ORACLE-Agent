@@ -8,19 +8,24 @@
  *  Zero LLM calls — pure deterministic script math, per the token-saving
  *  mandate. Pure function; all data arrives in the input struct. */
 
-import { getLeagueParams } from "../execution/index.js";
 import type { V3PenaltyFlags } from "../goalsV3/edgeGate.js";
-import { computeV3Lambdas, type V3LambdaInput, type V3Lambdas } from "../goalsV3/lambda.js";
+import {
+  computeV3Lambdas,
+  resolveRho,
+  type V3LambdaInput,
+  type V3Lambdas,
+} from "../goalsV3/lambda.js";
 import type { Devigged1x2 } from "../goalsV3/matchShape.js";
 import { FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import type { AllMarketEntry, EVMarket, Matrix } from "../types.js";
 import { classifyMarket } from "./classes.js";
-import { cardsMeans, priceCardsOutcome } from "./engines/cards.js";
-import { cornersMeans, priceCornersOutcome } from "./engines/corners.js";
+import { cardsMeans, priceCardsVariant } from "./engines/cards.js";
+import { cornersMeans, priceCornersVariant } from "./engines/corners.js";
 import { priceExoticsOutcome } from "./engines/exotics.js";
 import { priceHalfOutcome, V3_FIRST_HALF_SHARE_DEFAULT } from "./engines/half.js";
 import { priceResultOutcome } from "./engines/result.js";
 import { priceShapeOutcome } from "./engines/shape.js";
+import { priceShotsOutcome, shotsMeans } from "./engines/shots.js";
 import { priceTimeWindow } from "./engines/time.js";
 import { priceTotalsOutcome } from "./engines/totals.js";
 import type { V3EngineCtx, V3Price } from "./engines/types.js";
@@ -84,6 +89,16 @@ export interface V3AllMarketsInput {
   cornersAgainstA?: number;
   cardsAvgH?: number;
   cardsAvgA?: number;
+  /** PR-22: 1x2/handicap/range/odd-even corners/cards variants. Default true
+   *  (undefined ⇒ on) — ORACLE_V3_CORNERS_CARDS_EXT=off suppresses only these
+   *  new variants; match/team-total O/U (the pre-PR-22 surface, gated by
+   *  ORACLE_V3_CORNERS_CARDS above) are unaffected. */
+  v3CornersCardsExt?: boolean;
+  /** PR-22: shots-on-target module (engines/shots.ts) — season averages from
+   *  sportyBetStats.ts's possessionValue block. Withheld (⇒ ctx.shots null,
+   *  dormant) when ORACLE_V3_SHOTS_OU=off. */
+  sotForH?: number;
+  sotForA?: number;
   penaltyFlags: V3PenaltyFlags;
   edgeCap?: number;
   noiseGate?: number;
@@ -92,8 +107,17 @@ export interface V3AllMarketsInput {
   hfa?: number;
   /** True when λ input uses venue-split data (suppress HFA). */
   venueSplitUsed?: boolean;
+  /** λ v5 independent-side xG blend (ORACLE_V3_LAMBDA_V5). Default on. */
+  lambdaV5?: boolean;
+  /** Lake-computed league baselines (goals/game by league name) — prefer over
+   *  the static V3_LEAGUE_BASELINES table when present (audit P0-2). */
+  lakeBaselines?: Record<string, number>;
   /** v4 heightened gates: stricter bars, X excluded (PR-3). */
   heightened?: boolean;
+  /** Per-league dynamic rho refit from the calibration ledger's observed
+   *  scoreline frequencies (CalibrationMetrics.dynamicRhoParams, §8.1 NR-MLE).
+   *  Falls back to the static getLeagueParams(league).baseRho when absent. */
+  dynamicRho?: number;
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -158,12 +182,30 @@ function priceOutcome(
       return priceExoticsOutcome(ctx, route, marketName, desc);
     case "corners": {
       if (!ctx.corners) return null;
-      const p = priceCornersOutcome(ctx.corners, desc);
+      // PR-22: the new 1x2/handicap/range/odd-even variants are gated by
+      // ORACLE_V3_CORNERS_CARDS_EXT; team-total/match-total O/U (the
+      // pre-PR-22 surface) are unaffected — same "routing unconditional, ctx
+      // gates pricing" convention ORACLE_V3_CORNERS_CARDS itself already uses.
+      const newVariant =
+        route.variant === "1x2" ||
+        route.variant === "handicap" ||
+        route.variant === "odd-even" ||
+        route.variant === "range";
+      if (newVariant && ctx.cornersCardsExt === false) return null;
+      const p = priceCornersVariant(ctx.corners, desc, route.variant, route.side);
       return p !== null ? { p } : null;
     }
     case "cards": {
       if (!ctx.cards) return null;
-      const p = priceCardsOutcome(ctx.cards, desc);
+      const newVariant =
+        route.variant === "1x2" || route.variant === "handicap" || route.variant === "range";
+      if (newVariant && ctx.cornersCardsExt === false) return null;
+      const p = priceCardsVariant(ctx.cards, desc, route.variant, route.side);
+      return p !== null ? { p } : null;
+    }
+    case "shots": {
+      if (!ctx.shots) return null;
+      const p = priceShotsOutcome(ctx.shots, desc, route.side);
       return p !== null ? { p } : null;
     }
     default:
@@ -199,10 +241,12 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     xgBlend: input.xgBlend,
     hfa: input.hfa,
     venueSplitUsed: input.venueSplitUsed,
+    lambdaV5: input.lambdaV5,
+    lakeBaselines: input.lakeBaselines,
   });
   if (!lambdas) return null;
 
-  const rho = getLeagueParams(input.league).baseRho;
+  const rho = resolveRho(input.league, input.dynamicRho);
   const split = deriveDualSplit(lambdas, input.devigged1x2);
   const statsGrid = buildV3Grid(split.stats.lambdaHome, split.stats.lambdaAway, rho);
   const shapeGrid = buildV3Grid(split.odds.lambdaHome, split.odds.lambdaAway, rho);
@@ -230,6 +274,8 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
       cornersAgainstA: input.cornersAgainstA,
     }),
     cards: cardsMeans({ cardsAvgH: input.cardsAvgH, cardsAvgA: input.cardsAvgA }),
+    cornersCardsExt: input.v3CornersCardsExt !== false,
+    shots: shotsMeans({ sotForH: input.sotForH, sotForA: input.sotForA }),
   };
 
   const coverage = routeCoverage(input.allMarkets);

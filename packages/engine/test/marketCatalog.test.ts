@@ -1,8 +1,11 @@
 /** Canonical market index tests — verifies the generated catalog is internally
  *  consistent and that the family lookups/priceability helpers behave. */
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import type { MarketCatalogEntry } from "../src/markets/index.js";
 import {
+  _resetCatalogOverlayForTests,
+  extendCatalog,
   familyOf,
   isPriceable,
   lookupMarket,
@@ -50,5 +53,66 @@ describe("market catalog", () => {
     for (const fam of PRICEABLE_FAMILIES) {
       expect(families.has(fam)).toBe(true);
     }
+  });
+});
+
+function overlayEntry(overrides: Partial<MarketCatalogEntry> = {}): MarketCatalogEntry {
+  return {
+    id: "999999",
+    name: "Some New Special",
+    group: "Main",
+    family: "goals_ou",
+    outcomes: ["Over 2.5", "Under 2.5"],
+    specifierShapes: ["total=<num>"],
+    fixturesSeen: 3,
+    ...overrides,
+  };
+}
+
+describe("extendCatalog (PR-21)", () => {
+  afterEach(() => {
+    _resetCatalogOverlayForTests();
+  });
+
+  it("fills a genuinely uncatalogued id, making it resolvable via lookupMarket/familyOf/isPriceable", () => {
+    expect(lookupMarket("999999")).toBeUndefined();
+
+    const added = extendCatalog([overlayEntry()]);
+
+    expect(added).toBe(1);
+    expect(lookupMarket("999999")?.name).toBe("Some New Special");
+    expect(familyOf("999999")).toBe("goals_ou");
+    expect(isPriceable("999999")).toBe(true);
+  });
+
+  it("never shadows an id already in the committed MARKET_CATALOG", () => {
+    const committedId = MARKET_CATALOG[0]?.id;
+    expect(committedId).toBeTruthy();
+    const committedEntry = lookupMarket(committedId as string);
+
+    const added = extendCatalog([
+      overlayEntry({ id: committedId, name: "BOGUS OVERRIDE", family: "exotic" }),
+    ]);
+
+    expect(added).toBe(0);
+    expect(lookupMarket(committedId as string)).toEqual(committedEntry);
+  });
+
+  it("skips entries with a blank id or an unrecognised family, without throwing", () => {
+    const added = extendCatalog([
+      overlayEntry({ id: "", name: "no id" }),
+      overlayEntry({ id: "888888", family: "not_a_real_family" as MarketCatalogEntry["family"] }),
+    ]);
+
+    expect(added).toBe(0);
+    expect(lookupMarket("888888")).toBeUndefined();
+  });
+
+  it("is idempotent — re-adding the same overlay id twice only counts once", () => {
+    extendCatalog([overlayEntry()]);
+    const secondAdded = extendCatalog([overlayEntry()]);
+
+    expect(secondAdded).toBe(0);
+    expect(lookupMarket("999999")?.name).toBe("Some New Special");
   });
 });

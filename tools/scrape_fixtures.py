@@ -765,7 +765,7 @@ class BetExplorerScraper:
 # Timestamps are UTC Unix ms — no timezone conversion needed.
 # todayGames=true limits to today; pageSize=100 with pagination covers all matches.
 
-def _sportybet_event_to_record(ev: dict, league: str) -> Optional[dict]:
+def _sportybet_event_to_record(ev: dict, league: str, league_id: str = "") -> Optional[dict]:
     """Map a pcUpcomingEvents event to a sidecar record, or None if malformed."""
     home = ev.get("homeTeamName", "")
     away = ev.get("awayTeamName", "")
@@ -789,6 +789,12 @@ def _sportybet_event_to_record(ev: dict, league: str) -> Optional[dict]:
         "home": home,
         "away": away,
         "league": league,
+        # Sportradar tournament ID (e.g. "sr:tournament:17"), when the API
+        # response includes one — closes the league-name-collision gap where
+        # two unrelated competitions sharing a generic label (e.g. a
+        # lower-tier "Premier League") would otherwise be indistinguishable
+        # downstream. Empty string, not None, when absent (Parquet-friendly).
+        "leagueId": league_id,
         "kickoff_utc": kickoff,
         "marketCount": market_count,
     }
@@ -854,6 +860,157 @@ def _xg_for(table: dict[str, dict], team: str, venue: Optional[str] = None) -> O
         if isinstance(vn, (int, float)):
             out["venueN"] = int(vn)
     return out
+
+
+# Match-day squad availability index (tools/fetch_squad_availability.py, Kaggle
+# Transfermarkt backfill of top-5-league matchday squads). The table is a
+# per-past-match backfill, not a live feed — there's no such thing as "today's"
+# row for a fixture that hasn't been played yet, so this looks up each club's
+# MOST RECENT known row as a recency proxy for their current squad depth
+# (same "last known state as a prior for the next match" pattern as
+# applyTemporalDecay elsewhere in this pipeline). Optional — absent for any
+# league outside top-5 domestic Kaggle coverage, or if the CSV was never built.
+_AVAILABILITY_TABLE_PATH = Path(".tmp/squad-availability/availability_features.csv")
+
+
+def _load_availability_table() -> dict[str, dict]:
+    """Load the squad-availability CSV, keyed by normalise()'d club name, keeping
+    only each club's most recent row (by date). Missing/corrupt file or row →
+    that club (or field) is simply absent — availability blocks degrade to
+    null, never fatal."""
+    import csv
+
+    import math
+
+    table: dict[str, dict] = {}
+    try:
+        with _AVAILABILITY_TABLE_PATH.open("r", encoding="utf-8", newline="") as f:
+            for row in csv.DictReader(f):
+                club, date, idx_raw = row.get("club"), row.get("date"), row.get("availability_idx")
+                if not club or not date or not idx_raw:
+                    continue
+                try:
+                    idx = float(idx_raw)
+                except ValueError:
+                    continue
+                # Defense-in-depth: fetch_squad_availability.py's own min(ratio, 1.0)
+                # cap should make this unreachable today, but a NaN/Infinity or
+                # out-of-range value would otherwise flow unvalidated into the
+                # sidecar JSON (json.dumps's default allow_nan=True would emit the
+                # non-standard NaN/Infinity tokens, breaking Node's JSON.parse for
+                # the WHOLE day's sidecar file, not just this one row/fixture).
+                if not math.isfinite(idx) or not (0.0 <= idx <= 1.0):
+                    continue
+                key = normalise(club)
+                existing = table.get(key)
+                if existing is not None and existing["date"] >= date:
+                    continue
+                kp_raw = row.get("key_player_present")
+                table[key] = {
+                    "date": date,
+                    "idx": idx,
+                    "keyPlayerPresent": int(kp_raw) if kp_raw in ("0", "1") else None,
+                }
+    except (OSError, ValueError):
+        return {}
+    return table
+
+
+def _availability_for(table: dict[str, dict], team: str) -> Optional[dict]:
+    """Look up a team's most recent {idx, keyPlayerPresent} by normalised name.
+    None when uncovered (team outside top-5 Kaggle coverage, or table absent)."""
+    rec = table.get(normalise(team))
+    if not rec:
+        return None
+    out: dict = {"idx": rec["idx"]}
+    if rec.get("keyPlayerPresent") is not None:
+        out["keyPlayerPresent"] = rec["keyPlayerPresent"]
+    return out
+
+
+# PR-25: match-day weather (tools/fetch_weather.py's forecast-endpoint half —
+# Open-Meteo, keyless, plain HTTP, disk-cached by (lat,lon,date) so a repeat
+# run on the same slate is free). Weather is regional/venue-level, keyed by
+# the HOME team's city only (one block per fixture, not per side) — the away
+# team plays wherever the home team's ground is.
+#
+# Gated by ORACLE_FETCH_WEATHER, DEFAULT OFF — NOT a cheap/harmless default-on
+# feature. Populating this table means fixtures.ts's toEngineWeather() starts
+# setting RunState.pipeline.fetched.weather, which is the ONLY gate on
+# @oracle/engine's applyEnvironmentalPenalties (execution/index.ts) — an
+# already-live, UNCONDITIONAL lambda adjustment (wind >18.5mph: -8%, rain
+# >5mm: -6%) that has been fully dormant since it was ported from the
+# original monolith, simply because nothing ever populated fetched.weather
+# until this PR. Turning this flag on is therefore a real, immediate pricing
+# change on every fixture with adverse conditions, not just a new report
+# column — matches the "no λ change without backtest" caveat in the PR-25
+# plan. Flip to "on" only as a deliberate owner decision.
+#
+# Built as a table BEFORE the threaded enrichment pool starts (same
+# convention as xg/availability) rather than fetching per-event inside the
+# pool, so the sequential, throttled, disk-cached fetch loop below never
+# stacks concurrent requests against Open-Meteo from multiple worker threads
+# at once.
+
+
+def _load_weather_table(events: list[dict]) -> dict[tuple[str, str], dict]:
+    """One Open-Meteo forecast call per DISTINCT (home-team-city, kickoff
+    date) pair across today's slate — typically a few dozen even on a
+    90-fixture day, since most fixtures cluster into a handful of leagues/
+    cities. Missing coordinate coverage (team outside TEAM_CITY) or any
+    fetch failure simply omits that key — degrades to no weather for that
+    fixture, never fatal to acquisition. A per-event fetch/parse error is
+    caught and skips only that event, so one bad record can't blank out
+    weather for the rest of the slate (this loop runs before the
+    ThreadPoolExecutor below, so nothing else isolates it)."""
+    if os.environ.get("ORACLE_FETCH_WEATHER", "off").strip().lower() != "on":
+        return {}
+    try:
+        import fetch_weather as fw
+    except ImportError:
+        from tools import fetch_weather as fw  # repo root on sys.path instead of tools/
+
+    table: dict[tuple[str, str], dict] = {}
+    # Cache the FETCH RESULT (not just "already fetched") per (lat, lon,
+    # date) — two teams sharing a city (Inter/Milan, Roma/Lazio) must both
+    # get a table entry from the one shared network call, not just the
+    # first team processed. Keying only a "seen" set here previously caused
+    # the second team to silently get no weather at all.
+    fetched: dict[tuple[float, float, str], dict | None] = {}
+    for ev in events:
+        home = normalise(ev.get("home", ""))
+        date_iso = (ev.get("kickoff_utc") or "")[:10]
+        if not home or not date_iso:
+            continue
+        coords = fw.city_for_team(home)
+        if not coords:
+            continue
+        key = (coords[0], coords[1], date_iso)
+        try:
+            if key not in fetched:
+                fetched[key] = fw.fetch_forecast(coords[0], coords[1], date_iso)
+            wx = fetched[key]
+            if wx is None:
+                continue
+            is_adverse = wx["precip_mm"] > fw.ADVERSE_PRECIP_MM or wx["wind_kph"] > fw.ADVERSE_WIND_KPH
+            table[(home, date_iso)] = {
+                "tempC": round(wx["temp_c"], 1),
+                "precipMm": round(wx["precip_mm"], 2),
+                "windKph": round(wx["wind_kph"], 1),
+                "isAdverse": is_adverse,
+            }
+        except Exception as exc:  # noqa: BLE001 — one bad event must not blank the slate
+            print(f"[weather] skipping {home} {date_iso}: {exc}", flush=True)
+            continue
+    return table
+
+
+def _weather_for(table: dict[tuple[str, str], dict], home_team: str, kickoff_utc: str) -> Optional[dict]:
+    """Look up today's fixture weather by (normalised home team, date)."""
+    date_iso = (kickoff_utc or "")[:10]
+    if not date_iso:
+        return None
+    return table.get((normalise(home_team), date_iso))
 
 
 def _sb_get(url: str) -> Optional[dict]:
@@ -2014,6 +2171,10 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
         max_workers = swarm_max_workers(len(events))
 
     xg_table = _load_xg_table()
+    availability_table = _load_availability_table()
+    # PR-25: sequential + disk-cached, so this runs to completion BEFORE the
+    # threaded pool below starts — see _load_weather_table's docstring for why.
+    weather_table = _load_weather_table(events)
 
     def _xg_block(ev: dict) -> dict:
         return {
@@ -2021,18 +2182,35 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
             "away": _xg_for(xg_table, ev.get("away", ""), venue="away"),
         }
 
+    def _availability_block(ev: dict) -> dict:
+        return {
+            "home": _availability_for(availability_table, ev.get("home", "")),
+            "away": _availability_for(availability_table, ev.get("away", "")),
+        }
+
+    def _weather_block(ev: dict) -> Optional[dict]:
+        return _weather_for(weather_table, ev.get("home", ""), ev.get("kickoff_utc", ""))
+
     def _worker(ev: dict) -> dict:
         eid = ev.get("eventId", "")
         xg = _xg_block(ev)
+        availability = _availability_block(ev)
+        weather = _weather_block(ev)
         if not eid:
-            return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
+            return {
+                **ev, "odds": None, "stats": None, "statscoverage": None,
+                "xg": xg, "availability": availability, "weather": weather,
+            }
         try:
             detail = _fetch_fixture_detail(
                 eid, ev.get("kickoff_utc"), ev.get("home", ""), ev.get("away", "")
             )
-            return {**ev, **detail, "xg": xg}
+            return {**ev, **detail, "xg": xg, "availability": availability, "weather": weather}
         except Exception:
-            return {**ev, "odds": None, "stats": None, "statscoverage": None, "xg": xg}
+            return {
+                **ev, "odds": None, "stats": None, "statscoverage": None,
+                "xg": xg, "availability": availability, "weather": weather,
+            }
 
     enriched: list[dict] = [{}] * len(events)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -2047,6 +2225,8 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
                     **events[idx],
                     "odds": None, "stats": None, "statscoverage": None,
                     "xg": _xg_block(events[idx]),
+                    "availability": _availability_block(events[idx]),
+                    "weather": _weather_block(events[idx]),
                 }
             done += 1
             if done % 50 == 0:
@@ -2175,8 +2355,13 @@ class SportyBetScraper:
                 tournaments = api_data.get("data", {}).get("tournaments", [])
                 for tournament in tournaments:
                     league = tournament.get("name", "Football")
+                    # Sportradar tournament ID (e.g. "sr:tournament:28424") —
+                    # verified against .tmp/sportybet_api_capture's real
+                    # pcUpcomingEvents response. Previously discarded; now
+                    # captured to disambiguate leagues sharing a generic name.
+                    league_id = str(tournament.get("id") or "")
                     for ev in tournament.get("events", []):
-                        record = _sportybet_event_to_record(ev, league)
+                        record = _sportybet_event_to_record(ev, league, league_id)
                         # Only keep fixtures for the requested date
                         if record and record["kickoff_utc"][:10] == date_str:
                             ev_key = (record["home"], record["away"], record["kickoff_utc"])
@@ -2331,7 +2516,7 @@ def write_sportybet_sidecar(date_str: str, events: list[dict]) -> None:
 
     Written even when events is empty (TS selector fails open on empty list).
     Atomic write — a concurrent reader must never see a partial file.
-    Each event record shape: {eventId, home, away, league, kickoff_utc, marketCount,
+    Each event record shape: {eventId, home, away, league, leagueId, kickoff_utc, marketCount,
       odds: {1x2, ou15, ou25, ou35, btts, dc, dnb, ah}, stats: {form, standings, goals, h2h},
       statscoverage: {leaguetable, formtable, headtohead, …},
       xg: {home: {xgf, xga|null, src} | null, away: ...}  # Understat top-5 + FBref fallback}

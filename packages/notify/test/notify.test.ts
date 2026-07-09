@@ -187,6 +187,30 @@ describe("formatSummaryText/formatSummaryHtml sanityNote (PR-5b)", () => {
   });
 });
 
+describe("formatSummaryText/formatSummaryHtml marketCoverageNote (PR-20)", () => {
+  it("renders without throwing and omits the note when marketCoverageNote is absent", () => {
+    expect(() => formatSummaryText(sampleSummary)).not.toThrow();
+    expect(() => formatSummaryHtml(sampleSummary)).not.toThrow();
+    expect(formatSummaryText(sampleSummary)).not.toMatch(/markets: \d/);
+    expect(formatSummaryHtml(sampleSummary)).not.toMatch(/markets: \d/);
+  });
+
+  it("renders the market-coverage note when present, in both text and HTML output", () => {
+    const withCoverage: BatchSummary = {
+      ...sampleSummary,
+      marketCoverageNote: "markets: 100 total / 80 routed / 70 priced / 5 gate-passed",
+    };
+    expect(() => formatSummaryText(withCoverage)).not.toThrow();
+    expect(() => formatSummaryHtml(withCoverage)).not.toThrow();
+    expect(formatSummaryText(withCoverage)).toMatch(
+      /markets: 100 total \/ 80 routed \/ 70 priced \/ 5 gate-passed/
+    );
+    expect(formatSummaryHtml(withCoverage)).toMatch(
+      /markets: 100 total \/ 80 routed \/ 70 priced \/ 5 gate-passed/
+    );
+  });
+});
+
 describe("buildNotifiers", () => {
   it("empty env → no notifiers", () => {
     expect(buildNotifiers({})).toHaveLength(0);

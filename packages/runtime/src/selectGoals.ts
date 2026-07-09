@@ -159,11 +159,23 @@ export interface GoalsSelectionResult {
   /** Mini-ACCA — 2–4 highest-edge legs from strictly distinct leagues (no league repeat).
    *  Intended as the lowest-correlation, highest-confidence same-day combo. */
   miniAccaLegs: GoalsLeg[];
-  /** Naive joint probability for the mini-ACCA (product of mp values — no copula
-   *  correction; mini-ACCA is defined to be low-correlation by construction). */
+  /** Joint probability for the mini-ACCA via the same copula helper the long/
+   *  short slips use (copulaJointProbability) — cross-league legs correlate at
+   *  ρ=0 by construction, so this is numerically the naive product for a true
+   *  cross-league combo, computed the same way everywhere else instead of a
+   *  separate ad-hoc constant. See computeMiniAccaStats. */
   miniAccaCombinedProb: number;
   /** Combined decimal odds for the mini-ACCA (product of leg odds). */
   miniAccaCombinedOdds: number;
+  /** True EV at the combined offered price: miniAccaCombinedProb *
+   *  miniAccaCombinedOdds - 1. Combining N marked-up leg prices compounds each
+   *  leg's own bookmaker margin multiplicatively — this is what actually
+   *  surfaces that compounding (audit finding: the old flat 0.85 "correlation"
+   *  haircut was mislabeled — legs are ~independent — and never accounted for
+   *  margin compounding at all). Often meaningfully negative even when every
+   *  individual leg cleared its own EV gate; report this alongside the combo,
+   *  don't infer profitability from combinedOdds alone. */
+  miniAccaTrueEv: number;
 }
 
 type Side = "home" | "away";
@@ -416,8 +428,10 @@ export function pickSafestGoalsLeg(
   };
 }
 
-/** Maps a GoalsLeg to the engine's cross-fixture-correlation input shape. */
-function toPortfolioLeg(leg: GoalsLeg): PortfolioLeg {
+/** Maps a GoalsLeg to the engine's cross-fixture-correlation input shape.
+ *  Exported for reuse by goalsV3/crossBatchVeto.ts (PR-13) — same mapping,
+ *  not a separately-maintained copy. */
+export function toPortfolioLeg(leg: GoalsLeg): PortfolioLeg {
   return {
     home: leg.home,
     away: leg.away,
@@ -539,11 +553,39 @@ function forceDiverseLeaguesSlice(
   return result;
 }
 
-/** v3 §6 mini-ACCA combined-probability haircut: Combined P ≈ (∏ leg P) × 0.85
- *  — a flat correlation/uncertainty discount on the naive product. */
-export const V3_MINI_ACCA_HAIRCUT = 0.85;
 /** v3 §6 "different kick-off windows" — minimum kickoff separation (3h). */
 const V3_MINI_ACCA_KICKOFF_GAP_MS = 3 * 60 * 60 * 1000;
+
+/** Audit fix (EV-strategy-audit #5): the mini-ACCA previously applied a flat
+ *  ×0.85 to the naive joint probability, labeled a "correlation/uncertainty
+ *  discount" — but mini-ACCA legs are cross-league by construction, and this
+ *  same file's own copula helper (jointProb, used for the long/short slips)
+ *  already resolves cross-league pairs to ρ=0, i.e. genuinely independent.
+ *  There was nothing to "correlation-discount"; the 0.85 was an unexplained
+ *  constant on an otherwise-correct estimate. What the audit actually flagged
+ *  as MISSING is parlay margin compounding: multiplying N marked-up leg
+ *  odds together compounds each leg's own bookmaker margin, so the combined
+ *  price is a worse bet than any individual leg's own price — and nothing
+ *  here ever surfaced that. Fix: use the same jointProb() the other slips use
+ *  (no ad-hoc constant, consistent method), and report true EV at the
+ *  combined price (modelP*odds-1, same pattern as evGate.ts's true-EV floor)
+ *  so the margin-compounding effect is visible instead of silently absorbed
+ *  into an unrelated "correlation" label. Shared by selectGoalsAccumulator
+ *  and the two post-veto recomputation sites (crossBatchVeto.ts,
+ *  slateArbiter.ts) that previously duplicated the old formula. */
+export function computeMiniAccaStats(legs: GoalsLeg[]): {
+  miniAccaCombinedProb: number;
+  miniAccaCombinedOdds: number;
+  miniAccaTrueEv: number;
+} {
+  const miniAccaCombinedProb = jointProb(legs);
+  const miniAccaCombinedOdds = legs.reduce((acc, l) => acc * l.odds, 1);
+  return {
+    miniAccaCombinedProb,
+    miniAccaCombinedOdds,
+    miniAccaTrueEv: miniAccaCombinedProb * miniAccaCombinedOdds - 1,
+  };
+}
 
 const SHORT_SLIP_MIN = 4;
 const SHORT_SLIP_MAX = 9;
@@ -619,21 +661,30 @@ export function selectGoalsAccumulator(
   // Output C: mid-range legs (2.50 ≤ odds < 4.00), top 3 by edge.
   const outputCLegs = allByEdge.filter((l) => l.odds >= 2.5 && l.odds < 4.0).slice(0, 3);
 
-  // Mini-ACCA: 2–4 highest-edge legs, one per league (strict diversity); v3 also
-  // requires ≥3h kickoff separation (§6 "different kick-off windows") and draws
-  // from the mp-floored slip pool (a mini-ACCA is a confidence product, not a
-  // value single — long-odds legs would gut its combined probability).
+  // Mini-ACCA: 2–4 highest-edge legs, one per league (strict diversity) AND
+  // ≥3h kickoff separation (§6 "different kick-off windows") — draws from the
+  // mp-floored slip pool (a mini-ACCA is a confidence product, not a value
+  // single — long-odds legs would gut its combined probability).
+  //
+  // Audit fix: the kickoff-gap requirement used to be v3-only (gap=0 for
+  // legacy mode). computeMiniAccaStats's jointProb() call assumes these legs
+  // are genuinely independent because they're cross-league — but
+  // pairwiseCrossFixtureCorrelation's SAME_WINDOW_BONUS applies whenever two
+  // legs share a kickoff window, REGARDLESS of league (it's added on top of,
+  // not conditional on, the same-league check — verified directly against
+  // math/index.ts, not assumed from a comment). Two different-league legs
+  // kicking off at the same time — routine on a normal Saturday — would get a
+  // real non-zero rho and jointProb() would (correctly, given that rho) push
+  // miniAccaCombinedProb ABOVE the naive product, in legacy mode specifically
+  // where nothing else guards against it. Enforcing the gap unconditionally
+  // keeps the independence precondition this fix relies on actually true in
+  // both modes, not just v3.
   const miniAccaLegs = forceDiverseLeaguesSlice(
     opts.v3 ? [...all].sort((a, b) => edgeOf(b) - edgeOf(a)) : allByEdge,
     4,
-    opts.v3 ? V3_MINI_ACCA_KICKOFF_GAP_MS : 0
+    V3_MINI_ACCA_KICKOFF_GAP_MS
   );
-  // Naive joint probability (product of mp) — mini-ACCA is cross-league by
-  // construction so copula correction is negligible (rho ≈ 0 between leagues).
-  // v3 applies the §6 flat 0.85 correlation/uncertainty haircut on top.
-  const miniAccaCombinedProb =
-    miniAccaLegs.reduce((acc, l) => acc * l.mp, 1) * (opts.v3 ? V3_MINI_ACCA_HAIRCUT : 1);
-  const miniAccaCombinedOdds = miniAccaLegs.reduce((acc, l) => acc * l.odds, 1);
+  const miniAccaStats = computeMiniAccaStats(miniAccaLegs);
 
   return {
     legs,
@@ -649,7 +700,6 @@ export function selectGoalsAccumulator(
     outputBLegs,
     outputCLegs,
     miniAccaLegs,
-    miniAccaCombinedProb,
-    miniAccaCombinedOdds,
+    ...miniAccaStats,
   };
 }

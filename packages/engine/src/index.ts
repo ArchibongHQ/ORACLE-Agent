@@ -9,7 +9,13 @@ export type {
   V3AssessmentStat,
   V3CrossCheckOutcome,
 } from "./batch/index.js";
-export { parseFixtureList, runBatch } from "./batch/index.js";
+export {
+  isRetriableNetworkError,
+  makeFixtureId,
+  parseFixtureList,
+  runBatch,
+  withRetry,
+} from "./batch/index.js";
 export { runPool } from "./batch/pool.js";
 export type {
   BetRecord,
@@ -39,7 +45,13 @@ export {
 export type { MarketExecutorResult, MarketExecutorRiskParams } from "./decision/marketExecutor.js";
 export { runAllMarketsLlmExecutor } from "./decision/marketExecutor.js";
 export type { ExecutionResult, LeagueParam } from "./execution/index.js";
-export { applyRankingMode, ExecutionEngine, getLeagueParams } from "./execution/index.js";
+export {
+  applyConvergenceTierToStake,
+  applyRankingMode,
+  ExecutionEngine,
+  getLeagueParams,
+  isPopularTeam,
+} from "./execution/index.js";
 export type { GbmLiveInputs, GbmModel } from "./gbm/index.js";
 export {
   blendGbmIntoFp,
@@ -78,13 +90,23 @@ export {
   v3Tier,
 } from "./goalsV3/edgeGate.js";
 export type { V3LambdaInput, V3Lambdas, V3TeamXg } from "./goalsV3/lambda.js";
-export { computeV3Lambdas, V3_LEAGUE_BASELINES, v3LeaguePerTeamAvg } from "./goalsV3/lambda.js";
+export {
+  computeV3Lambdas,
+  resolveRho,
+  shrink,
+  V3_LEAGUE_BASELINES,
+  V3_LEAGUE_BASELINES_BY_ID,
+  v3LeaguePerTeamAvg,
+  xgBlendWeight,
+} from "./goalsV3/lambda.js";
 export type { Devigged1x2, MatchShape } from "./goalsV3/matchShape.js";
 export { deriveMatchShape, SHAPE_LAMBDA_FLOOR } from "./goalsV3/matchShape.js";
 export type { MarketCatalogEntry, MarketFamily } from "./markets/index.js";
 export {
   devigThreeWay,
   devigTwoWay,
+  extendCatalog,
+  FAMILY_LABEL,
   familyOf,
   isPriceable,
   lookupMarket,
@@ -108,10 +130,21 @@ export {
   classifyMarket,
   STRUCTURAL_X_FAMILIES,
 } from "./marketsV3/classes.js";
+export { dcCovers, dirOfDesc, lineOfDesc, sideOfDesc } from "./marketsV3/descParse.js";
 export type { V3CardsInput, V3CardsMeans } from "./marketsV3/engines/cards.js";
-export { cardsMeans, priceCardsOutcome } from "./marketsV3/engines/cards.js";
+export {
+  buildCardsGrid,
+  CARDS_GRID_CAP,
+  cardsMeans,
+  priceCardsLikeHandicap,
+  priceCardsLikeRange,
+  priceCardsOutcome,
+  priceCardsVariant,
+} from "./marketsV3/engines/cards.js";
 export type { V3CornersInput, V3CornersMeans } from "./marketsV3/engines/corners.js";
 export {
+  buildCornersGrid,
+  CORNERS_GRID_CAP,
   CORNERS_R_DEFAULT,
   CORNERS_R_MAX,
   CORNERS_R_MIN,
@@ -121,11 +154,16 @@ export {
   nbPMF,
   nbTailOver,
   nbTailUnder,
+  priceCornersLikeHandicap,
+  priceCornersLikeRange,
   priceCornersOutcome,
+  priceCornersVariant,
 } from "./marketsV3/engines/corners.js";
 export { priceExoticsOutcome } from "./marketsV3/engines/exotics.js";
 export { V3_FIRST_HALF_SHARE_DEFAULT } from "./marketsV3/engines/half.js";
 export { priceShapeOutcome } from "./marketsV3/engines/shape.js";
+export type { V3ShotsInput, V3ShotsMeans } from "./marketsV3/engines/shots.js";
+export { priceShotsOutcome, shotsMeans } from "./marketsV3/engines/shots.js";
 export { minuteShare, priceTimeWindow, V3_MINUTE_SHARE_TABLE } from "./marketsV3/engines/time.js";
 export type { ParsedOU } from "./marketsV3/engines/totals.js";
 export { parseOUDesc, priceOU, priceTotalsOutcome } from "./marketsV3/engines/totals.js";
@@ -160,7 +198,13 @@ export type {
   V3Routing,
   V3Skip,
 } from "./marketsV3/feedDictionary.js";
-export { isSkip, parseSpecifier, routeCoverage, routeMarket } from "./marketsV3/feedDictionary.js";
+export {
+  computeTailMarkets,
+  isSkip,
+  parseSpecifier,
+  routeCoverage,
+  routeMarket,
+} from "./marketsV3/feedDictionary.js";
 export type { ResultProbs } from "./marketsV3/grid.js";
 export {
   buildV3Grid,
@@ -224,6 +268,12 @@ export {
   goalsSlateSanityChecks,
   slateSanityChecks,
 } from "./marketsV3/sanity.js";
+export type { SkewShrinkCandidate, SkewShrinkResult } from "./marketsV3/skewShrink.js";
+export {
+  formatSkewShrinkShadow,
+  SKEW_SHRINK_FRACTION_DEFAULT,
+  shadowSkewShrink,
+} from "./marketsV3/skewShrink.js";
 export type { DualSplit } from "./marketsV3/split.js";
 export { deriveDualSplit, SHAPE_DISAGREEMENT_DELTA } from "./marketsV3/split.js";
 export * from "./math/index.js";
@@ -251,6 +301,8 @@ export type {
   AllMarketEntry,
   AllMarketOutcome,
   AnalysisRecord,
+  ClosingOddsSnapshot,
+  ClosingOddsSnapshotOdds,
   ClvSourceQuality,
   DecisionContext,
   DecisionInput,
@@ -277,6 +329,7 @@ export type {
 } from "./types.js";
 export {
   ANALYSIS_SCHEMA_VERSION,
+  CLOSING_ODDS_SCHEMA_VERSION,
   RESOLUTION_SCHEMA_VERSION,
   RUN_MANIFEST_SCHEMA_VERSION,
 } from "./types.js";

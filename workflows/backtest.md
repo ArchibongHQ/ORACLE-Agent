@@ -30,7 +30,7 @@ The harness enforces strict temporal ordering:
 3. **Compute baseline** RPS on the test window using current model parameters
 4. **Apply candidate change** (passed as a JSON config delta: `--config-delta '{"useBivariatePoisson":true}'`)
 5. **Compute candidate** RPS on the same test window
-6. **Run significance accept-gate** (`significanceAcceptGate(baseline, candidate, { minN: 30, effectSizeFloor: 0.002 })`)
+6. **Run significance accept-gate** (`significanceAcceptGate(baseline, candidate, { minN: 300, effectSizeFloor: 0.002 })`)
 7. **Report**: delta, 95% CI, accept/reject verdict, n, effect size
 
 ## Output report (stdout + `.tmp/backtest/YYYYMMDD_<label>.json`)
@@ -39,7 +39,7 @@ The harness enforces strict temporal ordering:
   "label": "bivariate_poisson_lambda3_0.10",
   "trainEnd": "2026-04-01",
   "testEnd": "2026-06-01",
-  "n": 142,
+  "n": 312,
   "baselineRPS": 0.2187,
   "candidateRPS": 0.2164,
   "delta": -0.0023,
@@ -47,14 +47,14 @@ The harness enforces strict temporal ordering:
   "ciUpper": -0.0005,
   "effectSize": 0.0023,
   "accept": true,
-  "reason": "ACCEPTED: Δ=-0.00230, 95% CI=[-0.00410, -0.00050], n=142"
+  "reason": "ACCEPTED: Δ=-0.00230, 95% CI=[-0.00410, -0.00050], n=312"
 }
 ```
 
 ## Significance gate parameters (§8.3)
 | Parameter | Default | Notes |
 |---|---|---|
-| `minN` | 30 | Hard floor; never lower for a core-param change |
+| `minN` | 300 | [PR-16] Raised from 30 — n=30 is too thin to reliably resolve a delta this small via bootstrap CI without mistaking noise for signal. Hard floor; never lower for a core-param change |
 | `effectSizeFloor` | 0.002 | ~1% of the RPS frontier (≈0.21); smaller gains don't justify complexity |
 | `alpha` | 0.95 | 95% two-sided CI |
 | `nBootstrap` | 1000 | More = slower but tighter CI; 500 sufficient for screening |

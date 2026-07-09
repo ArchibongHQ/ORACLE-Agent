@@ -4,10 +4,12 @@
 
 export type { AnalyzeOptions, AnalyzeResult, ResolveDayResult } from "./analyze.js";
 export { CLV_ELIGIBLE_LEAGUES, resolveDay, runAnalysis } from "./analyze.js";
+export type { SettlementFamilyBreakdown } from "./calibrationFeed.js";
 export {
   appendResolvedToLedger,
   DEFAULT_LEDGER_MAX,
   formatCalibrationMetrics,
+  formatSettlementBreakdown,
   loadLedgerState,
   settlePick,
 } from "./calibrationFeed.js";
@@ -35,14 +37,17 @@ export {
   gameToFixtureJob,
   resolvePythonBin,
   SPORT_TO_LEAGUE,
+  toEngineWeather,
 } from "./fixtures.js";
 export type {
   FixtureReportFiles,
   FixtureWorkbookDeps,
   MarketRowGroup,
+  XgCoverage,
 } from "./fixtureWorkbook.js";
 export {
   buildMarketRowGroups,
+  computeXgCoverage,
   generateAndWriteFixtureWorkbook,
   listFixtureReportFiles,
   renderFixturesWorkbook,
@@ -79,6 +84,7 @@ export {
   scoreCompleteness,
   V3_COMPLETENESS_WEIGHTS,
 } from "./goalsV3/completeness.js";
+export { applyCrossBatchVeto, crossBatchVetoKeys } from "./goalsV3/crossBatchVeto.js";
 export type { V3Eligibility, V3EligibilityStatus } from "./goalsV3/eligibility.js";
 export { classifyEligibility, GOALS_V3_WHITELIST } from "./goalsV3/eligibility.js";
 export { byPredictabilityV3, scorePredictabilityV3 } from "./goalsV3/predictability.js";
@@ -125,10 +131,12 @@ export {
 } from "./marketsV3/pipeline.js";
 export type { SlateGateOutcome, SlateGateSummary } from "./marketsV3/slateGate.js";
 export { formatSlateGateLog, prefilterMarketsV3Jobs } from "./marketsV3/slateGate.js";
-export type { MarketsV3SlateOutputs } from "./marketsV3/slateOutputs.js";
+export type { MarketsV3SlateOutputs, SlateMarketCoverage } from "./marketsV3/slateOutputs.js";
 export {
   buildMarketsV3SlateOutputs,
   curateActionableByV3Outputs,
+  formatMarketCoverageNote,
+  rollupCoverage,
 } from "./marketsV3/slateOutputs.js";
 export { enrichWithNewsIntel } from "./newsIntel.js";
 export type { CounterLeg, LegVerdict, PuntLeg } from "./punt.js";
@@ -162,6 +170,7 @@ export type {
 export {
   DEFAULT_MAX_FIXTURES_PER_RUN,
   findSidecarDetail,
+  findSportyBetEventId,
   loadSportyBetIndex,
   ORACLE_PRIORITY_LEAGUES,
   scoreFixture,
@@ -172,6 +181,7 @@ export type { GoalsLeg, GoalsSelectionResult, GoalsSelectOptions } from "./selec
 export {
   avgConceded,
   avgScored,
+  computeMiniAccaStats,
   DEFAULT_GOALS_MIN_CONFIDENCE,
   DEFAULT_GOALS_MIN_IMPLIED,
   DEFAULT_GOALS_TARGET_LEGS,
@@ -180,5 +190,5 @@ export {
   INTL_TOURNAMENT_RE,
   pickSafestGoalsLeg,
   selectGoalsAccumulator,
-  V3_MINI_ACCA_HAIRCUT,
 } from "./selectGoals.js";
+export { blendRecencyScored, MIN_PLAYED_FOR_OVERRIDE } from "./sportyBetStats.js";

@@ -3,11 +3,20 @@
  *  builders (pool/A/B/C/D/sanity), and curateActionableByV3Outputs's §7-ranked
  *  ordering + unmatched-picks fallback. */
 
-import type { FixtureJobSuccess, V3OutputCandidate, V3OutputRow } from "@oracle/engine";
+import type {
+  BatchJobResult,
+  FixtureJobSuccess,
+  RouteCoverage,
+  V3OutputCandidate,
+  V3OutputRow,
+} from "@oracle/engine";
 import { describe, expect, it } from "vitest";
 import {
+  buildManifestMarketCoverage,
   buildMarketsV3SlateOutputs,
   curateActionableByV3Outputs,
+  formatMarketCoverageNote,
+  rollupCoverage,
 } from "../src/marketsV3/slateOutputs.js";
 
 function candidate(overrides: Partial<V3OutputCandidate> = {}): V3OutputCandidate {
@@ -94,6 +103,77 @@ describe("buildMarketsV3SlateOutputs", () => {
     expect(out.sanityLine.length).toBeGreaterThan(0);
   });
 
+  it("wires shadowSkewShrink end-to-end: a real skewed slate produces a non-null skewShrinkLine, an unskewed one leaves it null", () => {
+    const homeDnb = (adjustedEdge: number) => [
+      { family: "dnb", desc: "Home DNB", outcome: "done", rawEdge: 0.1, adjustedEdge, cls: "M" },
+    ];
+    // 4/5 "done" dnb picks lean Home (80% >= the 70% SKEW_THRESHOLD) -> result_skew_home
+    // fires. Each Home pick's adjustedEdge (0.08) shrinks to 0.08 - 0.1*0.35 = 0.045,
+    // below class M's 0.05 minAdjEdge -> shadowSkewShrink flags it as a demotion.
+    const skewedJobs: FixtureJobSuccess[] = [
+      job(1, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(2, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(3, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(4, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(5, {
+        best: candidate(),
+        v3AssessmentStats: [
+          {
+            family: "dnb",
+            desc: "Away DNB",
+            outcome: "done",
+            rawEdge: 0.06,
+            adjustedEdge: 0.05,
+            cls: "M",
+          },
+        ],
+      }),
+    ];
+
+    const skewed = buildMarketsV3SlateOutputs(skewedJobs);
+    expect(skewed.sanity.flags).toContain("result_skew_home");
+    expect(skewed.skewShrinkLine).not.toBeNull();
+    expect(skewed.skewShrinkLine).toContain("Home DNB");
+    expect(skewed.skewShrinkLine).toContain("shadow");
+
+    // A balanced slate (2 home / 2 away) never trips the skew flag, so the
+    // shadow pass has nothing to evaluate and skewShrinkLine stays null —
+    // confirms this is genuinely conditional, not always-on noise.
+    const balancedJobs: FixtureJobSuccess[] = [
+      job(1, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(2, { best: candidate(), v3AssessmentStats: homeDnb(0.08) }),
+      job(3, {
+        best: candidate(),
+        v3AssessmentStats: [
+          {
+            family: "dnb",
+            desc: "Away DNB",
+            outcome: "done",
+            rawEdge: 0.06,
+            adjustedEdge: 0.05,
+            cls: "M",
+          },
+        ],
+      }),
+      job(4, {
+        best: candidate(),
+        v3AssessmentStats: [
+          {
+            family: "dnb",
+            desc: "Away DNB",
+            outcome: "done",
+            rawEdge: 0.06,
+            adjustedEdge: 0.05,
+            cls: "M",
+          },
+        ],
+      }),
+    ];
+    const balanced = buildMarketsV3SlateOutputs(balancedJobs);
+    expect(balanced.sanity.flags).not.toContain("result_skew_home");
+    expect(balanced.skewShrinkLine).toBeNull();
+  });
+
   it("returns an empty pool/outputs (no error) for a slate where every job has no v3Best", () => {
     const jobs: FixtureJobSuccess[] = [job(1, { best: null }), job(2, { best: null })];
 
@@ -171,5 +251,206 @@ describe("curateActionableByV3Outputs", () => {
 
     expect(result).toHaveLength(2);
     expect(result.map((p) => p.home)).toEqual(["A", "B"]);
+  });
+});
+
+function coverage(overrides: Partial<RouteCoverage> = {}): RouteCoverage {
+  return {
+    total: 10,
+    routed: 6,
+    byEngine: {
+      totals: 6,
+      result: 0,
+      shape: 0,
+      half: 0,
+      time: 0,
+      exotics: 0,
+      corners: 0,
+      cards: 0,
+    },
+    skipped: {
+      "player-market": 1,
+      "plain-1x2": 1,
+      "non-goal-metric": 1,
+      "corners-dormant": 0,
+      "cards-dormant": 0,
+      "settlement-variant": 0,
+      "no-grid-model": 1,
+      uncatalogued: 0,
+      "bad-specifier": 0,
+    },
+    ...overrides,
+  };
+}
+
+function assessmentStat(outcome: string) {
+  return { family: "goals_ou", desc: "Over 2.5", outcome, rawEdge: 0.05 };
+}
+
+describe("rollupCoverage (PR-20)", () => {
+  it("returns null when no fixture in the batch carries v3Coverage", () => {
+    const jobs = [job(1, {}), job(2, {})];
+    expect(rollupCoverage(jobs)).toBeNull();
+  });
+
+  it("sums total/routed/byEngine/skipped across every fixture that carries v3Coverage, skipping those that don't", () => {
+    const jobs = [
+      job(1, { v3Coverage: coverage({ total: 10, routed: 6 }) }),
+      job(2, {}), // v3 didn't run for this one — must not blow up the sum
+      job(3, {
+        v3Coverage: coverage({
+          total: 5,
+          routed: 2,
+          byEngine: {
+            totals: 1,
+            result: 1,
+            shape: 0,
+            half: 0,
+            time: 0,
+            exotics: 0,
+            corners: 0,
+            cards: 0,
+          },
+        }),
+      }),
+    ];
+
+    const result = rollupCoverage(jobs);
+
+    expect(result?.total).toBe(15);
+    expect(result?.routed).toBe(8);
+    expect(result?.byEngine.totals).toBe(7);
+    expect(result?.byEngine.result).toBe(1);
+    expect(result?.skipped["player-market"]).toBe(2); // 1 + 1 from the two coverage()s
+  });
+
+  it("merges unrouted market names across fixtures and caps to the top 5 by count descending", () => {
+    const jobs = [
+      job(1, {
+        v3Coverage: coverage({ unrouted: { "Market A": 3, "Market B": 1 } }),
+      }),
+      job(2, {
+        v3Coverage: coverage({
+          unrouted: { "Market A": 2, "Market C": 5, "Market D": 1, "Market E": 1, "Market F": 1 },
+        }),
+      }),
+    ];
+
+    const result = rollupCoverage(jobs);
+
+    // Market A: 3+2=5, Market C: 5 — tied for first; both must survive the top-5 cap
+    // ahead of the four count=1 markets (B, D, E, F — only 3 of those 4 fit).
+    expect(result?.topUnrouted).toHaveLength(5);
+    expect(result?.topUnrouted[0]?.count).toBe(5);
+    expect(result?.topUnrouted[1]?.count).toBe(5);
+    expect(result?.topUnrouted.map((u) => u.name)).toContain("Market A");
+    expect(result?.topUnrouted.map((u) => u.name)).toContain("Market C");
+  });
+
+  it("derives priced/gatePassed from v3AssessmentStats (priced = every entry, gatePassed = outcome:'done' only)", () => {
+    const jobs = [
+      job(1, {
+        v3Coverage: coverage(),
+        v3AssessmentStats: [assessmentStat("done"), assessmentStat("capped")],
+      }),
+      job(2, {
+        v3Coverage: coverage(),
+        v3AssessmentStats: [assessmentStat("done"), assessmentStat("done")],
+      }),
+    ];
+
+    const result = rollupCoverage(jobs);
+
+    expect(result?.priced).toBe(4);
+    expect(result?.gatePassed).toBe(3);
+  });
+});
+
+describe("formatMarketCoverageNote (PR-20)", () => {
+  it("renders the total/routed/priced/gate-passed line with a top-unrouted tail when present", () => {
+    const note = formatMarketCoverageNote({
+      total: 2741,
+      routed: 1902,
+      priced: 1640,
+      gatePassed: 37,
+      byEngine: {} as RouteCoverage["byEngine"],
+      skipped: {} as RouteCoverage["skipped"],
+      topUnrouted: [
+        { name: "Some Special", count: 12 },
+        { name: "Another One", count: 4 },
+      ],
+    });
+
+    expect(note).toBe(
+      "markets: 2741 entries total / 1902 routed / 1640 outcomes priced / 37 gate-passed; " +
+        "top unrouted: Some Special (12), Another One (4)"
+    );
+  });
+
+  it("omits the top-unrouted tail entirely when there's nothing recoverable to report", () => {
+    const note = formatMarketCoverageNote({
+      total: 100,
+      routed: 100,
+      priced: 90,
+      gatePassed: 5,
+      byEngine: {} as RouteCoverage["byEngine"],
+      skipped: {} as RouteCoverage["skipped"],
+      topUnrouted: [],
+    });
+
+    expect(note).toBe(
+      "markets: 100 entries total / 100 routed / 90 outcomes priced / 5 gate-passed"
+    );
+  });
+});
+
+function errorJob(i: number): BatchJobResult {
+  return {
+    status: "error",
+    fixtureId: `err${i}`,
+    home: `ErrHome${i}`,
+    away: `ErrAway${i}`,
+    league: "League0",
+    kickoff: new Date(2026, 0, 1, i).toISOString(),
+    reason: "boom",
+    errorCode: "INTERNAL",
+    llmEligible: true,
+  };
+}
+
+describe("buildManifestMarketCoverage (PR-20)", () => {
+  it("returns the narrowed RunManifest.marketCoverage shape (no byEngine/skipped) when jobs carry v3Coverage", () => {
+    const jobs: BatchJobResult[] = [
+      job(1, {
+        v3Coverage: coverage({ total: 10, routed: 6 }),
+        v3AssessmentStats: [assessmentStat("done")],
+      }),
+      errorJob(2), // must be filtered out, not thrown on
+    ];
+
+    const result = buildManifestMarketCoverage(jobs, undefined);
+
+    expect(result).toEqual({
+      total: 10,
+      routed: 6,
+      priced: 1,
+      gatePassed: 1,
+      topUnrouted: [],
+    });
+    expect(result).not.toHaveProperty("byEngine");
+    expect(result).not.toHaveProperty("skipped");
+  });
+
+  it("returns undefined (key omitted, not zeroed) when marketsCoverageNote is false", () => {
+    const jobs: BatchJobResult[] = [job(1, { v3Coverage: coverage() })];
+
+    expect(buildManifestMarketCoverage(jobs, false)).toBeUndefined();
+  });
+
+  it("returns undefined when marketsCoverageNote is true/undefined but no job carries v3Coverage", () => {
+    const jobs: BatchJobResult[] = [job(1, {}), errorJob(2)];
+
+    expect(buildManifestMarketCoverage(jobs, true)).toBeUndefined();
+    expect(buildManifestMarketCoverage(jobs, undefined)).toBeUndefined();
   });
 });

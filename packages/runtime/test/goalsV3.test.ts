@@ -419,7 +419,7 @@ describe("selectGoalsAccumulator v3 mode — Output B/C and mini-ACCA", () => {
     expect(selection.legs.length).toBe(0);
   });
 
-  it("mini-ACCA applies the 0.85 haircut on top of the naive product", () => {
+  it("mini-ACCA fix regression: no more mislabeled 0.85 'correlation' haircut — cross-league legs (rho=0) resolve to the naive product via the same copula helper the long/short slips use", () => {
     const jobs = [
       v3Job("A", "B", "Premier League", "Over 1.5", 1.5, 0.8, 0.08),
       v3Job("C", "D", "La Liga", "Over 1.5", 1.6, 0.75, 0.07, "high", "2026-08-01T20:00:00Z"),
@@ -427,7 +427,19 @@ describe("selectGoalsAccumulator v3 mode — Output B/C and mini-ACCA", () => {
     const selection = selectGoalsAccumulator(jobs, { v3: true, target: 39 });
     expect(selection.miniAccaLegs.length).toBe(2);
     const naive = selection.miniAccaLegs.reduce((acc, l) => acc * l.mp, 1);
-    expect(selection.miniAccaCombinedProb).toBeCloseTo(naive * 0.85, 10);
+    // Different leagues -> pairwiseCrossFixtureCorrelation = 0 -> copulaJointProbability
+    // skips the pair entirely and returns the plain independent product, no haircut.
+    expect(selection.miniAccaCombinedProb).toBeCloseTo(naive, 10);
+  });
+
+  it("mini-ACCA fix regression: reports true EV at the combined offered price, surfacing parlay margin compounding", () => {
+    const jobs = [
+      v3Job("A", "B", "Premier League", "Over 1.5", 1.5, 0.8, 0.08),
+      v3Job("C", "D", "La Liga", "Over 1.5", 1.6, 0.75, 0.07, "high", "2026-08-01T20:00:00Z"),
+    ];
+    const selection = selectGoalsAccumulator(jobs, { v3: true, target: 39 });
+    const expectedEv = selection.miniAccaCombinedProb * selection.miniAccaCombinedOdds - 1;
+    expect(selection.miniAccaTrueEv).toBeCloseTo(expectedEv, 10);
   });
 
   it("mini-ACCA rejects same-league legs even across different kickoffs", () => {

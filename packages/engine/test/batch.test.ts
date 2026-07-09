@@ -5,7 +5,12 @@
 import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
 import { describe, expect, it, vi } from "vitest";
 import type { FixtureJobError, FixtureJobSuccess } from "../src/batch/index.js";
-import { parseFixtureList, runBatch } from "../src/batch/index.js";
+import {
+  isRetriableNetworkError,
+  parseFixtureList,
+  runBatch,
+  withRetry,
+} from "../src/batch/index.js";
 import { ExecutionEngine } from "../src/execution/index.js";
 import type { RunResult } from "../src/types.js";
 
@@ -319,6 +324,74 @@ describe("runBatch", () => {
     const result = await runBatch(jobs, deps);
     expect(result.totalRecommendedStakePct).toBeGreaterThanOrEqual(0);
     spy.mockRestore();
+  });
+});
+
+// [PR-10] withRetry/isRetriableNetworkError are now exported so callers outside
+// this file (Telegram's post(), the worker's scrape execFile wrapper) can reuse
+// the same primitive with their own retry predicate instead of a bespoke wrapper.
+describe("withRetry (generalized, PR-10)", () => {
+  it("defaults to the original RATE_LIMITED-only predicate when no shouldRetry is passed", async () => {
+    let calls = 0;
+    await expect(
+      withRetry(
+        async () => {
+          calls++;
+          throw new Error("boom — totally unrelated failure");
+        },
+        3,
+        INSTANT_BACKOFF
+      )
+    ).rejects.toThrow("boom");
+    expect(calls).toBe(1); // non-RATE_LIMITED error — no retry with the default predicate
+  });
+
+  it("retries on a custom predicate and succeeds once it stops matching", async () => {
+    let calls = 0;
+    const result = await withRetry(
+      async () => {
+        calls++;
+        if (calls < 3) throw new Error("ENOTFOUND api.telegram.org");
+        return "ok";
+      },
+      3,
+      INSTANT_BACKOFF,
+      isRetriableNetworkError
+    );
+    expect(result).toBe("ok");
+    expect(calls).toBe(3);
+  });
+
+  it("stops retrying and throws once a custom predicate returns false", async () => {
+    let calls = 0;
+    await expect(
+      withRetry(
+        async () => {
+          calls++;
+          throw new Error("HTTP 400 bad request");
+        },
+        3,
+        INSTANT_BACKOFF,
+        isRetriableNetworkError
+      )
+    ).rejects.toThrow("HTTP 400");
+    expect(calls).toBe(1);
+  });
+});
+
+describe("isRetriableNetworkError", () => {
+  it.each([
+    "ENOTFOUND api.telegram.org",
+    "fetch failed",
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "EAI_AGAIN",
+  ])("matches %s", (msg) => {
+    expect(isRetriableNetworkError(new Error(msg))).toBe(true);
+  });
+
+  it("does not match an unrelated error", () => {
+    expect(isRetriableNetworkError(new Error("HTTP 400 bad request"))).toBe(false);
   });
 });
 

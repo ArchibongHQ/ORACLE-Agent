@@ -249,6 +249,261 @@ describe("resolveRecords CLV integration", () => {
   });
 });
 
+// ── PR-8b: TICK_LEVEL CLV + real steam signal from a captured snapshot ───────
+
+function baseAnalysisRecord(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    fixtureId: "snap-test",
+    home: "Arsenal",
+    away: "Chelsea",
+    league: "Premier League",
+    kickoff: "2026-06-01T15:00:00Z",
+    lambdaH: 1.5,
+    lambdaA: 1.2,
+    probabilities: { home: 0.5, draw: 0.28, away: 0.22 },
+    regime: "STANDARD",
+    rankingMode: "CONFIDENCE_WEIGHTED" as const,
+    evMarkets: [],
+    llmPick: null,
+    deterministicTopPick: {
+      cat: "1X2",
+      label: "Home",
+      market: "1X2",
+      mp: 0.5,
+      modelProb: 0.5,
+      ip: 0.526,
+      rawEdge: -0.026,
+      ev: -0.026,
+      odds: 1.9,
+      stake: 0.01,
+      stakeAmt: 10,
+      rankingScore: 0.5,
+      varianceMod: 1,
+    },
+    frozenOddsAtAnalysis: { home: 1.9, draw: 3.4, away: 4.5 },
+    liquidityTag: "CLV_ELIGIBLE" as const,
+    analysedAt: "2026-06-01T09:00:00Z",
+    ...overrides,
+  };
+}
+
+function fdFinishedResponse(homeGoals = 2, awayGoals = 1) {
+  return {
+    matches: [
+      {
+        id: 1,
+        utcDate: "2026-06-01T15:00:00Z",
+        status: "FINISHED",
+        homeTeam: { name: "Arsenal FC" },
+        awayTeam: { name: "Chelsea FC" },
+        score: { fullTime: { home: homeGoals, away: awayGoals } },
+      },
+    ],
+  };
+}
+
+describe("resolveRecords TICK_LEVEL CLV + steam signal (PR-8b)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("uses the snapshot for CLV (TICK_LEVEL) and never calls the Odds API", async () => {
+    const fetchSpy = vi.fn(async (input: unknown) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("the-odds-api"))
+        throw new Error("must not call Odds API when a snapshot exists");
+      return new Response(JSON.stringify(fdFinishedResponse()), { status: 200 });
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(fetchSpy);
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseAnalysisRecord();
+    const snapshots = new Map([
+      [
+        "snap-test",
+        {
+          fixtureId: "snap-test",
+          eventId: "sr:match:1",
+          kickoff: "2026-06-01T15:00:00Z",
+          snapshotAt: "2026-06-01T14:30:00Z",
+          odds: { "1x2": { home: 1.7, draw: 3.5, away: 5.0 } },
+        },
+      ],
+    ]);
+
+    const { resolved } = await resolveRecords([record], "fd-key", "odds-key", undefined, snapshots);
+    expect(resolved).toHaveLength(1);
+    const res = resolved[0]!;
+    expect(res.clvSourceQuality).toBe("TICK_LEVEL");
+    // closing home IP = 1/1.7 ≈ 0.588; analysis home IP = 1/1.9 ≈ 0.526 → CLV > 0
+    expect(res.realisedCLV).not.toBeNull();
+    expect(res.realisedCLV!).toBeGreaterThan(0);
+  });
+
+  it("populates a real steam signal (nonzero velocity) from the snapshot vs frozenOddsAtAnalysis", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify(fdFinishedResponse()), { status: 200 })
+    );
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseAnalysisRecord();
+    const snapshots = new Map([
+      [
+        "snap-test",
+        {
+          fixtureId: "snap-test",
+          eventId: "sr:match:1",
+          kickoff: "2026-06-01T15:00:00Z",
+          snapshotAt: "2026-06-01T14:30:00Z",
+          odds: { "1x2": { home: 1.7, draw: 3.5, away: 5.0 } },
+        },
+      ],
+    ]);
+
+    const { resolved } = await resolveRecords([record], "fd-key", undefined, undefined, snapshots);
+    const res = resolved[0]!;
+    expect(res.realisedSteamVelocity).not.toBeNull();
+    expect(res.realisedSteamVelocity!).toBeCloseTo(1 / 1.7 - 1 / 1.9, 5);
+    expect(typeof res.sharpCompressionDetected).toBe("boolean");
+  });
+
+  it("falls back to KICKOFF_PROXY when no snapshot is provided (byte-for-byte existing behavior)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = url.includes("the-odds-api")
+        ? [
+            {
+              home_team: "Arsenal",
+              away_team: "Chelsea",
+              bookmakers: [
+                {
+                  key: "pinnacle",
+                  markets: [
+                    {
+                      key: "h2h",
+                      outcomes: [
+                        { name: "Arsenal", price: 1.85 },
+                        { name: "Chelsea", price: 4.2 },
+                        { name: "Draw", price: 3.5 },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ]
+        : fdFinishedResponse();
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseAnalysisRecord();
+    const { resolved } = await resolveRecords([record], "fd-key", "odds-key");
+    const res = resolved[0]!;
+    expect(res.clvSourceQuality).toBe("KICKOFF_PROXY");
+    expect(res.realisedCLV).not.toBeNull();
+    expect(res.realisedSteamVelocity).toBeNull();
+    expect(res.sharpCompressionDetected).toBeNull();
+  });
+
+  it("CALIBRATION_ONLY league still gets a steam signal but never CLV, even with a snapshot", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            matches: [
+              {
+                id: 3,
+                utcDate: "2026-06-01T15:00:00Z",
+                status: "FINISHED",
+                homeTeam: { name: "Burnley" },
+                awayTeam: { name: "QPR" },
+                score: { fullTime: { home: 2, away: 0 } },
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+    );
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseAnalysisRecord({
+      fixtureId: "snap-calib-only",
+      home: "Burnley",
+      away: "QPR",
+      league: "Championship",
+      liquidityTag: "CALIBRATION_ONLY" as const,
+      frozenOddsAtAnalysis: { home: 1.7, draw: 3.5, away: 5.0 },
+    });
+    const snapshots = new Map([
+      [
+        "snap-calib-only",
+        {
+          fixtureId: "snap-calib-only",
+          eventId: "sr:match:2",
+          kickoff: "2026-06-01T15:00:00Z",
+          snapshotAt: "2026-06-01T14:30:00Z",
+          odds: { "1x2": { home: 1.6, draw: 3.6, away: 5.5 } },
+        },
+      ],
+    ]);
+
+    const { resolved } = await resolveRecords([record], "fd-key", "odds-key", undefined, snapshots);
+    const res = resolved[0]!;
+    expect(res.realisedCLV).toBeNull();
+    expect(res.realisedSteamVelocity).not.toBeNull();
+  });
+
+  it("falls back to KICKOFF_PROXY when the snapshot's snapshotAt is implausibly far from kickoff (postponement guard)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = url.includes("the-odds-api")
+        ? [
+            {
+              home_team: "Arsenal",
+              away_team: "Chelsea",
+              bookmakers: [
+                {
+                  key: "pinnacle",
+                  markets: [
+                    {
+                      key: "h2h",
+                      outcomes: [
+                        { name: "Arsenal", price: 1.85 },
+                        { name: "Chelsea", price: 4.2 },
+                        { name: "Draw", price: 3.5 },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ]
+        : fdFinishedResponse();
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseAnalysisRecord();
+    // snapshotAt is 5 hours before kickoff — well outside the 45-min plausibility band.
+    const snapshots = new Map([
+      [
+        "snap-test",
+        {
+          fixtureId: "snap-test",
+          eventId: "sr:match:1",
+          kickoff: "2026-06-01T15:00:00Z",
+          snapshotAt: "2026-06-01T10:00:00Z",
+          odds: { "1x2": { home: 1.7, draw: 3.5, away: 5.0 } },
+        },
+      ],
+    ]);
+
+    const { resolved } = await resolveRecords([record], "fd-key", "odds-key", undefined, snapshots);
+    const res = resolved[0]!;
+    expect(res.clvSourceQuality).toBe("KICKOFF_PROXY");
+    expect(res.realisedSteamVelocity).toBeNull();
+  });
+});
+
 // ── API-Football primary source + football-data.org fallback ────────────────
 
 function baseRecord(overrides: Partial<Record<string, unknown>> = {}) {

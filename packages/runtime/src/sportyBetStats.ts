@@ -25,8 +25,10 @@ import type {
 /** Season matches required before a goals/xG average is trusted enough to
  *  override the engine's xH/xA outright — below this, season averages are
  *  1-3 match noise that would corrupt the Poisson model worse than the
- *  existing league-average/LLM-estimate fallback. */
-const MIN_PLAYED_FOR_OVERRIDE = 4;
+ *  existing league-average/LLM-estimate fallback. Exported so
+ *  apps/worker/src/goalsV3Pipeline.ts's buildGoalsV3Input can gate its own
+ *  scoringConceding venue-split preference on the identical threshold. */
+export const MIN_PLAYED_FOR_OVERRIDE = 4;
 
 /** Sample threshold for full lambda trust. Between MIN_PLAYED_FOR_OVERRIDE and
  *  this, the raw lambda is shrunk toward the league prior using a linear
@@ -122,6 +124,30 @@ function formToRecentMatches(
   return matches.length >= 3 ? matches : null;
 }
 
+/** Recency-blend a season-average scored rate: prefer the real recentGoals
+ *  last-5 signal (60/40 recent/season blend), fall back to a form-string-
+ *  synthesized RecentMatch[] run through applyTemporalDecay, or return the
+ *  season average unchanged when neither recency signal exists. Used by the
+ *  v3 scoredPer90H/A raw λ inputs below and by buildGoalsV3Input (apps/worker),
+ *  which previously ran §3.1 goalsV3/marketsV3 lambdas on undecayed season
+ *  averages. NOT wired into the legacy xH/xA override below — that block
+ *  synthesizes its RecentMatch[] from the raw season goals average
+ *  specifically (not whatever xG-blended value xH/xA may already hold), a
+ *  subtly different base than this helper's single `seasonAvg` param assumes;
+ *  left as its own inline implementation rather than force-fit to avoid a
+ *  silent behavior change. */
+export function blendRecencyScored(
+  seasonAvg: number | null | undefined,
+  recentAvg: number | null | undefined,
+  formLast5: string | null | undefined
+): number | null {
+  if (!finite(seasonAvg)) return seasonAvg ?? null;
+  const RECENT_W = 0.6;
+  if (finite(recentAvg)) return recentAvg * RECENT_W + seasonAvg * (1 - RECENT_W);
+  const form = formToRecentMatches(formLast5, seasonAvg);
+  return form ? applyTemporalDecay(form, seasonAvg) : seasonAvg;
+}
+
 export interface StatsOverride {
   xH?: number;
   xA?: number;
@@ -165,6 +191,9 @@ export interface StatsOverride {
   /** Total cards per game (yellow + red), venue split (teamdisciplinary). §3.9. */
   cardsAvgH?: number;
   cardsAvgA?: number;
+  /** PR-22: shots-on-target per game, season aggregate (possessionValue). */
+  sotForH?: number;
+  sotForA?: number;
   /** Season O/U hit-rates (0..1), both venues (stats_season_overunder) — §2
    *  prioritisation + §1.2 heightened trend checks; ou25 also feeds the v4
    *  all-markets totals engine's per-line marketStatMissing flag (PR-4). */
@@ -186,6 +215,14 @@ export interface StatsOverride {
   xgaA?: number;
   nHome?: number;
   nAway?: number;
+  /** Match-day squad availability multiplier (tools/fetch_squad_availability.py
+   *  §8.2, PR-6) — feeds V3LambdaInput.home/awayAvailabilityMult in BOTH v3
+   *  pipelines (goals-only via buildGoalsV3Input reads the sidecar directly;
+   *  all-markets via batch/index.ts's buildV3Input reads this telemetry
+   *  field). Ungated by MIN_PLAYED_FOR_OVERRIDE like the raw λ inputs above —
+   *  availability is orthogonal to season sample size. */
+  homeAvailabilityMult?: number;
+  awayAvailabilityMult?: number;
 }
 
 /** Resolve the credibility-shrinkage prior for a league.
@@ -281,17 +318,60 @@ export function buildStatsOverride(
   const enoughSample =
     homePlayed >= MIN_PLAYED_FOR_OVERRIDE && awayPlayed >= MIN_PLAYED_FOR_OVERRIDE;
 
+  // Each scoringConceding side gates on its own venue-split match count —
+  // shared with the §0.3 market-specific tier further down, hoisted here so
+  // the §3.1 lambda inputs below can use it too.
+  const scOk = (p: ScoringConcedingProfile | null | undefined) =>
+    (p?.matches ?? 0) >= MIN_PLAYED_FOR_OVERRIDE;
+
   // ── all-markets-analysis-prompt-v3 §3.1 raw lambda inputs — ungated by
   // MIN_PLAYED_FOR_OVERRIDE (v3 runs its OWN multiplicative+shrinkage from
   // these, independent of the legacy xH/xA override above). Populated
   // whenever the underlying gismo field exists, regardless of sample size.
-  const gScoredH = stats.goals?.home?.avg_scored;
-  const gConcededH = stats.goals?.home?.avg_conceded;
-  const gScoredA = stats.goals?.away?.avg_scored;
-  const gConcededA = stats.goals?.away?.avg_conceded;
-  if (finite(gScoredH)) override.scoredPer90H = gScoredH;
+  //
+  // [PR-14] Prefer the scoringConceding venue split (home team's own
+  // home-scored/home-conceded rate, away team's own away-scored/away-conceded
+  // rate — stats_season_teamscoringconceding, the same source already used
+  // for the SoS opponent-conceded figure below) over the venue-agnostic
+  // season goals.avg_scored/avg_conceded — a strictly better prior when its
+  // own sample is thick enough, same pattern v3TeamXg already applies for xG
+  // (venueXgf/venueXga over the season aggregate). Gated on the SAME
+  // MIN_PLAYED_FOR_OVERRIDE threshold as scOk below, so a thin venue-split
+  // sample falls back to the season aggregate rather than trusting 1-3
+  // matches. This does NOT change v3Hfa/v3VenueSplitUsed — that flag is a
+  // separate, still-manual global override (see effectiveConfig.ts's WARN);
+  // this only improves the season-aggregate INPUT quality feeding lambda.
+  const homeScoringOk = scOk(stats.scoringConceding?.home);
+  const awayScoringOk = scOk(stats.scoringConceding?.away);
+  const gScoredH = homeScoringOk
+    ? (stats.scoringConceding?.home?.scored_avg ?? stats.goals?.home?.avg_scored)
+    : stats.goals?.home?.avg_scored;
+  const gConcededH = homeScoringOk
+    ? (stats.scoringConceding?.home?.conceded_avg ?? stats.goals?.home?.avg_conceded)
+    : stats.goals?.home?.avg_conceded;
+  const gScoredA = awayScoringOk
+    ? (stats.scoringConceding?.away?.scored_avg ?? stats.goals?.away?.avg_scored)
+    : stats.goals?.away?.avg_scored;
+  const gConcededA = awayScoringOk
+    ? (stats.scoringConceding?.away?.conceded_avg ?? stats.goals?.away?.avg_conceded)
+    : stats.goals?.away?.avg_conceded;
+  // Recency-blend the scored side only (mirrors the xH/xA decay below, which
+  // has never applied to these v3-specific fields — goalsV3/marketsV3 lambdas
+  // ran on flat season averages with zero recency weighting until now).
+  // Conceded rates stay season-flat, matching the existing xH/xA convention.
+  const scoredH = blendRecencyScored(
+    gScoredH,
+    stats.recentGoals?.home?.scored_avg,
+    stats.form?.home?.last5
+  );
+  const scoredA = blendRecencyScored(
+    gScoredA,
+    stats.recentGoals?.away?.scored_avg,
+    stats.form?.away?.last5
+  );
+  if (scoredH !== null) override.scoredPer90H = scoredH;
   if (finite(gConcededH)) override.concededPer90H = gConcededH;
-  if (finite(gScoredA)) override.scoredPer90A = gScoredA;
+  if (scoredA !== null) override.scoredPer90A = scoredA;
   if (finite(gConcededA)) override.concededPer90A = gConcededA;
   if (finite(stats.xg?.home?.xgf)) override.xgfH = stats.xg?.home?.xgf;
   if (finite(stats.xg?.home?.xga)) override.xgaH = stats.xg?.home?.xga;
@@ -299,6 +379,14 @@ export function buildStatsOverride(
   if (finite(stats.xg?.away?.xga)) override.xgaA = stats.xg?.away?.xga;
   if (homePlayed > 0) override.nHome = homePlayed;
   if (awayPlayed > 0) override.nAway = awayPlayed;
+  // Match-day squad availability (§8.2, PR-6) — feeds V3LambdaInput's λ
+  // multiplier in the all-markets v3 pipeline (batch/index.ts's buildV3Input
+  // reads this telemetry field); the goals-only pipeline reads the sidecar
+  // directly in buildGoalsV3Input instead of going through this override.
+  const availH = stats.availability?.home?.idx;
+  const availA = stats.availability?.away?.idx;
+  if (finiteOrZero(availH)) override.homeAvailabilityMult = availH;
+  if (finiteOrZero(availA)) override.awayAvailabilityMult = availA;
   // §3.5 empirical-blend sample size (PR-3) — recentGoals is a last-5 window,
   // so its own match count is the right "how much to trust this rate" signal,
   // independent of the season-long enoughSample gate below.
@@ -321,10 +409,18 @@ export function buildStatsOverride(
     };
     const xgH = pickXg(stats.xg?.home);
     const xgA = pickXg(stats.xg?.away);
-    // League-mean-estimated xGA (build_xg_table.py xga_src tag) completes the
-    // pair but must not claim empirical/high confidence.
-    const xgaEstimated =
-      stats.xg?.home?.xgaSrc === "estimated" || stats.xg?.away?.xgaSrc === "estimated";
+    // Two independent reasons an xG pair must not claim empirical/high
+    // confidence: (a) league-mean-estimated xGA (build_xg_table.py xga_src
+    // tag) fills a real gap, or (b) either side is google_ai-sourced (PR-19
+    // fallback tier, LLM prose extraction — a whole-pair low-confidence tier,
+    // not just an xGA-specific fill). Mirrors goalsV3/completeness.ts's
+    // xgEstimated check so the goals and all-markets pipelines never disagree
+    // on one xG pair's confidence.
+    const xgConfidenceDowngrade =
+      stats.xg?.home?.xgaSrc === "estimated" ||
+      stats.xg?.away?.xgaSrc === "estimated" ||
+      stats.xg?.home?.src === "google_ai" ||
+      stats.xg?.away?.src === "google_ai";
     const goalsHome = stats.goals?.home?.avg_scored;
     const goalsAway = stats.goals?.away?.avg_scored;
     // Full xG (xGF + xGA both sides) → highest confidence, unless the xGA half
@@ -333,8 +429,8 @@ export function buildStatsOverride(
     if (finite(xgH.xgf) && finite(xgA.xgf) && finite(xgH.xga) && finite(xgA.xga)) {
       override.xH = xgH.xgf;
       override.xA = xgA.xgf;
-      override.xgMode = xgaEstimated ? "estimated" : "empirical";
-      override.xg_confidence = xgaEstimated ? "medium" : "high";
+      override.xgMode = xgConfidenceDowngrade ? "estimated" : "empirical";
+      override.xg_confidence = xgConfidenceDowngrade ? "medium" : "high";
       // xGF-only (pre-fill FBref tables — no team-conceded figure) → still
       // preferred over raw goals-avg since xG is more predictive, but capped at
       // medium confidence to acknowledge the season-mean granularity.
@@ -424,10 +520,8 @@ export function buildStatsOverride(
 
   // ── all-markets v3 typed market-specific stats (§0.3 market-specific tier).
   // Each family gates on its own sample: scoringConceding rates on the
-  // profile's own venue match count, season aggregates on enoughSample,
-  // recent-5 corners on their built-in ≥1-match floor.
-  const scOk = (p: ScoringConcedingProfile | null | undefined) =>
-    (p?.matches ?? 0) >= MIN_PLAYED_FOR_OVERRIDE;
+  // profile's own venue match count (scOk, hoisted above), season aggregates
+  // on enoughSample, recent-5 corners on their built-in ≥1-match floor.
   const fhShare = (p: ScoringConcedingProfile | null | undefined): number | undefined => {
     const fh = p?.goals_1h_avg;
     const total = p?.scored_avg;
@@ -492,6 +586,13 @@ export function buildStatsOverride(
     const cardsA = cards(stats.disciplinary?.away);
     if (cardsH !== undefined) override.cardsAvgH = cardsH;
     if (cardsA !== undefined) override.cardsAvgA = cardsA;
+
+    // PR-22: shots-on-target — season aggregate only (no recent-form source
+    // exists for this stat, unlike corners), same gate as cards/O-U hit-rates.
+    const sotH = stats.possessionValue?.home?.shots_on_target_avg;
+    const sotA = stats.possessionValue?.away?.shots_on_target_avg;
+    if (finite(sotH)) override.sotForH = sotH;
+    if (finite(sotA)) override.sotForA = sotA;
 
     const o15H = stats.overunder?.home?.over15_pct;
     const o15A = stats.overunder?.away?.over15_pct;

@@ -207,6 +207,50 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     expect(success.result.evMarkets[0]?.label).toBe("Over 2.5");
   });
 
+  it("threads telemetry.home/awayAvailabilityMult and ledger.metrics.dynamicRhoParams into buildV3Input's lambdaInput/dynamicRho (PR-5/PR-6)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue(null); // return value irrelevant to this test
+
+    const job = makeJob({
+      telemetry: {
+        scoredPer90H: 1.7,
+        concededPer90H: 1.0,
+        scoredPer90A: 1.2,
+        concededPer90A: 1.5,
+        homeAvailabilityMult: 0.72,
+        awayAvailabilityMult: 0.95,
+      },
+      ledger: { metrics: { dynamicRhoParams: { "Premier League": -0.28 } } },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+
+    await runBatch([job], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
+
+    const call = analyzeFixtureMarketsV3Mock.mock.calls[0]![0];
+    expect(call.lambdaInput).toMatchObject({
+      homeAvailabilityMult: 0.72,
+      awayAvailabilityMult: 0.95,
+    });
+    expect(call.dynamicRho).toBe(-0.28);
+  });
+
+  it("home/awayAvailabilityMult and dynamicRho are undefined/null when no ledger or availability telemetry exists", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue(null);
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+
+    await runBatch([job], { storage, config: { ...baseConfig, enableMarketsV3: "on" } });
+
+    const call = analyzeFixtureMarketsV3Mock.mock.calls[0]![0];
+    expect(call.lambdaInput.homeAvailabilityMult).toBeNull();
+    expect(call.lambdaInput.awayAvailabilityMult).toBeNull();
+    expect(call.dynamicRho).toBeUndefined();
+  });
+
   it("runs v3 but keeps legacy eligible in 'shadow' mode (comparison instrumentation, no effect on the decision)", async () => {
     vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
     analyzeFixtureMarketsV3Mock.mockReturnValue({
@@ -322,6 +366,49 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     });
 
     expect(runAllMarketsLlmExecutorMock).not.toHaveBeenCalled();
+  });
+
+  it('PR-23 "unmapped" scope: does NOT demote the executor when v3 supplied candidates — narrows ctx.allMarkets to just the recoverable skip-tail instead', async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+    const routedEntry = allMarkets[0]!; // "Double Chance" — routes normally, NOT tail
+    const tailEntry: AllMarketEntry = {
+      id: "999999",
+      name: "Some Uncatalogued Market",
+      outcomes: [{ id: "1", desc: "Yes", odds: "1.9" }],
+    };
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets: [routedEntry, tailEntry] } } },
+    });
+
+    await runBatch([job], {
+      storage,
+      config: {
+        ...baseConfig,
+        enableMarketsV3: "on",
+        enableLlmMarketExecutor: true,
+        llmExecutorScope: "unmapped",
+      },
+    });
+
+    // NOT suppressed (unlike "full" scope's demote, tested above).
+    expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
+    const ctxSeenByExecutor = runAllMarketsLlmExecutorMock.mock.calls[0]![0];
+    // Only the tail entry — the routed "Double Chance" entry v3 already
+    // handled is excluded, so the executor sweeps what v3 couldn't price
+    // instead of re-analyzing the whole catalogue.
+    expect(ctxSeenByExecutor.allMarkets).toEqual([tailEntry]);
   });
 
   it("leaves the Q4 executor enabled when v3 produced nothing for this fixture (fail-open, not a blanket suppression)", async () => {
@@ -547,6 +634,60 @@ describe("batch/index.ts — v3Best/v3AssessmentStats projection (PR-5b)", () =>
     const success = result.jobs[0] as FixtureJobSuccess;
     expect(success.v3Best).toBeUndefined();
     expect(success.v3AssessmentStats).toBeUndefined();
+    expect(success.v3Coverage).toBeUndefined();
+  });
+
+  it("carries the fixture's full v3Coverage (PR-20), same populate-whenever-v3-ran condition as v3Best", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const coverage = {
+      total: 42,
+      routed: 30,
+      byEngine: {
+        totals: 20,
+        result: 10,
+        shape: 0,
+        half: 0,
+        time: 0,
+        exotics: 0,
+        corners: 0,
+        cards: 0,
+      },
+      skipped: {
+        "player-market": 5,
+        "plain-1x2": 3,
+        "non-goal-metric": 2,
+        "corners-dormant": 1,
+        "cards-dormant": 1,
+        "settlement-variant": 0,
+        "no-grid-model": 0,
+        uncatalogued: 0,
+        "bad-specifier": 0,
+      },
+      unrouted: { "Weird New Market": 2 },
+    };
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage,
+      assessments: [],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Coverage).toEqual(coverage);
   });
 });
 

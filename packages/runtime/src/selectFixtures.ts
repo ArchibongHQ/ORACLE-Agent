@@ -319,6 +319,45 @@ export interface SportyBetStats {
     home?: { top_scorer_goals?: number; top_scorer_name?: string } | null;
     away?: { top_scorer_goals?: number; top_scorer_name?: string } | null;
   } | null;
+  /** Match-day squad availability (tools/fetch_squad_availability.py, Kaggle
+   *  Transfermarkt backfill) — the team's MOST RECENT known matchday
+   *  availability_idx (matchday squad value / rolling peak squad value, 1.0 =
+   *  full strength) as a recency proxy for today's expected squad depth; not
+   *  literally today's lineup (unknowable pre-kickoff from a historical
+   *  dataset). Top-5 domestic leagues only, absent elsewhere. */
+  availability?: {
+    home?: SportyBetAvailabilityEntry | null;
+    away?: SportyBetAvailabilityEntry | null;
+  } | null;
+  /** [PR-18] Match-day weather forecast at the HOME team's city
+   *  (tools/scrape_fixtures.py's _load_weather_table, Open-Meteo Forecast
+   *  API via fetch_weather.py's fetch_forecast — NOT the archive/backfill
+   *  endpoint, which has no same-day coverage). One block per fixture, not
+   *  split by side (weather is a venue property, not a team property).
+   *  camelCase + km/h/mm, matching fetch_weather.py's existing backfill
+   *  convention (build_features()/gbm_residual.py's tempC/precipMm/windKph)
+   *  — NOT @oracle/engine's Weather interface shape (wind_mph/rain_mm),
+   *  which is a different unit system; convert at the fixtures.ts boundary
+   *  where this gets read into RunState.pipeline.fetched.weather, not here.
+   *  Absent for any team outside fetch_weather.py's curated TEAM_CITY map,
+   *  or when ORACLE_FETCH_WEATHER=off. */
+  weather?: SportyBetWeatherEntry | null;
+}
+
+export interface SportyBetAvailabilityEntry {
+  /** matchday_squad_value / rolling_peak_squad_value, clamped to [0,1]. */
+  idx: number;
+  /** 1 = the club's single most-valued rostered player started/was named;
+   *  0 = absent; undefined when unknown. */
+  keyPlayerPresent?: 0 | 1;
+}
+
+/** [PR-18] One fixture's match-day weather forecast — see SportyBetStats.weather. */
+export interface SportyBetWeatherEntry {
+  tempC?: number;
+  precipMm?: number;
+  windKph?: number;
+  isAdverse?: boolean;
 }
 
 export interface ScoringConcedingProfile {
@@ -344,6 +383,11 @@ export interface SportyBetEvent {
   away: string;
   marketCount: number;
   league?: string;
+  /** Sportradar tournament ID (e.g. "sr:tournament:17"), when the source
+   *  captured one — disambiguates leagues that share a generic name across
+   *  competitions. Absent for older lake partitions and non-SportyBet sources
+   *  (e.g. the ESPN scraper). See goalsV3/lambda.ts's V3_LEAGUE_BASELINES_BY_ID. */
+  leagueId?: string;
   kickoff_utc?: string;
   detail?: SportyBetEventDetail;
   /** Sportradar/SportyBet event ID (e.g. "sr:match:66456926") — present when the
@@ -361,6 +405,25 @@ export interface SportyBetIndex {
 /** Canonical index key — the contract between loadSportyBetIndex and selectFixtures. */
 export function sidecarKey(home: string, away: string): string {
   return `${resolveAlias(home)}|${resolveAlias(away)}`;
+}
+
+/** Resolve a SportyBet/Sportradar eventId for an already-analysed fixture by
+ *  team name (PR-8a) — needed because AnalysisRecord.fixtureId is a
+ *  home::away::kickoff slug (makeFixtureId), not the Sportradar match ID the
+ *  odds-only closing-snapshot endpoint requires. Tries the canonical
+ *  sidecarKey match first, falls back to the alias-aware namesMatch scan for
+ *  edge cases sidecarKey's normalisation doesn't cover — same two-tier
+ *  strategy as findSidecarDetail above. */
+export function findSportyBetEventId(
+  index: Pick<SportyBetIndex, "events">,
+  home: string,
+  away: string
+): string | undefined {
+  const key = sidecarKey(home, away);
+  const exact = index.events.find((e) => sidecarKey(e.home, e.away) === key);
+  if (exact?.eventId) return exact.eventId;
+  const fuzzy = index.events.find((e) => namesMatch(e.home, home) && namesMatch(e.away, away));
+  return fuzzy?.eventId;
 }
 
 /** Look up a fixture's sidecar detail tolerantly. Tries the exact canonical key
@@ -489,9 +552,25 @@ export async function loadSportyBetIndex(
               }
             | null
             | undefined;
+          const availabilityBlock = ev.availability as
+            | {
+                home?: SportyBetAvailabilityEntry | null;
+                away?: SportyBetAvailabilityEntry | null;
+              }
+            | null
+            | undefined;
+          const weatherBlock = ev.weather as SportyBetWeatherEntry | null | undefined;
           const stats: SportyBetStats | null =
-            baseStats != null || xgBlock != null
-              ? { ...(baseStats ?? {}), ...(xgBlock != null ? { xg: xgBlock } : {}) }
+            baseStats != null ||
+            xgBlock != null ||
+            availabilityBlock != null ||
+            weatherBlock != null
+              ? {
+                  ...(baseStats ?? {}),
+                  ...(xgBlock != null ? { xg: xgBlock } : {}),
+                  ...(availabilityBlock != null ? { availability: availabilityBlock } : {}),
+                  ...(weatherBlock != null ? { weather: weatherBlock } : {}),
+                }
               : null;
           detail = {
             eventId: ev.eventId,
@@ -504,6 +583,7 @@ export async function loadSportyBetIndex(
         }
       }
       const league = typeof ev.league === "string" ? ev.league : undefined;
+      const leagueId = typeof ev.leagueId === "string" && ev.leagueId ? ev.leagueId : undefined;
       const kickoff_utc = typeof ev.kickoff_utc === "string" ? ev.kickoff_utc : undefined;
       const eventId = typeof ev.eventId === "string" && ev.eventId ? ev.eventId : undefined;
       events.push({
@@ -511,6 +591,7 @@ export async function loadSportyBetIndex(
         away: ev.away,
         marketCount: mc,
         league,
+        leagueId,
         kickoff_utc,
         detail,
         eventId,

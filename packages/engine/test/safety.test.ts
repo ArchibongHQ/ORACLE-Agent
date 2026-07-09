@@ -258,6 +258,17 @@ describe("ConvergenceScorer tier mapping", () => {
   it("score 18 → APEX tier", () => expect(cs.getTier(18).label).toBe("APEX"));
 });
 
+// [PR-17] Every tier's kellyMultiplier is the machine-readable counterpart to
+// its descriptive `kelly` text — assert the numbers actually match what the
+// text claims (Full=1, Half=0.5, Quarter=0.25, do-not-bet=0).
+describe("ConvergenceScorer tier kellyMultiplier (PR-17)", () => {
+  it("NOISE → 0 (do not bet)", () => expect(cs.getTier(0).kellyMultiplier).toBe(0));
+  it("MARGINAL → 0.25 (Quarter Kelly)", () => expect(cs.getTier(4).kellyMultiplier).toBe(0.25));
+  it("VIABLE → 0.5 (Half Kelly)", () => expect(cs.getTier(8).kellyMultiplier).toBe(0.5));
+  it("PRIME → 1 (Full Kelly)", () => expect(cs.getTier(13).kellyMultiplier).toBe(1));
+  it("APEX → 1 (Full Kelly)", () => expect(cs.getTier(18).kellyMultiplier).toBe(1));
+});
+
 // ── ConvergenceScorer.compute no-convergence path ────────────────────────────
 
 describe("ConvergenceScorer.compute no-convergence path", () => {

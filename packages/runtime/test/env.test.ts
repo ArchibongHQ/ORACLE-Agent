@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildConfig } from "../src/env.js";
+import { buildConfig, loadLakeBaselines, loadLakeHfa } from "../src/env.js";
 
 describe("buildConfig maxFixturesPerRun", () => {
   it("defaults to 50 when unset", () => {
@@ -89,6 +92,33 @@ describe("buildConfig marketsV3Outputs", () => {
   });
 });
 
+describe("buildConfig marketsCoverageNote (PR-20)", () => {
+  it("defaults to true (route-coverage telemetry on)", () => {
+    expect(buildConfig({}).marketsCoverageNote).toBe(true);
+  });
+
+  it("respects ORACLE_MARKETS_COVERAGE=off (case-insensitive) as the rollback", () => {
+    expect(buildConfig({ ORACLE_MARKETS_COVERAGE: "off" }).marketsCoverageNote).toBe(false);
+    expect(buildConfig({ ORACLE_MARKETS_COVERAGE: "OFF" }).marketsCoverageNote).toBe(false);
+  });
+});
+
+describe("buildConfig catalogOverlay (PR-21)", () => {
+  it("defaults to false (runtime catalog overlay off until coverage data justifies it)", () => {
+    expect(buildConfig({}).catalogOverlay).toBe(false);
+  });
+
+  it("respects ORACLE_CATALOG_OVERLAY=on (case-insensitive) to enable it", () => {
+    expect(buildConfig({ ORACLE_CATALOG_OVERLAY: "on" }).catalogOverlay).toBe(true);
+    expect(buildConfig({ ORACLE_CATALOG_OVERLAY: "ON" }).catalogOverlay).toBe(true);
+  });
+
+  it("stays false for any value other than exactly 'on'", () => {
+    expect(buildConfig({ ORACLE_CATALOG_OVERLAY: "true" }).catalogOverlay).toBe(false);
+    expect(buildConfig({ ORACLE_CATALOG_OVERLAY: "yes" }).catalogOverlay).toBe(false);
+  });
+});
+
 describe("buildConfig v3CornersCards (PR-6)", () => {
   it("defaults to true (corners/cards O/U pricing on)", () => {
     expect(buildConfig({}).v3CornersCards).toBe(true);
@@ -148,5 +178,131 @@ describe("buildConfig calibrationLedger (PR-7)", () => {
 
   it("falls back to shadow on unknown values", () => {
     expect(buildConfig({ ORACLE_CALIBRATION_LEDGER: "banana" }).calibrationLedger).toBe("shadow");
+  });
+});
+
+describe("buildConfig llmExecutorScope + enableLlmMarketExecutor (PR-23 tri-state)", () => {
+  it('defaults to "off" (enableLlmMarketExecutor false) when unset', () => {
+    expect(buildConfig({}).llmExecutorScope).toBe("off");
+    expect(buildConfig({}).enableLlmMarketExecutor).toBe(false);
+  });
+
+  it('ENABLE_LLM_MARKET_EXECUTOR="true" resolves to "full" scope — the exact pre-PR-23 behavior', () => {
+    const cfg = buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "true" });
+    expect(cfg.llmExecutorScope).toBe("full");
+    expect(cfg.enableLlmMarketExecutor).toBe(true);
+  });
+
+  it('ENABLE_LLM_MARKET_EXECUTOR="unmapped" resolves to "unmapped" scope, enableLlmMarketExecutor still true', () => {
+    const cfg = buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "unmapped" });
+    expect(cfg.llmExecutorScope).toBe("unmapped");
+    expect(cfg.enableLlmMarketExecutor).toBe(true);
+  });
+
+  it("is case-insensitive for both recognised values", () => {
+    expect(buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "TRUE" }).llmExecutorScope).toBe("full");
+    expect(buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "UNMAPPED" }).llmExecutorScope).toBe(
+      "unmapped"
+    );
+  });
+
+  it('falls back to "off" on any unrecognised value (never throws, never silently becomes "full")', () => {
+    const cfg = buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "yes" });
+    expect(cfg.llmExecutorScope).toBe("off");
+    expect(cfg.enableLlmMarketExecutor).toBe(false);
+  });
+
+  it('ENABLE_LLM_MARKET_EXECUTOR="false" resolves to "off" (not "full" — only the literal "true" does)', () => {
+    expect(buildConfig({ ENABLE_LLM_MARKET_EXECUTOR: "false" }).llmExecutorScope).toBe("off");
+  });
+});
+
+describe("loadLakeBaselines (audit P0-2)", () => {
+  const withTempJson = (content: string, fn: (path: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "lake-baselines-"));
+    const path = join(dir, "league_baselines.json");
+    writeFileSync(path, content, "utf8");
+    try {
+      fn(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("returns the byName map, keeping only positive-finite values", () => {
+    withTempJson(
+      JSON.stringify({
+        byName: { "Premier League": 2.98, "La Liga": 2.58, Bad: 0, Nan: "x" },
+      }),
+      (path) => {
+        expect(loadLakeBaselines(path)).toEqual({
+          "Premier League": 2.98,
+          "La Liga": 2.58,
+        });
+      }
+    );
+  });
+
+  it("returns undefined for a missing file", () => {
+    expect(loadLakeBaselines("/no/such/league_baselines.json")).toBeUndefined();
+  });
+
+  it("returns undefined for malformed JSON", () => {
+    withTempJson("{ not json", (path) => {
+      expect(loadLakeBaselines(path)).toBeUndefined();
+    });
+  });
+
+  it("returns undefined when byName is absent or has no usable values", () => {
+    withTempJson(JSON.stringify({ detail: {} }), (path) => {
+      expect(loadLakeBaselines(path)).toBeUndefined();
+    });
+    withTempJson(JSON.stringify({ byName: { A: 0, B: -1 } }), (path) => {
+      expect(loadLakeBaselines(path)).toBeUndefined();
+    });
+  });
+});
+
+describe("buildConfig v3LakeBaselines gating", () => {
+  it("is undefined by default (flag off ⇒ static table only)", () => {
+    expect(buildConfig({}).v3LakeBaselines).toBeUndefined();
+  });
+});
+
+describe("loadLakeHfa (full-audit P3)", () => {
+  const withTempJson = (content: string, fn: (path: string) => void) => {
+    const dir = mkdtempSync(join(tmpdir(), "lake-hfa-"));
+    const path = join(dir, "league_baselines.json");
+    writeFileSync(path, content, "utf8");
+    try {
+      fn(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("returns the hfaByName map, keeping only positive-finite values", () => {
+    withTempJson(
+      JSON.stringify({ hfaByName: { "Premier League": 1.08, "La Liga": 1.13, Bad: 0 } }),
+      (path) => {
+        expect(loadLakeHfa(path)).toEqual({ "Premier League": 1.08, "La Liga": 1.13 });
+      }
+    );
+  });
+
+  it("returns undefined when hfaByName is absent (baselines-only artifact)", () => {
+    withTempJson(JSON.stringify({ byName: { "Premier League": 2.98 } }), (path) => {
+      expect(loadLakeHfa(path)).toBeUndefined();
+    });
+  });
+
+  it("returns undefined for a missing file", () => {
+    expect(loadLakeHfa("/no/such/league_baselines.json")).toBeUndefined();
+  });
+});
+
+describe("buildConfig v3HfaByLeague gating", () => {
+  it("is undefined by default (flag off ⇒ global v3Hfa applies)", () => {
+    expect(buildConfig({}).v3HfaByLeague).toBeUndefined();
   });
 });

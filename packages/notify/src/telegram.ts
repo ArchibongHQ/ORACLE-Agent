@@ -1,5 +1,6 @@
 /** Telegram push notifier — zero-dep (fetch to the Bot API, https.request fallback). */
 import { request as httpsRequest } from "node:https";
+import { isRetriableNetworkError, withRetry } from "@oracle/engine";
 import type { BatchSummary, Notifier } from "./types.js";
 import { formatSummaryText } from "./types.js";
 
@@ -22,8 +23,22 @@ export class TelegramNotifier implements Notifier {
    *  undici DNS/TLS/IPv6 quirk that doesn't affect Node's OpenSSL https stack — seen in
    *  the Servy service context), falls back to node:https.request which uses a different
    *  network path. HTTP status errors (4xx/5xx) are NOT retried here — they return a
-   *  response so the caller's Markdown-fallback logic still runs. */
-  private async post(url: string, body: string): Promise<SendResponse> {
+   *  response so the caller's Markdown-fallback logic still runs.
+   *
+   *  [PR-10] The fetch->https fallback alone doesn't help a host-wide intermittent-DNS
+   *  blip (both transports resolve the same hostname) — wrap the whole attempt in the
+   *  generalized withRetry so a transient ENOTFOUND gets a couple of delayed retries
+   *  before giving up, instead of failing on the first blip. */
+  private post(url: string, body: string): Promise<SendResponse> {
+    return withRetry(
+      () => this.attemptPost(url, body),
+      2,
+      (attempt) => 1_000 * 2 ** attempt,
+      isRetriableNetworkError
+    );
+  }
+
+  private async attemptPost(url: string, body: string): Promise<SendResponse> {
     try {
       const res = await fetch(url, {
         method: "POST",

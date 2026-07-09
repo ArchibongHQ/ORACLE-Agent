@@ -9,6 +9,7 @@ import type {
   BatchOptions,
   BatchResult,
   CalibrationMetrics,
+  ClosingOddsSnapshot,
   DecisionShadow,
   FixtureJob,
   FixtureOutcome,
@@ -24,8 +25,10 @@ import {
   appendResolvedToLedger,
   formatCalibrationMetrics,
   loadLedgerState,
+  type SettlementFamilyBreakdown,
 } from "./calibrationFeed.js";
 import { findFixtureEnrichmentHtml, loadFixtureEnrichmentContext } from "./dailyFixtureReport.js";
+import { buildManifestMarketCoverage } from "./marketsV3/slateOutputs.js";
 import { renderReport, writeReport } from "./report.js";
 import type { ResolveResult } from "./resolveFixtures.js";
 import { resolveRecords, resolveUnmatchedViaWebSearch } from "./resolveFixtures.js";
@@ -282,6 +285,11 @@ export async function runAnalysis(
     } satisfies FixtureOutcome;
   });
 
+  // PR-20: slate-wide route-coverage rollup — telemetry only, additive to the
+  // manifest. ORACLE_MARKETS_COVERAGE=off (config.marketsCoverageNote===false)
+  // skips the computation entirely (byte-identical manifest to pre-PR-20).
+  const marketCoverage = buildManifestMarketCoverage(batch.jobs, config.marketsCoverageNote);
+
   const manifest: RunManifest = {
     runId: batch.runId,
     schemaVersion: RUN_MANIFEST_SCHEMA_VERSION,
@@ -299,6 +307,7 @@ export async function runAnalysis(
     },
     cost: batch.cost,
     errors: batch.errors,
+    ...(marketCoverage ? { marketCoverage } : {}),
   };
 
   if (persist) {
@@ -359,6 +368,11 @@ export interface ResolveDayResult extends ResolveResult {
   ledgerAppended?: number;
   /** PR-7: post-append calibration metrics for the resolve report / Telegram. */
   calibrationMetrics?: CalibrationMetrics;
+  /** [audit fix] Per-family settle/skip breakdown from this run's
+   *  appendResolvedToLedger call — surfaces a ledger that's silently biased
+   *  toward 1x2-derivable families instead of hiding it behind ledgerAppended's
+   *  one aggregate number. */
+  ledgerByFamily?: SettlementFamilyBreakdown;
 }
 
 /** Resolve all analysis records whose kickoff falls on `date` (YYYY-MM-DD).
@@ -385,6 +399,12 @@ export async function resolveDay(
     return { date, candidates: 0, resolved: [], unmatched: [] };
   }
 
+  // PR-8b: real T-30m closing-odds snapshots, when captured — preferred over
+  // the KICKOFF_PROXY Odds-API path inside resolveRecord/resolveRecords.
+  const allSnapshots =
+    (await storage.get<ClosingOddsSnapshot[]>(STORAGE_KEYS.closingOddsSnapshots)) ?? [];
+  const snapshotsByFixture = new Map(allSnapshots.map((s) => [s.fixtureId, s]));
+
   // API sources first (structured, fixture-ID-exact). No early-exit when both keys
   // are absent — CLAUDE.md §6 no-data-blocker: the web-search consensus fallback
   // below always runs on whatever resolveRecords couldn't (or, with no keys, didn't
@@ -395,7 +415,8 @@ export async function resolveDay(
           dayRecords,
           keys.footballDataApiKey,
           keys.oddsApiKey,
-          keys.apiFootballKey
+          keys.apiFootballKey,
+          snapshotsByFixture
         )
       : { resolved: [], unmatched: dayRecords.map((r) => r.fixtureId) };
 
@@ -426,6 +447,7 @@ export async function resolveDay(
   // failure must never abort the resolve run.
   let ledgerAppended: number | undefined;
   let calibrationMetrics: CalibrationMetrics | undefined;
+  let ledgerByFamily: SettlementFamilyBreakdown | undefined;
   const calibMode = calibration.mode ?? "shadow";
   if (calibMode !== "off" && resolved.length) {
     try {
@@ -434,6 +456,7 @@ export async function resolveDay(
       });
       ledgerAppended = r.appended;
       calibrationMetrics = r.metrics;
+      ledgerByFamily = r.byFamily;
     } catch (err) {
       process.stderr.write(
         `[calibration] WARN: ledger append failed (non-fatal): ${
@@ -496,5 +519,6 @@ export async function resolveDay(
     unmatched,
     ledgerAppended,
     calibrationMetrics,
+    ledgerByFamily,
   };
 }

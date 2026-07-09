@@ -16,7 +16,7 @@
 
 import { callClaudeCode } from "@oracle/llm";
 import type { GoalsLeg, GoalsSelectionResult } from "../selectGoals.js";
-import { V3_MINI_ACCA_HAIRCUT } from "../selectGoals.js";
+import { computeMiniAccaStats } from "../selectGoals.js";
 
 export const DEFAULT_GOALS_ARBITER_TIMEOUT_MS = 120_000;
 
@@ -33,7 +33,9 @@ export function slateLegKey(leg: GoalsLeg): string {
   return `${leg.home}|${leg.away}|${leg.side}`;
 }
 
-function dedupeLegs(selection: GoalsSelectionResult): GoalsLeg[] {
+/** Exported for reuse by goalsV3/crossBatchVeto.ts (PR-13) — same
+ *  dedupe-across-all-five-outputs logic, not a separately-maintained copy. */
+export function dedupeLegs(selection: GoalsSelectionResult): GoalsLeg[] {
   const seen = new Map<string, GoalsLeg>();
   for (const pool of [
     selection.legs,
@@ -155,6 +157,7 @@ export function applySlateVerdicts(
   const droppedFromLong = legs.length !== selection.legs.length;
   const droppedFromShort = shortSlipLegs.length !== selection.shortSlipLegs.length;
   const droppedFromMini = miniAccaLegs.length !== selection.miniAccaLegs.length;
+  const miniAccaStats = droppedFromMini ? computeMiniAccaStats(miniAccaLegs) : null;
 
   return {
     ...selection,
@@ -171,11 +174,6 @@ export function applySlateVerdicts(
     shortSlipCombinedOdds: droppedFromShort
       ? prod(shortSlipLegs, (l) => l.odds)
       : selection.shortSlipCombinedOdds,
-    miniAccaCombinedProb: droppedFromMini
-      ? prod(miniAccaLegs, (l) => l.mp) * V3_MINI_ACCA_HAIRCUT
-      : selection.miniAccaCombinedProb,
-    miniAccaCombinedOdds: droppedFromMini
-      ? prod(miniAccaLegs, (l) => l.odds)
-      : selection.miniAccaCombinedOdds,
+    ...(miniAccaStats ?? {}),
   };
 }

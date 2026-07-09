@@ -15,12 +15,11 @@
  *  Pure function — all data arrives in the input struct; no runtime imports. */
 
 import type { BatchJobResult, FixtureJobSuccess } from "../batch/index.js";
-import { getLeagueParams } from "../execution/index.js";
 import { devigThreeWay, FAMILY_LABEL } from "../markets/index.js";
 import { buildMatrix, extractMarkets } from "../math/index.js";
 import type { ConfidenceGrade, EVMarket, RunResult } from "../types.js";
 import { devigOU, gateV3Edge, type V3EdgeAssessment, type V3PenaltyFlags } from "./edgeGate.js";
-import { computeV3Lambdas, type V3LambdaInput, type V3Lambdas } from "./lambda.js";
+import { computeV3Lambdas, resolveRho, type V3LambdaInput, type V3Lambdas } from "./lambda.js";
 import { deriveMatchShape, type MatchShape } from "./matchShape.js";
 
 /** Decimal odds the goals path prices. Absent side of a pair ⇒ 1/odds implied. */
@@ -74,11 +73,21 @@ export interface V3AnalyzeInput {
   hfa?: number;
   /** True when λ input uses venue-split data (suppress HFA multiplier). */
   venueSplitUsed?: boolean;
+  /** λ v5 independent-side xG blend (ORACLE_V3_LAMBDA_V5). Default on. */
+  lambdaV5?: boolean;
+  /** Lake-computed league baselines (goals/game by league name) — prefer over
+   *  the static V3_LEAGUE_BASELINES table when present (audit P0-2). */
+  lakeBaselines?: Record<string, number>;
   /** v4 heightened gates: 8pt pass floor under HFA/hit-rate uncertainty (PR-3). */
   heightened?: boolean;
   /** v4 §0.3 per-selection hit-rates (PR-4) — overrides `penaltyFlags.hitRateMissing`
    *  per candidate line when the matching entry is defined. */
   lineHitRates?: V3LineHitRates;
+  /** Per-league dynamic rho refit from the calibration ledger's observed
+   *  scoreline frequencies (CalibrationMetrics.dynamicRhoParams, §8.1 NR-MLE).
+   *  Falls back to the static getLeagueParams(league).baseRho when absent
+   *  (calibrationLedger mode "off"/"shadow", or a league with n<30 samples). */
+  dynamicRho?: number;
 }
 
 /** One market's full v3 assessment — kept for every priced market including
@@ -146,6 +155,7 @@ function round3(v: number): number {
  *  that penalizes the edge can never silently skip the rationale. */
 const LIMIT_TEXT: Record<keyof V3PenaltyFlags, string> = {
   xgMissing: "no xG",
+  xgMissingLargeSample: "no xG (large raw-goals sample)",
   xgEstimated: "xG estimated (AI-Mode)",
   h2hMissing: "no H2H",
   lineupsUnconfirmed: "lineups unconfirmed",
@@ -193,10 +203,12 @@ export function analyzeGoalsFixtureV3(input: V3AnalyzeInput): V3FixtureResult | 
     xgBlend: input.xgBlend,
     hfa: input.hfa,
     venueSplitUsed: input.venueSplitUsed,
+    lambdaV5: input.lambdaV5,
+    lakeBaselines: input.lakeBaselines,
   });
   if (!lambdas) return null;
 
-  const rho = getLeagueParams(input.league).baseRho;
+  const rho = resolveRho(input.league, input.dynamicRho);
   const nb = v3NbDispersion(input.nbDispersion);
 
   // Raw-μ matrix: O/U totals (§3.2 exact tail, DC-corrected cells).

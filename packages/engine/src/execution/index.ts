@@ -409,7 +409,7 @@ const POPULAR_TEAMS = new Set([
   "real madrid cf",
 ]);
 
-function isPopularTeam(name: string): boolean {
+export function isPopularTeam(name: string): boolean {
   if (!name) return false;
   const n = name.toLowerCase().trim();
   if (POPULAR_TEAMS.has(n)) return true;
@@ -628,6 +628,29 @@ function priceAllMarketOutcome(
 }
 
 // ── ExecutionEngine ───────────────────────────────────────────────────────────
+
+/** [PR-17] Scales one evMarket's already-computed optimizedKelly stake by its
+ *  ConvergenceScorer tier's kellyMultiplier — extracted as a standalone pure
+ *  function so it's directly unit-testable without needing to engineer a
+ *  specific convergence score through the full ExecutionEngine.run() pipeline
+ *  (scoreMarket's S01-S14 signals aren't practical to hand-craft a target
+ *  score from). Mutates evMarket in place, matching this file's existing
+ *  post-processing convention (the portfolio-correlation veto block above
+ *  does the same). Full Kelly (multiplier >= 1) is a no-op — the stake
+ *  already reflects it. NOISE (multiplier <= 0) vetoes the market outright
+ *  rather than leaving a live positive-EV pick with a stake the tier
+ *  guidance explicitly says not to deploy. */
+export function applyConvergenceTierToStake(evMarket: EVMarket, kellyMultiplier: number): void {
+  if (kellyMultiplier >= 1) return;
+  if (kellyMultiplier <= 0) {
+    evMarket.veto = "CONVERGENCE_NOISE_VETO";
+    evMarket.stake = 0;
+    evMarket.stakeAmt = 0;
+    return;
+  }
+  evMarket.stake *= kellyMultiplier;
+  evMarket.stakeAmt *= kellyMultiplier;
+}
 
 export class ExecutionEngine {
   constructor(
@@ -1809,7 +1832,7 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       }
     }
 
-    // §8.4 Isotonic calibration — post-hoc PAVA fit on resolved bets (no-op if < 30 resolved)
+    // §8.4 Isotonic calibration — post-hoc PAVA fit on resolved bets (no-op if < 300 resolved, PR-16)
     fp = isotonicCalibrateFp(fp, (ledger?.bets ?? []) as Parameters<typeof isotonicCalibrateFp>[1]);
 
     // GBM residual model blend — gated off by default (see OracleConfig.enableGbmResidual
@@ -2181,10 +2204,28 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
     const rag = new RAGSystem(this._storage);
     await rag.init();
     const ragSimilar = rag.findSimilar(rawRes as unknown as Record<string, unknown>, 5);
-    rawRes.convergence = new ConvergenceScorer().compute(
+    const convergence = new ConvergenceScorer().compute(
       rawRes as unknown as Record<string, unknown>,
       ragSimilar as unknown as Record<string, unknown>[]
     );
+    rawRes.convergence = convergence;
+    // [PR-17] ConvergenceScorer's per-tier Kelly guidance (Full/Half/Quarter/
+    // Do-not-bet) used to be descriptive text only (deploymentGuide) — never
+    // applied to the actual stake. Every scored candidate carries its OWN
+    // tier (not just the apex pick), so multiply each one's already-computed
+    // optimizedKelly stake by its tier's kellyMultiplier directly, rather
+    // than re-deriving intent from deploymentGuide's text (which has its own
+    // pre-existing "noConvergence short-circuits before the MARGINAL branch"
+    // quirk this deliberately sidesteps by reading the numeric tier data,
+    // not the string). NOISE (kellyMultiplier 0) zeroes the stake outright —
+    // "Do not bet — signal too thin" was never just a suggestion.
+    for (const scored of convergence.scores) {
+      const evMarket = rawRes.evMarkets.find(
+        (m) => !m.veto && (m.label === scored.market || m.market === scored.market)
+      );
+      if (!evMarket) continue;
+      applyConvergenceTierToStake(evMarket, scored.tier.kellyMultiplier);
+    }
     rawRes.mlFilter = new MLSafetyFilter().evaluate(
       fetched as Record<string, unknown>,
       rawRes as unknown as Record<string, unknown>,

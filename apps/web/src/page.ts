@@ -249,11 +249,17 @@ function renderSlip(
   title: string,
   legs: GoalsLeg[],
   combinedProb: number | undefined,
-  combinedOdds: number | undefined
+  combinedOdds: number | undefined,
+  trueEv?: number
 ): string {
   const meta =
     combinedProb !== undefined && combinedOdds !== undefined
-      ? `${legs.length} leg(s) · combined prob ${pct(combinedProb)} · combined odds ${combinedOdds.toFixed(2)}`
+      ? `${legs.length} leg(s) · combined prob ${pct(combinedProb)} · combined odds ${combinedOdds.toFixed(2)}` +
+        // True EV at the combined offered price — surfaces parlay margin
+        // compounding (multiplying N marked-up leg odds together compounds
+        // each leg's own bookmaker margin) instead of a bare probability/odds
+        // pair that reads as more favorable than the combo actually is.
+        (trueEv !== undefined ? ` · true EV ${trueEv >= 0 ? "+" : ""}${pct(trueEv)}` : "")
       : `${legs.length} leg(s)`;
   return `
 <div class="slip">
@@ -290,7 +296,8 @@ export function renderGoalsPage(date: string, artifact: GoalsArtifact | null): s
           "Mini-ACCA",
           artifact.selection.miniAccaLegs,
           artifact.selection.miniAccaCombinedProb,
-          artifact.selection.miniAccaCombinedOdds
+          artifact.selection.miniAccaCombinedOdds,
+          artifact.selection.miniAccaTrueEv
         ),
         renderSlip("Output B (odds ≥ 4.00)", artifact.selection.outputBLegs, undefined, undefined),
         renderSlip(

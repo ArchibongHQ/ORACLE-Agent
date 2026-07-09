@@ -22,9 +22,23 @@ import { devigTwoWay } from "../markets/index.js";
 /** §4.2 data-quality penalty flags. All penalties are expressed in probability
  *  points (0.01 = 1 pt). `xgEstimated` is the plan-adopted extension for
  *  AI-Mode-sourced xG: −1 pt, between "have real xG" (0) and "missing" (−2).
- *  PR-2 v4 deltas: `hfaDefaultUsed` and `hitRateMissing`. */
+ *  PR-2 v4 deltas: `hfaDefaultUsed` and `hitRateMissing`.
+ *
+ *  Desktop-audit concept #3 (graduated xG penalties): `xgMissing` and
+ *  `xgMissingLargeSample` are mutually exclusive — exactly one applies when
+ *  xG is absent, never both, decided by the raw-goals sample size (see
+ *  goalsV3/lambda.ts's SHRINK_N). A thin sample (n<8 either side) means the
+ *  raw-goals lambda itself still needed small-sample shrinkage — losing
+ *  xG's smoothing on TOP of that is the full −2pt hit. A sample n>=8 both
+ *  sides means the raw-goals lambda is already fully trusted on its own
+ *  (shrink() applies zero pull toward the league mean at that point) — xG
+ *  would have refined it further, but its absence costs less: −1pt, the
+ *  same tier as `xgEstimated`. */
 export interface V3PenaltyFlags {
   xgMissing?: boolean;
+  /** xG absent, but raw-goals sample size already clears SHRINK_N on both
+   *  sides — reduced penalty vs. the thin-sample xgMissing case. */
+  xgMissingLargeSample?: boolean;
   xgEstimated?: boolean;
   h2hMissing?: boolean;
   lineupsUnconfirmed?: boolean;
@@ -39,6 +53,7 @@ export interface V3PenaltyFlags {
 
 export const V3_PENALTY_PTS: Record<keyof V3PenaltyFlags, number> = {
   xgMissing: 0.02,
+  xgMissingLargeSample: 0.01,
   xgEstimated: 0.01,
   h2hMissing: 0.01,
   lineupsUnconfirmed: 0.01,

@@ -27,6 +27,7 @@ function assessment(overrides: Partial<V3MarketOutcomeAssessment> = {}): V3Marke
     penaltyPts: 0,
     adjustedEdge: 0.08,
     adjEvPct: 0.16,
+    ev: 0.155,
     cls: "M",
     outcome: "done",
     confidence: "high",

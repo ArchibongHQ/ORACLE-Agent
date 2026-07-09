@@ -1,6 +1,6 @@
 /** all-markets-analysis-prompt-v3 — Phase 2 core deterministic engine tests.
  *  Anchored to the spec's own worked examples (DNB 64.9% discard, 1H Under 1.5
- *  70.3% fail-Class-S, Over 2.5 +8.5pts done) plus per-engine unit coverage. */
+ *  70.2% noise-band discard, Over 2.5 +8.5pts done) plus per-engine unit coverage. */
 
 import {
   type AllMarketEntry,
@@ -10,6 +10,7 @@ import {
   CLASS_GATE,
   CLASS_GATE_HEIGHTENED,
   classifyMarket,
+  computeTailMarkets,
   deriveDualSplit,
   EMPIRICAL_BLEND_W,
   gateAllMarkets,
@@ -70,17 +71,35 @@ describe("grid (§3.1/§3.4)", () => {
 // ── evGate.ts — spec worked examples ────────────────────────────────────────
 
 describe("evGate — spec §5 worked examples", () => {
-  // The spec's WORKED EXAMPLES prose gives illustrative model-P/q PAIRS
-  // (66.6%, 65.5% etc.) that don't reconcile bit-exact against any single
-  // devig formula applied to its example odds (rounding in the prose) — so
-  // these tests feed the spec's own P/q numbers straight into the gate to
-  // verify the GATE ARITHMETIC (raw/adjusted/tiering), which is exact.
-  it("Class S (1H Under 1.5): model 70.3% vs q 66.6% → adj +1.7pts fails the S gate (needs ≥3pts & ≥4% EV)", () => {
-    const q = { q: 0.666, devigged: true };
-    const gate = gateAllMarkets(0.703, q, 1.36, "S", { xgMissing: true });
-    // raw ≈ 3.7pts, penalty 2pts (no xG) → adjusted ≈ 1.7pts, EV% ≈ 1.7/66.6 ≈ 2.6%
-    expect(gate.rawEdge).toBeCloseTo(0.037, 3);
-    expect(gate.adjustedEdge).toBeCloseTo(0.017, 3);
+  // The spec's WORKED EXAMPLES prose gives illustrative model-P/q PAIRS that
+  // don't always reconcile bit-exact against a real devig formula applied to
+  // its example odds (rounding in the prose) — so most of these tests feed
+  // the spec's own P/q numbers straight into the gate to verify the GATE
+  // ARITHMETIC (raw/adjusted/tiering), which is exact. Where a test uses a
+  // real odds pair, q is the ACTUAL additive de-vig of those odds (the method
+  // the live code has always used — see markets/devig.ts), not an
+  // approximation.
+  it("Class S (1H Under 1.5): model 70.2% vs the real additive de-vig of 1.36/3.05 (q=70.4%) → near-zero raw edge, noise-band discard", () => {
+    // q = additive de-vig of odds 1.36/3.05 (margin/2 subtracted from each
+    // side) — matches all-markets-analysis-prompt-v4.md §4.1's worked example.
+    // An earlier draft of this fixture used q=0.666 (a de-vig arithmetic
+    // error), then the doc briefly stated q=0.692 via the multiplicative
+    // formula that the live code has never used — both superseded.
+    const q = { q: 0.704, devigged: true };
+    const gate = gateAllMarkets(0.702, q, 1.36, "S", { xgMissing: true });
+    expect(gate.rawEdge).toBeCloseTo(-0.002, 3);
+    expect(gate.adjustedEdge).toBeCloseTo(-0.022, 3);
+    expect(gate.outcome).toBe("noise");
+  });
+
+  it("Class S: a real edge that clears the noise band can still fail the S gate on inadequate adjusted edge", () => {
+    // Illustrative pair (not tied to a specific doc example) covering the
+    // below_gate-via-insufficient-edge path distinctly from the noise-band
+    // case above.
+    const q = { q: 0.704, devigged: true };
+    const gate = gateAllMarkets(0.73, q, 1.36, "S", { xgMissing: true });
+    expect(gate.rawEdge).toBeCloseTo(0.026, 3);
+    expect(gate.adjustedEdge).toBeCloseTo(0.006, 3);
     expect(gate.outcome).toBe("below_gate");
   });
 
@@ -168,6 +187,20 @@ describe("evGate — spec §5 worked examples", () => {
     expect(CLASS_GATE.M).toMatchObject({ minAdjEdge: 0.05, minAdjEvPct: null });
     expect(CLASS_GATE.L).toMatchObject({ minAdjEdge: 0.06, minAdjEvPct: 0.15 });
     expect(CLASS_GATE.X).toMatchObject({ minAdjEdge: 0.06, minAdjEvPct: 0.2, maxOdds: 15 });
+  });
+
+  it("[audit fix] the true-EV floor rejects a -EV pick that would otherwise clear the S-class points/EV% gate", () => {
+    // Odds 1.40 @ ~8% margin (opposite side 2.734), model p=0.706 — clears
+    // Class S on rawEdge/adjEvPct alone (3.17pts / 4.7%) but true EV at the
+    // offered price is 0.706*1.40-1 = -1.16%. Confirmed the pre-fix live code
+    // returned "done" here; the floor must now reject it.
+    const q = impliedQ(1.4, 2.734)!;
+    expect(q.q).toBeCloseTo(0.6743, 3);
+    const gate = gateAllMarkets(0.706, q, 1.4, "S", {});
+    expect(gate.rawEdge).toBeCloseTo(0.0317, 3);
+    expect(gate.adjEvPct).toBeCloseTo(0.047, 2);
+    expect(gate.ev).toBeCloseTo(-0.0116, 3);
+    expect(gate.outcome).toBe("below_gate");
   });
 });
 
@@ -259,6 +292,92 @@ describe("priceExoticsOutcome — exact-goals & multigoals (PR-3)", () => {
       { engine: "exotics", family: "exact_goals" },
       "Exact Goals",
       "2-3 goals"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it('BUG FIX regression: prices exact_goals "6+" (catalog id 21) as P(total>=6), not P(total===6)', () => {
+    const expectedTail = sumWhere(ctx.statsGrid, (h, a) => h + a >= 6);
+    const expectedExact = sumWhere(ctx.statsGrid, (h, a) => h + a === 6);
+    // The two must actually differ for this test to prove anything (true on
+    // any non-degenerate grid — there's real mass above 6 goals).
+    expect(expectedTail).toBeGreaterThan(expectedExact);
+
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals" },
+      "Exact Goals",
+      "6+"
+    );
+    expect(price?.p).toBeCloseTo(expectedTail, 10);
+  });
+
+  it('prices "3+" (catalog id 21, match-total Exact Goals) as an open-ended tail over the WHOLE match', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h + a >= 3);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals" },
+      "Exact Goals",
+      "3+"
+    );
+    expect(price?.p).toBeCloseTo(expected, 10);
+  });
+
+  it('BUG FIX regression: "Home/Away Team Exact Goals" (catalog ids 23/24) prices only that TEAM\'s axis, not the match total', () => {
+    const expectedHome = sumWhere(ctx.statsGrid, (h) => h >= 3);
+    const expectedAway = sumWhere(ctx.statsGrid, (_h, a) => a >= 3);
+    const expectedMatchTotal = sumWhere(ctx.statsGrid, (h, a) => h + a >= 3);
+    // The team-axis and match-total tails must actually differ for this test
+    // to prove anything (true on any non-degenerate grid).
+    expect(expectedHome).not.toBeCloseTo(expectedMatchTotal, 5);
+
+    const homePrice = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals", side: "home" },
+      "Home Team Exact Goals",
+      "3+"
+    );
+    expect(homePrice?.p).toBeCloseTo(expectedHome, 10);
+
+    const awayPrice = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals", side: "away" },
+      "Away Team Exact Goals",
+      "3+"
+    );
+    expect(awayPrice?.p).toBeCloseTo(expectedAway, 10);
+  });
+
+  it('BUG FIX regression: "Home/Away Team Exact Goals" (ids 23/24) prices the closed-range/exact-value branch (non-"+" outcomes "0"/"1"/"2") against that team\'s own axis too, not just the "3+" tail', () => {
+    const expectedHome1 = sumWhere(ctx.statsGrid, (h) => h === 1);
+    const expectedAway0 = sumWhere(ctx.statsGrid, (_h, a) => a === 0);
+    const expectedMatchTotal1 = sumWhere(ctx.statsGrid, (h, a) => h + a === 1);
+    expect(expectedHome1).not.toBeCloseTo(expectedMatchTotal1, 5);
+
+    const homePrice = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals", side: "home" },
+      "Home Team Exact Goals",
+      "1"
+    );
+    expect(homePrice?.p).toBeCloseTo(expectedHome1, 10);
+
+    const awayPrice = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals", side: "away" },
+      "Away Team Exact Goals",
+      "0"
+    );
+    expect(awayPrice?.p).toBeCloseTo(expectedAway0, 10);
+  });
+
+  it('prices compound "1-3+" (catalog id 450002, Goal Bounds) as P(total>=1) — the trailing + on the upper end makes it open-ended', () => {
+    const expected = sumWhere(ctx.statsGrid, (h, a) => h + a >= 1);
+    const price = priceExoticsOutcome(
+      ctx,
+      { engine: "exotics", family: "exact_goals" },
+      "Goal Bounds",
+      "1-3+"
     );
     expect(price?.p).toBeCloseTo(expected, 10);
   });
@@ -636,6 +755,49 @@ describe("feedDictionary routing (§0.2)", () => {
     expect(r).toMatchObject({ engine: "result", family: "handicap", hcpScore: [0, 1] });
   });
 
+  it('BUG FIX regression: routes "Home/Away Team Exact Goals" (ids 23/24, PREFIX naming) with side set, plain "Exact Goals" (id 21) without', () => {
+    expect(routeMarket(entry({ id: "23", name: "Home Team Exact Goals" }))).toMatchObject({
+      engine: "exotics",
+      family: "exact_goals",
+      side: "home",
+    });
+    expect(routeMarket(entry({ id: "24", name: "Away Team Exact Goals" }))).toMatchObject({
+      engine: "exotics",
+      family: "exact_goals",
+      side: "away",
+    });
+    const matchTotal = routeMarket(entry({ id: "21", name: "Exact Goals" }));
+    expect(matchTotal).toMatchObject({ engine: "exotics", family: "exact_goals" });
+    expect((matchTotal as { side?: string }).side).toBeUndefined();
+  });
+
+  it('BUG FIX regression: routes "Goal Bounds - Home/Away" and "Excluded Goals - Home/Away" (ids 450002/450003/450005/450006, SUFFIX naming) with side set, unsuffixed "Goal Bounds"/"Excluded Goals" (ids 450001/450004) without', () => {
+    expect(routeMarket(entry({ id: "450002", name: "Goal Bounds - Home" }))).toMatchObject({
+      engine: "exotics",
+      family: "exact_goals",
+      side: "home",
+    });
+    expect(routeMarket(entry({ id: "450003", name: "Goal Bounds - Away" }))).toMatchObject({
+      engine: "exotics",
+      family: "exact_goals",
+      side: "away",
+    });
+    expect(routeMarket(entry({ id: "450005", name: "Excluded Goals - Home" }))).toMatchObject({
+      engine: "exotics",
+      family: "exact_goals",
+      side: "home",
+    });
+    expect(routeMarket(entry({ id: "450006", name: "Excluded Goals - Away" }))).toMatchObject({
+      engine: "exotics",
+      family: "exact_goals",
+      side: "away",
+    });
+    const goalBounds = routeMarket(entry({ id: "450001", name: "Goal Bounds" }));
+    expect((goalBounds as { side?: string }).side).toBeUndefined();
+    const excludedGoals = routeMarket(entry({ id: "450004", name: "Excluded Goals" }));
+    expect((excludedGoals as { side?: string }).side).toBeUndefined();
+  });
+
   it("skips player-market and routes plain corners/cards O/U to their §3.9 engines (PR-6)", () => {
     expect(routeMarket(entry({ id: "40", name: "Anytime Goalscorer" }))).toMatchObject({
       skip: true,
@@ -651,21 +813,30 @@ describe("feedDictionary routing (§0.2)", () => {
     ).toMatchObject({ engine: "cards", family: "cards", total: 5.5 });
   });
 
-  it("keeps non-O/U and 1st-half corners/cards variants dormant (PR-6 — only the plain total is priced)", () => {
-    // No over/under shape (a corners handicap/1X2) → still dormant.
+  it("keeps 1st-half corners/cards variants dormant; routes handicap (PR-22); flags a missing specifier precisely", () => {
+    // PR-22: "Corners Handicap" now has a real model (joint-grid handicap) —
+    // no longer dormant. This is the intended PR-22 behavior change; see
+    // marketsV3CornersCards.test.ts's routing-table describe block for the
+    // full PR-22 variant coverage (1x2/handicap/range/odd-even/team-total).
     expect(
       routeMarket(entry({ id: "900999", name: "Corners Handicap", specifier: "hcp=0:2" }))
-    ).toMatchObject({ skip: true, reason: "corners-dormant" });
-    // 1st-half corners O/U has no half-calibrated corners model → dormant.
+    ).toMatchObject({ engine: "corners", family: "corners", variant: "handicap" });
+    // 1st-half corners O/U has no half-calibrated corners model → still
+    // dormant (HALF_RE is checked first in routeCornersLike, before any
+    // PR-22 variant detection — unaffected by this change).
     expect(
       routeMarket(
         entry({ id: "900998", name: "1st Half Corners Over/Under", specifier: "total=4.5" })
       )
     ).toMatchObject({ skip: true, reason: "corners-dormant" });
-    // Cards O/U missing its total specifier → dormant (unparseable line).
+    // Cards O/U missing its total specifier: PR-22's routeCornersLike returns
+    // the more precise "bad-specifier" reason here (an O/U-shaped name that
+    // failed to parse) rather than the old generic "cards-dormant" catch-all
+    // — same "bad-specifier" reason routeMarket's own uncatalogued-id path
+    // already uses for an identical failure mode.
     expect(routeMarket(entry({ id: "900997", name: "Total Bookings Over/Under" }))).toMatchObject({
       skip: true,
-      reason: "cards-dormant",
+      reason: "bad-specifier",
     });
   });
 
@@ -681,6 +852,61 @@ describe("feedDictionary routing (§0.2)", () => {
     expect(cov.skipped["plain-1x2"]).toBe(1);
     expect(cov.byEngine.totals).toBe(1);
     expect(cov.byEngine.shape).toBe(1);
+  });
+
+  it("routeCoverage.unrouted tallies market NAMES only for the recoverable skip tail (PR-20)", () => {
+    const entries = [
+      // Principled skip (plain-1x2) — must NOT appear in `unrouted`.
+      entry({ id: "1", name: "1X2" }),
+      // uncatalogued: id not in the catalog, non-O/U-shaped name.
+      entry({ id: "999999", name: "Some Uncatalogued Market" }),
+      // uncatalogued via the desc-only fallback (name absent).
+      entry({ id: "999998", name: undefined, desc: "Desc Only Market" }),
+      // uncatalogued via the id: fallback (both name and desc absent).
+      entry({ id: "999997", name: undefined, desc: undefined }),
+      // no-grid-model: catalogued id 45 = correct_score, half-scoped.
+      entry({ id: "45", name: "1st Half Correct Score" }),
+      // bad-specifier: goals_ou (id 18) with a minute window but no total line.
+      entry({ id: "18", name: "Over/Under - Early Goals", specifier: "minsnr=10" }),
+    ];
+    const cov = routeCoverage(entries);
+    expect(cov.unrouted?.["1X2"]).toBeUndefined();
+    expect(cov.unrouted?.["Some Uncatalogued Market"]).toBe(1);
+    expect(cov.unrouted?.["Desc Only Market"]).toBe(1);
+    expect(cov.unrouted?.["id:999997"]).toBe(1);
+    expect(cov.unrouted?.["1st Half Correct Score"]).toBe(1);
+    expect(cov.unrouted?.["Over/Under - Early Goals"]).toBe(1);
+  });
+
+  describe("computeTailMarkets (PR-23)", () => {
+    it("keeps only no-grid-model and uncatalogued entries — the same recoverable tail routeCoverage.unrouted tallies", () => {
+      const uncatalogued = entry({ id: "999999", name: "Some Uncatalogued Market" });
+      const noGridModel = entry({ id: "45", name: "1st Half Correct Score" }); // half correct_score
+      const entries = [
+        entry({ id: "1", name: "1X2" }), // plain-1x2 — principled skip, excluded
+        uncatalogued,
+        noGridModel,
+        entry({ id: "18", name: "Over/Under - Early Goals", specifier: "minsnr=10" }), // bad-specifier, excluded
+        entry({ id: "18", name: "Over/Under", specifier: "total=2.5" }), // routed, excluded
+        entry({ id: "40", name: "Anytime Goalscorer" }), // player-market, excluded
+      ];
+
+      const tail = computeTailMarkets(entries);
+
+      expect(tail).toEqual([uncatalogued, noGridModel]);
+    });
+
+    it("returns an empty array (not an error) when nothing in the catalogue has a recoverable tail reason", () => {
+      const entries = [
+        entry({ id: "1", name: "1X2" }),
+        entry({ id: "18", name: "Over/Under", specifier: "total=2.5" }),
+      ];
+      expect(computeTailMarkets(entries)).toEqual([]);
+    });
+
+    it("returns an empty array for an empty catalogue", () => {
+      expect(computeTailMarkets([])).toEqual([]);
+    });
   });
 });
 
@@ -899,6 +1125,53 @@ describe("analyzeFixtureMarketsV3 (orchestrator)", () => {
     for (const a of heightened!.assessments) {
       if (a.outcome === "done") expect(a.cls).not.toBe("X");
     }
+  });
+
+  describe("dynamicRho override (PR-5, §8.1 NEW-07)", () => {
+    // Over/Under 1.5 (not 2.5): the DC tau correction only redistributes
+    // probability among the four low-score cells (0-0/1-0/0-1/1-1) — all of
+    // which sit on the SAME side of the 2.5 line, so Over/Under 2.5 is
+    // mathematically insensitive to rho. 1-1 straddles the 1.5 line (it's the
+    // only one of the four cells that's "over"), so Over/Under 1.5 is the
+    // line that actually moves when rho changes.
+    const allMarkets: AllMarketEntry[] = [
+      {
+        id: "18",
+        name: "Over/Under",
+        specifier: "total=1.5",
+        outcomes: [
+          { id: "1", desc: "Over 1.5", odds: "1.30" },
+          { id: "2", desc: "Under 1.5", odds: "3.20" },
+        ],
+      },
+    ];
+
+    it("omitting dynamicRho falls back to the static getLeagueParams baseRho (unchanged)", async () => {
+      const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+      const withoutOverride = analyzeFixtureMarketsV3({ ...baseInput, allMarkets });
+      // Default league's baseRho per execution/index.ts's LEAGUE_PARAMS is -0.13.
+      const withMatchingOverride = analyzeFixtureMarketsV3({
+        ...baseInput,
+        allMarkets,
+        dynamicRho: -0.13,
+      });
+      expect(withoutOverride).not.toBeNull();
+      expect(withMatchingOverride).not.toBeNull();
+      const mp = (r: typeof withoutOverride) =>
+        r!.assessments.find((a) => a.desc === "Over 1.5")!.mp;
+      expect(mp(withMatchingOverride)).toBeCloseTo(mp(withoutOverride), 10);
+    });
+
+    it("a dynamicRho override changes the priced model probability", async () => {
+      const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+      const withoutOverride = analyzeFixtureMarketsV3({ ...baseInput, allMarkets });
+      const withOverride = analyzeFixtureMarketsV3({ ...baseInput, allMarkets, dynamicRho: -0.28 });
+      expect(withoutOverride).not.toBeNull();
+      expect(withOverride).not.toBeNull();
+      const mp = (r: typeof withoutOverride) =>
+        r!.assessments.find((a) => a.desc === "Over 1.5")!.mp;
+      expect(mp(withOverride)).not.toBeCloseTo(mp(withoutOverride), 5);
+    });
   });
 });
 

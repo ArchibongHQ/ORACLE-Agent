@@ -32,6 +32,7 @@ function selection(): GoalsSelectionResult {
     miniAccaLegs: [],
     miniAccaCombinedProb: 0,
     miniAccaCombinedOdds: 0,
+    miniAccaTrueEv: -1,
   };
 }
 

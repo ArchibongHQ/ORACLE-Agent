@@ -53,6 +53,7 @@ export function sportyEventToFixtureJob(event: SportyBetEvent): FixtureJob | nul
     home: event.home,
     away: event.away,
     league,
+    leagueId: event.leagueId,
     kickoff: event.kickoff_utc ?? new Date().toISOString(),
     state: {
       telemetry: {

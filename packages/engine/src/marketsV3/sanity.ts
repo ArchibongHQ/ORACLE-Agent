@@ -20,18 +20,23 @@
  *  `V3MarketOutcomeAssessment` and the goals-path `V3MarketAssessment`
  *  without importing either (no cross-pipeline coupling). Pure math, no I/O. */
 
+import { dirOfDesc, sideOfDesc } from "./descParse.js";
+
 const CAP_RATE_THRESHOLD = 0.25;
 const SKEW_THRESHOLD = 0.7;
 const RAW_EDGE_HOT_THRESHOLD = 0.05;
 
-const RESULT_FAMILIES = new Set([
+// Exported so skewShrink.ts's shadow pass targets exactly the same family
+// sets that decide whether a skew flag fires in the first place — a
+// duplicated Set literal could silently drift out of sync with this one.
+export const RESULT_FAMILIES = new Set([
   "dnb",
   "double_chance",
   "asian_handicap",
   "handicap",
   "winning_margin",
 ]);
-const TOTALS_FAMILIES = new Set(["goals_ou", "team_total"]);
+export const TOTALS_FAMILIES = new Set(["goals_ou", "team_total"]);
 /** Goals-path `cat` values are FAMILY_LABEL human strings, not MarketFamily ids. */
 const GOALS_TOTALS_CATS = new Set(["Goals O/U", "Team Total"]);
 
@@ -56,34 +61,21 @@ interface SanityGateOutcome {
   rawEdge: number;
 }
 
-/** All-markets assessment shape (structurally matches V3MarketOutcomeAssessment). */
+/** All-markets assessment shape (structurally matches V3MarketOutcomeAssessment).
+ *  adjustedEdge/cls (audit fix, Desktop concept #4): carried so skewShrink.ts
+ *  can shadow-evaluate a skew-shrunk assessment against its own class gate
+ *  without needing the full modelP/q/odds/penaltyPts the live assessment had. */
 export interface AllMarketsSanityInput extends SanityGateOutcome {
   family: string;
   desc: string;
+  adjustedEdge: number;
+  cls: string;
 }
 
 /** Goals-path assessment shape (structurally matches V3MarketAssessment). */
 export interface GoalsSanityInput extends SanityGateOutcome {
   cat: string;
   label: string;
-}
-
-function sideOfResultDesc(desc: string): "home" | "away" | null {
-  const d = desc.toLowerCase();
-  const mentionsHome = d.includes("home");
-  const mentionsAway = d.includes("away");
-  if (mentionsHome && !mentionsAway) return "home";
-  if (mentionsAway && !mentionsHome) return "away";
-  return null; // draw / ambiguous double-chance combos — excluded from the ratio
-}
-
-function directionOfTotalsDesc(desc: string): "over" | "under" | null {
-  const d = desc.toLowerCase();
-  const hasOver = /\bover\b/.test(d);
-  const hasUnder = /\bunder\b/.test(d);
-  if (hasOver && !hasUnder) return "over";
-  if (hasUnder && !hasOver) return "under";
-  return null;
 }
 
 /** (a) cap-rate. Division guard: a quiet slate (denominator 0) reports
@@ -111,7 +103,7 @@ function resultSkewCheck(assessments: AllMarketsSanityInput[]): {
   let home = 0;
   let away = 0;
   for (const a of done) {
-    const side = sideOfResultDesc(a.desc);
+    const side = sideOfDesc(a.desc);
     if (side === "home") home++;
     else if (side === "away") away++;
   }
@@ -150,7 +142,7 @@ function totalsSkewFromDescs(descs: string[]): {
   let over = 0;
   let under = 0;
   for (const desc of descs) {
-    const dir = directionOfTotalsDesc(desc);
+    const dir = dirOfDesc(desc);
     if (dir === "over") over++;
     else if (dir === "under") under++;
   }

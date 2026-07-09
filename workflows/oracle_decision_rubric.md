@@ -21,7 +21,11 @@ These are enforced in code — no LLM instruction can bypass them:
 - `convergenceScore.tier` is `STRONG` or `MODERATE`
 - `mlFilter.mlAllowed === true`
 - `hoursToKO > 4` (pre-match window)
-- `evMarkets` has ≥ 1 market with `ev > 0.04`
+- `evMarkets` has ≥ 1 market clearing its class's EV gate — per-class thresholds
+  live in `marketsV3/evGate.ts:61-69` (`CLASS_GATE`: S ev%≥0.04, M edge-only,
+  L ev%≥0.15, X ev%≥0.20 & odds≤15), not a single blanket number. See
+  `.claude/skills/oracle-engine/SKILL.md` §4 for the full table plus the v4
+  heightened variant.
 
 ### Lean NO_BET when
 
@@ -31,7 +35,23 @@ These are enforced in code — no LLM instruction can bypass them:
 - `portfolioCorrelation > 0.6` and no clear best leg
 - Key injury flag present on the recommended side — escalate from MODERATE → NO_BET, not DC
 - Fixture is a cross-confederation friendly with no shared opposition baseline (form not comparable)
-- Both teams are in a title-race / promotion-playoff context (home advantage signal degrades to near-50%)
+
+### Provisional signals (shadow-tracked, not a hard trigger)
+
+Rules added from a single post-mortem match get logged here first, not promoted straight
+to "Lean NO_BET" — `tools/skillopt.py`'s own auto-proposed edits already require
+`MIN_SAMPLE_SIZE = 10` scored disagreements plus a held-out-RPS improvement before applying
+(see `propose_edit`); a rule a human adds manually from one match deserves the same bar, not
+a lower one just because a person typed it instead of the script.
+
+- **Title-race / promotion-playoff context** (audit fix, EV-strategy-audit #6): originally
+  added 2026-06-04 as a hard "Lean NO_BET when" trigger from a single match (Raja 0-1
+  Berkane, see SkillOpt history below) — an n=1 sample, added before `skillopt.py`'s
+  `MIN_SAMPLE_SIZE` gate existed. Demoted here: when both teams have live title/promotion/
+  survival stakes, note it as a mild negative factor on confidence (home-advantage signal
+  may be less reliable than usual) rather than an automatic NO_BET lean. Promote back to a
+  hard trigger only once it clears the same n≥10 + held-out-RPS-improvement bar every other
+  rubric rule now has to clear.
 
 ### Adversary objection framework
 
@@ -71,6 +91,11 @@ probability reverts toward 50% regardless of table position. Apply a home-advant
 of ~10 percentage points when both sides have live stakes. Raja (1st) lost 0-1 at home to
 Berkane (2nd) in a title-race match — market's 50% implied was correct; our 60%+ read was not.
 
+**Correction (EV-strategy-audit #6, 2026-07-08):** this was a hard "Lean NO_BET" trigger from
+one match — never actually held to the n≥10 validation bar `skillopt.py`'s own auto-proposed
+edits require. Demoted to a provisional/shadow-tracked signal (see "Provisional signals"
+above) until it's validated on more samples the same way every other rule now has to be.
+
 **Rule added — Key injury list → escalate to NO_BET.**
 When the recommended side has 2+ confirmed absences (injury or suspension), the pick must
 downgrade one full tier. MODERATE → NO_BET. HIGH → MODERATE (reduced stake only). Wydad's
@@ -79,7 +104,9 @@ placed — it lost 2-1 in stoppage time.
 
 **Validated — Low-EV friendly win markets correctly skipped.**
 Netherlands at 1.29 for a friendly: NO BET call. Algeria won 1-0. Backing at 1.29 would
-have lost. Rotation-risk + near-zero EV = correct pass. Reinforces the `ev > 0.04` gate.
+have lost. Rotation-risk + near-zero EV = correct pass. Reinforces the class EV
+gate (see Hard/soft gates above — this was a Class S candidate, below the 0.04
+EV% floor).
 
 **Validated — Table position + H2H in mid-table leagues reliable.**
 Skellefteå (3rd, H2H 5-1) won 3-1 at Storfors (6th). KSZO (home playoff, strong form) won
