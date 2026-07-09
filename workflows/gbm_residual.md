@@ -103,6 +103,20 @@ Then modify `build_features` to look up the Elo snapshot nearest to but before e
 Computable from backfill CSVs. Separates attack and defense strength with exponential decay.
 The literature benchmark (CatBoost + pi-ratings) achieves RPS ~0.1925. PRD §8.6(b).
 
+### 4. PPDA + 1X2 reverse-line-movement — UNTRIED (audit fix 2026-07-09)
+`tools/fetch_ppda.py` and `tools/fetch_reverse_lm.py` are fully wired (`load_ppda`/
+`load_reverse_lm`, called by default unless `--no-ppda`/`--no-reverse-lm`) but the
+currently-saved model's 95-col `feat_cols` (`.tmp/models/gbm_residual_meta.json`,
+mirrored verbatim in `packages/engine/src/gbm/index.ts`'s `GBM_FEAT_COLS`) has zero
+`ppda*`/`ml*` columns — Run 3 (the last recorded training run above) predates both
+fetchers or ran with them disabled. Their output CSVs already exist
+(`.tmp/ppda/ppda_features.csv`, `.tmp/reverse-lm/reverse_lm_features.csv` — 10,850 /
+2,379 rows respectively, no re-download needed) and will be picked up automatically
+by the next `python tools/gbm_residual.py` run. Genuinely untried lever, not a wiring
+gap — pressing intensity and sharp-money drift are exactly the kind of signal a
+closing-line-efficient market (per "Why GBM fails" above) might not have fully priced
+in thin leagues. Worth a Run 4 alongside the split-model approach (#1).
+
 ## Feature importances (Run 3 — top 15)
 
 | Rank | Feature | Importance |
