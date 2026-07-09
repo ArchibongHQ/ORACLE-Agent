@@ -50,10 +50,18 @@ function lgamma(x: number): number {
   return 0.5 * Math.log(2 * Math.PI) + (xx + 0.5) * Math.log(t) - t + Math.log(a);
 }
 
-/** NB(mean, r) PMF at k, via log-space to avoid overflow at larger k. */
+/** NB(mean, r) PMF at k, via log-space to avoid overflow at larger k. Mean
+ *  floored at 0.01 (matches math/index.ts's poissonPMF convention) rather
+ *  than short-circuiting to 0 at mean<=0 — the old `mean<=0 → 0` guard made
+ *  nbPMF(0, 0, r) return 0 instead of ~1, which inverted every derived tail
+ *  (nbCDF/nbTailOver/nbTailUnder): a team truly averaging 0 corners priced as
+ *  ~100% "over any line" instead of ~100% "under," a review-caught bug fixed
+ *  before it ever fired in production (season corner/shots averages are
+ *  never literally 0.0, but a thin early-season sample could get close). */
 export function nbPMF(k: number, mean: number, r: number): number {
-  if (k < 0 || mean <= 0) return 0;
-  const p = r / (r + mean);
+  if (k < 0) return 0;
+  const m = Math.max(0.01, mean);
+  const p = r / (r + m);
   const logPmf = lgamma(k + r) - lgamma(r) - lgamma(k + 1) + r * Math.log(p) + k * Math.log(1 - p);
   return Math.exp(logPmf);
 }

@@ -83,6 +83,20 @@ describe("Negative Binomial math (nbPMF/nbCDF)", () => {
     const tightTail = nbTailOver(farLine, 10, CORNERS_R_MAX); // less overdispersion
     expect(wideTail).toBeGreaterThan(tightTail);
   });
+
+  it("a zero (or negative) mean prices near-certain UNDER, not OVER (review-caught bug)", () => {
+    // Before the fix, nbPMF(k, 0, r) returned 0 for every k (including k=0),
+    // so nbCDF stayed 0 forever and nbTailOver(line, 0, r) came back ~1 — a
+    // team truly averaging 0 corners/shots priced as near-certain OVER any
+    // line instead of near-certain UNDER. Mean is now floored at 0.01 (same
+    // convention as math/index.ts's poissonPMF), so P(X=0) dominates instead.
+    expect(nbPMF(0, 0, 10)).toBeGreaterThan(0.9);
+    expect(nbCDF(0, 0, 10)).toBeGreaterThan(0.9);
+    expect(nbTailOver(0.5, 0, 10)).toBeLessThan(0.1);
+    expect(nbTailUnder(0.5, 0, 10)).toBeGreaterThan(0.9);
+    // Negative mean (shouldn't occur upstream, but the guard must not invert either).
+    expect(nbTailUnder(0.5, -1, 10)).toBeGreaterThan(0.9);
+  });
 });
 
 describe("cornersMeans (dormancy + blending)", () => {

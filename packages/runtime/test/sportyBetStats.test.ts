@@ -454,6 +454,30 @@ describe("buildStatsOverride — all-markets v3 additions", () => {
     expect(override?.ouO35H).toBeUndefined();
   });
 
+  it("populates sotForH/A from possessionValue.shots_on_target_avg under the sample gate (PR-22)", () => {
+    const d = detail({
+      standings: { home: { played: 10 }, away: { played: 10 } },
+      possessionValue: {
+        home: { shots_on_target_avg: 5.4 },
+        away: { shots_on_target_avg: 3.9 },
+      },
+    });
+    expect(buildStatsOverride(d)).toMatchObject({ sotForH: 5.4, sotForA: 3.9 });
+  });
+
+  it("omits sotForH/A when the sample gate fails, even with possessionValue present", () => {
+    const d = detail({
+      standings: { home: { played: 2 }, away: { played: 2 } },
+      possessionValue: {
+        home: { shots_on_target_avg: 5.4 },
+        away: { shots_on_target_avg: 3.9 },
+      },
+    });
+    const override = buildStatsOverride(d);
+    expect(override?.sotForH).toBeUndefined();
+    expect(override?.sotForA).toBeUndefined();
+  });
+
   it("sums yellow+red into cardsAvg and types O1.5/O2.5/O3.5 hit-rates under the sample gate (PR-4)", () => {
     const d = detail({
       standings: { home: { played: 10 }, away: { played: 10 } },
