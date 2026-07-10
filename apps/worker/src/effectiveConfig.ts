@@ -40,6 +40,10 @@ export function printEffectiveConfig(
     calibrationEpochStart: cfg.calibrationEpochStart,
     v3Ratings: cfg.v3Ratings,
     sharpFeed: cfg.sharpFeed,
+    // [Wave 3] P1-2 SafetyPipeline extraction / legacy-pricer rollback lever —
+    // same "visible from the first log line" rationale as Waves 1-2's rows.
+    v3Safety: cfg.v3Safety,
+    legacyPricer: cfg.legacyPricer,
     enableGoalsOnlyMode: cfg.enableGoalsOnlyMode,
     enableNewsIntel: cfg.enableNewsIntel,
     enableLlmMarketExecutor: cfg.enableLlmMarketExecutor,

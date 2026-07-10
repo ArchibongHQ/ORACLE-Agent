@@ -321,6 +321,8 @@ export {
   familyPenaltyMultiplier,
   MLSafetyFilter,
 } from "./safety/index.js";
+export type { SafetyPipelineInput, SafetyPipelineResult } from "./safety/pipeline.js";
+export { runSafetyPipeline } from "./safety/pipeline.js";
 export type {
   AgentError,
   AgentErrorCode,

@@ -415,6 +415,18 @@ export function buildConfig(
     // Playwright/Google-AI-Mode fallback). Default shadow — persists CLV
     // records without yet being the criterion that flips sharpFeedVerified.
     sharpFeed: parseTriState(env.ORACLE_SHARP_FEED, "shadow"),
+    // [refactor P1-2, Wave 3] SafetyPipeline extraction (stage 1) + dual-run
+    // shadow diff (stage 2). "shadow" (default) = the extracted pipeline runs
+    // alongside legacy _run when usedV3, logging a structured diff into the
+    // run manifest — DecisionContext still reads legacy output. "on" would
+    // make SafetyPipeline authoritative (Wave 4 territory, gated on golden
+    // tests + dual-run diff review, never hand-flipped early).
+    v3Safety: parseTriState(env.ORACLE_V3_SAFETY, "shadow"),
+    // [refactor P1-2, Wave 3] Rollback lever for the legacy pricer
+    // (scanMarkets/scanAllMarketsFallback) — "on" (default) keeps it live;
+    // "off" is Wave 4's eventual cutover flag, gated on a ≥7-slate parity
+    // report + UNPRICED_BY_DESIGN registry closing the coverage gap.
+    legacyPricer: env.ORACLE_LEGACY_PRICER?.toLowerCase() === "off" ? "off" : "on",
   };
 }
 
