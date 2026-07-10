@@ -7,18 +7,21 @@ Run ORACLE's analysis engine against today's fixtures, produce a self-contained 
 Candidate generation runs through the deterministic all-markets v3 engine by default (`ORACLE_MARKETS_V3=on`) instead of the legacy `scanMarkets` cascade. The v4 upgrade (PRs #39–#44 + PR-7/PR-8) added the HFA λ term, v4 gates/completeness, slate pre-filter, Outputs A–D, R10 cross-check, corners/cards, the calibration feedback loop, and LLM posture A (demote draft cascade + arbiter top-N only) — see `workflows/markets_v3.md` for the full spec-to-code map, all env flags, and per-PR rollback.
 
 ## Daily control flow (WAT cron, source of truth = `apps/worker/src/index.ts`)
-All jobs are pinned to explicit WAT (`WAT_TZ`). If the box was off at a slot, `checkHeartbeatFreshness` fires the missed acquire/goals jobs on daemon restart.
+All jobs are pinned to explicit WAT (`WAT_TZ`). If the box was off at a slot, `checkHeartbeatFreshness` fires the missed acquire/unified-batch jobs on daemon restart.
+
+**2026-07-10 cron merge:** the former 09:35 `daily-batch` and 09:40 `goals-batch` cron slots are now ONE `unified-batch` job at 09:35 WAT — `runDailyBatch` then `runGoalsBatch`, sequential, in the same job. This isn't just a schedule tidy-up: the goals pipeline's cross-batch veto (`goalsV3Pipeline.ts`'s `loadTodaysCompletedLegs`) reads the RunManifests `runDailyBatch` just wrote, so daily must complete before goals starts. Five minutes of clock separation used to satisfy that by coincidence, not by guarantee; running them in one job makes the ordering structural.
 
 | Time (WAT) | Job | What |
 |---|---|---|
 | 02:00 | `fotmob-xg-refresh` | (PR-7) `acquire_daily.py --live-xg-refresh` → FotMob live-xG + `build_xg_table.py` rebuild (rolling xG prior, fills obscure-league gaps) when `ORACLE_FETCH_LIVE_XG=on` (default). Reads the on-disk sidecar for team names — no live scrape, no lake write. Standalone/off-peak by design: its Playwright browser-page swarm never stacks with the 09:30 job's own. |
 | 09:30 | `acquire-daily` | `acquire_daily.py` → Parquet lake + JSON sidecar; news-intel enrichment; sends the fixture spreadsheet (xlsx) report to Telegram. Also runs `fetch_injuries.py` when `ORACLE_FETCH_INJURIES=on`, and `fetch_squad_availability.py` when `ORACLE_FETCH_SQUAD_AVAILABILITY=on`. |
-| 09:35 | `daily-batch` | `runDailyBatch("scheduled")` → full v3 all-markets analysis → HTML report + Telegram. Internal scrape is gap-fill-only (reuses the 09:30 lake). Calibration read side runs here (stamps `state.ledger` when `ORACLE_CALIBRATION_LEDGER=on`). |
-| 09:40 | `goals-batch` | Independent goals discovery funnel over the SportyBet pool. |
+| 09:35 | `unified-batch` | `runDailyBatch("scheduled")` → full v3 all-markets analysis → **v5 Phase 7 four-output delivery** (Outputs A–D + mini-ACCA appendix, see below) via HTML report + Telegram, **then** `runGoalsBatch("scheduled")` → independent goals discovery funnel over the full SportyBet pool, delivered as ONE consolidated "goals supplement" Telegram message (was five separate slips — see `apps/worker/src/goalsAccumulator.ts`'s `finalizeGoalsSelection`). Internal scrapes are gap-fill-only (reuse the 09:30 lake/SportyBet index). Calibration read side runs here (stamps `state.ledger` when `ORACLE_CALIBRATION_LEDGER=on`). |
 | 10:00 | `resolve-yesterday` | `resolveDay` → fetch yesterday's results, write resolution records, **settle picks into the calibration ledger** (PR-7, shadow+on) + surface hit-rate/Brier/ECE/CLV metrics. |
 | 10:00 / 12:00 / 13:00 | punt prompts | Named-slip counter-booking prompts (independent job). |
 
 **HTML report vs xlsx workbook:** the engine + LLM read the **Parquet lake + sidecar directly** — neither rendered artifact is the analysis feed. The **xlsx workbook** (`fixtureWorkbook.ts`) is the canonical LLM-readable delivery; the **HTML report** (`report.ts`) is human-facing only.
+
+**v5 Phase 7 delivery format:** the daily batch's Telegram message carries all four `unified-markets-analysis-prompt-v5.md` §7 outputs, assembled by `packages/runtime/src/marketsV3/slateOutputs.ts`'s `buildMarketsV3SlateOutputs` — Output A (top-39 all-markets), Output B (mini-ACCA + best singles, per the engine's own `V3OutputB`), Output C (best-5 high-odds ≥4.00), Output D (best-3 mid-odds 2.50–3.99) — plus the **§7.5 mini-ACCA appendix**: `buildMiniAccaAppendix` (in the same file) picks 2–4 Class S/M-only legs from Output A (L/X strictly excluded), preferring distinct leagues/kickoff windows, combined P = (∏ model P) × 0.85, stake guidance ≤1% bankroll — and returns `null` (rendered as an explicit skip note by `formatMiniAccaAppendix`, never silence) when fewer than 2 S/M legs qualify. The appendix line rides `BatchSummary.sanityNote` (no dedicated field added to `@oracle/notify`) alongside the existing sanity/skew-shrink lines.
 
 ## Required inputs
 - `.tmp/fixtures/today.txt` — newline-delimited fixture list (see format below)
@@ -49,9 +52,10 @@ Write today's fixtures to `.tmp/fixtures/today.txt`. Sources:
 - `tools/fetch_fixtures.py` (when implemented) → calls api-football or football-data.org
 
 ### 2. Run the batch
-**Scheduled (cron):** The worker runs the main daily batch at **09:35 WAT** when `node dist/index.js`
-is running (see the control-flow table above for the full chain). The goals batch fires at 09:40 WAT
-as an independent funnel over the SportyBet pool.
+**Scheduled (cron):** The worker runs the unified batch at **09:35 WAT** when `node dist/index.js`
+is running (see the control-flow table above for the full chain) — the main all-markets daily batch,
+then the goals discovery funnel over the full SportyBet pool, sequentially in the same job (merged
+2026-07-10; previously two adjacent cron slots at 09:35/09:40).
 
 **Manual one-shot:**
 ```bash

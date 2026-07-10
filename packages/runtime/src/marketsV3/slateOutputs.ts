@@ -40,6 +40,87 @@ export interface MarketsV3SlateOutputs {
    *  header) — null when sanity fired no skew flag, or every flagged pick
    *  would still clear its gate under shrinkage. Never affects pool/outputA-D. */
   skewShrinkLine: string | null;
+  /** v5-prompt §7.5 optional appendix (wave-1, 2026-07-10) — 2-4 Class S/M-only
+   *  legs from outputA, distinct fixtures (free from outputA's own 1-per-fixture
+   *  rule), preferring distinct leagues/kickoff windows. Null when fewer than 2
+   *  S/M legs qualify (§7.5: "skip the appendix entirely"). Deliberately a
+   *  SEPARATE, stricter builder from V3OutputB.miniAcca above — that one
+   *  back-fills with L/X legs when the S/M pool runs short (a different, older
+   *  policy); this one never does, per the v5 spec's explicit L/X exclusion. */
+  miniAccaAppendix: MiniAccaAppendix | null;
+}
+
+export const MINI_ACCA_APPENDIX_MIN_LEGS = 2;
+export const MINI_ACCA_APPENDIX_MAX_LEGS = 4;
+/** v5 §7.5: `Combined P ≈ (∏ P_model) × 0.85`. */
+export const MINI_ACCA_APPENDIX_HAIRCUT = 0.85;
+export const MINI_ACCA_APPENDIX_STAKE_NOTE = "Stake ≤1% of bankroll.";
+/** Soft "different kick-off windows" preference (v5 §7.5) — mirrors the 3h gap
+ *  @oracle/runtime's selectGoals.ts uses for its own mini-ACCA (V3_MINI_ACCA_KICKOFF_GAP_MS). */
+const MINI_ACCA_APPENDIX_KICKOFF_GAP_MS = 3 * 60 * 60 * 1000;
+
+export interface MiniAccaAppendix {
+  legs: V3OutputRow[];
+  /** (∏ leg.mp) × MINI_ACCA_APPENDIX_HAIRCUT. */
+  combinedP: number;
+  stakeGuidance: string;
+}
+
+function kicksOffTooClose(a: V3OutputRow, b: V3OutputRow): boolean {
+  const ta = Date.parse(a.kickoff);
+  const tb = Date.parse(b.kickoff);
+  return (
+    Number.isFinite(ta) &&
+    Number.isFinite(tb) &&
+    Math.abs(ta - tb) < MINI_ACCA_APPENDIX_KICKOFF_GAP_MS
+  );
+}
+
+/** v5-prompt §7.5 — "Optional appendix — Mini-ACCA": 2-4 legs from Output A,
+ *  different fixtures (free — outputA already carries max 1 row per fixture),
+ *  different leagues/kickoff windows where possible, Class S or M legs ONLY
+ *  (L/X excluded — "the flat haircut assumes near-independent low-error
+ *  legs"). Returns null when fewer than 2 S/M legs qualify — the spec's own
+ *  "skip the appendix entirely" instruction, not a fail-open default. */
+export function buildMiniAccaAppendix(outputA: V3OutputRow[]): MiniAccaAppendix | null {
+  const eligible = outputA.filter((r) => r.cls === "S" || r.cls === "M");
+  if (eligible.length < MINI_ACCA_APPENDIX_MIN_LEGS) return null;
+
+  const legs: V3OutputRow[] = [];
+  const usedLeagues = new Set<string>();
+  for (const row of eligible) {
+    if (legs.length >= MINI_ACCA_APPENDIX_MAX_LEGS) break;
+    if (usedLeagues.has(row.league)) continue;
+    if (legs.some((l) => kicksOffTooClose(l, row))) continue;
+    legs.push(row);
+    usedLeagues.add(row.league);
+  }
+  // Backfill (allowing repeat leagues/kickoff windows) if the diversity-first
+  // pass left us short of the minimum — still drawn ONLY from `eligible`
+  // (S/M), never widening into L/X the way V3OutputB.miniAcca's fallback does.
+  if (legs.length < MINI_ACCA_APPENDIX_MIN_LEGS) {
+    for (const row of eligible) {
+      if (legs.length >= MINI_ACCA_APPENDIX_MAX_LEGS) break;
+      if (!legs.includes(row)) legs.push(row);
+    }
+  }
+  if (legs.length < MINI_ACCA_APPENDIX_MIN_LEGS) return null;
+
+  const combinedP = legs.reduce((p, r) => p * r.mp, 1) * MINI_ACCA_APPENDIX_HAIRCUT;
+  return { legs, combinedP, stakeGuidance: MINI_ACCA_APPENDIX_STAKE_NOTE };
+}
+
+/** v5 §7.5 Telegram/log line — mirrors formatSanityFlags's plain-string
+ *  convention. Null appendix renders as an explicit skip note, not silence. */
+export function formatMiniAccaAppendix(appendix: MiniAccaAppendix | null): string {
+  if (!appendix) return "Mini-ACCA appendix: skipped (fewer than 2 Class S/M legs qualified).";
+  const legsText = appendix.legs
+    .map((l) => `${l.home} v ${l.away} — ${l.desc} (${l.cls}, ${l.odds.toFixed(2)})`)
+    .join("; ");
+  return (
+    `Mini-ACCA appendix (${appendix.legs.length} legs, S/M only): ${legsText} — ` +
+    `Combined P ${(appendix.combinedP * 100).toFixed(1)}%. ${appendix.stakeGuidance}`
+  );
 }
 
 /** Build the day's slate-level v3 outputs from every successfully-analyzed
@@ -78,6 +159,7 @@ export function buildMarketsV3SlateOutputs(jobs: FixtureJobSuccess[]): MarketsV3
     sanity,
     sanityLine: formatSanityFlags(sanity),
     skewShrinkLine: formatSkewShrinkShadow(skewShrink),
+    miniAccaAppendix: buildMiniAccaAppendix(outputA),
   };
 }
 

@@ -16,6 +16,14 @@ import {
   fetchTodaysFixtures,
   findSidecarDetail,
   formatMarketCoverageNote,
+  // [wave-1] formatMiniAccaAppendix is NOT yet in @oracle/runtime's barrel
+  // (packages/runtime/src/index.ts) — that file is out of this workstream's
+  // edit scope. Needs this line added before typecheck passes:
+  //   export { formatMiniAccaAppendix } from "./marketsV3/slateOutputs.js";
+  // (alongside a `MiniAccaAppendix` type export on the existing
+  // `export type { MarketsV3SlateOutputs, ... }` line, for callers that want
+  // the type — not required by this file, which only calls the formatter.)
+  formatMiniAccaAppendix,
   formatSlateGateLog,
   loadSportyBetIndex,
   ORACLE_PRIORITY_LEAGUES,
@@ -213,13 +221,24 @@ export async function runDailyBatch(
     );
     if (v3Outputs.skewShrinkLine)
       process.stdout.write(`[markets-v3] ${v3Outputs.skewShrinkLine}\n`);
+    // v5-prompt §7.5 mini-ACCA appendix (wave-1, 2026-07-10) — logged and folded
+    // into the delivered summary alongside the sanity/skew lines below. Always
+    // a string (formatMiniAccaAppendix renders an explicit skip note rather
+    // than nothing when fewer than 2 Class S/M legs qualified), so the daily
+    // Telegram message always states the appendix's outcome one way or another.
+    const miniAccaAppendixLine = formatMiniAccaAppendix(v3Outputs.miniAccaAppendix);
+    process.stdout.write(`[markets-v3] ${miniAccaAppendixLine}\n`);
     if (summary.actionable.length > 39) {
       summary.actionable = curateActionableByV3Outputs(summary.actionable, v3Outputs.outputA, 39);
       summary.actionableCount = summary.actionable.length;
     }
-    summary.sanityNote = v3Outputs.skewShrinkLine
-      ? `${v3Outputs.sanityLine}\n${v3Outputs.skewShrinkLine}`
-      : v3Outputs.sanityLine;
+    // BatchSummary (packages/notify) has no dedicated mini-ACCA field — reusing
+    // the existing free-text sanityNote (already rendered verbatim by
+    // formatSummaryText/Html in @oracle/notify) rather than touching that
+    // package, which is out of this workstream's edit scope.
+    summary.sanityNote = [v3Outputs.sanityLine, v3Outputs.skewShrinkLine, miniAccaAppendixLine]
+      .filter((line): line is string => Boolean(line))
+      .join("\n");
 
     // PR-20: slate-wide route-coverage rollup — reports the recoverable skip
     // tail's size, never suppresses picks. ORACLE_MARKETS_COVERAGE=off skips

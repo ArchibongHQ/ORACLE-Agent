@@ -1,8 +1,14 @@
 /** ORACLE scheduled worker — thin cron shell.
  *  node-cron, single morning sequence (WAT = UTC+1): acquire-daily + fixture
- *  report @09:30 WAT -> main all-markets batch @09:35 WAT -> goals-only batch
- *  @09:40 WAT (independent discovery funnel over the full SportyBet pool) ->
- *  resolve-yesterday + punt prompt @10:00 WAT (retries @12:00/13:00 WAT).
+ *  report @09:30 WAT -> unified batch @09:35 WAT (main all-markets batch,
+ *  delivering the v5 Phase 7 four-output message + mini-ACCA appendix, then
+ *  the goals-only discovery funnel over the full SportyBet pool, delivering
+ *  its own single consolidated "goals supplement" message) -> resolve-
+ *  yesterday + punt prompt @10:00 WAT (retries @12:00/13:00 WAT). The two
+ *  09:35/09:40 slots were merged 2026-07-10 — daily and goals now run
+ *  sequentially in one job instead of two clock-adjacent cron slots, making
+ *  the goals pipeline's cross-batch-veto ordering dependency on the daily
+ *  batch's RunManifests structural rather than a five-minute clock assumption.
  *  All analysis/fixture/report logic lives in @oracle/runtime; this file only schedules. */
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -248,10 +254,11 @@ const DAILY_BATCH_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a faili
 const ACQUIRE_SLOT_MINUTES = 9 * 60 + 30; // 09:30 WAT
 const DAILY_BATCH_SLOT_MINUTES = 9 * 60 + 35; // 09:35 WAT
 
-// [audit fix, P0-4] Cap on how long the 09:35/09:40 cron slots wait for the
-// 09:30 acquire job before proceeding anyway (awaitAcquireDailyJobOrTimeout) —
-// the "fallback cron" half of the fix: a hung/dead acquire job must not
-// permanently starve the rest of the day's pipeline.
+// [audit fix, P0-4] Cap on how long the 09:35 unified batch (and its
+// back-online equivalents) wait for the 09:30 acquire job before proceeding
+// anyway (awaitAcquireDailyJobOrTimeout) — the "fallback cron" half of the
+// fix: a hung/dead acquire job must not permanently starve the rest of the
+// day's pipeline.
 const ACQUIRE_CHAIN_TIMEOUT_MS = 20 * 60 * 1000; // 20 min
 
 function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
@@ -300,13 +307,25 @@ async function checkHeartbeatFreshness(): Promise<void> {
     process.stdout.write(
       "[worker] daily lake stale/missing — triggering back-online acquisition\n"
     );
-    // After back-online acquisition completes, send the fixture report and fire the
-    // goals batch immediately so a machine that was off across 09:30 WAT still gets
-    // the report + picks as soon as it comes up — mirrors the 09:30 WAT cron sequence.
+    // After back-online acquisition completes, send the fixture report only —
+    // deliberately does NOT also fire runGoalsBatch here [2026-07-10 cron
+    // merge]. The daily-batch back-online trigger below now runs the full
+    // unified daily->goals sequence, and both `if` blocks in this function
+    // read `lastBatchAt` from the SAME heartbeat snapshot at the top of this
+    // pass — a true back-online case (machine off across both 09:30 AND 09:35
+    // WAT) has both the lake AND the daily batch stale simultaneously, so
+    // both blocks fire in the same pass. Running runGoalsBatch from both
+    // would double-run it for the same day. The daily-batch trigger's own
+    // awaitAcquireDailyJobOrTimeout already waits for the acquireDailyJob this
+    // block kicks off, so deferring the unified sequence to it is safe, not
+    // just non-duplicating. (Known accepted gap: if runDailyBatch succeeds —
+    // which writes the lastBatch heartbeat isDailyBatchFreshForToday checks —
+    // but the chained runGoalsBatch then throws, no back-online trigger will
+    // retry goals until the next calendar day; same class of gap as any other
+    // logJob() failure here, which logs and does not auto-retry.)
     logJob("acquire-daily@back-online", async () => {
       await acquireDailyJob();
       await sendDailyFixtureReport();
-      await runGoalsBatch("scheduled");
     });
   }
 
@@ -329,9 +348,17 @@ async function checkHeartbeatFreshness(): Promise<void> {
     // both the lake AND the batch stale) — without this handoff, this
     // logJob's runDailyBatch could start concurrently with the other one's
     // acquireDailyJob, the same race the cron-slot fix addresses below.
-    logJob("daily-batch@back-online", async () => {
+    //
+    // [2026-07-10 cron merge] This is now also the SOLE back-online path for
+    // runGoalsBatch — the lake/acquire trigger above deliberately stopped
+    // calling it (see that trigger's comment) so a back-online restart runs
+    // the unified daily->goals sequence exactly once, mirroring the merged
+    // 09:35 WAT cron job's own daily-then-goals order (structural dependency:
+    // goals' cross-batch veto reads the RunManifests runDailyBatch just wrote).
+    logJob("unified-batch@back-online", async () => {
       await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
       await runDailyBatch("scheduled");
+      await runGoalsBatch("scheduled");
     });
   }
 
@@ -494,8 +521,10 @@ if (!IS_ONE_SHOT) {
   // fixture spreadsheet report to Telegram. This is now the ONLY acquisition job —
   // the old 00:00 scrape was removed so picks are sourced from one fresh morning
   // odds snapshot instead of two. Back-online: if the machine was off at this slot,
-  // checkHeartbeatFreshness fires acquireDailyJob + goals immediately on daemon
-  // restart (see workerUtils.ts's isLakeFreshForToday/LAKE_STALE_MS).
+  // checkHeartbeatFreshness fires acquireDailyJob + report immediately on daemon
+  // restart (see workerUtils.ts's isLakeFreshForToday/LAKE_STALE_MS); the unified
+  // daily->goals sequence itself is deferred to the daily-batch back-online
+  // trigger below, not fired from here — see that trigger's own comment for why.
   cron.schedule(
     "30 9 * * *",
     () =>
@@ -506,48 +535,45 @@ if (!IS_ONE_SHOT) {
     { timezone: WAT_TZ }
   );
 
-  // 3. Main Daily Batch — 09:35 WAT slot, but its heavy work now waits (up to
+  // 3. Unified Batch — 09:35 WAT slot (merged 2026-07-10; previously two
+  // adjacent cron slots, main all-markets @09:35 + goals-only @09:40). The
+  // goals pipeline's cross-batch veto (goalsV3Pipeline.ts's
+  // loadTodaysCompletedLegs) reads the RunManifests runDailyBatch just wrote —
+  // daily MUST complete before goals starts. Five minutes of clock separation
+  // happened to satisfy that in practice, but was never a guarantee (a slow
+  // daily-batch chunk loop overrunning past :40 would race the goals cron
+  // tick). Running them sequentially in one job makes the dependency
+  // structural: goals literally cannot start until runDailyBatch's own await
+  // resolves, not "usually five minutes later." Heavy work still waits (up to
   // ACQUIRE_CHAIN_TIMEOUT_MS) for the 09:30 acquire job to actually finish
-  // instead of assuming 5 minutes was enough [audit fix, P0-4]. Full LLM
-  // all-markets analysis -> HTML report + Telegram. Its internal scrape is
-  // gap-fill-only — runDailyBatch only re-acquires when the 09:30 lake is
-  // missing/stale (see isLakeFreshForToday), so this normally reuses the lake the
-  // job above just wrote.
+  // instead of assuming a fixed delay was enough [audit fix, P0-4].
+  // runDailyBatch's internal scrape is gap-fill-only (reuses the 09:30 lake
+  // when fresh); runGoalsBatch's discovery funnel (mechanical pre-filter ->
+  // Sonnet screen) runs over the FULL SportyBet pool independently of
+  // whatever subset runDailyBatch analyzed, using the same fresh morning
+  // odds. Delivery: runDailyBatch sends the v5 Phase 7 four-output message
+  // (Outputs A-D + mini-ACCA appendix — see slateOutputs.ts); runGoalsBatch
+  // sends its own single consolidated "goals supplement" message (was five
+  // separate slips — see goalsAccumulator.ts's finalizeGoalsSelection).
   cron.schedule(
     "35 9 * * *",
     () =>
-      logJob("daily-batch@09:35-WAT", async () => {
+      logJob("unified-batch@09:35-WAT", async () => {
         await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
         await runDailyBatch("scheduled");
-      }),
-    { timezone: WAT_TZ }
-  );
-
-  // 4. Goals batch — 09:40 WAT slot, same chained-not-clocked handoff as the
-  // daily batch above [audit fix, P0-4]. Independent discovery funnel
-  // (mechanical pre-filter -> Sonnet screen) over the full SportyBet pool,
-  // using the same fresh morning odds the lake above wrote. runGoalsBatch
-  // reads the SportyBet index written by acquireDailyJob; if the scrape is
-  // still in progress (in-flight guard) it waits for it via loadSportyBetIndex
-  // fallback + scrapeFixtures() call inside runGoalsBatch itself.
-  cron.schedule(
-    "40 9 * * *",
-    () =>
-      logJob("goals-batch@09:40-WAT", async () => {
-        await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
         await runGoalsBatch("scheduled");
       }),
     { timezone: WAT_TZ }
   );
 
-  // 5. Resolve yesterday's results — 10:00 WAT.
+  // 4. Resolve yesterday's results — 10:00 WAT.
   cron.schedule(
     "0 10 * * *",
     () => logJob("resolve-yesterday@10:00-WAT", resolveYesterdayFixtures),
     { timezone: WAT_TZ }
   );
 
-  // 6. Punt prompt — 10:00 WAT (first), 12:00 WAT + 13:00 WAT (retry only if no
+  // 5. Punt prompt — 10:00 WAT (first), 12:00 WAT + 13:00 WAT (retry only if no
   // code received yet). Runs alongside resolve-yesterday above; independent jobs,
   // no shared state.
   cron.schedule(
@@ -566,20 +592,20 @@ if (!IS_ONE_SHOT) {
     { timezone: WAT_TZ }
   );
 
-  // 7. Weekly Kaggle refresh — Saturday 04:00 WAT.
+  // 6. Weekly Kaggle refresh — Saturday 04:00 WAT.
   cron.schedule("0 4 * * 6", () => logJob("kaggle-refresh", runWeeklyKaggleRefresh), {
     timezone: WAT_TZ,
   });
 
-  // 8. Heartbeat freshness check — every hour, on the hour (timezone is a
+  // 7. Heartbeat freshness check — every hour, on the hour (timezone is a
   // no-op for an every-hour cadence, but pinned for consistency).
   cron.schedule("0 * * * *", () => void checkHeartbeatFreshness(), { timezone: WAT_TZ });
 
-  // 9. Bot heartbeat check — every 10 min (its own staleness threshold is
+  // 8. Bot heartbeat check — every 10 min (its own staleness threshold is
   // 10 min, not the 36h daily-batch threshold, so it needs tighter polling).
   cron.schedule("*/10 * * * *", () => void checkBotHeartbeatFreshness(), { timezone: WAT_TZ });
 
-  // 10. Closing-odds sweep — every 5 min (PR-8a). Timezone pin is a no-op for
+  // 9. Closing-odds sweep — every 5 min (PR-8a). Timezone pin is a no-op for
   // this cadence (minutes are timezone-invariant) — kept for consistency with
   // the hourly/10-min jobs above. Restart-safe: re-derives "who's due" from
   // storage every tick rather than tracking any in-memory per-fixture timer.
