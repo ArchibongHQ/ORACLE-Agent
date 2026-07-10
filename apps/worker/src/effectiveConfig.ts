@@ -35,6 +35,11 @@ export function printEffectiveConfig(
     safetyMode: cfg.safetyMode,
     feedIntegrity: cfg.feedIntegrity,
     sharpFeedVerified: cfg.sharpFeedVerified,
+    // [Wave 2] P0-1 segment calibration epoch / P1-1 pi-ratings / P1-4 sharp
+    // feed — same "visible from the first log line" rationale as Wave 1's row.
+    calibrationEpochStart: cfg.calibrationEpochStart,
+    v3Ratings: cfg.v3Ratings,
+    sharpFeed: cfg.sharpFeed,
     enableGoalsOnlyMode: cfg.enableGoalsOnlyMode,
     enableNewsIntel: cfg.enableNewsIntel,
     enableLlmMarketExecutor: cfg.enableLlmMarketExecutor,

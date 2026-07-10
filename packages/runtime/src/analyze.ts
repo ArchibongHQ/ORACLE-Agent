@@ -390,7 +390,11 @@ export async function resolveDay(
   },
   date: string,
   webSearchFallback: { enabled?: boolean; minConsensus?: number } = {},
-  calibration: { mode?: "off" | "shadow" | "on"; maxLedger?: number } = {}
+  // [Wave-2 setup] type widened to accept "segment" (owner: WS2-A) — the
+  // write side (settling into the ledger) behaves the same for "segment" as
+  // for "on"; only calibFactorFor's READ side (in engine/calibration) resolves
+  // a per-segment factor differently. Logic still TODO for WS2-A.
+  calibration: { mode?: "off" | "shadow" | "on" | "segment"; maxLedger?: number } = {}
 ): Promise<ResolveDayResult> {
   const allRecords = (await storage.get<AnalysisRecord[]>(STORAGE_KEYS.analysisRecords)) ?? [];
   const dayRecords = allRecords.filter((r) => r.kickoff.startsWith(date));

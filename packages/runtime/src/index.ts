@@ -13,6 +13,8 @@ export {
   loadLedgerState,
   settlePick,
 } from "./calibrationFeed.js";
+export type { ColumnFillReport, ColumnFillStat } from "./columnFillReport.js";
+export { buildColumnFillReport } from "./columnFillReport.js";
 export type {
   CommentBarAction,
   CommentBarActionType,
@@ -213,6 +215,8 @@ export {
   pickSafestGoalsLeg,
   selectGoalsAccumulator,
 } from "./selectGoals.js";
+export type { SharpOddsRecord } from "./sharpFeed.js";
+export { fetchSharpFairPrice } from "./sharpFeed.js";
 export { blendRecencyScored, MIN_PLAYED_FOR_OVERRIDE } from "./sportyBetStats.js";
 export {
   isSrlTeamName,

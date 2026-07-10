@@ -343,8 +343,12 @@ export interface OracleConfig {
   //              engine still runs at calibFactor=1.0 (no behaviour change)
   //   "on"     — write side settles + read side stamps state.ledger so the engine's
   //              calibFactor + isotonic 1x2 calibration activate live
+  //   "segment" — [Wave 2, WS2-A] like "on", but calibFactorFor resolves a
+  //              per-(league,family)-segment factor once that segment clears
+  //              its own significanceAcceptGate (minN 300, effect 0.002),
+  //              falling back to the existing global factor otherwise.
   // Default "shadow" (ORACLE_CALIBRATION_LEDGER) for the first 1-2 weeks.
-  calibrationLedger?: "off" | "shadow" | "on";
+  calibrationLedger?: "off" | "shadow" | "on" | "segment";
   // [refactor P0-2] Market-anchored blend (v5 §5.8): the de-vigged market price
   // is the prior, the model adjusts it. Three-state:
   //   "off"    — blend fields not computed (byte-identical to pre-P0-2 gating)
@@ -373,6 +377,23 @@ export interface OracleConfig {
   // S04 compression, S05 CLV survival) are zero-weighted — they'd otherwise
   // compute on air when the only odds source is the soft book being bet into.
   sharpFeedVerified?: boolean;
+  // [Wave 2, WS2-A] ISO date (e.g. "2026-07-10") marking the Wave-1 deploy —
+  // the P0-2/P0-3 pricing-behavior boundary. Per-segment calibration must only
+  // accumulate {n,wins,pSum} from picks whose BetRecord.epoch is on/after this
+  // date; pre-epoch records reflect the OLD pricing and would poison segment
+  // factors if mixed in. Sourced from ORACLE_CALIBRATION_EPOCH_START.
+  calibrationEpochStart?: string;
+  // [Wave 2, WS2-B] pi-ratings blended into goalsV3 lambda as a third factor.
+  // "shadow" (default) computes diagnostic deltas only — never applied to a
+  // live lambda — until the walk-forward harness clears +0.002 RPS; "on" only
+  // ever hand-set after that bar is cleared, never as a rollout default.
+  v3Ratings?: "off" | "shadow" | "on";
+  // [Wave 2, WS2-C] Sharp-reference odds feed (Odds API primary + Playwright/
+  // Google-AI-Mode fallback). "shadow" (default) persists CLV records
+  // ({pick_odds, sharp_fair_at_pick, sharp_fair_at_close}) without yet being
+  // the criterion that flips `sharpFeedVerified` — that flip requires the
+  // documented ≥95%-coverage-over-7-slates bar, checked separately.
+  sharpFeed?: "off" | "shadow" | "on";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
