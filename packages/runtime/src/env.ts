@@ -427,6 +427,13 @@ export function buildConfig(
     // "off" is Wave 4's eventual cutover flag, gated on a ≥7-slate parity
     // report + UNPRICED_BY_DESIGN registry closing the coverage gap.
     legacyPricer: env.ORACLE_LEGACY_PRICER?.toLowerCase() === "off" ? "off" : "on",
+    // [Wave 4-accuracy] Market-anchored blend pricing for ALL v3 candidates —
+    // "on" (default, owner decision after Phase-0 replay); "off" = legacy
+    // raw-edge gating, byte-identical rollback.
+    v3BlendPricing: env.ORACLE_V3_BLEND_PRICING?.toLowerCase() === "off" ? "off" : "on",
+    // [Wave 4-accuracy] Empirical hit-rate blend for totals O/U half-lines
+    // (goals counter only). "on" (default, owner decision).
+    v3TotalsEmpirical: env.ORACLE_V3_TOTALS_EMPIRICAL?.toLowerCase() === "off" ? "off" : "on",
   };
 }
 
