@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { computeRealisedClv } from "../src/resolveFixtures.js";
+import { computeRealisedClv, computeSharpReferenceClv } from "../src/resolveFixtures.js";
 
 // ── computeRealisedClv unit tests ─────────────────────────────────────────────
 
@@ -58,6 +58,70 @@ describe("computeRealisedClv", () => {
     const clv = computeRealisedClv(frozen, { home: 1.95, draw: 3.4, away: 4.5 }, "Home");
     expect(clv).not.toBeNull();
     const str = clv?.toString();
+    const decimals = str.includes(".") ? str.split(".")[1]?.length : 0;
+    expect(decimals).toBeLessThanOrEqual(6);
+  });
+});
+
+// ── computeSharpReferenceClv unit tests (P1-4, Wave 2) ────────────────────────
+
+describe("computeSharpReferenceClv", () => {
+  it("returns null when sharpFairAtPick is null", () => {
+    expect(computeSharpReferenceClv(null, 1.95)).toBeNull();
+  });
+
+  it("returns null when sharpFairAtPick is undefined", () => {
+    expect(computeSharpReferenceClv(undefined, 1.95)).toBeNull();
+  });
+
+  it("returns null when sharpFairAtPick is <= 1", () => {
+    expect(computeSharpReferenceClv(1, 1.95)).toBeNull();
+    expect(computeSharpReferenceClv(0.9, 1.95)).toBeNull();
+  });
+
+  it("returns null when sharpFairAtClose is null", () => {
+    expect(computeSharpReferenceClv(1.95, null)).toBeNull();
+  });
+
+  it("returns null when sharpFairAtClose is undefined", () => {
+    expect(computeSharpReferenceClv(1.95, undefined)).toBeNull();
+  });
+
+  it("returns null when sharpFairAtClose is <= 1", () => {
+    expect(computeSharpReferenceClv(1.95, 1)).toBeNull();
+    expect(computeSharpReferenceClv(1.95, 0.8)).toBeNull();
+  });
+
+  it("returns null (never throws) when both endpoints are missing", () => {
+    expect(() => computeSharpReferenceClv(null, undefined)).not.toThrow();
+    expect(computeSharpReferenceClv(null, undefined)).toBeNull();
+  });
+
+  it("computes positive CLV when the sharp fair price shortened (moved in the bettor's favor)", () => {
+    // Sharp fair 1.95 → 1.80: closing IP 0.556 > pick IP 0.513 → CLV > 0
+    const clv = computeSharpReferenceClv(1.95, 1.8);
+    expect(clv).not.toBeNull();
+    expect(clv!).toBeGreaterThan(0);
+    expect(clv!).toBeCloseTo(1 / 1.8 - 1 / 1.95, 6);
+  });
+
+  it("computes negative CLV when the sharp fair price drifted (moved against the bettor)", () => {
+    // Sharp fair 1.95 → 2.20: closing IP 0.455 < pick IP 0.513 → CLV < 0
+    const clv = computeSharpReferenceClv(1.95, 2.2);
+    expect(clv).not.toBeNull();
+    expect(clv!).toBeLessThan(0);
+    expect(clv!).toBeCloseTo(1 / 2.2 - 1 / 1.95, 6);
+  });
+
+  it("returns 0 (not null) when the sharp fair price is unchanged", () => {
+    const clv = computeSharpReferenceClv(2.0, 2.0);
+    expect(clv).toBe(0);
+  });
+
+  it("result is rounded to 6 decimal places", () => {
+    const clv = computeSharpReferenceClv(1.93, 1.87);
+    expect(clv).not.toBeNull();
+    const str = clv?.toString() ?? "";
     const decimals = str.includes(".") ? str.split(".")[1]?.length : 0;
     expect(decimals).toBeLessThanOrEqual(6);
   });
@@ -674,5 +738,171 @@ describe("resolveRecords API-Football primary source", () => {
     expect(unmatched).toEqual([]);
     expect(resolved).toHaveLength(1);
     expect(resolved[0]!.actualResult).toBe("home");
+  });
+});
+
+// ── Sharp-reference CLV integration via resolveRecords (P1-4, Wave 2) ─────────
+
+describe("resolveRecords sharp-reference CLV (P1-4)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("carries pick_odds/source through and computes realisedSharpClv when both endpoints are captured", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify(fdFinishedResponse()), { status: 200 })
+    );
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseAnalysisRecord();
+    const sharpOddsByFixture = new Map([
+      [
+        "snap-test",
+        {
+          id: "snap-test::1X2::home",
+          fixtureKey: "snap-test",
+          market: "1X2",
+          side: "home",
+          pick_odds: 1.9,
+          sharp_fair_at_pick: 1.95,
+          sharp_fair_at_close: 1.8,
+          source: "odds_api",
+          sharp_fair_at_close_source: "ai_mode_fallback",
+          capturedAt: "2026-06-01T09:00:00Z",
+          closeCapturedAt: "2026-06-01T14:35:00Z",
+        },
+      ],
+    ]);
+
+    const { resolved } = await resolveRecords(
+      [record],
+      "fd-key",
+      undefined,
+      undefined,
+      undefined,
+      sharpOddsByFixture
+    );
+    expect(resolved).toHaveLength(1);
+    const res = resolved[0]!;
+    expect(res.pickOdds).toBe(1.9);
+    expect(res.sharpFairAtPick).toBe(1.95);
+    expect(res.sharpFairAtPickSource).toBe("odds_api");
+    expect(res.sharpFairAtClose).toBe(1.8);
+    expect(res.sharpFairAtCloseSource).toBe("ai_mode_fallback");
+    expect(res.realisedSharpClv).not.toBeNull();
+    expect(res.realisedSharpClv!).toBeCloseTo(1 / 1.8 - 1 / 1.95, 6);
+  });
+
+  it("leaves every sharp field null (never throws) when no SharpOddsRecord exists for the fixture", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify(fdFinishedResponse()), { status: 200 })
+    );
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseAnalysisRecord();
+
+    const { resolved } = await resolveRecords([record], "fd-key");
+    expect(resolved).toHaveLength(1);
+    const res = resolved[0]!;
+    expect(res.pickOdds).toBeNull();
+    expect(res.sharpFairAtPick).toBeNull();
+    expect(res.sharpFairAtPickSource).toBeNull();
+    expect(res.sharpFairAtClose).toBeNull();
+    expect(res.sharpFairAtCloseSource).toBeNull();
+    expect(res.realisedSharpClv).toBeNull();
+  });
+
+  it("leaves realisedSharpClv null when only sharp_fair_at_pick was captured (close not yet swept)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify(fdFinishedResponse()), { status: 200 })
+    );
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseAnalysisRecord();
+    const sharpOddsByFixture = new Map([
+      [
+        "snap-test",
+        {
+          id: "snap-test::1X2::home",
+          fixtureKey: "snap-test",
+          market: "1X2",
+          side: "home",
+          pick_odds: 1.9,
+          sharp_fair_at_pick: 1.95,
+          sharp_fair_at_close: null,
+          source: "odds_api",
+          capturedAt: "2026-06-01T09:00:00Z",
+        },
+      ],
+    ]);
+
+    const { resolved } = await resolveRecords(
+      [record],
+      "fd-key",
+      undefined,
+      undefined,
+      undefined,
+      sharpOddsByFixture
+    );
+    const res = resolved[0]!;
+    expect(res.sharpFairAtPick).toBe(1.95);
+    expect(res.sharpFairAtPickSource).toBe("odds_api");
+    expect(res.sharpFairAtClose).toBeNull();
+    expect(res.realisedSharpClv).toBeNull();
+  });
+
+  it("still computes realisedSharpClv for a CALIBRATION_ONLY record — independent of the liquidityTag gate that guards realisedCLV", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("api-sports.io")) {
+        return new Response(
+          JSON.stringify({
+            response: [
+              {
+                fixture: { date: "2026-06-19T13:00:00+00:00", status: { short: "FT" } },
+                teams: { home: { name: "Mbeya City" }, away: { name: "Simba SC" } },
+                goals: { home: 1, away: 0 },
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const { resolveRecords } = await import("../src/resolveFixtures.js");
+    const record = baseRecord(); // CALIBRATION_ONLY, frozenOddsAtAnalysis: null
+    const sharpOddsByFixture = new Map([
+      [
+        "af-test",
+        {
+          id: "af-test::1X2::home",
+          fixtureKey: "af-test",
+          market: "1X2",
+          side: "home",
+          pick_odds: 1.6,
+          sharp_fair_at_pick: 1.65,
+          sharp_fair_at_close: 1.5,
+          source: "odds_api",
+          sharp_fair_at_close_source: "odds_api",
+          capturedAt: "2026-06-19T09:00:00Z",
+          closeCapturedAt: "2026-06-19T12:35:00Z",
+        },
+      ],
+    ]);
+
+    const { resolved } = await resolveRecords(
+      [record],
+      undefined,
+      undefined,
+      "af-key",
+      undefined,
+      sharpOddsByFixture
+    );
+    const res = resolved[0]!;
+    // realisedCLV stays null (CALIBRATION_ONLY never gets the SportyBet-line metric)...
+    expect(res.realisedCLV).toBeNull();
+    // ...but realisedSharpClv is computed regardless, since it doesn't gate on liquidityTag.
+    expect(res.realisedSharpClv).not.toBeNull();
+    expect(res.realisedSharpClv!).toBeCloseTo(1 / 1.5 - 1 / 1.65, 6);
   });
 });
