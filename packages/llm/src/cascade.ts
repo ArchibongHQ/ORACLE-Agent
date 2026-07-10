@@ -4,15 +4,14 @@ export const MODELS = {
   GEMINI_FLASH: "gemini-3.5-flash", // GA at Google I/O 2026 — faster + better agentic than 3.1 Pro
   GEMINI_FLASH_LITE: "gemini-3.1-flash-lite", // cheapest tier — 3.5 Flash-Lite not yet GA
   GEMINI_PRO: "gemini-3.5-flash", // 3.5 Flash outperforms 3.1 Pro on agentic at 4x speed
-  CLAUDE_OPUS: "claude-opus-4-8", // #1 SWE-bench (88.6%) — Briefing + framing-bias check + CVL pass
-  CLAUDE_FABLE: "claude-fable-5", // newest Claude family — local-CLI arbiter targets this or Opus, never Sonnet/older
-  // Dead constant: this was meant to be a narrow, cost-conscious exception for
-  // the goals-discovery screening stage (packages/runtime/src/goalsScreen.ts),
-  // routed through callClaude.ts's API transport. That routing was never wired
-  // up — goalsScreen.ts calls callClaudeCode() (local CLI, pinned to Opus) like
-  // every other call site. No code references this constant outside test
-  // mocks; the no-Sonnet policy has no exceptions in practice.
-  CLAUDE_SONNET: "claude-sonnet-4-6",
+  CLAUDE_OPUS: "claude-opus-4-8", // #1 SWE-bench (88.6%) — still used by Briefing + framing-bias check + CVL pass
+  // Newest Claude family — available as an explicit opts.model override where a
+  // caller specifically wants it; no longer the local-CLI arbiter's implicit target.
+  CLAUDE_FABLE: "claude-fable-5",
+  // Sonnet 5 id retained as an available opts.model override; NOT the local-CLI
+  // default (owner instruction 2026-07-10 pins the local decision tier to Opus —
+  // see CLAUDE_OPUS above and callClaudeCode.ts's DEFAULT_MODEL "opus").
+  CLAUDE_SONNET: "claude-sonnet-5",
   // Haiku — used ONLY for the news-intel Claude reshape path (fetchNewsViaClaudeReshape),
   // where the task is structured JSON extraction from scraped prose, not reasoning.
   // Cheapest Claude tier; do not use for any decision-layer work.
@@ -43,7 +42,9 @@ export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 /** OpenRouter model IDs — Tier 2 (paid) and Tier 3 (free). Paid models MUST stay
  *  ahead of the free tier in every call-site cascade — never append a new paid
  *  fallback after the free safety net, that silently demotes it below weaker models.
- *  Cascade order per owner directive 2026-07-06:
+ *  Cascade order per owner directive 2026-07-06 — STILL the live order for
+ *  callGemini.ts, callVerification.ts, and callRegimeHint.ts (out of WS1-C's scope,
+ *  unchanged by the 2026-07-10 reorder below):
  *  Claude (primary) → DeepSeek-V4-Flash → DeepSeek-V4-Pro → DeepSeek-R1 → GLM-5.2 →
  *  GLM-5.1 → Kimi-K2 → GPT-4o → Qwen3-235B-Thinking → MiniMax-M3 → MiniMax-M2.5 →
  *  MiMo-V2.5 → Qwen3-Coder-480B → Qwen3-Coder-Next(80B) → LongCat-Flash-Chat →
@@ -56,7 +57,34 @@ export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
  *  available"; NVIDIA's current flagship is Nemotron-3-Ultra, there is no Nemotron-4
  *  Ultra). Substituted the closest live models (LongCat-Flash-Chat 560B, Nemotron-3-
  *  Ultra 550B) per owner direction. Similarly "Qwen3 Coder 32B" doesn't exist — the
- *  existing Qwen3-Coder-Next (80B) stands in as the smaller coder-specialized tier. */
+ *  existing Qwen3-Coder-Next (80B) stands in as the smaller coder-specialized tier.
+ *
+ *  ── 2026-07-10 decision-cascade reorder (decision/index.ts + callBriefing.ts
+ *  ONLY — see the "free-tier decision-cascade rungs" block below) ──
+ *  New OWNER-mandated decision cascade: (1) local Claude Code CLI, Opus —
+ *  cascade.ts's MODELS.CLAUDE_OPUS / callClaudeCode.ts's DEFAULT_MODEL "opus".
+ *  (2) Gemini 3.5 Flash — MODELS.GEMINI_FLASH, via callGeminiDecision(). (3)-(6) are
+ *  OpenRouter rungs, STRICTLY FREE variants preferred: GLM-5.2 → DeepSeek-V4-Pro →
+ *  DeepSeek-V4-Flash → Gemma 4 (31B dense or 26B MoE). Verified live 2026-07-10 (see
+ *  sources in the PR description / handoff notes): DeepSeek has NO free tier on
+ *  OpenRouter as of this date (every DeepSeek slug is paid — deepseek-r1:free and
+ *  deepseek-chat-v3:free were retired); GLM-5.2 has no :free variant either (only
+ *  the older/lighter z-ai/glm-4.5-air:free is free). Gemma 4 DOES have live free
+ *  variants: google/gemma-4-26b-a4b-it:free (26B MoE) and google/gemma-4-31b-it:free
+ *  (31B dense) — both confirmed on openrouter.ai. Per the pre-agreed substitution
+ *  rule, each named model without a live :free endpoint is tried at its own :free
+ *  slug FIRST (harmless — errors and the loop just skips it) followed immediately by
+ *  the nearest live free reasoning substitute: GLM-5.2 → z-ai/glm-4.5-air:free (same
+ *  vendor, hybrid thinking mode); DeepSeek-V4-Pro → nvidia/nemotron-3-ultra-550b-a55b:free
+ *  (550B MoE frontier-reasoning tier, confirmed free on OpenRouter's free-models
+ *  collection alongside the existing paid NEMOTRON_3_ULTRA slug); DeepSeek-V4-Flash →
+ *  nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free (lighter/faster explicit
+ *  "reasoning" tier, matching Flash's speed-over-size intent). These new constants
+ *  are ADDITIVE — every existing Tier 2/Tier 3 constant below is unchanged and still
+ *  used verbatim by callGemini.ts/callVerification.ts/callRegimeHint.ts and their
+ *  tests. callBriefing.ts (WS1-C scope) separately switches to a free-tier-only
+ *  OpenRouter list per task policy — briefing is an optional extra, not the gated
+ *  decision path, so it never needs the paid tier. */
 export const OPENROUTER_MODELS = {
   // ── Tier 2 — paid frontier models ────────────────────────────────────────
   DEEPSEEK_V4_FLASH: "deepseek/deepseek-v4-flash", // 284B MoE (13B active), 1M ctx — verified 2026-07-06
@@ -89,6 +117,21 @@ export const OPENROUTER_MODELS = {
   NEMOTRON_NANO_30B: "nvidia/nemotron-3-nano-30b-a3b:free", // 30B reasoning, 256K ctx
   GPT_OSS_20B: "openai/gpt-oss-20b:free", // 20B MoE — lighter free fallback
   LLAMA_3_3_70B: "meta-llama/llama-3.3-70b-instruct:free", // 70B general (can 429)
+
+  // ── Free-tier decision-cascade rungs (2026-07-10 reorder) ─────────────────
+  // decision/index.ts's _tryOpenRouter (rungs 3-6) and callBriefing.ts ONLY.
+  // Each named model is tried at its own :free slug first (harmless if it 404s
+  // — the loop skips a null result), immediately followed by the nearest live
+  // free reasoning substitute. See the OPENROUTER_MODELS header comment above
+  // for the verification sources/dates.
+  GLM_5_2_FREE: "z-ai/glm-5.2:free", // NOT verified live 2026-07-10 — GLM-5.2 has no confirmed free slug; try anyway, loop skips on failure
+  GLM_4_5_AIR_FREE: "z-ai/glm-4.5-air:free", // verified free 2026-07-10 — GLM-5.2 substitute (same vendor, hybrid thinking mode)
+  DEEPSEEK_V4_PRO_FREE: "deepseek/deepseek-v4-pro:free", // NOT verified live 2026-07-10 — DeepSeek has no free tier on OpenRouter; try anyway, loop skips on failure
+  NEMOTRON_3_ULTRA_FREE: "nvidia/nemotron-3-ultra-550b-a55b:free", // verified free 2026-07-10 — DeepSeek-V4-Pro substitute (550B MoE frontier reasoning)
+  DEEPSEEK_V4_FLASH_FREE: "deepseek/deepseek-v4-flash:free", // NOT verified live 2026-07-10 — DeepSeek has no free tier on OpenRouter; try anyway, loop skips on failure
+  NEMOTRON_NANO_OMNI_REASONING_FREE: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", // verified free 2026-07-10 — DeepSeek-V4-Flash substitute (lighter/faster explicit reasoning tier)
+  GEMMA_4_26B_MOE_FREE: "google/gemma-4-26b-a4b-it:free", // verified free 2026-07-10 — 26B MoE, rung 6 primary
+  GEMMA_4_31B_FREE: "google/gemma-4-31b-it:free", // verified free 2026-07-10 — 31B dense, rung 6 fallback
 } as const;
 
 export type OpenRouterModelId = (typeof OPENROUTER_MODELS)[keyof typeof OPENROUTER_MODELS];

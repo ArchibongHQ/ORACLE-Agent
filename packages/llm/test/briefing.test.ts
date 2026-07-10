@@ -1,7 +1,8 @@
 /** callBriefing (B1) — Tier 0 local Claude Code → Claude Opus primary → Gemini
- *  temperature ensemble → OpenRouter Tier 2/3 (DeepSeek-first). Pins flag emission
- *  (FRAMING_BIAS_DETECTED, DIVERGENT_TEMPERATURE_ENSEMBLE) and the terminal throw
- *  when no LLM is available. */
+ *  temperature ensemble → OpenRouter Tier 2/3 (free-tier only, 2026-07-10 policy:
+ *  briefing is an optional extra, never justifies paid-tier spend). Pins flag
+ *  emission (FRAMING_BIAS_DETECTED, DIVERGENT_TEMPERATURE_ENSEMBLE) and the
+ *  terminal throw when no LLM is available. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { callBriefing } from "../src/callBriefing.js";
 import { _resetClaudeCodeCaches } from "../src/callClaudeCode.js";
@@ -118,29 +119,29 @@ describe("callBriefing — Gemini temperature ensemble fallback", () => {
   });
 });
 
-describe("callBriefing — OpenRouter Tier 2/3, DeepSeek-first", () => {
+describe("callBriefing — OpenRouter Tier 2/3, free-tier only", () => {
   const ctx = makeCtx({ openrouterApiKey: "or-key" });
 
-  it("uses DeepSeek-V4-Flash first when no Claude/Gemini keys", async () => {
+  it("uses GLM-5.2's own :free slug first when no Claude/Gemini keys", async () => {
     fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
     const res = await callBriefing("p", ctx);
-    expect(res.model).toBe(OPENROUTER_MODELS.DEEPSEEK_V4_FLASH);
+    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2_FREE);
     expect(res.text).toBe('{"primaryPick":"Over 2.5"}');
   });
 
-  it("falls DeepSeek-V4-Flash → DeepSeek-V4-Pro → DeepSeek-R1 → GLM-5.2 in order", async () => {
+  it("falls GLM-5.2:free → GLM-4.5-Air:free → DeepSeek-V4-Pro:free → Nemotron-3-Ultra:free in order", async () => {
     fetchMock
-      .mockResolvedValueOnce({ ok: false, status: 500 })
-      .mockResolvedValueOnce({ ok: false, status: 500 })
-      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: false, status: 404 })
       .mockResolvedValueOnce(chatResponse('{"primaryPick":"X"}'));
     const res = await callBriefing("p", ctx);
-    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2);
+    expect(res.model).toBe(OPENROUTER_MODELS.NEMOTRON_3_ULTRA_FREE);
     expect(postedModels(fetchMock)).toEqual([
-      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
-      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
-      OPENROUTER_MODELS.DEEPSEEK_R1,
-      OPENROUTER_MODELS.GLM_5_2,
+      OPENROUTER_MODELS.GLM_5_2_FREE,
+      OPENROUTER_MODELS.GLM_4_5_AIR_FREE,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO_FREE,
+      OPENROUTER_MODELS.NEMOTRON_3_ULTRA_FREE,
     ]);
   });
 
@@ -148,7 +149,7 @@ describe("callBriefing — OpenRouter Tier 2/3, DeepSeek-first", () => {
     generateContentMock.mockRejectedValue(new Error("gemini down"));
     fetchMock.mockResolvedValue(chatResponse("or-briefing"));
     const res = await callBriefing("p", makeCtx({ geminiApiKey: "gk", openrouterApiKey: "ok" }));
-    expect(res.model).toBe(OPENROUTER_MODELS.DEEPSEEK_V4_FLASH);
+    expect(res.model).toBe(OPENROUTER_MODELS.GLM_5_2_FREE);
   });
 });
 
@@ -203,24 +204,18 @@ describe("callBriefing — exhaustion", () => {
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
     const ctx = makeCtx({ claudeApiKey: "ck", geminiApiKey: "gk", openrouterApiKey: "ok" });
     await expect(callBriefing("p", ctx)).rejects.toThrow(/callBriefing: no LLM available/);
-    // Full cascade order, paid models before the free tier — locks in the
-    // 2026-07-06 ordering-bug fix (deeper paid fallbacks must precede GPT-OSS).
+    // Full free-tier-only cascade order (2026-07-10 policy) — each named
+    // rung's own :free slug immediately followed by its verified free
+    // substitute, then the pre-existing free tail as deeper fallbacks.
     expect(postedModels(fetchMock)).toEqual([
-      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
-      OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
-      OPENROUTER_MODELS.DEEPSEEK_R1,
-      OPENROUTER_MODELS.GLM_5_2,
-      OPENROUTER_MODELS.GLM_5_1,
-      OPENROUTER_MODELS.KIMI_K2,
-      OPENROUTER_MODELS.GPT_4O,
-      OPENROUTER_MODELS.QWEN3_235B_THINKING,
-      OPENROUTER_MODELS.MINIMAX_M3,
-      OPENROUTER_MODELS.MINIMAX_M2_5,
-      OPENROUTER_MODELS.MIMO_V2_5_PRO,
-      OPENROUTER_MODELS.QWEN3_CODER_480B,
-      OPENROUTER_MODELS.QWEN3_CODER_NEXT,
-      OPENROUTER_MODELS.LONGCAT_FLASH_CHAT,
-      OPENROUTER_MODELS.NEMOTRON_3_ULTRA,
+      OPENROUTER_MODELS.GLM_5_2_FREE,
+      OPENROUTER_MODELS.GLM_4_5_AIR_FREE,
+      OPENROUTER_MODELS.DEEPSEEK_V4_PRO_FREE,
+      OPENROUTER_MODELS.NEMOTRON_3_ULTRA_FREE,
+      OPENROUTER_MODELS.DEEPSEEK_V4_FLASH_FREE,
+      OPENROUTER_MODELS.NEMOTRON_NANO_OMNI_REASONING_FREE,
+      OPENROUTER_MODELS.GEMMA_4_26B_MOE_FREE,
+      OPENROUTER_MODELS.GEMMA_4_31B_FREE,
       OPENROUTER_MODELS.GPT_OSS_120B,
       OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
       OPENROUTER_MODELS.QWEN3_NEXT_80B,
