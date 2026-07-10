@@ -10,6 +10,36 @@ import { type SportyBetEventDetail, sidecarKey } from "../src/selectFixtures.js"
 
 const cfg = buildMarketsV3GateConfig({});
 
+/** Realistic ~21-entry allMarkets block (over the 20-entry meaningful floor —
+ *  see feedIntegrity.ts's MIN_MEANINGFUL_PAIRED_ENTRIES) for the P1-3
+ *  feed-integrity contamination tests below. */
+function makeAllMarketsBlock(): NonNullable<
+  NonNullable<SportyBetEventDetail["odds"]>["allMarkets"]
+> {
+  const entries: NonNullable<NonNullable<SportyBetEventDetail["odds"]>["allMarkets"]> = [
+    {
+      id: "1",
+      outcomes: [
+        { id: "1", odds: "1.79" },
+        { id: "2", odds: "3.66" },
+        { id: "3", odds: "4.56" },
+      ],
+    },
+  ];
+  for (let line = 5; line <= 45; line += 5) {
+    entries.push({
+      id: `ou_${line}`,
+      name: "Over/Under",
+      specifier: `total=${(line / 10).toFixed(1)}`,
+      outcomes: [
+        { id: "over", desc: "Over", odds: String(1.4 + line / 100) },
+        { id: "under", desc: "Under", odds: String(2.6 - line / 100) },
+      ],
+    });
+  }
+  return entries;
+}
+
 function detail(overrides: Partial<SportyBetEventDetail> = {}): SportyBetEventDetail {
   return {
     eventId: "sr:match:1",
@@ -111,6 +141,56 @@ describe("prefilterMarketsV3Jobs", () => {
     const { jobs, summary } = prefilterMarketsV3Jobs([youth], index([[youth, detail()]]), cfg);
     expect(jobs).toHaveLength(0);
     expect(summary?.discardCounts).toEqual({ below_completeness_floor: 1 });
+  });
+
+  it("[P1-3 review fix] discards a contaminated fixture outright — no headline-only rescue path exists downstream", () => {
+    const block = makeAllMarketsBlock();
+    const real = job("Home FC", "Away FC");
+    const twin = job("Home FC SRL", "Away FC SRL", "Some Obscure Regional League");
+    const withBlock = detail({
+      odds: {
+        "1x2": { home: 1.8, draw: 3.6, away: 4.2 },
+        ou25: { over: 1.9, under: 1.95 },
+        allMarkets: block,
+      },
+    });
+    const { jobs, summary, integrityReport } = prefilterMarketsV3Jobs(
+      [real, twin],
+      index([
+        [real, withBlock],
+        [twin, withBlock],
+      ]),
+      cfg
+    );
+    expect(integrityReport?.contaminatedCount).toBeGreaterThanOrEqual(1);
+    expect(jobs.map((j) => j.home)).not.toContain("Home FC");
+    expect(summary?.discardCounts.contaminated).toBe(1);
+  });
+
+  it("[P1-3] feedIntegrity='shadow' still runs the v3 gate normally on a contaminated fixture, only logging the report", () => {
+    const block = makeAllMarketsBlock();
+    const real = job("Home FC", "Away FC");
+    const twin = job("Home FC SRL", "Away FC SRL", "Some Obscure Regional League");
+    const withBlock = detail({
+      odds: {
+        "1x2": { home: 1.8, draw: 3.6, away: 4.2 },
+        ou25: { over: 1.9, under: 1.95 },
+        allMarkets: block,
+      },
+    });
+    const { jobs, integrityReport } = prefilterMarketsV3Jobs(
+      [real, twin],
+      index([
+        [real, withBlock],
+        [twin, withBlock],
+      ]),
+      cfg,
+      { feedIntegrity: "shadow" }
+    );
+    expect(integrityReport?.contaminatedCount).toBeGreaterThanOrEqual(1);
+    // Not discarded for contamination under "shadow" — it survives (or is
+    // discarded) purely on the normal gate's own merits.
+    expect(jobs.map((j) => j.home)).toContain("Home FC");
   });
 
   it("completenessV4=false restores hit-rate to the mandatory (discard) set", () => {

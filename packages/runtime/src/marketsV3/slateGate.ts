@@ -26,18 +26,15 @@
  *  `opts.feedIntegrity` ("off" | "shadow" | "on", default "on" — mirrors
  *  OracleConfig.feedIntegrity's default in packages/engine/src/types.ts; the
  *  dailyBatch caller may pass `opts.feedIntegrity = config.feedIntegrity`
- *  explicitly but doesn't have to). "on": a contaminated fixture skips the
- *  v3 gate entirely (mirrors the unmapped fail-open path — pushed to `kept`
- *  untouched) rather than being evaluated against a markets block that may
- *  be garbage; "shadow": the gate runs as normal, the report is computed and
- *  returned for logging only; "off": the stage doesn't run at all. The
- *  computed report is returned on `SlateGateOutcome.integrityReport` — the
- *  deferred batch/index.ts per-fixture hook (WS2-A) looks verdicts up from
- *  it via `checkFixtureIntegrity(fixtureKey, outcome.integrityReport)` using
- *  the same `${home}|${away}` fixtureKey convention documented in
- *  feedIntegrity.ts, rather than this function stamping anything onto
- *  RunState.telemetry (that type is closed and out of this workstream's
- *  edit scope). Pure, synchronous, no I/O. */
+ *  explicitly but doesn't have to). "on": a contaminated fixture is
+ *  discarded outright (no headline-only rescue path is implemented — see
+ *  `FixtureIntegrityResult.headlineOnly`'s doc comment in feedIntegrity.ts)
+ *  rather than being evaluated against a markets block that may be garbage;
+ *  "shadow": the gate runs as normal, the report is computed and returned
+ *  for logging only; "off": the stage doesn't run at all. The computed
+ *  report is returned on `SlateGateOutcome.integrityReport` — look a
+ *  specific fixture's verdict up via `checkFixtureIntegrity(fixtureKey,
+ *  outcome.integrityReport)`. Pure, synchronous, no I/O. */
 
 import type { FixtureJob } from "@oracle/engine";
 import {
@@ -193,12 +190,15 @@ export function prefilterMarketsV3Jobs(
       if (feedIntegrityMode === "on") {
         const integrity = checkFixtureIntegrity(fixtureIntegrityKey(job), integrityReport);
         if (integrity?.verdict === "contaminated") {
-          // Mirror the unmapped fail-open path: don't run the v3 gate
-          // against a block that may be garbage (the France v Morocco
-          // incident is exactly the deterministic layer pricing a
-          // contaminated block confidently) — keep the fixture alive for
-          // the legacy/headline-only pipeline instead of discarding it.
-          kept.push(job);
+          // [review fix, pre-PR] No headline-only rescue path is implemented
+          // anywhere downstream — `headlineOnly` is set on the verdict but no
+          // pricing pipeline reads it. Keeping the job "alive" would just let
+          // the same contaminated allMarkets block reach the legacy/LLM
+          // tail-sweep instead of the v3 gate: the France v Morocco incident
+          // wearing a new hat. Discard outright, matching feedIntegrity.ts's
+          // own "integrity-class HARD reject" documentation, until a real
+          // headline-only rescue path exists.
+          discardCounts.contaminated = (discardCounts.contaminated ?? 0) + 1;
           continue;
         }
       }

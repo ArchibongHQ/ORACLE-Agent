@@ -2211,7 +2211,8 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
     const ragSimilar = rag.findSimilar(rawRes as unknown as Record<string, unknown>, 5);
     const convergence = new ConvergenceScorer().compute(
       rawRes as unknown as Record<string, unknown>,
-      ragSimilar as unknown as Record<string, unknown>[]
+      ragSimilar as unknown as Record<string, unknown>[],
+      { sharpSignalsEnabled: this._config.sharpFeedVerified ?? false }
     );
     rawRes.convergence = convergence;
     // [PR-17] ConvergenceScorer's per-tier Kelly guidance (Full/Half/Quarter/

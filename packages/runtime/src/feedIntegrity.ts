@@ -30,8 +30,11 @@ export interface FixtureIntegrityResult {
   reason?: "srl_twin" | "headline_mismatch" | "duplicate_block";
   /** Human-readable evidence line for the rationale/report. */
   detail?: string;
-  /** When contaminated: the fixture may still be priced on fixtures-sheet
-   *  headline markets only (Rule 0.14a rescue path). */
+  /** When contaminated: Rule 0.14a envisions the fixture still being
+   *  priceable on fixtures-sheet headline markets only. NOT implemented —
+   *  no consumer restricts pricing to headline markets on this flag; a
+   *  contaminated fixture is discarded outright by slateGate.ts's "on" mode
+   *  instead. Kept for when that rescue path is actually built. */
   headlineOnly?: boolean;
 }
 

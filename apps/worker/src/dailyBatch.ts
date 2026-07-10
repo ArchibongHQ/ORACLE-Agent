@@ -16,13 +16,6 @@ import {
   fetchTodaysFixtures,
   findSidecarDetail,
   formatMarketCoverageNote,
-  // [wave-1] formatMiniAccaAppendix is NOT yet in @oracle/runtime's barrel
-  // (packages/runtime/src/index.ts) — that file is out of this workstream's
-  // edit scope. Needs this line added before typecheck passes:
-  //   export { formatMiniAccaAppendix } from "./marketsV3/slateOutputs.js";
-  // (alongside a `MiniAccaAppendix` type export on the existing
-  // `export type { MarketsV3SlateOutputs, ... }` line, for callers that want
-  // the type — not required by this file, which only calls the formatter.)
   formatMiniAccaAppendix,
   formatSlateGateLog,
   loadSportyBetIndex,
@@ -114,13 +107,15 @@ export async function runDailyBatch(
   logMemoryUsage("daily-batch:sportyIndex-loaded");
   let gatedJobs = jobs;
   if (config.enableMarketsV3 === "on" && config.marketsV3Gate !== false) {
-    const { jobs: survivors, summary } = prefilterMarketsV3Jobs(
-      jobs,
-      sportyIndex?.detailByKey,
-      buildMarketsV3GateConfig(env),
-      { completenessV4: config.v3CompletenessV4 }
-    );
-    if (summary) process.stdout.write(`[markets-v3] ${formatSlateGateLog(summary)}\n`);
+    const {
+      jobs: survivors,
+      summary,
+      integrityReport,
+    } = prefilterMarketsV3Jobs(jobs, sportyIndex?.detailByKey, buildMarketsV3GateConfig(env), {
+      completenessV4: config.v3CompletenessV4,
+    });
+    if (summary)
+      process.stdout.write(`[markets-v3] ${formatSlateGateLog(summary, integrityReport)}\n`);
     if (survivors.length > 0) {
       gatedJobs = survivors;
     } else {

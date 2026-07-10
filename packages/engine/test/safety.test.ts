@@ -95,6 +95,27 @@ describe("BLOCK 4: ConvergenceScorer.scoreMarket (T214-T219)", () => {
   it("T219: B4 totalScore ≥ 0 with S01-S14", () => {
     expect(r4base.totalScore).toBeGreaterThanOrEqual(0);
   });
+
+  it("[P1-4 review fix] sharpSignalsEnabled=false zero-weights S02-S05 even with sharp-book data present", () => {
+    const r = cs.scoreMarket(b4mkt, b4base, [], false);
+    expect(r.signals.S02).toBe(0);
+    expect(r.signals.S03).toBe(0);
+    expect(r.signals.S04).toBe(0);
+    expect(r.signals.S05).toBe(0);
+  });
+
+  it("[P1-4 review fix] scoreMarket defaults sharpSignalsEnabled=true (byte-identical to pre-P1-4)", () => {
+    expect(cs.scoreMarket(b4mkt, b4base, []).signals.S02).toBe(r4base.signals.S02);
+  });
+
+  it("[P1-4 review fix] compute()'s opts.sharpSignalsEnabled forwards to every candidate's scoreMarket call", () => {
+    const gated = cs.compute({ ...b4base, evMarkets: [b4mkt] }, [], { sharpSignalsEnabled: false });
+    expect(gated.apex?.signals.S02).toBe(0);
+    const ungated = cs.compute({ ...b4base, evMarkets: [b4mkt] }, [], {
+      sharpSignalsEnabled: true,
+    });
+    expect(ungated.apex?.signals.S02).toBe(3);
+  });
 });
 
 // ── MLSafetyFilter evaluate (T155-T157, T184-T186) ───────────────────────────
