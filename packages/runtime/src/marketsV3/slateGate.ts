@@ -15,10 +15,42 @@
  *
  *  Survivors are stamped `telemetry.v3Heightened` from their §1.2 eligibility
  *  class, completing the all-markets heightened wiring deferred in PR-3
- *  (buildV3Input consumes the stamp per fixture). Pure, synchronous, no I/O. */
+ *  (buildV3Input consumes the stamp per fixture).
+ *
+ *  [refactor P1-3] Also runs the v5 Rule 0.14 feed-integrity stage
+ *  (feedIntegrity.ts) over the same sidecar-mapped fixtures, slate-wide, once
+ *  per call, BEFORE the per-job gating loop — the SRL-twin pairing check
+ *  needs every mapped fixture's block visible (including twins the
+ *  eligibility gate would otherwise discard as "srl_virtual" before the
+ *  real fixture's twin comparison ever ran). Controlled by
+ *  `opts.feedIntegrity` ("off" | "shadow" | "on", default "on" — mirrors
+ *  OracleConfig.feedIntegrity's default in packages/engine/src/types.ts; the
+ *  dailyBatch caller may pass `opts.feedIntegrity = config.feedIntegrity`
+ *  explicitly but doesn't have to). "on": a contaminated fixture skips the
+ *  v3 gate entirely (mirrors the unmapped fail-open path — pushed to `kept`
+ *  untouched) rather than being evaluated against a markets block that may
+ *  be garbage; "shadow": the gate runs as normal, the report is computed and
+ *  returned for logging only; "off": the stage doesn't run at all. The
+ *  computed report is returned on `SlateGateOutcome.integrityReport` — the
+ *  deferred batch/index.ts per-fixture hook (WS2-A) looks verdicts up from
+ *  it via `checkFixtureIntegrity(fixtureKey, outcome.integrityReport)` using
+ *  the same `${home}|${away}` fixtureKey convention documented in
+ *  feedIntegrity.ts, rather than this function stamping anything onto
+ *  RunState.telemetry (that type is closed and out of this workstream's
+ *  edit scope). Pure, synchronous, no I/O. */
 
 import type { FixtureJob } from "@oracle/engine";
-import { findSidecarDetail, type SportyBetEventDetail } from "../selectFixtures.js";
+import {
+  checkFixtureIntegrity,
+  type MarketsBlockEntry,
+  runFeedIntegrity,
+  type SlateIntegrityReport,
+} from "../feedIntegrity.js";
+import {
+  findSidecarDetail,
+  type SportyBetEventDetail,
+  type SportyBetOdds,
+} from "../selectFixtures.js";
 import {
   gateMarketsV3Fixture,
   type MarketsV3GateConfig,
@@ -39,6 +71,11 @@ export interface SlateGateOutcome {
   /** null ⇒ gate did not run (no sidecar index, or error fail-open) — `jobs`
    *  is the input list untouched. */
   summary: SlateGateSummary | null;
+  /** [refactor P1-3] v5 Rule 0.14 feed-integrity report for this slate. null
+   *  when the stage didn't run (`feedIntegrity: "off"`, no sidecar index, or
+   *  no fixture carried an allMarkets block to check). Look a specific
+   *  fixture's verdict up with `checkFixtureIntegrity(fixtureKey, report)`. */
+  integrityReport?: SlateIntegrityReport | null;
 }
 
 /** Mirror of the goals path's enrichment derivation (worker completeness gate):
@@ -63,28 +100,109 @@ function stampHeightened(job: FixtureJob, heightened: boolean): FixtureJob {
   };
 }
 
+/** [refactor P1-3] fixtureKey convention shared with feedIntegrity.ts: raw
+ *  (not alias-resolved) `${home}|${away}`, no kickoff component — matters
+ *  because the SRL-twin pairing check needs the literal " SRL" team-name
+ *  suffix intact to strip. */
+function fixtureIntegrityKey(job: Pick<FixtureJob, "home" | "away">): string {
+  return `${job.home}|${job.away}`;
+}
+
+/** Flatten a sidecar allMarkets catalogue into feedIntegrity.ts's generic
+ *  MarketsBlockEntry shape. Market id "1" is gismo's documented 1X2/match-
+ *  result market (tools/scrape_fixtures.py `_parse_odds`: "1=1X2 … outcomes
+ *  1=home, 2=draw, 3=away") — normalized to a stable "1X2"/"home"/"draw"/
+ *  "away" label here so crossCheckHeadline1x2 doesn't have to guess at
+ *  gismo's raw (undocumented) `name`/`desc` text for that one market; every
+ *  other market keeps its raw desc/name/id as the label (only used for
+ *  identity pairing + duplicate fingerprinting, never parsed). */
+function toMarketsBlockEntries(
+  allMarkets: NonNullable<SportyBetOdds["allMarkets"]>
+): MarketsBlockEntry[] {
+  const out: MarketsBlockEntry[] = [];
+  for (const m of allMarkets) {
+    const isHeadline1x2 = m.id === "1";
+    const market = isHeadline1x2 ? "1X2" : (m.name ?? m.desc ?? m.id);
+    for (const o of m.outcomes ?? []) {
+      const odds = o.odds != null ? Number(o.odds) : Number.NaN;
+      if (!Number.isFinite(odds)) continue;
+      const outcome = isHeadline1x2
+        ? (({ "1": "home", "2": "draw", "3": "away" } as Record<string, string>)[o.id] ??
+          o.desc ??
+          o.id)
+        : (o.desc ?? o.id);
+      out.push({ market, specifier: m.specifier ?? null, outcome, odds });
+    }
+  }
+  return out;
+}
+
 /** Gate a daily-batch job list against the v3 slate pre-filter. */
 export function prefilterMarketsV3Jobs(
   jobs: FixtureJob[],
   detailByKey: Map<string, SportyBetEventDetail> | undefined,
   gateConfig: MarketsV3GateConfig,
-  opts: { completenessV4?: boolean } = {}
+  opts: { completenessV4?: boolean; feedIntegrity?: "off" | "shadow" | "on" } = {}
 ): SlateGateOutcome {
   try {
     if (!detailByKey?.size) return { jobs, summary: null };
+    const feedIntegrityMode = opts.feedIntegrity ?? "on";
+
+    // Pass 1: resolve every mapped job's sidecar detail once (reused by pass
+    // 2 below) and, unless the integrity stage is off, flatten its
+    // allMarkets block + fixtures-sheet headline 1X2 into the slate-wide
+    // maps runFeedIntegrity needs. Includes fixtures the eligibility gate
+    // will separately discard as "srl_virtual" — an SRL twin's own block
+    // must be visible here for the REAL fixture's twin-pairing check.
+    const detailByJob = new Map<FixtureJob, SportyBetEventDetail>();
+    const blocksByFixture = new Map<string, MarketsBlockEntry[]>();
+    const headlineByFixture = new Map<string, { home?: number; draw?: number; away?: number }>();
+    for (const job of jobs) {
+      const detail = findSidecarDetail(detailByKey, job.home, job.away);
+      if (!detail) continue;
+      detailByJob.set(job, detail);
+      if (feedIntegrityMode === "off") continue;
+      const key = fixtureIntegrityKey(job);
+      const am = detail.odds?.allMarkets;
+      if (am?.length) blocksByFixture.set(key, toMarketsBlockEntries(am));
+      const t = job.state?.telemetry;
+      if (t?.hOdds != null || t?.dOdds != null || t?.aOdds != null) {
+        headlineByFixture.set(key, { home: t.hOdds, draw: t.dOdds, away: t.aOdds });
+      }
+    }
+    const integrityReport: SlateIntegrityReport | null =
+      feedIntegrityMode !== "off" && blocksByFixture.size
+        ? runFeedIntegrity(blocksByFixture, headlineByFixture)
+        : null;
+
+    // Pass 2: the existing eligibility + completeness gate, now integrity-aware.
     const kept: FixtureJob[] = [];
     const discardCounts: Record<string, number> = {};
     let unmapped = 0;
     let mapped = 0;
     let passed = 0;
     for (const job of jobs) {
-      const detail = findSidecarDetail(detailByKey, job.home, job.away);
+      const detail = detailByJob.get(job);
       if (!detail) {
         unmapped += 1;
         kept.push(job);
         continue;
       }
       mapped += 1;
+
+      if (feedIntegrityMode === "on") {
+        const integrity = checkFixtureIntegrity(fixtureIntegrityKey(job), integrityReport);
+        if (integrity?.verdict === "contaminated") {
+          // Mirror the unmapped fail-open path: don't run the v3 gate
+          // against a block that may be garbage (the France v Morocco
+          // incident is exactly the deterministic layer pricing a
+          // contaminated block confidently) — keep the fixture alive for
+          // the legacy/headline-only pipeline instead of discarding it.
+          kept.push(job);
+          continue;
+        }
+      }
+
       const result = gateMarketsV3Fixture(
         {
           home: job.home,
@@ -104,19 +222,34 @@ export function prefilterMarketsV3Jobs(
       passed += 1;
       kept.push(stampHeightened(job, result.eligibility.status === "heightened"));
     }
-    return { jobs: kept, summary: { total: mapped, passed, discardCounts, unmapped } };
+    return {
+      jobs: kept,
+      summary: { total: mapped, passed, discardCounts, unmapped },
+      integrityReport,
+    };
   } catch {
     return { jobs, summary: null };
   }
 }
 
-/** One-line batch log: `gate: N mapped → M survive (K unmapped pass; reason: n, …)`. */
-export function formatSlateGateLog(summary: SlateGateSummary): string {
+/** One-line batch log: `gate: N mapped → M survive (K unmapped pass; reason: n, …)`.
+ *  [refactor P1-3] Optional second arg appends the v5 Rule 0.14 feed-integrity
+ *  tally (` | feed-integrity: N contaminated, M flagged`) when a report is
+ *  passed — omitted entirely when absent, so every pre-existing call site
+ *  (and its exact expected output) is unaffected. */
+export function formatSlateGateLog(
+  summary: SlateGateSummary,
+  integrityReport?: SlateIntegrityReport | null
+): string {
   const reasons = Object.entries(summary.discardCounts)
     .map(([reason, n]) => `${reason}: ${n}`)
     .join(", ");
-  return (
+  const base =
     `gate: ${summary.total} mapped → ${summary.passed} survive ` +
-    `(${summary.unmapped} unmapped pass through${reasons ? `; ${reasons}` : ""})`
+    `(${summary.unmapped} unmapped pass through${reasons ? `; ${reasons}` : ""})`;
+  if (!integrityReport) return base;
+  return (
+    `${base} | feed-integrity: ${integrityReport.contaminatedCount} contaminated, ` +
+    `${integrityReport.flaggedCount} flagged`
   );
 }

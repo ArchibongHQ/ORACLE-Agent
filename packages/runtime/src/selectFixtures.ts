@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FixtureJob } from "@oracle/engine";
+import { SRL_VIRTUAL_RE } from "./srlPatterns.js";
 import { namesMatch, resolveAlias } from "./teamNames.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -905,8 +906,13 @@ export function selectFixtures(
   // Exclude SRL (simulated reality league) and other virtual/eSports fixtures.
   // They carry no real match data — the engine produces artificially inflated EV
   // on them and they consume LLM quota without delivering actionable intelligence.
-  const SRL_PATTERN = /\bSRL\b|simulated\s*reality|virtual\s*(football|soccer|sport)/i;
-  gated = gated.filter((c) => !SRL_PATTERN.test(c.job.league));
+  // [refactor P1-3] Consolidated into srlPatterns.ts (SRL_VIRTUAL_RE) — a strict
+  // superset of the old local pattern (adds e-soccer/esports coverage and makes
+  // the football/soccer/sport qualifier after "virtual" optional rather than
+  // mandatory). This filter only ever REMOVES candidates, so the superset can
+  // only exclude a strict superset of leagues the old pattern already excluded
+  // — the intended direction for this call site.
+  gated = gated.filter((c) => !SRL_VIRTUAL_RE.test(c.job.league));
 
   const droppedBulkOdds = failOpen
     ? 0

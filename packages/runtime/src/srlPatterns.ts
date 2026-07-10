@@ -16,8 +16,14 @@
 export const SRL_VIRTUAL_RE =
   /simulated\s*reality|\bsrl\b|e-?soccer|esports?|virtual\s*(football|soccer|sport)?/i;
 
-/** Trailing " SRL" team-name suffix (teamNames.ts strip case). */
-export const SRL_TEAM_SUFFIX_RE = /\s+SRL\s*$/i;
+/** Trailing " SRL" team-name suffix (teamNames.ts strip case). Word-boundary
+ *  anchored rather than end-of-string anchored — mirrors teamNames.ts's
+ *  pre-consolidation inline regex (`/\s+srl\b/g`) exactly so normTeam()'s
+ *  behavior doesn't shift. Deliberately NOT global: normTeam()'s call site
+ *  (a single .replace()) only ever needs the first hit, and this same
+ *  pattern is also .test()'d elsewhere (isSrlTeamName) where a `g` flag
+ *  would introduce lastIndex statefulness bugs across repeated calls. */
+export const SRL_TEAM_SUFFIX_RE = /\s+srl\b/i;
 
 /** True when a league/competition label denotes an SRL or virtual product. */
 export function isSrlVirtualLabel(label: string | null | undefined): boolean {

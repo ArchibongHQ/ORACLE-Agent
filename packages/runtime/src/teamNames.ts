@@ -4,6 +4,7 @@
  *  for fuzzy fixture matching across odds providers. Both fixtures.ts and
  *  oddsProviders.ts import from here — do not reimplement matching elsewhere.
  */
+import { SRL_TEAM_SUFFIX_RE } from "./srlPatterns.js";
 
 /** Normalise a team name for fuzzy matching: lowercase, strip common suffixes & punctuation.
  *  Diacritics are folded (é→e, ô→o, ü→u, …) before punctuation is stripped — otherwise
@@ -15,8 +16,12 @@ export function normTeam(name: string): string {
       .normalize("NFD")
       .replace(/[̀-ͯ]/g, "") // strip combining diacritical marks
       .toLowerCase()
-      // Strip SportyBet SRL simulation-league suffix ("Sweden SRL" → "Sweden")
-      .replace(/\s+srl\b/g, "")
+      // Strip SportyBet SRL simulation-league suffix ("Sweden SRL" → "Sweden").
+      // [refactor P1-3] Uses the narrow SRL_TEAM_SUFFIX_RE (srlPatterns.ts), NOT
+      // the broad SRL_VIRTUAL_RE — this call site strips a team-name suffix, it
+      // doesn't classify a whole fixture as SRL/virtual, so the wider pattern
+      // (e-soccer/esports/simulated-reality wording) would over-strip here.
+      .replace(SRL_TEAM_SUFFIX_RE, "")
       .replace(/\b(fc|afc|sc|cf|ac|as|ss|ssc|sv|bk|if|cd|ud)\b/g, "")
       .replace(/[^a-z0-9\s]/g, "")
       .replace(/\s+/g, " ")

@@ -172,10 +172,16 @@ def _fotmob_xg_has_teams(tools_dir: Path) -> bool:
     return isinstance(data, dict) and len(data) > 0
 
 
-# Mirrors packages/runtime/src/goalsV3/eligibility.ts's SRL_RE (§1.2 hard
-# discard) — reimplemented here in Python rather than parsed from the TS
-# source; keep the two patterns in sync if either changes.
-_SRL_VIRTUAL_RE = re.compile(r"simulated\s*reality|\bsrl\b|e-?soccer|esports?|virtual", re.IGNORECASE)
+# [refactor P1-3] Source of truth: packages/runtime/src/srlPatterns.ts's
+# SRL_VIRTUAL_RE. Reimplemented here in Python rather than parsed/imported
+# from the TS source (no TS runtime in this process) — the two MUST be kept
+# byte-for-byte equivalent (mirror any future change to SRL_VIRTUAL_RE here
+# too). packages/runtime/test/srlPatterns.test.ts cross-checks the two
+# source files' regex literals for parity on every test run.
+_SRL_VIRTUAL_RE = re.compile(
+    r"simulated\s*reality|\bsrl\b|e-?soccer|esports?|virtual\s*(football|soccer|sport)?",
+    re.IGNORECASE,
+)
 
 
 def _residual_teams_for_fallback(teams: list[str], tools_dir: Path) -> list[str]:
