@@ -296,14 +296,16 @@ export type {
   ActionKind,
   AntiSycophancyResult,
   ConvergenceResult,
+  FilterRecord,
   MLSafetyResult,
   ReversibilityVeto,
+  SafetyPenaltySignals,
 } from "./safety/index.js";
 export {
   AntiSycophancyCircuit,
   ConvergenceScorer,
+  familyPenaltyMultiplier,
   MLSafetyFilter,
-  weighReversibility,
 } from "./safety/index.js";
 export type {
   AgentError,

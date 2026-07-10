@@ -386,7 +386,32 @@ export function buildConfig(
     // posture A keeps the paid extras gated; ENABLE_BRIEFING/ENABLE_CVL=true opts in.
     enableBriefing: env.ENABLE_BRIEFING?.toLowerCase() === "true",
     enableCVL: env.ENABLE_CVL?.toLowerCase() === "true",
+    // [refactor P0-2] Market-anchored blend (v5 §5.8). Default ON per the
+    // change list: blend fields persist on every assessment in shadow+on;
+    // the odds≥4.00 blendEdge ≥ +5% gate enforces only when "on".
+    v3Blend: parseTriState(env.ORACLE_V3_BLEND, "on"),
+    // [refactor P0-3] Safety posture: "penalty" (default) = mis-scoped hard
+    // rejects become family penalties/tier downgrades; "legacy" = rollback.
+    safetyMode: env.ORACLE_SAFETY_MODE?.toLowerCase() === "legacy" ? "legacy" : "penalty",
+    // [refactor P1-3] Feed-integrity stage (Rule 0.14). Default ON —
+    // contamination is an integrity-class hard reject.
+    feedIntegrity: parseTriState(env.ORACLE_FEED_INTEGRITY, "on"),
+    // [refactor P1-4] Sharp-reference feed verification latch. Default false —
+    // flipped manually (ORACLE_SHARP_FEED_VERIFIED=true) only after the feed
+    // meets its documented coverage criteria; gates ConvergenceScorer S02-S05.
+    sharpFeedVerified: env.ORACLE_SHARP_FEED_VERIFIED?.toLowerCase() === "true",
   };
+}
+
+/** Shared off|shadow|on parser for the refactor flags — unknown values fall
+ *  back to the flag's documented default rather than a global constant. */
+function parseTriState(
+  raw: string | undefined,
+  dflt: "off" | "shadow" | "on"
+): "off" | "shadow" | "on" {
+  const v = raw?.toLowerCase().trim();
+  if (v === "off" || v === "shadow" || v === "on") return v;
+  return dflt;
 }
 
 /** ORACLE_CALIBRATION_LEDGER → off|shadow|on. Default shadow (write-only, no live

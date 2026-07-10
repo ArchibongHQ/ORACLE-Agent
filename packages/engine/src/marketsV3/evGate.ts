@@ -97,8 +97,41 @@ export const RELATIVE_CAP_RATIO_X = 0.3;
  *  (math/index.ts, p*odds-1-MOS) that this all-markets path never reused. */
 export const V3_EV_FLOOR_DEFAULT = 0;
 
+/** [refactor P0-2] Market-anchored blend (v5 §5.8, live-incident 2026-07-09 —
+ *  unblended Poisson models overrating weak sides at long odds, e.g. fake
+ *  +65-70% "edges" on 6.20/13.50 longshots). The de-vigged market price q.q is
+ *  the prior; the model (modelP) nudges it by wModel. wModel scales with data
+ *  quality — up to +0.15 for full completeness, +0.10 for confirmed
+ *  (non-estimated) xG — off a 0.15 floor (closest to market = strictest, the
+ *  correct posture when completeness/xG provenance is unknown/absent) and a
+ *  hard 0.40 ceiling (the model may never out-weigh the market more than
+ *  40/60). See computeMarketBlend below. */
+export const V3_BLEND_W_FLOOR = 0.15;
+export const V3_BLEND_W_COMPLETENESS_COEF = 0.15;
+export const V3_BLEND_W_XG_COEF = 0.1;
+export const V3_BLEND_W_CAP = 0.4;
+/** §5.8 mandatory longshot gate: odds ≥ this floor additionally require
+ *  blendEdge ≥ V3_BLEND_MIN_EDGE when blendMode === "on" (additive to the
+ *  existing Class L/X bars — never a substitute for them). */
+export const V3_BLEND_GATE_ODDS_FLOOR = 4.0;
+export const V3_BLEND_MIN_EDGE = 0.05;
+
 export type V3Confidence = "very_high" | "high" | "medium";
 export type V3AllGateOutcome = "done" | "capped" | "noise" | "below_gate";
+
+/** Attributed reason a candidate failed/was excluded — additive to `outcome`
+ *  (which stays exactly as-is for backward compat). Only ever set when the
+ *  candidate does NOT reach "done"; undefined on a passing assessment. */
+export type V3AllGateReason =
+  | "class_edge"
+  | "class_evpct"
+  | "max_odds"
+  | "ev_floor"
+  | "heightened_x_excluded"
+  | "model_hot_longshot"
+  | "noise"
+  | "capped_absolute"
+  | "capped_relative";
 
 export interface V3AllMarketsAssessment {
   q: number;
@@ -115,6 +148,43 @@ export interface V3AllMarketsAssessment {
   confidence: V3Confidence | null;
   /** Which §5.4 cap fired, when outcome === "capped". */
   capReason?: "absolute" | "relative";
+  /** Attributed failure reason — see V3AllGateReason. Additive; `outcome`
+   *  remains the source of truth for pass/fail branching everywhere else. */
+  gateReason?: V3AllGateReason;
+  /** [refactor P0-2] market-anchored blend weight on modelP, 0.15-0.40 —
+   *  present whenever blendMode !== "off" (both "shadow" and "on"), computed
+   *  BEFORE any gate branching so it's persisted for the calibration ledger
+   *  even on capped/noise/below_gate assessments. */
+  wModel?: number;
+  /** (1 - wModel)*q.q + wModel*modelP — the blended fair probability. */
+  pBlend?: number;
+  /** pBlend * odds - 1 — true EV at the offered price under the blended prior. */
+  blendEdge?: number;
+  /** blendEdge >= V3_BLEND_MIN_EDGE, independent of whether it was actually
+   *  enforced (enforcement is odds>=4.00 AND blendMode==="on" only). */
+  blendGatePass?: boolean;
+}
+
+/** [refactor P0-2] Pure blend math, factored out so it's independently
+ *  testable against the v5 §5.8 worked examples. `completeness01` and
+ *  `hasRealXg` default to the strictest posture (0 / false) when omitted —
+ *  a missing data-quality signal must never earn the model extra trust. */
+export function computeMarketBlend(
+  modelP: number,
+  q: number,
+  odds: number,
+  completeness01 = 0,
+  hasRealXg = false
+): { wModel: number; pBlend: number; blendEdge: number; blendGatePass: boolean } {
+  const wModel = Math.min(
+    V3_BLEND_W_CAP,
+    V3_BLEND_W_FLOOR +
+      V3_BLEND_W_COMPLETENESS_COEF * completeness01 +
+      V3_BLEND_W_XG_COEF * (hasRealXg ? 1 : 0)
+  );
+  const pBlend = (1 - wModel) * q + wModel * modelP;
+  const blendEdge = pBlend * odds - 1;
+  return { wModel, pBlend, blendEdge, blendGatePass: blendEdge >= V3_BLEND_MIN_EDGE };
 }
 
 /** §5.5 confidence. M/L/X read the adjusted edge (X's Medium floor is 6pts —
@@ -145,18 +215,42 @@ export function gateAllMarkets(
   odds: number,
   cls: V3MarketClass,
   flags: V3AllMarketsPenaltyFlags,
-  opts: { edgeCap?: number; noiseGate?: number; heightened?: boolean; evFloor?: number } = {}
+  opts: {
+    edgeCap?: number;
+    noiseGate?: number;
+    heightened?: boolean;
+    evFloor?: number;
+    /** [refactor P0-2] "off" (default here — callers opt in explicitly) skips
+     *  the blend computation entirely, byte-identical to pre-P0-2 gating.
+     *  "shadow" computes+returns the blend fields but never gates on them.
+     *  "on" additionally enforces the odds>=4.00 mandatory blend bar below. */
+    blendMode?: "off" | "shadow" | "on";
+    /** 0-1 scale. Absent ⇒ 0 (the strictest wModel posture — see
+     *  computeMarketBlend's header comment). */
+    completeness?: number;
+    hasRealXg?: boolean;
+  } = {}
 ): V3AllMarketsAssessment {
   const edgeCap = opts.edgeCap ?? V3_EDGE_CAP_DEFAULT;
   const noiseGate = opts.noiseGate ?? V3_NOISE_GATE_DEFAULT;
   const heightened = opts.heightened ?? false;
   const evFloor = opts.evFloor ?? V3_EV_FLOOR_DEFAULT;
+  const blendMode = opts.blendMode ?? "off";
 
   const rawEdge = modelP - q.q;
   const penaltyPts = allMarketsPenaltyPts(flags);
   const adjustedEdge = rawEdge - penaltyPts;
   const adjEvPct = q.q > 0 ? adjustedEdge / q.q : 0;
   const ev = modelP * odds - 1;
+
+  // [refactor P0-2] Computed unconditionally (whenever blendMode !== "off"),
+  // BEFORE any gate branching below, so the fields land on every outcome —
+  // capped/noise/below_gate included — for calibration-ledger persistence in
+  // both "shadow" and "on" modes.
+  const blend =
+    blendMode !== "off"
+      ? computeMarketBlend(modelP, q.q, odds, opts.completeness ?? 0, opts.hasRealXg ?? false)
+      : null;
 
   const base = {
     q: q.q,
@@ -167,33 +261,83 @@ export function gateAllMarkets(
     adjEvPct,
     ev,
     cls,
+    ...(blend
+      ? {
+          wModel: blend.wModel,
+          pBlend: blend.pBlend,
+          blendEdge: blend.blendEdge,
+          blendGatePass: blend.blendGatePass,
+        }
+      : {}),
   };
 
   // v4 heightened: X excluded entirely
   if (heightened && cls === "X") {
-    return { ...base, outcome: "below_gate", confidence: null };
+    return {
+      ...base,
+      outcome: "below_gate",
+      confidence: null,
+      gateReason: "heightened_x_excluded",
+    };
   }
 
   if (rawEdge > edgeCap) {
-    return { ...base, outcome: "capped", confidence: null, capReason: "absolute" };
+    return {
+      ...base,
+      outcome: "capped",
+      confidence: null,
+      capReason: "absolute",
+      gateReason: "capped_absolute",
+    };
   }
   const relRatio = cls === "X" ? RELATIVE_CAP_RATIO_X : RELATIVE_CAP_RATIO;
   if (odds > RELATIVE_CAP_ODDS_FLOOR && q.q > 0 && rawEdge / q.q > relRatio) {
-    return { ...base, outcome: "capped", confidence: null, capReason: "relative" };
+    return {
+      ...base,
+      outcome: "capped",
+      confidence: null,
+      capReason: "relative",
+      gateReason: "capped_relative",
+    };
   }
   if (Math.abs(rawEdge) <= noiseGate) {
-    return { ...base, outcome: "noise", confidence: null };
+    return { ...base, outcome: "noise", confidence: null, gateReason: "noise" };
   }
 
   const gateTable = heightened ? CLASS_GATE_HEIGHTENED : CLASS_GATE;
   const gate = gateTable[cls];
-  if (gate === null) return { ...base, outcome: "below_gate", confidence: null };
-  const passes =
+  if (gate === null) {
+    return {
+      ...base,
+      outcome: "below_gate",
+      confidence: null,
+      gateReason: "heightened_x_excluded",
+    };
+  }
+
+  // [refactor P0-2] MANDATORY gate, "on" mode only: odds>=4.00 candidates must
+  // ALSO clear the blend-anchored EV bar — additive to the class tiers below,
+  // never a relaxation of them (Class L/X bars are untouched).
+  const blendGateRequired =
+    blendMode === "on" && odds >= V3_BLEND_GATE_ODDS_FLOOR && blend !== null;
+  const blendGateOk = !blendGateRequired || blend!.blendGatePass;
+
+  const classOk =
     adjustedEdge >= gate.minAdjEdge &&
     (gate.minAdjEvPct === null || adjEvPct >= gate.minAdjEvPct) &&
     (gate.maxOdds === null || odds <= gate.maxOdds) &&
     ev >= evFloor;
-  if (!passes) return { ...base, outcome: "below_gate", confidence: null };
+  const passes = classOk && blendGateOk;
+
+  if (!passes) {
+    let gateReason: V3AllGateReason;
+    if (adjustedEdge < gate.minAdjEdge) gateReason = "class_edge";
+    else if (gate.minAdjEvPct !== null && adjEvPct < gate.minAdjEvPct) gateReason = "class_evpct";
+    else if (gate.maxOdds !== null && odds > gate.maxOdds) gateReason = "max_odds";
+    else if (ev < evFloor) gateReason = "ev_floor";
+    else gateReason = "model_hot_longshot"; // classOk but blendGateOk failed
+    return { ...base, outcome: "below_gate", confidence: null, gateReason };
+  }
 
   return { ...base, outcome: "done", confidence: v3Confidence(cls, adjustedEdge, adjEvPct) };
 }

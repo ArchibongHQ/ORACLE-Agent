@@ -16,6 +16,7 @@
 import { GOALS_RICH_LEAGUES } from "../goalsPreFilter.js";
 import type { SportyBetEvent } from "../selectFixtures.js";
 import { INTL_TOURNAMENT_RE } from "../selectGoals.js";
+import { SRL_VIRTUAL_RE as SRL_RE } from "../srlPatterns.js";
 
 /** v3 §1.1 whitelist, mapped to this codebase's SportyBet league-name
  *  convention (see ORACLE_PRIORITY_LEAGUES for the naming source of truth).
@@ -115,8 +116,11 @@ export const GOALS_V3_WHITELIST: ReadonlySet<string> = new Set([
   ...GOALS_RICH_LEAGUES,
 ]);
 
-/** Simulated Reality League / virtual / e-sport football — §1.2 hard discard. */
-const SRL_RE = /simulated\s*reality|\bsrl\b|e-?soccer|esports?|virtual/i;
+/** Simulated Reality League / virtual / e-sport football — §1.2 hard discard.
+ *  [refactor P1-3] Consolidated into srlPatterns.ts (SRL_VIRTUAL_RE). This is
+ *  the strictest gate of the three legacy call sites, so the consolidated
+ *  superset (adds a trailing optional football/soccer/sport qualifier that
+ *  is a no-op here — see srlPatterns.ts) never changes behavior. */
 
 /** Heightened-bar classes (§1.2): goals modelling unreliable, so these need
  *  near-perfect data with aligned trends instead of a flat discard. */

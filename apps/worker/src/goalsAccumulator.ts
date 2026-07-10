@@ -4,13 +4,22 @@
  *  own SportyBet index read, its own discovery funnel (mechanical pre-filter
  *  -> Sonnet screen, over the FULL daily fixture pool, not the main batch's
  *  top-N), its own runAnalysis pass in goals-only-markets mode.
- *  selectGoalsAccumulator produces FIVE distinct outputs delivered as
- *  separate Telegram messages:
- *   1. TOP PICKS (short slip, 4-9 legs, EV-maximized)
- *   2. 39-LEG LOTTERY (long slip, up to 39 legs, correlation-aware greedy)
- *   3. MINI-ACCA (2-4 legs, one per league, highest-edge)
- *   4. OUTPUT B (top 5 legs with odds ≥ 4.00, ranked by edge)
- *   5. OUTPUT C (top 3 legs with 2.50 ≤ odds < 4.00, ranked by edge)
+ *
+ *  [2026-07-10, wave-1 worker merge] selectGoalsAccumulator still computes
+ *  FIVE internal views (top picks / 39-leg lottery / mini-ACCA / Output B /
+ *  Output C — see selectGoals.ts), but finalizeGoalsSelection no longer sends
+ *  five separate Telegram slips for them. This funnel's discovery pool is
+ *  genuinely independent of the daily batch's own v5 Phase-7 Outputs A-D
+ *  (buildMarketsV3SlateOutputs in slateOutputs.ts only ever sees fixtures the
+ *  daily batch itself analyzed, never this funnel's full-SportyBet-pool scan
+ *  — see runGoalsBatch's docstring below), so its content is NOT redundant
+ *  with the unified daily message and still needs its own delivery. It's now
+ *  ONE consolidated "goals supplement" send instead of five: the lottery legs
+ *  (the fullest surviving pool) as the message body, with mini-ACCA/Output B/
+ *  Output C folded in as an informational appendix note (they're near-total
+ *  subsets of the same pool, not disjoint content — see selectGoals.ts). The
+ *  full breakdown (all five views) is still persisted via writeGoalsArtifact
+ *  for apps/web's /goals route.
  *
  *  sendGoalsSlip/finalizeGoalsSelection are the shared notify/booking tail
  *  for BOTH this file's legacy runGoalsBatch funnel AND goalsV3Pipeline.ts's
@@ -128,18 +137,14 @@ function checkSportyBetStreak(sportyBetCount: number): void {
 // SportyBet index read, its own discovery funnel (mechanical pre-filter ->
 // Sonnet screen, over the FULL daily fixture pool, not the main batch's top-N),
 // its own runAnalysis pass in goals-only-markets mode. selectGoalsAccumulator
-// produces FIVE distinct outputs delivered as separate Telegram messages:
-//   1. TOP PICKS (short slip, 4-9 legs, EV-maximized)
-//   2. 39-LEG LOTTERY (long slip, up to 39 legs, correlation-aware greedy)
-//   3. MINI-ACCA (2-4 legs, one per league, highest-edge)
-//   4. OUTPUT B (top 5 legs with odds ≥ 4.00, ranked by edge)
-//   5. OUTPUT C (top 3 legs with 2.50 ≤ odds < 4.00, ranked by edge)
+// still computes five internal views; as of the 2026-07-10 wave-1 merge only
+// ONE consolidated Telegram send goes out for them (see finalizeGoalsSelection).
 
-const TOP_PICKS_TAG = "GOALS — TOP PICKS";
-const LOTTERY_TAG = "GOALS — 39-LEG LOTTERY";
-const MINI_ACCA_TAG = "GOALS — MINI-ACCA (cross-league, 2-4 legs)";
-const OUTPUT_B_TAG = "GOALS — OUTPUT B (odds ≥ 4.00)";
-const OUTPUT_C_TAG = "GOALS — OUTPUT C (odds 2.50–3.99)";
+/** Single consolidated send (was five separate slips — see this file's header
+ *  comment). Framed as the v5-prompt's Output-2 goals view's supplement: the
+ *  daily batch's own Output A/B (all-markets/goals-markets top-39) only ever
+ *  see fixtures the daily batch analyzed, never this funnel's full-pool scan. */
+const GOALS_SUPPLEMENT_TAG = "GOALS — v5 Output-2 supplement (full-pool funnel)";
 
 /** Builds an LLMCallContext for the Sonnet screening stage (goalsFunnel.ts) —
  *  same shape every other Claude-calling call site in this worker builds inline. */
@@ -154,9 +159,12 @@ function buildLlmCtx() {
   };
 }
 
-/** One slip → notify/booking cycle. Shared by the top-picks and 39-leg lottery
- *  sends so both go through the identical booking-gate + notify + error-handling
- *  path, just with a different tag/leg-set/combinedProb-odds pair. */
+/** One slip → notify/booking cycle: booking-gate + notify + error-handling in
+ *  one path. As of the 2026-07-10 wave-1 merge, finalizeGoalsSelection below
+ *  calls this exactly once per day (was up to five calls — top picks, 39-leg
+ *  lottery, mini-ACCA, Output B, Output C, each independently notified AND
+ *  independently booking-gated). Kept as its own exported function — same
+ *  shape it's always had — rather than inlined into finalizeGoalsSelection. */
 export async function sendGoalsSlip(
   legs: GoalsSelectionResult["legs"],
   tag: string,
@@ -246,8 +254,41 @@ export async function sendGoalsSlip(
   return summary;
 }
 
-/** Shared tail: turn a full goals selection into FIVE independent notify/booking
- *  cycles — top picks, 39-leg lottery, mini-ACCA, Output B, Output C. */
+/** Builds the informational appendix line folded into the single consolidated
+ *  send below — mini-ACCA/Output B/Output C are near-total subsets of the
+ *  lottery pool (`selection.legs`, the message body), not disjoint content,
+ *  so they're reported as counts+combined stats rather than resent as their
+ *  own slips. Mirrors slateOutputs.ts's formatMiniAccaAppendix's "always
+ *  render a line, even when a tier is empty" convention — never silent. */
+function buildGoalsAppendixNote(selection: GoalsSelectionResult): string {
+  const parts: string[] = [
+    `top picks (EV-max, ${selection.shortSlipLegs.length} legs): ` +
+      `${(selection.shortSlipCombinedProb * 100).toFixed(1)}% @ ${selection.shortSlipCombinedOdds.toFixed(2)}`,
+  ];
+  parts.push(
+    selection.miniAccaLegs.length > 0
+      ? `mini-ACCA (${selection.miniAccaLegs.length} legs, cross-league): ` +
+          `${(selection.miniAccaCombinedProb * 100).toFixed(1)}% @ ${selection.miniAccaCombinedOdds.toFixed(2)} ` +
+          `(true EV ${(selection.miniAccaTrueEv * 100).toFixed(1)}%)`
+      : "mini-ACCA: skipped (fewer than 2 cross-league legs qualified)"
+  );
+  parts.push(`high-odds ≥4.00: ${selection.outputBLegs.length} legs`);
+  parts.push(`mid-odds 2.50–3.99: ${selection.outputCLegs.length} legs`);
+  return `goals supplement — ${parts.join(" · ")}`;
+}
+
+/** Shared tail: turn a full goals selection into notify/booking delivery.
+ *  [2026-07-10, wave-1 merge] Previously FIVE independent notify/booking
+ *  cycles (top picks, 39-leg lottery, mini-ACCA, Output B, Output C), each
+ *  its own Telegram message and its own booking-gate check — up to five
+ *  separate SportyBet booking attempts per day if ENABLE_SPORTYBET_BOOKING
+ *  was on. Now ONE consolidated send: the lottery legs (`selection.legs`,
+ *  the fullest surviving pool — the other four views are near-total subsets
+ *  of it, see selectGoals.ts) as the message body and the single booking
+ *  attempt, with the other four views folded in as an informational
+ *  appendix note (buildGoalsAppendixNote) rather than resent. Exactly one
+ *  booking path, exactly one Telegram send — see sendGoalsSlip's own
+ *  booking-gate block for where that happens. */
 export async function finalizeGoalsSelection(
   selection: GoalsSelectionResult,
   date: string,
@@ -262,83 +303,21 @@ export async function finalizeGoalsSelection(
       `teamover05=${selection.counts.teamOver05}; qualified=${selection.qualified} of ${selection.analysed})\n`
   );
 
-  // 1. Top picks — short, EV-maximized, 4-9 legs (high-confidence bar).
-  const topPicks = await sendGoalsSlip(
-    selection.shortSlipLegs,
-    TOP_PICKS_TAG,
-    date,
-    selection.analysed,
-    errorCount,
-    selection.shortSlipCombinedProb,
-    selection.shortSlipCombinedOdds,
-    "top-picks",
-    v3Meta
-  );
+  const appendixNote = buildGoalsAppendixNote(selection);
+  const sanityNote = [v3Meta?.sanityLine, appendixNote].filter(Boolean).join("\n");
 
-  // 2. Lottery — long slip, up to 39 legs, greedy correlation-aware. The fullest
-  // slate view, so the sanity note (slate-wide, would just repeat on every
-  // other filtered subset) rides this send only.
-  const lottery = await sendGoalsSlip(
+  const consolidated = await sendGoalsSlip(
     selection.legs,
-    LOTTERY_TAG,
+    GOALS_SUPPLEMENT_TAG,
     date,
     selection.analysed,
     errorCount,
     selection.combinedProb,
     selection.combinedOdds,
-    "lottery",
+    "goals-supplement",
     v3Meta,
-    v3Meta?.sanityLine
+    sanityNote
   );
-
-  // 3. Mini-ACCA — 2-4 legs, one per league, highest edge (always sent; if <2
-  //    legs available the slip arrives as "no picks" rather than being skipped,
-  //    consistent with the empty-slip notification pattern above).
-  await sendGoalsSlip(
-    selection.miniAccaLegs,
-    MINI_ACCA_TAG,
-    date,
-    selection.analysed,
-    errorCount,
-    selection.miniAccaCombinedProb,
-    selection.miniAccaCombinedOdds,
-    "mini-acca",
-    v3Meta
-  );
-
-  // 4. Output B — top 5 legs with odds ≥ 4.00 (value/longshot tier).
-  if (selection.outputBLegs.length > 0) {
-    const bProb = selection.outputBLegs.reduce((acc, l) => acc * l.mp, 1);
-    const bOdds = selection.outputBLegs.reduce((acc, l) => acc * l.odds, 1);
-    await sendGoalsSlip(
-      selection.outputBLegs,
-      OUTPUT_B_TAG,
-      date,
-      selection.analysed,
-      errorCount,
-      bProb,
-      bOdds,
-      "output-b",
-      v3Meta
-    );
-  }
-
-  // 5. Output C — top 3 legs with 2.50 ≤ odds < 4.00 (mid-range value tier).
-  if (selection.outputCLegs.length > 0) {
-    const cProb = selection.outputCLegs.reduce((acc, l) => acc * l.mp, 1);
-    const cOdds = selection.outputCLegs.reduce((acc, l) => acc * l.odds, 1);
-    await sendGoalsSlip(
-      selection.outputCLegs,
-      OUTPUT_C_TAG,
-      date,
-      selection.analysed,
-      errorCount,
-      cProb,
-      cOdds,
-      "output-c",
-      v3Meta
-    );
-  }
 
   writeHeartbeat("lastGoalsBatch", {
     trigger,
@@ -349,12 +328,13 @@ export async function finalizeGoalsSelection(
     outputBLegs: selection.outputBLegs.length,
     outputCLegs: selection.outputCLegs.length,
     target: selection.target,
-    topPicksBooked: Boolean(topPicks.bookingCode),
-    lotteryBooked: Boolean(lottery.bookingCode),
+    consolidatedBooked: Boolean(consolidated.bookingCode),
   });
 
-  // Persist the full selection so apps/web's /goals route can show it — the
-  // pipeline was previously worker -> Telegram/email only, zero web surface.
+  // Persist the full selection (all five views) so apps/web's /goals route can
+  // still show the complete breakdown — the pipeline was previously worker ->
+  // Telegram/email only, zero web surface, and this artifact predates the
+  // consolidation above; delivery shrank, the stored data didn't.
   try {
     await writeGoalsArtifact(
       selection,
@@ -371,14 +351,19 @@ export async function finalizeGoalsSelection(
   }
 }
 
-/** The ONLY goals pipeline (2026-06-24 rewrite): independent of the main
- *  all-markets daily batch entirely — its own SportyBet index read, its own
+/** The ONLY goals pipeline (2026-06-24 rewrite): functionally independent of
+ *  the main all-markets daily batch — its own SportyBet index read, its own
  *  discovery funnel (mechanical pre-filter -> Sonnet screen, goalsFunnel.ts),
- *  its own runAnalysis pass in goals-only-markets mode. Per owner instruction,
- *  the funnel scans the FULL daily SportyBet pool (potentially 1000+ fixtures)
+ *  its own runAnalysis pass in goals-only-markets mode, and it does NOT
+ *  derive its picks from runDailyBatch's output. Per owner instruction, the
+ *  funnel scans the FULL daily SportyBet pool (potentially 1000+ fixtures)
  *  for goals-market opportunity — not whatever subset the main batch happened
- *  to analyze for all markets. Runs as its own cron slot / --run-goals-now
- *  invocation, no longer derived from or chained after the main daily batch.
+ *  to analyze for all markets. Callable standalone via --run-goals-now; as of
+ *  the 2026-07-10 wave-1 cron merge, index.ts's unified 09:35 WAT job also
+ *  calls this immediately after runDailyBatch (same job, sequential, not two
+ *  cron slots) — that ordering is a structural requirement (the goals
+ *  cross-batch veto reads runDailyBatch's RunManifests), not a data
+ *  dependency on the daily batch's picks.
  *
  *  ORACLE_GOALS_V3=true switches to the deterministic v3 pipeline
  *  (runGoalsBatchV3) immediately after the future-kickoff filter below —

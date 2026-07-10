@@ -345,6 +345,34 @@ export interface OracleConfig {
   //              calibFactor + isotonic 1x2 calibration activate live
   // Default "shadow" (ORACLE_CALIBRATION_LEDGER) for the first 1-2 weeks.
   calibrationLedger?: "off" | "shadow" | "on";
+  // [refactor P0-2] Market-anchored blend (v5 §5.8): the de-vigged market price
+  // is the prior, the model adjusts it. Three-state:
+  //   "off"    — blend fields not computed (byte-identical to pre-P0-2 gating)
+  //   "shadow" — wModel/pBlend/blendEdge computed + persisted on every
+  //              assessment, but the odds≥4.00 blend gate is NOT enforced
+  //   "on"     — fields computed AND candidates at odds ≥ 4.00 must also pass
+  //              blendEdge ≥ +5% (Class L/X bars unchanged — this is additive)
+  // Default "on" per the change list (the underdog fix).
+  v3Blend?: "off" | "shadow" | "on";
+  // [refactor P0-3] Safety-layer posture. "penalty" (default) converts the
+  // mis-scoped MLSafetyFilter hard rejects (odds-band, xG, draw-risk, upset
+  // league, sharp fade, miscalibration) into market-family penalties /
+  // stake-tier downgrades; hard rejects remain only for integrity failures
+  // (contamination, missing mandatory data, promo markets, withdrawn odds,
+  // started fixtures). "legacy" restores the pre-refactor hard-reject set —
+  // the rollback lever.
+  safetyMode?: "legacy" | "penalty";
+  // [refactor P1-3] Feed-integrity stage (v5 Rule 0.14): SRL-twin block
+  // comparison, fixtures-vs-markets headline 1X2 cross-check, duplicate-block
+  // scan. "on" (default) = contamination is an integrity-class hard reject;
+  // "shadow" = checks run + log, nothing rejected; "off" = checks skipped.
+  feedIntegrity?: "off" | "shadow" | "on";
+  // [refactor P1-4] True only once the sharp-reference odds feed is verified
+  // live (≥95% pick coverage over 7 consecutive slates). Until then the
+  // ConvergenceScorer's sharp-dependent signals (S02 consensus, S03 RLM,
+  // S04 compression, S05 CLV survival) are zero-weighted — they'd otherwise
+  // compute on air when the only odds source is the soft book being bet into.
+  sharpFeedVerified?: boolean;
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

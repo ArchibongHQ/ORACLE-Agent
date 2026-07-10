@@ -233,6 +233,31 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-10** — Refactor Wave 1 (branch `feature/wave-1`, 6 commits). **P0-2
+  market-anchored blend** (`marketsV3/evGate.ts`): `gateAllMarkets` now computes
+  `wModel = min(0.40, 0.15 + 0.15·completeness + 0.10·realXg)`,
+  `pBlend = (1−w)·q_fair + w·P_model`, `blendEdge = pBlend·odds − 1` on every
+  assessment; a **mandatory `blendEdge ≥ +5%` gate fires at odds ≥ 4.00** on top
+  of the Class L/X bars (the longshot-inflation fix), tagged `model_hot_longshot`
+  when it kills. `below_gate` is now reason-tagged (`gateReason`). `evFloor` is
+  finally passed at the `analyzeFixtureMarkets.ts` call site (was defaulting to 0
+  — latent bug). Flag `ORACLE_V3_BLEND` (default on; fields persisted in all
+  modes). **P0-3/P0-4 safety** (`safety/index.ts`, `execution/index.ts`):
+  MLSafetyFilter hard rejects (S1 odds-band, S7 low-xG, S11 derby/injury, S13
+  upset-league, S16 sharp-fade, S17 miscalibration, draw-risk) become
+  market-**family** stake downgrades via new `familyPenaltyMultiplier`, applied
+  in `_run` after `MLSafetyFilter.evaluate({ mode })`; hard rejects survive only
+  under `ORACLE_SAFETY_MODE=legacy` (rollback). Per-filter kill telemetry
+  (`filters[]` + `killCounts`, previously built and discarded). `S01` is now
+  graduated + sign-aware (≤5pt +3, 5–8pt 0, >8pt **−3**), reconciled with S14's
+  `[NEGATIVE_EV_ALERT]`. S02–S05 zero-weighted until `sharpFeedVerified`.
+  `weighReversibility` deleted (was dead). **LLM cascade** (`llm/`,
+  `decision/index.ts`): local Claude Code CLI pinned to **Opus** (owner
+  instruction), then Gemini 3.5 Flash, then OpenRouter **free tier** (GLM-5.2 →
+  DeepSeek V4-Pro → V4-Flash → Gemma 4, each unverified `:free` slug backed by a
+  verified free substitute); GLM-5.2 shadow path retired. Companion runtime work
+  (P1-3 feed integrity, worker merge, v5 four-output delivery) lands in
+  `@oracle/runtime` / `apps/worker` — see `workflows/markets_v3.md`.
 - **2026-07-09** — PR-25 item 2: referee-assignment fetcher + cards shadow
   diagnostic. `tools/compute_referee_cards.py` (new) aggregates
   `.tmp/backfill/*.csv`'s existing `Referee`/`HY`/`AY`/`HR`/`AR` columns

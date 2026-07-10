@@ -60,6 +60,8 @@ export function buildV3Input(
     v3CornersCards?: boolean;
     v3CornersCardsExt?: boolean;
     v3ShotsOu?: boolean;
+    /** [refactor P0-2] Market-anchored blend three-state — see OracleConfig.v3Blend. */
+    v3Blend?: "off" | "shadow" | "on";
   }
 ): V3AllMarketsInput | null {
   if (!allMarkets?.length) return null;
@@ -172,6 +174,22 @@ export function buildV3Input(
     // v3 gate falls back to the static getLeagueParams baseRho unchanged.
     dynamicRho: state.ledger?.metrics?.dynamicRhoParams?.[job.league],
     v3CornersCardsExt: config?.v3CornersCardsExt,
+    // [refactor P0-2] Market-anchored blend inputs (evGate.ts computeMarketBlend):
+    blendMode: config?.v3Blend,
+    // 0-1 scale (V3AllMarketsInput.completeness contract) — the slate pre-filter
+    // (packages/runtime/src/marketsV3/slateGate.ts, owned by a different
+    // workstream) is expected to stamp telemetry.v3Completeness at that same
+    // 0-1 scale when it stamps telemetry.v3Heightened; read here via the
+    // telemetry index signature since RunState.telemetry has no named field
+    // for it. Absent (not yet stamped, or fixture bypassed the pre-filter)
+    // ⇒ undefined ⇒ evGate.ts's computeMarketBlend treats it as 0 (strictest
+    // wModel posture), never as a blocker.
+    completeness: typeof t.v3Completeness === "number" ? t.v3Completeness : undefined,
+    // Confirmed (non-estimated) xG provenance — reuses the same xgMode marker
+    // the xgEstimated/xgMissing penalty flags above already read, so this is
+    // an exact derivation, not an approximation: "empirical" means real xG
+    // was actually supplied, not the SHRINK_N-gated raw-goals estimate.
+    hasRealXg: t.xgMode === "empirical",
   };
 }
 

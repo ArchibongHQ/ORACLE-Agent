@@ -20,7 +20,13 @@ import { type MarketExecutorRiskParams, runAllMarketsLlmExecutor } from "./marke
 export interface DecisionResult {
   decision: DecisionOutput;
   replay: DecisionReplay | null;
-  /** GLM-5.2 shadow comparison — observability only, never affects `decision`. */
+  /** Retired 2026-07-10: GLM-5.2 is now a real cascade rung (see decideInner /
+   *  _tryOpenRouter below), not an observability-only shadow comparison — this
+   *  field is always undefined now. Kept for API compatibility with existing
+   *  callers (batch/index.ts destructures `shadow: decisionShadow`) — the
+   *  DecisionShadow type itself (packages/engine/src/types.ts) is now dead and
+   *  a candidate for a future cleanup pass; not touched here (out of this
+   *  workstream's file scope). */
   shadow?: DecisionShadow;
   /** The eligible-bets list actually used for the arbiter + downstream gates.
    *  Only set (and widened by one synthetic EVMarket) when the all-markets LLM
@@ -303,7 +309,11 @@ guessing — 0 is the honest default, not a fabricated number.`;
  *  decision returned to the rest of the pipeline (validateSelection's hard gates
  *  still apply downstream, unchanged). On any failure (binary missing, timeout,
  *  bad parse), falls back to `draft` labelled arbiterStatus="unverified" so
- *  callers/UI can tell the difference — the pipeline never blocks on this. */
+ *  callers/UI can tell the difference — the pipeline never blocks on this.
+ *
+ *  Model: no explicit opts.model is passed to callClaudeCode below, so this
+ *  inherits callClaudeCode.ts's DEFAULT_MODEL — Opus (owner instruction
+ *  2026-07-10). ARBITER_TIMEOUT_MS is unchanged. */
 async function arbitrate(
   eligibleBets: EVMarket[],
   ctx: DecisionContext,
@@ -377,42 +387,6 @@ export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
   return evMarkets.filter((m) => !m.veto && m.ev > 0);
 }
 
-// ── GLM-5.2 shadow run ────────────────────────────────────────────────────────
-
-/** Evaluates GLM-5.2 against the same prompt the real decision tier received,
- *  for observability only — never affects the returned decision. Fail-open:
- *  any error or missing key returns undefined. Since the 2026-07-06 DeepSeek-first
- *  reorder, GLM-5.2 is no longer the first (or usual) Tier-3 model, so this now
- *  fires as a genuine cross-model comparison against most Tier-3-sourced drafts
- *  (not just a self-check) — each firing is one extra paid OpenRouter call. */
-async function shadowDecideWithGlm52(
-  prompt: string,
-  openrouterKey: string,
-  realPick: DecisionOutput
-): Promise<DecisionShadow | undefined> {
-  if (!openrouterKey) return undefined;
-  try {
-    const { callOpenRouterJson, OPENROUTER_MODELS } = await import("@oracle/llm");
-    const raw = await callOpenRouterJson(
-      "You are ORACLE's gated betting decision engine. Return ONLY valid JSON.",
-      prompt,
-      OPENROUTER_MODELS.GLM_5_2,
-      openrouterKey,
-      0
-    );
-    if (!raw) return undefined;
-    const parsed = parseDecisionResponse(raw);
-    if (!parsed) return undefined;
-    return {
-      model: OPENROUTER_MODELS.GLM_5_2,
-      pick: parsed,
-      agree: parsed.primaryPick.market === realPick.primaryPick.market,
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 // ── Public: decide ────────────────────────────────────────────────────────────
 
 // Model IDs come from @oracle/llm cascade.ts (MODELS / OPENROUTER_MODELS) via the same
@@ -421,28 +395,36 @@ async function shadowDecideWithGlm52(
 
 /** Calls LLMs to select the best bet, then runs the mandatory final-arbiter pass.
  *
- *  Draft cascade (multi-tier — produces the candidate the arbiter will review):
- *   1. Claude Opus    — when claudeApiKey present
- *   2. Gemini 3.5     — when geminiApiKey present (fires if Claude key absent OR Claude call fails)
- *   3. OpenRouter     — DeepSeek(Flash/Pro/R1) → GLM-5.2 → GLM-5.1 → deeper paid fallback
- *                       tier → free models last (when openrouterApiKey present)
+ *  Draft cascade (multi-tier — produces the candidate the arbiter will review).
+ *  Owner-mandated reorder, 2026-07-10:
+ *   1. Local Claude Code CLI (Opus) — no API key needed; fires whenever
+ *                       isLocalRuntime() is true
+ *   2. Gemini 3.5 Flash — when geminiApiKey present (fires if rung 1 was
+ *                       unavailable or returned nothing)
+ *   3. OpenRouter, free tier only — GLM-5.2 → DeepSeek-V4-Pro → DeepSeek-V4-Flash →
+ *                       Gemma 4, STRICTLY free (:free) variants. Each named model's
+ *                       own :free slug is tried first, immediately followed by its
+ *                       verified free reasoning substitute where the named model has
+ *                       no live free endpoint — see cascade.ts's OPENROUTER_MODELS
+ *                       header comment for sources. Fires when openrouterApiKey present.
  *   4. Deterministic  — when all LLMs unavailable or parse fails
  *
  *  Final arbiter — ORACLE_LOCAL_DECISION="true" (global, applies to every fixture
  *  through every analysis pipeline — daily batch, punt, CLI fixture lookup, since
  *  they all route through this one function):
- *  local Claude Code reviews the draft's stats, news intel, rationale, and engine
- *  math, then RATIFIES it, OVERRIDES it with a different eligible market, or FLAGS
- *  MISSING_DATA. The arbiter's verdict becomes the returned decision. On any
- *  arbiter failure (binary missing, non-local runtime, timeout, bad parse), the
- *  draft is returned as-is with arbiterStatus="unverified" so callers/UI can tell
- *  the difference — never blocks the pipeline. When the flag is unset, behaves
- *  exactly as before (draft cascade only, no arbiterStatus).
+ *  local Claude Code (Opus) reviews the draft's stats, news intel, rationale,
+ *  and engine math, then RATIFIES it, OVERRIDES it with a different eligible
+ *  market, or FLAGS MISSING_DATA. The arbiter's verdict becomes the returned
+ *  decision. On any arbiter failure (binary missing, non-local runtime, timeout,
+ *  bad parse), the draft is returned as-is with arbiterStatus="unverified" so
+ *  callers/UI can tell the difference — never blocks the pipeline. When the flag
+ *  is unset, behaves exactly as before (draft cascade only, no arbiterStatus).
  *
  *  Always returns { decision, replay } — replay is null on the deterministic path
- *  with the arbiter off. When the draft came from an LLM tier and an OpenRouter key
- *  is present, also runs a non-blocking GLM-5.2 shadow comparison against the DRAFT
- *  (see `shadow` on the result) — independent of, and unaffected by, the arbiter. */
+ *  with the arbiter off. `shadow` on the result is always undefined now — the
+ *  GLM-5.2 shadow comparison was retired when GLM-5.2 became a real cascade rung
+ *  (rung 3) instead of an observability-only side call; the field is kept only for
+ *  API compatibility with existing callers (see DecisionResult.shadow above). */
 export async function decide(
   eligibleBets: EVMarket[],
   ctx?: DecisionContext,
@@ -537,22 +519,7 @@ export async function decide(
     result = { ...result, eligibleBets: effectiveEligible };
   }
 
-  if (!ctx || draft.replay === null || !config?.openrouterApiKey) return result;
-
-  // Skip when GLM-5.2 itself already produced the draft — shadowing it against
-  // itself is a wasted call with a trivial result. GLM-5.2 is no longer the first
-  // Tier-3 model tried (DeepSeek-V4-Flash/Pro/R1 precede it as of 2026-07-06), so
-  // this self-check now rarely fires; most Tier-3 drafts DO trigger a real paid
-  // shadow call. Also skip when the draft came from the market-executor tier —
-  // GLM-5.2 never saw the full allMarkets catalogue, so shadowing it here tests
-  // nothing useful.
-  if (draft.replay.model === "claude-code-market-executor") return result;
-  const { OPENROUTER_MODELS } = await import("@oracle/llm");
-  if (draft.replay.model === OPENROUTER_MODELS.GLM_5_2) return result;
-
-  const prompt = buildPrompt(effectiveEligible, ctx);
-  const shadow = await shadowDecideWithGlm52(prompt, config.openrouterApiKey, draft.decision);
-  return shadow ? { ...result, shadow } : result;
+  return result;
 }
 
 async function decideInner(
@@ -575,11 +542,10 @@ async function decideInner(
   if (!ctx) return deterministicDecide(eligibleBets);
 
   const prompt = buildPrompt(eligibleBets, ctx);
-  const _requestedAt = new Date().toISOString();
-  const _geminiKey = config?.geminiApiKey ?? "";
+  const geminiKey = config?.geminiApiKey ?? "";
   const openrouterKey = config?.openrouterApiKey ?? "";
 
-  // ── Tier 1: local Claude Code CLI (no API key needed) ────────────────────
+  // ── Rung 1: local Claude Code CLI (Opus, no API key needed) ──────────────
   // isLocalRuntime() guards the spawn — must NOT be removed. Without it, a real
   // `claude` binary on PATH is called during every Vitest run, causing 5–45s
   // hangs and intermittent CI failures on dev boxes with the CLI installed.
@@ -599,50 +565,77 @@ async function decideInner(
       }
     }
   } catch {
-    // Fall through to OpenRouter tiers
+    // Fall through to Gemini
   }
 
-  return await _tryOpenRouter(prompt, openrouterKey, eligibleBets, "Claude local unavailable");
+  return await _tryGemini(
+    prompt,
+    geminiKey,
+    openrouterKey,
+    eligibleBets,
+    "Claude local unavailable"
+  );
 }
 
+/** ── Rung 2: Gemini 3.5 Flash — fires only when rung 1 (local Claude Code)
+ *  was unavailable (isLocalRuntime()=false) or returned nothing. Pure Gemini
+ *  call: does NOT re-attempt local Claude Code (that was rung 1's job) — on
+ *  any failure (missing key, call error, bad parse) falls straight through to
+ *  the OpenRouter free-tier cascade (rungs 3-6). callGeminiDecision() throws
+ *  when its own internal Pro→Flash cascade is exhausted; caught here like any
+ *  other tier failure. */
 async function _tryGemini(
   prompt: string,
-  _geminiKey: string,
+  geminiKey: string,
   openrouterKey: string,
-  _requestedAt: string,
   eligibleBets: EVMarket[],
-  claudeFailReason: string
+  priorFailReason: string
 ): Promise<DecisionResult> {
-  // ── Tier 2: local Claude Code CLI (Gemini key not needed) ─────────────────
-  try {
-    const { callClaudeCode, MODELS } = await import("@oracle/llm");
-    const raw = await callClaudeCode(prompt, { timeoutMs: 45_000 });
-    if (raw) {
-      const replay: DecisionReplay = {
-        prompt,
-        rawResponse: raw,
-        model: MODELS.CLAUDE_OPUS,
-        temperature: 0,
-      };
-      const parsed = parseDecisionResponse(raw);
-      if (parsed) return { decision: parsed, replay };
+  if (geminiKey) {
+    try {
+      const { callGeminiDecision, MODELS } = await import("@oracle/llm");
+      const raw = await callGeminiDecision(prompt, {
+        config: { claudeApiKey: "", geminiApiKey: geminiKey, bankroll: 0 },
+        requestedAt: new Date().toISOString(),
+      });
+      if (raw) {
+        const parsed = parseDecisionResponse(raw);
+        if (parsed) {
+          const replay: DecisionReplay = {
+            prompt,
+            rawResponse: raw,
+            model: MODELS.GEMINI_FLASH,
+            temperature: 0,
+          };
+          return { decision: parsed, replay };
+        }
+      }
+    } catch {
+      // Fall through to OpenRouter
     }
-  } catch {
-    /* fall through */
   }
 
   return await _tryOpenRouter(
     prompt,
     openrouterKey,
     eligibleBets,
-    `${claudeFailReason} — local Claude unavailable`
+    `${priorFailReason} — Gemini unavailable`
   );
 }
 
-/** ── Tier 3: OpenRouter cascade — DeepSeek-V4-Flash → DeepSeek-V4-Pro → DeepSeek-R1 →
- *  GLM-5.2 → GLM-5.1 → free models → deeper paid fallback tier.
- *  Each model is tried at temperature 0 with JSON mode; the first that parses wins.
- *  All fail (or no key) → deterministic fallback. callOpenRouterJson never throws. */
+/** ── Rungs 3-6: OpenRouter free-tier cascade — GLM-5.2 → DeepSeek-V4-Pro →
+ *  DeepSeek-V4-Flash → Gemma 4. STRICTLY free (:free) variants per owner
+ *  directive 2026-07-10 — this is the decision-path cascade only; contrast
+ *  with the DeepSeek-first PAID cascade other call sites (callGemini.ts,
+ *  callVerification.ts, callRegimeHint.ts — out of this workstream's scope)
+ *  still use unchanged. Each named model's own :free slug is tried first
+ *  (GLM-5.2 and DeepSeek have no confirmed live :free endpoint as of
+ *  2026-07-10 — see cascade.ts's OPENROUTER_MODELS header comment for
+ *  sources — so those two attempts are expected to fail and the loop just
+ *  skips them), immediately followed by the verified free reasoning
+ *  substitute. Each model is tried at temperature 0 with JSON mode; the first
+ *  that parses wins. All fail (or no key) → deterministic fallback.
+ *  callOpenRouterJson never throws. */
 async function _tryOpenRouter(
   prompt: string,
   openrouterKey: string,
@@ -657,32 +650,15 @@ async function _tryOpenRouter(
   }
 
   const { callOpenRouterJson, OPENROUTER_MODELS } = await import("@oracle/llm");
-  // DeepSeek-first (owner directive 2026-07-06): DeepSeek-V4-Flash/Pro/R1 are tried
-  // before GLM-5.2, the prior primary decision model (cascade.ts), then a deeper paid
-  // fallback tier (MiniMax/MiMo/Qwen3-Coder/LongCat/Nemotron-Ultra), THEN free-tier
-  // models last — paid models must stay ahead of the free safety net, never behind it.
-  // Tier-0 local Claude Code already absorbs most traffic before this cascade is
-  // reached, bounding paid-tier cost here. Cycling through the free models after
-  // exhausting every paid option means a transient 429 just rolls to the next instead
-  // of dropping straight to the deterministic fallback.
   for (const model of [
-    OPENROUTER_MODELS.DEEPSEEK_V4_FLASH,
-    OPENROUTER_MODELS.DEEPSEEK_V4_PRO,
-    OPENROUTER_MODELS.DEEPSEEK_R1,
-    OPENROUTER_MODELS.GLM_5_2,
-    OPENROUTER_MODELS.GLM_5_1,
-    OPENROUTER_MODELS.MINIMAX_M3,
-    OPENROUTER_MODELS.MINIMAX_M2_5,
-    OPENROUTER_MODELS.MIMO_V2_5_PRO,
-    OPENROUTER_MODELS.QWEN3_CODER_480B,
-    OPENROUTER_MODELS.QWEN3_CODER_NEXT,
-    OPENROUTER_MODELS.LONGCAT_FLASH_CHAT,
-    OPENROUTER_MODELS.NEMOTRON_3_ULTRA,
-    OPENROUTER_MODELS.GPT_OSS_120B,
-    OPENROUTER_MODELS.NEMOTRON_SUPER_120B,
-    OPENROUTER_MODELS.QWEN3_NEXT_80B,
-    OPENROUTER_MODELS.GPT_OSS_20B,
-    OPENROUTER_MODELS.LLAMA_3_3_70B,
+    OPENROUTER_MODELS.GLM_5_2_FREE,
+    OPENROUTER_MODELS.GLM_4_5_AIR_FREE,
+    OPENROUTER_MODELS.DEEPSEEK_V4_PRO_FREE,
+    OPENROUTER_MODELS.NEMOTRON_3_ULTRA_FREE,
+    OPENROUTER_MODELS.DEEPSEEK_V4_FLASH_FREE,
+    OPENROUTER_MODELS.NEMOTRON_NANO_OMNI_REASONING_FREE,
+    OPENROUTER_MODELS.GEMMA_4_26B_MOE_FREE,
+    OPENROUTER_MODELS.GEMMA_4_31B_FREE,
   ]) {
     const raw = await callOpenRouterJson(
       "You are ORACLE's gated betting decision engine. Return ONLY valid JSON.",

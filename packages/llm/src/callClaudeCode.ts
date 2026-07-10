@@ -11,11 +11,14 @@
  *  decision JSON — treated as a failure, not handed downstream.
  *
  *  Model: pinned to DEFAULT_MODEL ("opus") via --model on every invocation —
- *  never left to the CLI's account default, which could silently resolve to
- *  Sonnet on some accounts. Operator instruction: every Claude call doing
- *  analysis/decision-making in this pipeline must target Opus or Fable-5-or-
- *  newer, never Sonnet or older. Callers may override via opts.model (e.g.
- *  "fable") but must not pass a Sonnet/Haiku alias.
+ *  never left to the CLI's account default, so the pinned model is explicit and
+ *  auditable rather than whatever an account happens to default to. Policy
+ *  (owner instruction 2026-07-10): Claude Opus is the primary LOCAL decision
+ *  model — the local Claude Code CLI is cascade rung 1, ahead of the OpenRouter
+ *  free-tier rungs (GLM-5.2 → DeepSeek V4 → Gemma 4). Callers may still override
+ *  via opts.model (e.g. "fable") for tiers that intentionally want a different
+ *  tier (e.g. the news-intel reshape path pins Haiku for cheap structured
+ *  extraction — see callNewsIntel.ts).
  *
  *  Auditability: the CLI still samples at the pinned model's own default
  *  temperature — there is no temperature knob to pin to 0, so callers must not
@@ -23,12 +26,10 @@
  *  model as "claude-code-local" (or "claude-code-arbiter" at the decision-layer
  *  call site) and keep the raw envelope for DecisionReplay at the call site.
  *
- *  The no-Sonnet rule above has no exceptions in practice: the goals-discovery
- *  screening stage (packages/runtime/src/goalsScreen.ts) also calls through
- *  this file and resolves to DEFAULT_MODEL ("opus") like every other call site,
- *  despite its own header comment historically describing a Sonnet exception
- *  routed through callClaude.ts's API transport — that routing was never
- *  actually wired up. */
+ *  Every call site that goes through this file with no explicit opts.model
+ *  (goalsScreen.ts, slateArbiter.ts, callVerification.ts, callKimi.ts,
+ *  commentBarOrchestrator.ts, marketExecutor.ts, decision/index.ts's draft +
+ *  arbiter tiers) resolves to Opus by inheriting DEFAULT_MODEL. */
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -216,9 +217,11 @@ interface ClaudeCodeEnvelope {
 }
 
 /** Default model for every local Claude Code invocation in this pipeline. Operator
- *  instruction: analysis/decision-making calls must target Opus or Fable-5-or-newer,
- *  never Sonnet or older — so this is pinned explicitly via --model rather than left
- *  to the CLI's account default, which could silently be Sonnet on some accounts. */
+ *  instruction (2026-07-10): Claude Opus is the primary local decision model —
+ *  pinned explicitly via --model (the CLI alias "opus") rather than left to the
+ *  CLI's account default. The local CLI is cascade rung 1; OpenRouter free-tier
+ *  models are the fallback rungs. Callers that need a different tier (e.g. Fable,
+ *  Haiku) pass opts.model explicitly. */
 const DEFAULT_MODEL = "opus";
 
 /** Redact substrings shaped like secrets (bearer tokens, API keys, JWTs)

@@ -61,6 +61,15 @@ export function buildMarketsV3GateConfig(
 export interface MarketsV3GateResult {
   eligibility: V3Eligibility;
   completeness: V3Completeness;
+  /** [refactor P0-2] completeness.score normalized to the 0-1 scale
+   *  packages/engine/src/marketsV3's blend gate expects (V3AllMarketsInput
+   *  .completeness / evGate.ts's computeMarketBlend) — completeness.score
+   *  itself stays 0-100 (V3_COMPLETENESS_WEIGHTS sums to 100) for backward
+   *  compat with every existing completenessMin/heightenedMin comparison.
+   *  Present on every branch below, including the discard paths, so a caller
+   *  that stamps telemetry.v3Completeness from a non-passing gate result
+   *  still gets a real number instead of undefined. */
+  completenessScore01: number;
   /** True ⇒ fixture clears both the eligibility and completeness gates. */
   passes: boolean;
   /** Machine-readable reason when passes=false (for slate-level discard logs). */
@@ -86,32 +95,46 @@ export function gateMarketsV3Fixture(
   const eligibility = classifyEligibility(event);
   const detail: SportyBetEventDetail | undefined = event.detail;
   const completeness = scoreCompleteness(detail, enrich);
+  const completenessScore01 = completeness.score / 100;
 
   if (eligibility.status === "discard") {
     const reason = eligibility.reasons[0] as MarketsV3GateResult["discardReason"];
-    return { eligibility, completeness, passes: false, discardReason: reason };
+    return { eligibility, completeness, completenessScore01, passes: false, discardReason: reason };
   }
 
   if (completeness.mandatoryMissing.length > 0) {
-    return { eligibility, completeness, passes: false, discardReason: "mandatory_data_missing" };
+    return {
+      eligibility,
+      completeness,
+      completenessScore01,
+      passes: false,
+      discardReason: "mandatory_data_missing",
+    };
   }
 
   const minScore =
     eligibility.status === "heightened" ? config.heightenedMin : config.completenessMin;
   if (completeness.score < minScore) {
-    return { eligibility, completeness, passes: false, discardReason: "below_completeness_floor" };
+    return {
+      eligibility,
+      completeness,
+      completenessScore01,
+      passes: false,
+      discardReason: "below_completeness_floor",
+    };
   }
 
   if (eligibility.status === "heightened" && !heightenedTrendsAligned(detail)) {
     return {
       eligibility,
       completeness,
+      completenessScore01,
       passes: false,
       discardReason: "heightened_trends_not_aligned",
     };
   }
 
-  return { eligibility, completeness, passes: true };
+  return { eligibility, completeness, completenessScore01, passes: true };
 }
 
 export interface MarketsV3SlateSummary {

@@ -30,6 +30,20 @@ export type { DailyNewsRow } from "./dailyStore.js";
 export { fixturesPartitionExists, loadDailyNews, teamSlug } from "./dailyStore.js";
 export type { GoalsV3Config } from "./env.js";
 export { buildConfig, buildGoalsV3Config, loadEnv, validateConfig } from "./env.js";
+// [refactor P1-3] feed-integrity stage (Rule 0.14) + consolidated SRL patterns
+export type {
+  FeedIntegrityVerdict,
+  FixtureIntegrityResult,
+  MarketsBlockEntry,
+  SlateIntegrityReport,
+} from "./feedIntegrity.js";
+export {
+  checkFixtureIntegrity,
+  crossCheckHeadline1x2,
+  detectSrlTwin,
+  runFeedIntegrity,
+  scanDuplicateBlocks,
+} from "./feedIntegrity.js";
 export type { FetchResult } from "./fixtures.js";
 export {
   fetchFixtureByName,
@@ -50,10 +64,12 @@ export {
   computeXgCoverage,
   generateAndWriteFixtureWorkbook,
   listFixtureReportFiles,
+  renderFixturesMarketsPage,
   renderFixturesWorkbook,
   renderMarketsWorkbook,
   TELEGRAM_FILE_BUDGET_BYTES,
   writeFixtureReportFiles,
+  writeFixturesMarketsPage,
 } from "./fixtureWorkbook.js";
 export type { GoalsArtifact } from "./goalsArtifact.js";
 export { readGoalsArtifact, writeGoalsArtifact } from "./goalsArtifact.js";
@@ -131,11 +147,17 @@ export {
 } from "./marketsV3/pipeline.js";
 export type { SlateGateOutcome, SlateGateSummary } from "./marketsV3/slateGate.js";
 export { formatSlateGateLog, prefilterMarketsV3Jobs } from "./marketsV3/slateGate.js";
-export type { MarketsV3SlateOutputs, SlateMarketCoverage } from "./marketsV3/slateOutputs.js";
+export type {
+  MarketsV3SlateOutputs,
+  MiniAccaAppendix,
+  SlateMarketCoverage,
+} from "./marketsV3/slateOutputs.js";
 export {
   buildMarketsV3SlateOutputs,
+  buildMiniAccaAppendix,
   curateActionableByV3Outputs,
   formatMarketCoverageNote,
+  formatMiniAccaAppendix,
   rollupCoverage,
 } from "./marketsV3/slateOutputs.js";
 export { enrichWithNewsIntel } from "./newsIntel.js";
@@ -192,3 +214,10 @@ export {
   selectGoalsAccumulator,
 } from "./selectGoals.js";
 export { blendRecencyScored, MIN_PLAYED_FOR_OVERRIDE } from "./sportyBetStats.js";
+export {
+  isSrlTeamName,
+  isSrlVirtualLabel,
+  SRL_TEAM_SUFFIX_RE,
+  SRL_VIRTUAL_RE,
+  stripSrlSuffix,
+} from "./srlPatterns.js";
