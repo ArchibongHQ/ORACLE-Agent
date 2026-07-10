@@ -295,6 +295,14 @@ export {
 } from "./marketsV3/skewShrink.js";
 export type { DualSplit } from "./marketsV3/split.js";
 export { deriveDualSplit, SHAPE_DISAGREEMENT_DELTA } from "./marketsV3/split.js";
+export type { UnpricedByDesignEntry } from "./marketsV3/unpriced.js";
+export {
+  isMarketIdRegistered,
+  isSkipRegistered,
+  noGridModelSubKey,
+  UNPRICED_BY_DESIGN,
+  unpricedByDesignKeys,
+} from "./marketsV3/unpriced.js";
 export * from "./math/index.js";
 export type { PostmortemEntry, RAGEntry, RootCause } from "./rag/index.js";
 export { PostmortemRegistry, postmortemRegistry, RAGSystem, ROOT_CAUSES } from "./rag/index.js";
@@ -321,6 +329,8 @@ export {
   familyPenaltyMultiplier,
   MLSafetyFilter,
 } from "./safety/index.js";
+export type { SafetyPipelineInput, SafetyPipelineResult } from "./safety/pipeline.js";
+export { runSafetyPipeline } from "./safety/pipeline.js";
 export type {
   AgentError,
   AgentErrorCode,

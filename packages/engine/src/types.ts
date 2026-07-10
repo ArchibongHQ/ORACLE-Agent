@@ -437,6 +437,17 @@ export interface OracleConfig {
   // the criterion that flips `sharpFeedVerified` — that flip requires the
   // documented ≥95%-coverage-over-7-slates bar, checked separately.
   sharpFeed?: "off" | "shadow" | "on";
+  // [Wave 3, WS3-A] SafetyPipeline extraction — "shadow" (default) runs the
+  // extracted pipeline alongside legacy `_run` when `usedV3`, logging a
+  // structured diff into the run manifest without DecisionContext reading
+  // its output yet; "on" is Wave-4 territory, gated on golden tests +
+  // dual-run diff review, never hand-flipped early.
+  v3Safety?: "off" | "shadow" | "on";
+  // [Wave 3, WS3-A] Rollback lever for the legacy pricer (scanMarkets /
+  // scanAllMarketsFallback) — "on" (default) keeps it live; "off" is Wave 4's
+  // eventual cutover flag, gated on a ≥7-slate parity report +
+  // UNPRICED_BY_DESIGN registry closing the coverage gap.
+  legacyPricer?: "on" | "off";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

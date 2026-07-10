@@ -11,6 +11,7 @@ export {
   formatCalibrationMetrics,
   formatSettlementBreakdown,
   loadLedgerState,
+  rollupSegmentClv,
   settlePick,
 } from "./calibrationFeed.js";
 export type { ColumnFillReport, ColumnFillStat } from "./columnFillReport.js";

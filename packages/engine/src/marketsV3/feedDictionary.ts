@@ -204,12 +204,25 @@ export function routeMarket(entry: AllMarketEntry): V3Routing {
   if (SETTLEMENT_RE.test(name)) return { skip: true, reason: "settlement-variant" };
 
   if (!family) {
-    // Uncatalogued id (market added since last catalog regeneration): only the
-    // unambiguous goal-total shape is safe to price; everything else waits for
-    // a catalog rebuild.
+    // Uncatalogued id (market added since last catalog regeneration): only
+    // unambiguous, full-time-goal-derivable shapes are safe to price;
+    // everything else waits for a catalog rebuild.
     const total = num(spec.get("total"));
     if (!HALF_RE.test(name) && name.includes("over/under") && total !== undefined) {
       return { engine: "totals", family: "goals_ou", total };
+    }
+    // [WS3-B parity port] Mirror legacy's uncatalogued tolerance
+    // (execution/index.ts's priceAllMarketOutcome, which reasons over ANY
+    // family/catalog status via name/desc text, not just PRICEABLE_FAMILIES)
+    // for two more full-time-goal-derivable shapes the parity harness found
+    // a real v3-only gap on: odd/even total goals and correct-score. Both are
+    // unambiguous from the score grid regardless of catalog status, same as
+    // the O/U branch above.
+    if (!HALF_RE.test(name) && name.includes("odd") && name.includes("even")) {
+      return { engine: "totals", family: "odd_even" };
+    }
+    if (!HALF_RE.test(name) && name.includes("correct score")) {
+      return { engine: "exotics", family: "correct_score" };
     }
     return { skip: true, reason: "uncatalogued" };
   }

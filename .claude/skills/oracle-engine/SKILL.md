@@ -46,6 +46,7 @@ against current code before trusting a line number.
 | `swarm/index.ts` (193 lines) | Live — `runSwarm()` called from `batch/index.ts:757`, advisory-only, never sets `primaryPick` | **Documented here — §5.5** |
 | `markets/` | Live — static market catalog + two/three-way devig helpers | — |
 | `batch/index.ts`, `batch/pool.ts` | Live — `runBatch`/`processOne`, closest thing to a top-level entry point (§ above) | — |
+| `safety/pipeline.ts` (new, Wave 3 WS3-A) | Live — `runSafetyPipeline()`, a verbatim-lift extraction of `execution/index.ts` `_run`'s post-pricing safety block (steam-chaser veto → portfolio correlation → AntiSycophancy → RAG → ConvergenceScorer → tier/family multipliers → MLSafetyFilter → rag.addToStore) into a source-agnostic function so both legacy and v3-adapted candidates run the identical stage; `v3AssessmentsToEvMarkets` adapter lives here too | No dedicated doc yet — see this file's own header comment |
 
 ## 2. Pipeline shape (decision tree, not a fixed sequence)
 
@@ -233,6 +234,32 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-10** — Refactor Wave 3, WS3-C hygiene sweep (branch `feature/wave-3`, P2-2/P2-3,
+  comment-only — no executable-logic changes). `math/index.ts`: distinguished the §8.2 Skellam
+  cross-check's Wilkens (2026) citation — **verified** (standard result: independent-Poisson goal
+  margins are Skellam-distributed by construction) and correctly gated off-by-default behind
+  `useSkellam` (`types.ts:200`, default `false`) — from `adaptiveVarianceRegime` (Antila 2024) and
+  `leeRecoveryConstraint` (Lee 2025), which **stay flagged as house defaults**: both run
+  UNCONDITIONALLY every pricing pass (no opt-out flag, feeding `execution/index.ts`'s
+  `drawdownPenaltyFinal` via `_bindingRisk`) and neither citation/heuristic has been independently
+  validated against ORACLE's own resolved-bet ledger. All three variants' doc comments now state
+  their promotion bar explicitly: the same walk-forward/`significanceAcceptGate` treatment
+  (minN=300, effect bar) already used to gate the ratings/GBM dormant variants. `gbm/index.ts`:
+  added the same explicit gate pointer directly on `blendGbmIntoFp` (previously only stated at the
+  module header) — do not wire a call site until `.tmp/models/gbm_residual_meta.json`'s
+  `gate_passed` flag is true. `rag/index.ts`: found and documented a previously-unflagged dormant
+  module — `PostmortemRegistry`/`postmortemRegistry` (pre-seeded with 4 confirmed 2026-03-10
+  losses) has **zero live call sites** for `.check()`/`.formatWarning()` outside its own unit
+  tests (verified via call-site grep across `packages/`), same unwired status as `safety/
+  index.ts`'s `weighReversibility` (§5.6 below) — now documented at the class definition rather
+  than silently assumed live. `safety/index.ts`: added the exact S02-S05 activation bar the
+  existing `sharpSignalsEnabled` gating was missing — per Wave 2's WS2-C spec, `sharpFeedVerified`
+  may only flip true after `runtime/sharpFeed.ts` demonstrates >=95% pick coverage over 7
+  CONSECUTIVE slates (not a single clean slate); stated on both the SIGNAL TABLE comment and the
+  `scoreMarket` parameter doc so it can't drift out of sync. No citations found needing correction
+  in `safety/index.ts` (none present) or `rag/index.ts` (none present beyond well-known Benford's
+  Law, unattributed to a specific paper by design). Module-index table above gained a row for
+  `safety/pipeline.ts` (new this wave, WS3-A — not otherwise this workstream's file to edit).
 - **2026-07-10** — Refactor Wave 2 (branch `feature/wave-2`, multi-workstream).
   **Per-segment calibration** (`calibration/index.ts`): `ORACLE_CALIBRATION_LEDGER=segment`
   mode accumulates `{n,wins,pSum}` factors scoped to `ORACLE_CALIBRATION_EPOCH_START`

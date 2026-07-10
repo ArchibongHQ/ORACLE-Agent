@@ -23,6 +23,14 @@ import {
 import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
 import { computeTailMarkets, type RouteCoverage } from "../marketsV3/feedDictionary.js";
 import type { V3OutputCandidate } from "../marketsV3/outputs.js";
+import { buildRatingsLambdaInput, TeamRatingsEngine } from "../ratings/index.js";
+import {
+  buildSafetyShadowDiff,
+  runSafetyPipeline,
+  type SafetyPipelineResult,
+  type SafetyShadowDiff,
+  v3AssessmentsToEvMarkets,
+} from "../safety/pipeline.js";
 import type {
   AgentError,
   AgentErrorCode,
@@ -64,7 +72,12 @@ export function buildV3Input(
     v3ShotsOu?: boolean;
     /** [refactor P0-2] Market-anchored blend three-state — see OracleConfig.v3Blend. */
     v3Blend?: "off" | "shadow" | "on";
-  }
+  },
+  /** [Wave 3, WS3-A] Diagnostic-only pi-ratings signal (see ratings/index.ts's
+   *  buildRatingsLambdaInput header) — attached to lambdaInput but never
+   *  flips opts.ratingsBlend here (that stays a Wave-3-caller decision gated
+   *  on the walk-forward harness, per that function's wiring contract). */
+  ratingsInput?: { ratingsXgd: number; ratingsN: number }
 ): V3AllMarketsInput | null {
   if (!allMarkets?.length) return null;
   const t = state.telemetry ?? {};
@@ -104,6 +117,8 @@ export function buildV3Input(
       // silently priced every non-goals market without it until now.
       homeAvailabilityMult: t.homeAvailabilityMult ?? null,
       awayAvailabilityMult: t.awayAvailabilityMult ?? null,
+      ratingsXgd: ratingsInput?.ratingsXgd ?? null,
+      ratingsN: ratingsInput?.ratingsN ?? null,
     },
     devigged1x2,
     allMarkets,
@@ -366,6 +381,13 @@ export interface FixtureJobSuccess {
    *  safetyMode so telemetry never goes dark just because a filter was
    *  demoted from hard-reject to penalty. Feeds a slate-level report tally. */
   safetyKillCounts?: Record<string, number>;
+  /** [Wave 3, WS3-A] Stage-2 dual-run shadow diff — legacy SafetyPipeline
+   *  output vs a v3-adapted candidate set run through the same pipeline,
+   *  present only when `usedV3` was true for this fixture. Diagnostic-only:
+   *  never read by DecisionContext or anything upstream of this return —
+   *  carried here purely so a run-manifest/report consumer can persist it
+   *  (see safety/pipeline.ts's SafetyShadowDiff doc comment). */
+  safetyShadowDiff?: SafetyShadowDiff;
 }
 
 export interface FixtureJobError {
@@ -627,6 +649,22 @@ export async function runBatch(
   const costTracker = new AtomicCostTracker(LLM_COST_ESTIMATE_USD_PER_CALL, ceilingUsd);
   let completedCounter = 0;
 
+  // [Wave 3, WS3-A] TeamRatingsEngine instantiation (WS2-B built the engine +
+  // buildRatingsLambdaInput but never wired a call site — see ratings/
+  // index.ts's "Wiring contract for the Wave-3 caller" header). Hydrated ONCE
+  // per batch (not per fixture) per the file's own hydrate-once/persist-at-end
+  // pattern. Gated off entirely when ORACLE_V3_RATINGS=off so a disabled flag
+  // costs zero storage reads. This only threads `{ratingsXgd, ratingsN}` into
+  // buildV3Input's lambdaInput — it deliberately does NOT flip
+  // `opts.ratingsBlend: true` at the analyzeFixtureMarketsV3 call site (that
+  // file is a different workstream's ownership this wave, and per the
+  // wiring contract, ratingsBlend may only go live after the walk-forward
+  // harness clears its +0.002 RPS bar — no evidence that's happened yet), so
+  // this stays a shadow diagnostic input with zero effect on any live λ,
+  // matching `ORACLE_V3_RATINGS`'s default `"shadow"`.
+  const ratingsEngine = config.v3Ratings !== "off" ? new TeamRatingsEngine(deps.storage) : null;
+  if (ratingsEngine) await ratingsEngine.hydrate();
+
   // Per-fixture work — identical logic to the previous sequential body, now
   // runnable concurrently. Returns a BatchJobResult (never throws).
   async function processOne(job: FixtureJob): Promise<BatchJobResult> {
@@ -751,12 +789,53 @@ export async function runBatch(
           // its prompt a token-cost rounding error next to the Q4 catalogue
           // dump this replaces, without losing any real candidate (spec §7
           // Output A only ever keeps ONE selection per fixture anyway).
+          // Risk multipliers the engine already computed for THIS fixture, reused
+          // so the all-markets LLM executor tier's Kelly stake (Q4b) — and, as
+          // of Wave 3, the v3-adapted shadow-safety-pipeline stake below — are
+          // consistent with every other stake the engine produces, not a
+          // separate guess.
+          const mcResult = runResult.mc as { varMultiplier?: number } | undefined;
+          // [Wave 2, WS2-A] Per-(league,family)-segment calibFactor resolver —
+          // mirrors execution/index.ts's calibFactorForFamily construction
+          // exactly (same makeCalibFactorResolver call, same fallback object
+          // shape) so the Q4 executor's Kelly stake stays consistent with
+          // every other stake this fixture's ExecutionEngine.run() produced.
+          // Byte-identical to the old flat `calibFactor` read for every mode
+          // except "segment". [Wave 3, WS3-A] Moved earlier (was defined right
+          // before the "Two-tier gate" comment) so the usedV3/v3Result block
+          // below can reuse it for the stage-2 shadow-diff Kelly staking
+          // instead of duplicating a second resolver.
+          const calibMetricsForExecutor: CalibrationMetrics =
+            (job.state?.ledger?.metrics as unknown as CalibrationMetrics | undefined) ??
+            ({ calibFactor: 1.0, segmentCalibFactors: {}, leagueData: {} } as CalibrationMetrics);
+          const calibResolverForExecutor = makeCalibFactorResolver(calibMetricsForExecutor, {
+            calibrationLedger: config.calibrationLedger,
+          });
+          const marketExecutorRisk: MarketExecutorRiskParams = {
+            dqs: (runResult.dqs as number | undefined) ?? 0.85,
+            councilPenalty: (runResult.councilPenalty as boolean | undefined) ?? false,
+            varMultiplier: mcResult?.varMultiplier ?? 1.0,
+            drawdownPenalty: (runResult.drawdownPenalty as number | undefined) ?? 1.0,
+            calibFactorFor: (family) =>
+              family
+                ? calibResolverForExecutor(job.league, family)
+                : calibMetricsForExecutor.calibFactor,
+            bankroll: config.bankroll,
+          };
+
           let usedV3 = false;
           let v3Best: V3OutputCandidate | undefined;
           let v3AssessmentStats: V3AssessmentStat[] | undefined;
           let v3Coverage: RouteCoverage | undefined;
+          let safetyShadowDiff: SafetyShadowDiff | undefined;
           if (config.enableMarketsV3 && config.enableMarketsV3 !== "off") {
-            const v3Input = buildV3Input(job, state, allMarkets, config);
+            // [Wave 3, WS3-A] Diagnostic-only pi-ratings data threading — see
+            // the ratingsEngine header comment above runBatch's processOne
+            // definition. Never flips any gate, never changes lambdas.
+            const ratingsInput = ratingsEngine
+              ? buildRatingsLambdaInput(ratingsEngine, job.home, job.away)
+              : undefined;
+            const v3Input = buildV3Input(job, state, allMarkets, config, ratingsInput);
             const v3Result = v3Input ? analyzeFixtureMarketsV3(v3Input) : null;
             // R10 cross-check (PR-6): mutate BEFORE the eligible slice and the
             // v3Best derivation below so both see the corrected state.
@@ -805,6 +884,69 @@ export async function runBatch(
                 gateReason: a.gateReason,
               }));
             }
+            // [Wave 3, WS3-A] Stage-2 dual-run shadow diff — DIAGNOSTIC ONLY.
+            // When v3 supplied this fixture's candidate set, additionally run
+            // the same SafetyPipeline stage over a Kelly-staked adaptation of
+            // v3's gate-surviving assessments, and log a structured diff
+            // against the legacy pipeline's already-computed output (which
+            // ran inside ExecutionEngine._run above, BEFORE this file ever
+            // sees the fixture). DecisionContext (built below) reads
+            // `runResult`/`convResult`/`mlResult` — the LEGACY pipeline's
+            // fields — untouched by anything in this block; this shadow run
+            // never writes back into `runResult`, `eligible`, or `evMarkets`.
+            // Never allowed to fail the real batch job (best-effort try/catch
+            // around a diagnostic side-channel).
+            if (usedV3 && v3Result) {
+              try {
+                const v3EvMarkets = v3AssessmentsToEvMarkets(v3Result.assessments, {
+                  bankroll: marketExecutorRisk.bankroll,
+                  dqs: marketExecutorRisk.dqs,
+                  councilPenalty: marketExecutorRisk.councilPenalty,
+                  varMultiplier: marketExecutorRisk.varMultiplier,
+                  drawdownPenalty: marketExecutorRisk.drawdownPenalty,
+                  calibFactorFor: marketExecutorRisk.calibFactorFor,
+                });
+                const v3SafetyResult = await runSafetyPipeline({
+                  evMarkets: v3EvMarkets,
+                  // v3 has no single unified scoreline matrix the way the
+                  // legacy engine's finalMat is — statsGrid (the empirical-
+                  // stats-split grid) is the closest analogue for
+                  // CorrelationMatrix.compute's portfolio-correlation check.
+                  matrix: v3Result.statsGrid,
+                  telemetry: (state.telemetry ?? {}) as Record<string, unknown>,
+                  calibFactorFor: marketExecutorRisk.calibFactorFor,
+                  // Same fixture-level context as the legacy run (λ, odds,
+                  // mes, drawRisk factors are shared) with ONLY the candidate
+                  // set swapped for v3's — AntiSycophancy/RAG/Convergence/
+                  // MLSafetyFilter read match-level fields duck-typed off
+                  // this object, not the candidate identities.
+                  context: { ...runResult, evMarkets: v3EvMarkets } as unknown as Record<
+                    string,
+                    unknown
+                  >,
+                  fetched: (state.pipeline?.fetched ?? {}) as Record<string, unknown>,
+                  storage: deps.storage,
+                  sharpCompressionTag: Boolean(runResult.sharpCompressionTag),
+                  skipSensitivity: false,
+                  safetyMode: config.safetyMode ?? "penalty",
+                  sharpFeedVerified: config.sharpFeedVerified ?? false,
+                  expectedScoreline: String(runResult.expectedScoreline ?? "?"),
+                  home: job.home,
+                  away: job.away,
+                });
+                const legacySafetyResult = {
+                  evMarkets: runResult.evMarkets,
+                  portfolioCorrelation: runResult.portfolioCorrelation,
+                  correlatedParlayRisk: runResult.correlatedParlayRisk,
+                  debate: (runResult.debate ?? {}) as Record<string, unknown>,
+                  convergence: runResult.convergence,
+                  mlFilter: runResult.mlFilter,
+                } as unknown as SafetyPipelineResult;
+                safetyShadowDiff = buildSafetyShadowDiff(legacySafetyResult, v3SafetyResult);
+              } catch {
+                /* diagnostic-only shadow run — never let it affect the real batch job */
+              }
+            }
           }
           // Demote the Q4 all-markets LLM catalogue-dump executor when v3
           // supplied this fixture's candidates — v3 IS the deterministic
@@ -823,35 +965,6 @@ export async function runBatch(
           const unmappedTailScope = usedV3 && config.llmExecutorScope === "unmapped";
           const decideConfig =
             usedV3 && !unmappedTailScope ? { ...config, enableLlmMarketExecutor: false } : config;
-
-          // Risk multipliers the engine already computed for THIS fixture, reused
-          // so the all-markets LLM executor tier's Kelly stake (Q4b) is consistent
-          // with every other stake the engine produces — not a separate guess.
-          const mcResult = runResult.mc as { varMultiplier?: number } | undefined;
-          // [Wave 2, WS2-A] Per-(league,family)-segment calibFactor resolver —
-          // mirrors execution/index.ts's calibFactorForFamily construction
-          // exactly (same makeCalibFactorResolver call, same fallback object
-          // shape) so the Q4 executor's Kelly stake stays consistent with
-          // every other stake this fixture's ExecutionEngine.run() produced.
-          // Byte-identical to the old flat `calibFactor` read for every mode
-          // except "segment".
-          const calibMetricsForExecutor: CalibrationMetrics =
-            (job.state?.ledger?.metrics as unknown as CalibrationMetrics | undefined) ??
-            ({ calibFactor: 1.0, segmentCalibFactors: {}, leagueData: {} } as CalibrationMetrics);
-          const calibResolverForExecutor = makeCalibFactorResolver(calibMetricsForExecutor, {
-            calibrationLedger: config.calibrationLedger,
-          });
-          const marketExecutorRisk: MarketExecutorRiskParams = {
-            dqs: (runResult.dqs as number | undefined) ?? 0.85,
-            councilPenalty: (runResult.councilPenalty as boolean | undefined) ?? false,
-            varMultiplier: mcResult?.varMultiplier ?? 1.0,
-            drawdownPenalty: (runResult.drawdownPenalty as number | undefined) ?? 1.0,
-            calibFactorFor: (family) =>
-              family
-                ? calibResolverForExecutor(job.league, family)
-                : calibMetricsForExecutor.calibFactor,
-            bankroll: config.bankroll,
-          };
 
           // Two-tier gate: only the top-N fixtures (by composite stats score,
           // flagged llmEligible at selection, computed once above processOne's
@@ -1066,6 +1179,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             v3AssessmentStats,
             v3Coverage,
             safetyKillCounts: mlResult?.killCounts as Record<string, number> | undefined,
+            safetyShadowDiff,
           };
         },
         maxRetries,
