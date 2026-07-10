@@ -262,10 +262,37 @@ export async function loadLedgerState(
   }
 }
 
+/** [Wave 3, WS3-D] Slate-wide rollup of CalibrationMetrics.segmentClv — total
+ *  post-epoch bet count across every (league,family) segment, the covered
+ *  fraction (recovering `covered = round(n * coverage)` per segment, per that
+ *  field's own doc comment), and the coverage-weighted mean sharp-reference
+ *  CLV over only the covered bets. `clv` is null when nothing is covered yet
+ *  (never a fake zero). This IS the metric WS2-C's un-zero-weight criterion
+ *  for S02-S05 reads ("≥95% coverage over 7 consecutive slates") — surfacing
+ *  it as a headline lets that bar be watched at a glance instead of only via
+ *  a manual ledger query. */
+export function rollupSegmentClv(m: CalibrationMetrics): { clv: number | null; coverage: number } {
+  const segments = Object.values(m.segmentClv ?? {});
+  let totalN = 0;
+  let totalCovered = 0;
+  let coveredClvSum = 0;
+  for (const seg of segments) {
+    totalN += seg.n;
+    const covered = Math.round(seg.n * seg.coverage);
+    totalCovered += covered;
+    if (seg.clv != null) coveredClvSum += seg.clv * covered;
+  }
+  return {
+    clv: totalCovered > 0 ? coveredClvSum / totalCovered : null,
+    coverage: totalN > 0 ? totalCovered / totalN : 0,
+  };
+}
+
 /** One-line human-readable metrics block for the resolve report / Telegram. */
 export function formatCalibrationMetrics(m: CalibrationMetrics): string {
   const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
   const num = (x: number | null, dp = 4) => (x != null ? x.toFixed(dp) : "n/a");
+  const sharpClv = rollupSegmentClv(m);
   return [
     `n=${m.resolvedCount}`,
     `hit=${pct(m.winRate)}`,
@@ -273,6 +300,7 @@ export function formatCalibrationMetrics(m: CalibrationMetrics): string {
     `ECE=${num(m.ece)}`,
     `logLoss=${num(m.logLoss)}`,
     `CLV=${pct(m.clv)}`,
+    `sharpCLV=${sharpClv.clv != null ? num(sharpClv.clv) : "n/a"} (cov=${pct(sharpClv.coverage)})`,
     `calibFactor=${m.calibFactor.toFixed(3)}`,
   ].join(" · ");
 }

@@ -232,6 +232,19 @@ export class RAGSystem {
 }
 
 // ── PostmortemRegistry ────────────────────────────────────────────────────────
+//
+// [P2-2 hygiene] Dormant — `PostmortemRegistry`/`postmortemRegistry` are exported from the
+// barrel (packages/engine/src/index.ts) and pre-seeded with 4 confirmed 2026-03-10 losses,
+// but `.check()`/`.formatWarning()` currently have ZERO call sites in `batch/`, `execution/`,
+// `decision/`, or anywhere else in `packages/` outside this file's own unit tests
+// (verify with a call-site grep before assuming otherwise — this changes fast). Same status
+// as `safety/index.ts`'s `weighReversibility` (§5.6 in `.claude/skills/oracle-engine/SKILL.md`):
+// defined and self-contained, never wired into a live decision path. Activation would mean a
+// caller in the decision/execution pipeline running `check()` against the current fixture and
+// surfacing `formatWarning()`'s output as a soft-context postmortem-pattern warning (parallel to
+// how `RAGSystem.findSimilar` already feeds ConvergenceScorer's S10 signal) — no walk-forward
+// gate is implied here since this is pattern-matching against confirmed past losses, not a
+// probability-affecting model variant, but it should not be assumed live without checking first.
 
 export const ROOT_CAUSES = Object.freeze({
   SSSVO_IGNORED: "SSSVO_IGNORED",

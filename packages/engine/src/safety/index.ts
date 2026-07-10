@@ -177,6 +177,11 @@ const TIERS: ConvergenceTier[] = [
  *       [P1-4] Gated on sharpSignalsEnabled.
  *  S04  sharp compression without RLM. POSITIVE. [P1-4] Gated.
  *  S05  CLV survival probability > 0.7. POSITIVE. [P1-4] Gated.
+ *  [P2-3 hygiene] S02-S05 activation bar (Wave 2 WS2-C spec, `ORACLE_SHARP_FEED`): these four
+ *  stay zero-weighted (`sharpSignalsEnabled=false`, i.e. `config.sharpFeedVerified=false`) until
+ *  the sharp-reference feed (`runtime/sharpFeed.ts`) demonstrates >=95% pick coverage over 7
+ *  CONSECUTIVE slates. Below that bar the feed itself is too gappy to trust for scoring — do not
+ *  flip `sharpFeedVerified` on partial/inconsistent coverage even if a single slate looks clean.
  *  S06  EV excess beyond a 5pt baseline > 9pt. POSITIVE (bigger true edge).
  *  S07  model probability >= 0.75 (high-confidence pick). POSITIVE.
  *  S08  adversary ACCEPTed the bet AND referee verdict contains "+EV".
@@ -206,7 +211,11 @@ export class ConvergenceScorer {
     ragSimilar: Array<Record<string, unknown>> = [],
     /** [P1-4] True unless a verified sharp-reference feed exists
      *  (config.sharpFeedVerified). Default true so direct unit-tested calls
-     *  are unaffected; execution/index.ts wires the real value explicitly. */
+     *  are unaffected; execution/index.ts wires the real value explicitly.
+     *  [P2-3 hygiene] Activation bar for flipping `sharpFeedVerified` true in production
+     *  (Wave 2 WS2-C spec): >=95% pick coverage over 7 consecutive slates from
+     *  `runtime/sharpFeed.ts` — see the SIGNAL TABLE comment above scoreMarket for the
+     *  same bar restated next to S02-S05. */
     sharpSignalsEnabled = true
   ): MarketConvergenceResult {
     const signals: SignalMap = {};

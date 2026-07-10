@@ -27,7 +27,6 @@ import {
   buildBivariateMatrix,
   buildHalfTimeMatrix,
   buildMatrix,
-  CorrelationMatrix,
   calibratedZipPi,
   checkLambdaInconsistency,
   clamp,
@@ -41,7 +40,6 @@ import {
   generateSyntheticAlpha,
   getDrawdownPenalty,
   hurdle,
-  isSteamChaser,
   klDivergence,
   leeRecoveryConstraint,
   lstmMarketDecoderProxy,
@@ -54,13 +52,7 @@ import {
   skellamAHCover,
   skellamProbs,
 } from "../math/index.js";
-import { RAGSystem } from "../rag/index.js";
-import {
-  AntiSycophancyCircuit,
-  ConvergenceScorer,
-  familyPenaltyMultiplier,
-  MLSafetyFilter,
-} from "../safety/index.js";
+import { runSafetyPipeline } from "../safety/pipeline.js";
 import type {
   AllMarketEntry,
   AllMarketOutcome,
@@ -635,28 +627,11 @@ function priceAllMarketOutcome(
 
 // ── ExecutionEngine ───────────────────────────────────────────────────────────
 
-/** [PR-17] Scales one evMarket's already-computed optimizedKelly stake by its
- *  ConvergenceScorer tier's kellyMultiplier — extracted as a standalone pure
- *  function so it's directly unit-testable without needing to engineer a
- *  specific convergence score through the full ExecutionEngine.run() pipeline
- *  (scoreMarket's S01-S14 signals aren't practical to hand-craft a target
- *  score from). Mutates evMarket in place, matching this file's existing
- *  post-processing convention (the portfolio-correlation veto block above
- *  does the same). Full Kelly (multiplier >= 1) is a no-op — the stake
- *  already reflects it. NOISE (multiplier <= 0) vetoes the market outright
- *  rather than leaving a live positive-EV pick with a stake the tier
- *  guidance explicitly says not to deploy. */
-export function applyConvergenceTierToStake(evMarket: EVMarket, kellyMultiplier: number): void {
-  if (kellyMultiplier >= 1) return;
-  if (kellyMultiplier <= 0) {
-    evMarket.veto = "CONVERGENCE_NOISE_VETO";
-    evMarket.stake = 0;
-    evMarket.stakeAmt = 0;
-    return;
-  }
-  evMarket.stake *= kellyMultiplier;
-  evMarket.stakeAmt *= kellyMultiplier;
-}
+/** [Wave 3, WS3-A] Definition moved to safety/pipeline.ts (the safety
+ *  pipeline needs it internally for tier/family stake multipliers) —
+ *  re-exported here so existing imports from `../execution/index.js`
+ *  (batch/index.ts, the `@oracle/engine` barrel) keep working unchanged. */
+export { applyConvergenceTierToStake } from "../safety/pipeline.js";
 
 export class ExecutionEngine {
   constructor(
@@ -2159,17 +2134,14 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       upsetAlertVeto
     );
 
-    // Steam chaser veto
-    rawRes.evMarkets = rawRes.evMarkets.map((m) =>
-      isSteamChaser(sharpCompressionTag, m.ev)
-        ? { ...m, veto: "STEAM_CHASER_VETO", stake: 0, stakeAmt: 0 }
-        : m
-    );
-
     // Q4 (revised): no market is skipped for consideration — every raw SportyBet
     // allMarkets entry (900+ on a liquid fixture) is priced against the same
     // scoreline matrix and competes on equal footing with the ~9 hardcoded
     // families above, always (not just when those families found nothing).
+    // [Wave 3, WS3-A] Moved to run BEFORE the safety pipeline (was previously
+    // interleaved between the steam-chaser veto and the portfolio-correlation
+    // block) — see safety/pipeline.ts's header comment for why folding
+    // fallback candidates into the steam-chaser veto is correct, not a bug.
     {
       const allMarkets = (fetched.sportyBetOdds as { allMarkets?: AllMarketEntry[] } | undefined)
         ?.allMarkets;
@@ -2187,118 +2159,45 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       if (allMarkets?.length) rawRes.marketCoverage = scanned.coverage;
     }
 
-    // Portfolio covariance + correlated parlay hard cap (BUG-M05 FIX)
-    if (!skipSensitivity && rawRes.evMarkets.length >= 2) {
-      let maxRho = 0;
-      const penalties = new Array<number>(rawRes.evMarkets.length).fill(1.0);
-      const correlatedPairs: Array<{ a: string; b: string; rho: number }> = [];
-      const vetoSet = new Set<number>();
-      for (let i = 0; i < rawRes.evMarkets.length - 1; i++) {
-        // Already-vetoed/non-positive-EV markets can never be selected downstream
-        // regardless of correlation — skip the whole inner loop for them rather
-        // than computing O(n) correlation pairs that are discarded either way.
-        if (rawRes.evMarkets[i]?.veto || (rawRes.evMarkets[i]?.ev ?? 0) <= 0) continue;
-        for (let j = i + 1; j < rawRes.evMarkets.length; j++) {
-          if (rawRes.evMarkets[j]?.veto || (rawRes.evMarkets[j]?.ev ?? 0) <= 0) continue;
-          const rho = CorrelationMatrix.compute(
-            finalMat,
-            rawRes.evMarkets[i]?.label,
-            rawRes.evMarkets[j]?.label
-          );
-          if (rho > 0.1) {
-            maxRho = Math.max(maxRho, rho);
-            const pen = 1 / (1 + rho);
-            penalties[i] = Math.min(penalties[i]!, pen);
-            penalties[j] = Math.min(penalties[j]!, pen);
-          }
-          if (rho > 0.7) {
-            correlatedPairs.push({
-              a: rawRes.evMarkets[i]?.label,
-              b: rawRes.evMarkets[j]?.label,
-              rho: parseFloat(rho.toFixed(3)),
-            });
-            vetoSet.add((rawRes.evMarkets[i]?.ev ?? 0) >= (rawRes.evMarkets[j]?.ev ?? 0) ? j : i);
-          }
-        }
-      }
-      for (let i = 0; i < rawRes.evMarkets.length; i++) {
-        if (vetoSet.has(i)) {
-          rawRes.evMarkets[i]!.stake = 0;
-          rawRes.evMarkets[i]!.stakeAmt = 0;
-          rawRes.evMarkets[i]!.veto = "CORRELATED_PARLAY_VETO";
-        } else {
-          rawRes.evMarkets[i]!.stakeAmt *= penalties[i]!;
-          rawRes.evMarkets[i]!.stake *= penalties[i]!;
-        }
-      }
-      rawRes.portfolioCorrelation = maxRho;
-      rawRes.correlatedParlayRisk = correlatedPairs;
-    }
-
-    if (!skipSensitivity) rawRes.sensitivity = await this._sensitivityAnalyze(state, rawRes);
-
-    rawRes.debate = new AntiSycophancyCircuit().execute(
-      rawRes as unknown as Record<string, unknown>
-    );
-
-    const rag = new RAGSystem(this._storage);
-    await rag.init();
-    const ragSimilar = rag.findSimilar(rawRes as unknown as Record<string, unknown>, 5);
-    const convergence = new ConvergenceScorer().compute(
-      rawRes as unknown as Record<string, unknown>,
-      ragSimilar as unknown as Record<string, unknown>[],
-      { sharpSignalsEnabled: this._config.sharpFeedVerified ?? false }
-    );
-    rawRes.convergence = convergence;
-    // [PR-17] ConvergenceScorer's per-tier Kelly guidance (Full/Half/Quarter/
-    // Do-not-bet) used to be descriptive text only (deploymentGuide) — never
-    // applied to the actual stake. Every scored candidate carries its OWN
-    // tier (not just the apex pick), so multiply each one's already-computed
-    // optimizedKelly stake by its tier's kellyMultiplier directly, rather
-    // than re-deriving intent from deploymentGuide's text (which has its own
-    // pre-existing "noConvergence short-circuits before the MARGINAL branch"
-    // quirk this deliberately sidesteps by reading the numeric tier data,
-    // not the string). NOISE (kellyMultiplier 0) zeroes the stake outright —
-    // "Do not bet — signal too thin" was never just a suggestion.
-    for (const scored of convergence.scores) {
-      const evMarket = rawRes.evMarkets.find(
-        (m) => !m.veto && (m.label === scored.market || m.market === scored.market)
-      );
-      if (!evMarket) continue;
-      applyConvergenceTierToStake(evMarket, scored.tier.kellyMultiplier);
-    }
-    // [P0-3] safetyMode="penalty" (default) turns the former MLSafetyFilter hard
-    // rejects (odds-band, low-xG, draw-risk, derby/injury, upset-league, sharp
-    // fade, miscalibration) into market-FAMILY stake downgrades instead of
-    // fixture-wide kills — the compensating half of dismantling the hard
-    // rejects. "legacy" preserves the old hard-reject behavior via evaluate()'s
-    // early returns. The penaltySignals the filter surfaces feed
-    // familyPenaltyMultiplier per candidate, reusing applyConvergenceTierToStake's
-    // stake-scaling mechanic (multiplier is always in (0,1], so it never vetoes).
+    // [Wave 3, WS3-A] SafetyPipeline extraction (stage 1) — verbatim lift of
+    // the former inline block (steam-chaser veto → portfolio correlation →
+    // AntiSycophancy → RAG → ConvergenceScorer → tier/family multipliers →
+    // MLSafetyFilter → rag.addToStore) into safety/pipeline.ts's
+    // runSafetyPipeline, now source-agnostic so the same stage can also run
+    // over v3-adapted candidates (batch/index.ts's stage-2 shadow diff).
     const safetyMode = this._config.safetyMode ?? "penalty";
-    const mlFilterResult = new MLSafetyFilter().evaluate(
-      fetched as Record<string, unknown>,
-      rawRes as unknown as Record<string, unknown>,
-      tel as Record<string, unknown>,
-      { mode: safetyMode }
-    );
-    rawRes.mlFilter = mlFilterResult;
-    if (safetyMode === "penalty") {
-      const penaltySignals = mlFilterResult.penaltySignals;
-      for (const evMarket of rawRes.evMarkets) {
-        if (evMarket.veto) continue;
-        const mult = familyPenaltyMultiplier(evMarket.cat, penaltySignals);
-        if (mult < 1) applyConvergenceTierToStake(evMarket, mult);
-      }
-    }
-
-    await rag.addToStore(rawRes as unknown as Record<string, unknown>, {
+    const safetyResult = await runSafetyPipeline({
       evMarkets: rawRes.evMarkets,
-      debate: rawRes.debate,
+      matrix: finalMat,
+      telemetry: tel as Record<string, unknown>,
+      calibFactorFor: calibFactorForFamily,
+      context: rawRes as unknown as Record<string, unknown>,
+      fetched: fetched as Record<string, unknown>,
+      storage: this._storage,
+      sharpCompressionTag,
+      skipSensitivity,
+      safetyMode,
+      sharpFeedVerified: this._config.sharpFeedVerified ?? false,
       expectedScoreline,
       home: fixture.home,
       away: fixture.away,
     });
+    rawRes.evMarkets = safetyResult.evMarkets;
+    rawRes.portfolioCorrelation = safetyResult.portfolioCorrelation;
+    rawRes.correlatedParlayRisk = safetyResult.correlatedParlayRisk;
+    rawRes.debate = safetyResult.debate;
+    rawRes.convergence = safetyResult.convergence;
+    rawRes.mlFilter = safetyResult.mlFilter;
+
+    // [Wave 3, WS3-A] Moved to run AFTER the safety pipeline instead of
+    // between portfolio-correlation and AntiSycophancy (its pre-extraction
+    // position) — _sensitivityAnalyze only reads baseRes.evMarkets[0]'s
+    // label/ev (the top market by array position), and nothing in the safety
+    // pipeline reorders/removes evMarkets or mutates .label/.ev, so this is
+    // behavior-identical to the pre-extraction position, just not physically
+    // interleaved inside the now-opaque pipeline call (which can't host a
+    // recursive `this._run` call — not source-agnostic).
+    if (!skipSensitivity) rawRes.sensitivity = await this._sensitivityAnalyze(state, rawRes);
 
     // Apply ranking mode to evMarkets
     const mode = cfg.rankingMode ?? "CONFIDENCE_WEIGHTED";

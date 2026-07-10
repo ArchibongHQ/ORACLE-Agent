@@ -30,6 +30,21 @@ export interface CalibrationMetrics {
     string,
     { calibFactor: number; shrinkage: number; n: number; accepted: boolean }
   >;
+  /** [Wave 3, WS3-D] CLV headline — per-(league,family)-segment mean sharp-reference
+   *  CLV (BetRecord.sharpClv; see that field's doc comment for why it's distinct
+   *  from the older global `clv` above), keyed by the same `segmentKey(league,
+   *  family)` as `segmentCalibFactors`, over the SAME post-epoch population
+   *  (`epoch >= epochStart`) so the two aggregates describe the same underlying bet
+   *  set. `coverage` is the fraction of that segment's resolved, post-epoch bets
+   *  that actually carry a `sharpClv` value (not undefined/null) — WS2-C's own
+   *  un-zero-weight criterion for S02–S05 is "≥95% coverage over 7 consecutive
+   *  slates," so this is the metric that criterion reads. `clv` is the mean over
+   *  only the covered bets (null when coverage is 0 — never divide by zero, never
+   *  silently report 0 as if it were a real zero-CLV result). `n` is the segment's
+   *  total resolved post-epoch bet count (covered + uncovered), matching
+   *  `segmentCalibFactors[key].n` — so a caller can always recover
+   *  `covered = round(n * coverage)`. */
+  segmentClv: Record<string, { clv: number | null; n: number; coverage: number }>;
   /** §8.3 hierarchical bbnParams: each entry carries shrinkage weight and sample count
    *  so callers know how much data backs the estimate. */
   bbnParams: Record<string, { homeAvg: number; awayAvg: number; shrinkage: number; n: number }>;
@@ -95,6 +110,24 @@ export interface BetRecord {
   resolvedAt?: string;
   liquidityTag?: LiquidityTag;
   clvSourceQuality?: ClvSourceQuality;
+  /** [Wave 3, WS3-D] Sharp-reference CLV — `computeSharpReferenceClv(sharpFairAtPick,
+   *  sharpFairAtClose)` (runtime/resolveFixtures.ts), i.e. `EnrichedResolutionRecord
+   *  .realisedSharpClv` (1/close − 1/pick implied-probability delta; positive =
+   *  favorable line move), NOT the same signal as the `clv` field above (that one is
+   *  the older odds/closingOdds-ratio CLV, PR-8b-era, computed from the T-30m
+   *  snapshot rather than the Wave-2 sharp-reference feed — the two coexist by
+   *  design, see EnrichedResolutionRecord's own doc comment). Optional/additive:
+   *  populated only once the settlement call site (runtime/calibrationFeed.ts's
+   *  toBetRecord) threads `EnrichedResolutionRecord.realisedSharpClv` through — that
+   *  wiring is a separate file, outside this workstream's ownership this wave, so
+   *  this stays undefined on every existing/未-wired record until that lands. Null
+   *  (as opposed to undefined) means "the sharp feed was checked for this pick and
+   *  had no CLV to report" (missing pick/close endpoint); undefined means "this
+   *  record predates the wiring or the feed was never consulted." `segmentClv`
+   *  below distinguishes the two only via `coverage` (undefined and null both count
+   *  as "no CLV data" for coverage purposes — the distinction matters for future
+   *  debugging, not for this aggregate). */
+  sharpClv?: number | null;
 }
 
 export interface CalibrationRecord {
@@ -271,6 +304,7 @@ export class CalibrationEngine {
       calibFactor: 1.0,
       leagueData: {},
       segmentCalibFactors: {},
+      segmentClv: {},
       bbnParams: {},
       driftAlert: false,
       resolvedCount: 0,
@@ -539,17 +573,28 @@ export class CalibrationEngine {
     // Only bets stamped with an `epoch` on/after `epochStart` accumulate here;
     // a missing `epoch` is treated as "not provably post-epoch" and excluded
     // (fail-safe — never assume a record is safe to mix in).
-    const segData: Record<string, { wins: number; pSum: number; n: number; league: string }> = {};
+    const segData: Record<
+      string,
+      { wins: number; pSum: number; n: number; league: string; clvSum: number; clvN: number }
+    > = {};
     res.forEach((b) => {
       if (b.outcome === "push" || !b.league || !b.family) return;
       if (!b.epoch || b.epoch < epochStart) return;
       const key = segmentKey(b.league, b.family);
       const iw = b.outcome === "win" ? 1 : b.outcome === "half-win" ? 0.5 : 0;
-      segData[key] ??= { wins: 0, pSum: 0, n: 0, league: b.league };
+      segData[key] ??= { wins: 0, pSum: 0, n: 0, league: b.league, clvSum: 0, clvN: 0 };
       const sd = segData[key]!;
       sd.wins += iw;
       sd.pSum += b.mp ?? 0;
       sd.n++;
+      // [Wave 3, WS3-D] Same post-epoch segment population as the calibFactor
+      // accumulation above — sharpClv is undefined/null until
+      // calibrationFeed.ts's toBetRecord threads it through (see BetRecord.sharpClv's
+      // doc comment); both undefined and null mean "not covered" here.
+      if (b.sharpClv !== undefined && b.sharpClv !== null && !Number.isNaN(b.sharpClv)) {
+        sd.clvSum += b.sharpClv;
+        sd.clvN++;
+      }
     });
     const segmentCalibFactors: Record<
       string,
@@ -576,6 +621,23 @@ export class CalibrationEngine {
         shrinkage: parseFloat(w.toFixed(4)),
         n: sd.n,
         accepted,
+      };
+    });
+
+    // [Wave 3, WS3-D] CLV headline — per-segment mean sharp-reference CLV +
+    // coverage %, over the exact same segData population as segmentCalibFactors
+    // above (see CalibrationMetrics.segmentClv's doc comment). Deliberately no
+    // significance gate here (unlike segmentCalibFactors' `accepted`) — CLV
+    // coverage/mean is a reporting metric surfaced to a human via the daily
+    // report headline, not something a caller stakes real money on directly, so
+    // a thin segment's number is still worth showing (with its low `n` visible
+    // right alongside it) rather than hidden.
+    const segmentClv: Record<string, { clv: number | null; n: number; coverage: number }> = {};
+    Object.entries(segData).forEach(([key, sd]) => {
+      segmentClv[key] = {
+        clv: sd.clvN > 0 ? parseFloat((sd.clvSum / sd.clvN).toFixed(5)) : null,
+        n: sd.n,
+        coverage: sd.n > 0 ? parseFloat((sd.clvN / sd.n).toFixed(4)) : 0,
       };
     });
 
@@ -642,6 +704,7 @@ export class CalibrationEngine {
       resolvedCount: res.length,
       leagueData: { ...lData, _leagueCalibFactors: leagueCalibFactors },
       segmentCalibFactors,
+      segmentClv,
       bbnParams,
       driftAlert:
         (overallEce != null && overallEce > 0.05) ||

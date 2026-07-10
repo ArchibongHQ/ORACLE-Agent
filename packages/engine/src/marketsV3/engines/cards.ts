@@ -148,20 +148,26 @@ export function priceCardsLikeRange(
  *  corners-only shape with no cards market to route it — feedDictionary.ts
  *  never actually produces it for the cards engine) purely so callers can
  *  pass route.variant directly without a narrowing cast; falls through to
- *  the default (unchanged O/U) branch if it were ever reached. */
+ *  the default (unchanged O/U) branch if it were ever reached.
+ *
+ *  [Wave 3, WS3-B parity-fix] Same case-normalization fix as
+ *  priceCornersVariant — real descs are capitalized ("Home -2.5"), the two
+ *  PR-22 sub-pricers below matched lowercase-only with no normalization of
+ *  their own. */
 export function priceCardsVariant(
   means: V3CardsMeans,
   desc: string,
   variant?: "1x2" | "handicap" | "range" | "odd-even" | "team-total",
   side?: "home" | "away"
 ): number | null {
+  const d = desc.toLowerCase().trim();
   switch (variant) {
     case "1x2":
-      return priceCards1X2(buildCardsGrid(means), desc);
+      return priceCards1X2(buildCardsGrid(means), d);
     case "handicap":
-      return priceCardsLikeHandicap(buildCardsGrid(means), desc);
+      return priceCardsLikeHandicap(buildCardsGrid(means), d);
     case "range":
-      return priceCardsLikeRange(buildCardsGrid(means), desc, side);
+      return priceCardsLikeRange(buildCardsGrid(means), d, side);
     default:
       return priceCardsOutcome(means, desc, side);
   }

@@ -249,7 +249,16 @@ export function buildGbmFeatureVector(inputs: GbmLiveInputs): number[] {
 
 /** Blends the GBM's [home, draw, away] probabilities into an existing fp triple at
  *  weight `w` (0-1), renormalising. Mirrors execution/index.ts's existing Skellam
- *  cross-check blend (same shape: low-weight nudge, not a replacement). */
+ *  cross-check blend (same shape: low-weight nudge, not a replacement).
+ *
+ *  [P2-2 hygiene] Activation criterion (same gate as `ratings/index.ts`'s
+ *  `buildRatingsLambdaInput`): do NOT wire this into a live call site until a retrained model
+ *  clears its own walk-forward significance gate (`tools/gbm_residual.py`'s RPS-improvement
+ *  check vs. the +0.002 bar, `calibration/index.ts`'s `significanceAcceptGate` machinery) —
+ *  check `.tmp/models/gbm_residual_meta.json`'s `gate_passed` flag before ever calling this
+ *  from `batch/`, `execution/`, `goalsV3/`, or `marketsV3/`. As of this entry there is still
+ *  zero call site anywhere in `packages/` and `OracleConfig.enableGbmResidual` stays the
+ *  required (necessary, not sufficient) opt-in flag on top of that gate. */
 export function blendGbmIntoFp(
   fp: { home: number; draw: number; away: number },
   gbmProbs: [number, number, number],

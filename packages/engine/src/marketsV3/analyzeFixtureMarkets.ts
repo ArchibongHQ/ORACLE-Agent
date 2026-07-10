@@ -180,6 +180,13 @@ export interface V3AllMarketsResult {
    *  affects lambdas/evMarkets/best above. Empty candidates when neither side
    *  has FBref npxG coverage or neither diverges past the threshold. */
   finishingShadow: FinishingRegressionResult;
+  /** [Wave 3, WS3-A] The stats-side scoreline grid already computed
+   *  internally for market pricing — exposed so batch/index.ts's stage-2
+   *  safety-pipeline shadow diff has a `Matrix` to pass into
+   *  `CorrelationMatrix.compute` for v3's portfolio-correlation check (v3 has
+   *  no other unified scoreline matrix the way the legacy engine's finalMat
+   *  is one). Never used for pricing outside this file. */
+  statsGrid: Matrix;
 }
 
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
@@ -417,5 +424,6 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     best: evMarkets[0] ?? null,
     refereeShadow,
     finishingShadow,
+    statsGrid,
   };
 }

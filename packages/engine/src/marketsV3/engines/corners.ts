@@ -224,22 +224,34 @@ function priceCornersLikeOddEven(grid: Matrix, d: string): number | null {
 /** PR-22 dispatcher: routes to the right corners pricer for the given
  *  variant. `variant` undefined (or "team-total") falls back to the original
  *  marginal-tail priceCornersOutcome (match-total O/U, or team O/U via
- *  `side`) — the pre-PR-22 behavior, unchanged. */
+ *  `side`) — the pre-PR-22 behavior, unchanged.
+ *
+ *  [Wave 3, WS3-B parity-fix] Real SportyBet catalog descs are capitalized
+ *  ("Home (+1.5)", "Odd" — see catalog.generated.ts's outcomes), but the
+ *  four PR-22 sub-pricers below matched only exact-lowercase strings with no
+ *  `.toLowerCase()` of their own (unlike every other desc-parsing function in
+ *  this codebase — descParse.ts, totals.ts, exotics.ts, shots.ts all
+ *  normalize case internally) — a real bug that silently zero-priced these
+ *  variants against any real-cased desc, only ever passing against
+ *  hand-lowercased test fixtures. The parity harness (test/analysis/
+ *  pricerParity.ts) caught this on id 165 "Corner Handicap". Normalizing
+ *  once here, at the single dispatch point, rather than in each sub-function. */
 export function priceCornersVariant(
   means: V3CornersMeans,
   desc: string,
   variant?: "1x2" | "handicap" | "range" | "odd-even" | "team-total",
   side?: "home" | "away"
 ): number | null {
+  const d = desc.toLowerCase().trim();
   switch (variant) {
     case "1x2":
-      return priceCorners1X2(buildCornersGrid(means), desc);
+      return priceCorners1X2(buildCornersGrid(means), d);
     case "handicap":
-      return priceCornersLikeHandicap(buildCornersGrid(means), desc);
+      return priceCornersLikeHandicap(buildCornersGrid(means), d);
     case "range":
-      return priceCornersLikeRange(buildCornersGrid(means), desc, side);
+      return priceCornersLikeRange(buildCornersGrid(means), d, side);
     case "odd-even":
-      return priceCornersLikeOddEven(buildCornersGrid(means), desc);
+      return priceCornersLikeOddEven(buildCornersGrid(means), d);
     default:
       return priceCornersOutcome(means, desc, side);
   }

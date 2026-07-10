@@ -1495,7 +1495,17 @@ export function normalizedEfficiency(
 
 // ---------- ported: variance regime + recovery constraints (lines 1242–1290) ----------
 
-/** adaptiveVarianceRegime — line 1242. Momentum/mean-reversion regime from recent returns (Antila 2024). */
+/** adaptiveVarianceRegime — line 1242. Momentum/mean-reversion regime from recent returns (Antila 2024).
+ *  [P2-3 hygiene] House default, stay flagged — unlike the §8.2 Skellam cross-check below
+ *  (Wilkens 2026, gated off by default behind `useSkellam`), this function runs UNCONDITIONALLY
+ *  every pricing pass (`execution/index.ts`'s `_adaptiveRegime`, feeding `drawdownPenaltyFinal` via
+ *  `_bindingRisk`) — it was never given its own opt-out flag when ported from the archive JSX.
+ *  The Antila 2024 citation has not been independently re-verified against ORACLE's own resolved-bet
+ *  ledger; treat the regime/factor mapping as a plausible heuristic, not a validated one. Promotion
+ *  from "house default" to "verified" requires the same walk-forward treatment used for
+ *  `ratings/walkForward.ts`'s pi-ratings gate: backtest bankroll/CLV outcomes with vs. without this
+ *  multiplier through `calibration/index.ts`'s `significanceAcceptGate` (minN=300, effect bar) before
+ *  trusting it beyond its current conservative safety-net role. */
 export function adaptiveVarianceRegime(recentReturns: number[] | null | undefined): VarianceRegime {
   if (!recentReturns || recentReturns.length < 4)
     return { regime: "INSUFFICIENT_DATA", factor: 1.0, autocorr: 0 };
@@ -1534,7 +1544,15 @@ export function adaptiveVarianceRegime(recentReturns: number[] | null | undefine
   };
 }
 
-/** leeRecoveryConstraint — line 1268. Drawdown-recovery guard on Kelly sizing (Lee 2025). */
+/** leeRecoveryConstraint — line 1268. Drawdown-recovery guard on Kelly sizing (Lee 2025).
+ *  [P2-3 hygiene] House default, stay flagged — same status as `adaptiveVarianceRegime` above:
+ *  runs unconditionally every pricing pass (`execution/index.ts`'s `_leeConstraint`, feeding
+ *  `drawdownPenaltyFinal` via `_bindingRisk`), no opt-out flag, and the Lee 2025 citation/model
+ *  (fixed `estimatedEdge = 0.04` assumption baked into the recovery-probability formula) has not
+ *  been independently validated against ORACLE's own resolved-bet data. Do not treat this as a
+ *  confirmed-accurate drawdown model — it is a conservative ported heuristic. Promotion to
+ *  "verified" requires clearing the same walk-forward/`significanceAcceptGate` bar (minN=300,
+ *  effect bar) the ratings/GBM dormant variants must clear before their outputs are trusted live. */
 export function leeRecoveryConstraint(
   drawdown: number,
   betsRemaining = 50,
@@ -1647,7 +1665,17 @@ function modifiedBesselI(n: number, x: number): number {
 
 /** Skellam PMF: P(X₁ − X₂ = k) where X₁ ~ Poisson(l1), X₂ ~ Poisson(l2).
  *  Wilkens (2026): "the Skellam distribution naturally models win-draw-loss results."
- *  PRD §8.2 — used as AH/supremacy cross-check, not as a replacement for the matrix path. */
+ *  PRD §8.2 — used as AH/supremacy cross-check, not as a replacement for the matrix path.
+ *  [P2-3 hygiene] Citation verified — Skellam-as-goal-difference-model is a standard, well-
+ *  established result (independent-Poisson goal margins are Skellam-distributed by construction),
+ *  distinct from `adaptiveVarianceRegime`/`leeRecoveryConstraint` above which stay flagged as
+ *  unvalidated house defaults. This dormant variant IS correctly gated: `useSkellam` defaults
+ *  `false` (`types.ts:200`) and the whole cross-check/blend only executes behind that flag
+ *  (`execution/index.ts:1825`). Activation criterion to flip the default: a walk-forward replay
+ *  showing the 20%-weight blend (triggered when `maxDivergence < 0.05`, see `skellamCrossCheck`)
+ *  improves calibration/CLV over the matrix-only baseline, cleared through the same
+ *  `significanceAcceptGate` bar (minN=300, effect bar) as the ratings/GBM dormant variants —
+ *  never hand-flipped on priors alone. */
 export function skellamPMF(k: number, l1: number, l2: number): number {
   const s1 = Math.max(1e-6, l1);
   const s2 = Math.max(1e-6, l2);
