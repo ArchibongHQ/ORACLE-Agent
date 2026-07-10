@@ -64,10 +64,12 @@ export {
   computeXgCoverage,
   generateAndWriteFixtureWorkbook,
   listFixtureReportFiles,
+  renderFixturesMarketsPage,
   renderFixturesWorkbook,
   renderMarketsWorkbook,
   TELEGRAM_FILE_BUDGET_BYTES,
   writeFixtureReportFiles,
+  writeFixturesMarketsPage,
 } from "./fixtureWorkbook.js";
 export type { GoalsArtifact } from "./goalsArtifact.js";
 export { readGoalsArtifact, writeGoalsArtifact } from "./goalsArtifact.js";

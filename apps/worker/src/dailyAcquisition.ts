@@ -228,7 +228,9 @@ export async function sendDailyFixtureReport(): Promise<void> {
       if (!alreadyFlagged) writeHeartbeat("fixtureReportPlaceholder", { date: today });
       return;
     }
-    const allPaths = [result.fixturesPath, ...result.marketsPaths];
+    // HTML one-pager first (human-friendly: fixtures + collapsible markets), then
+    // the xlsx workbooks (the canonical LLM-readable feed). Owner request 2026-07-10.
+    const allPaths = [result.htmlPagePath, result.fixturesPath, ...result.marketsPaths];
     for (const p of allPaths) {
       const kb = Math.round(statSync(p).size / 1024);
       process.stdout.write(`[fixture-report] wrote ${p} (${kb}KB)\n`);
@@ -240,15 +242,21 @@ export async function sendDailyFixtureReport(): Promise<void> {
       await sendTelegramDocument(
         env.TELEGRAM_BOT_TOKEN as string,
         env.TELEGRAM_CHAT_ID as string,
+        result.htmlPagePath,
+        `ORACLE fixtures & markets (open in browser — tap a fixture to expand its markets) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}${dataHealthLine ? `\n${dataHealthLine}` : ""}`
+      );
+      await sendTelegramDocument(
+        env.TELEGRAM_BOT_TOKEN as string,
+        env.TELEGRAM_CHAT_ID as string,
         result.fixturesPath,
-        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}${dataHealthLine ? `\n${dataHealthLine}` : ""}`
+        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 2/${total}]`
       );
       for (let i = 0; i < result.marketsPaths.length; i++) {
         await sendTelegramDocument(
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
           result.marketsPaths[i] as string,
-          `ORACLE daily markets — ${today} [file ${i + 2}/${total}${partCount > 1 ? `, part ${i + 1} of ${partCount}` : ""}]`
+          `ORACLE daily markets — ${today} [file ${i + 3}/${total}${partCount > 1 ? `, part ${i + 1} of ${partCount}` : ""}]`
         );
       }
       process.stdout.write(

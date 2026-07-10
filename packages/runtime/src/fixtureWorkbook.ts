@@ -535,6 +535,160 @@ export function renderMarketsWorkbook(groups: MarketRowGroup[], date: string): E
   return wb;
 }
 
+// ── Single-page HTML report (fixtures + markets, spreadsheet-style, dropdowns) ──
+// Owner request 2026-07-10: a human-friendly one-pager delivered alongside the
+// xlsx workbooks. Mirrors the spreadsheet's Fixtures columns as a scrollable
+// table; each fixture is a native <details> dropdown whose body reveals that
+// fixture's full field set + its complete markets ladder. No JavaScript — native
+// <details>/<summary> collapse works in Telegram's in-app browser and everywhere
+// else, and there's nothing to fail to load.
+
+/** HTML-escape (distinct from sanitizeCell, which guards spreadsheet formula
+ *  injection — irrelevant in HTML; here we neutralize markup instead). */
+function escHtml(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+const FIXTURES_MARKETS_PAGE_CSS = `
+:root{--bg:#0f1512;--surface:#161f1b;--surface2:#1c2620;--border:#26332c;--text:#e8efe9;--dim:#8ea69c;--accent:#57d8b4;--amber:#f0a94e}
+@media(prefers-color-scheme:light){:root{--bg:#eef1ef;--surface:#fff;--surface2:#e3e9e6;--border:#c7d1cc;--text:#132420;--dim:#51655d;--accent:#0b7f68;--amber:#a8650c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.45;font-size:14px}
+.wrap{max-width:1100px;margin:0 auto;padding:20px 16px 64px}
+h1{font-size:22px;margin:0 0 2px;letter-spacing:-.01em}
+.sub{color:var(--dim);font-size:13px;margin:0 0 18px;font-family:ui-monospace,Consolas,monospace}
+.controls{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.controls button{font:inherit;font-size:12px;padding:5px 12px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:6px;cursor:pointer}
+details{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--surface);overflow:hidden}
+summary{list-style:none;cursor:pointer;padding:10px 14px;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+summary::-webkit-details-marker{display:none}
+summary:hover{background:var(--surface2)}
+.fx-title{font-weight:650}
+.fx-title .lg{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+.fx-meta{display:flex;gap:10px;flex-wrap:wrap;font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--dim)}
+.fx-meta b{color:var(--text);font-weight:600}
+.chev{color:var(--dim);font-size:12px}
+details[open] .chev::after{content:"▲"}
+details:not([open]) .chev::after{content:"▼"}
+.panel{padding:4px 14px 16px;border-top:1px solid var(--border)}
+.h{font-family:ui-monospace,Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:14px 0 6px}
+.fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px 14px}
+.fields div{font-size:12px;border-bottom:1px dotted var(--border);padding:2px 0;display:flex;justify-content:space-between;gap:8px}
+.fields .k{color:var(--dim)}.fields .v{font-family:ui-monospace,Consolas,monospace;text-align:right}
+.tblwrap{overflow-x:auto;border:1px solid var(--border);border-radius:6px}
+table{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
+thead th{position:sticky;top:0;text-align:left;background:var(--surface2);color:var(--dim);font-family:ui-monospace,Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:6px 10px;border-bottom:1px solid var(--border)}
+tbody td{padding:5px 10px;border-bottom:1px solid var(--border)}
+tbody tr:nth-child(even){background:var(--surface2)}
+td.odds{text-align:right;font-family:ui-monospace,Consolas,monospace;color:var(--amber)}
+.priceable{color:var(--accent)}
+.empty{color:var(--dim);font-style:italic;padding:8px 0}
+`;
+
+const MARKET_HEAD = ["Market ID", "Market", "Family", "Group", "Specifier", "Outcome", "Odds"];
+
+/** Compact "spreadsheet key columns" shown in every fixture's collapsed summary. */
+const SUMMARY_ODDS: Array<{
+  label: string;
+  get: (e: SportyBetEvent) => number | null | undefined;
+}> = [
+  { label: "1X2", get: (e) => e.detail?.odds?.["1x2"]?.home },
+  { label: "O2.5", get: (e) => e.detail?.odds?.ou25?.over },
+  { label: "U2.5", get: (e) => e.detail?.odds?.ou25?.under },
+  { label: "BTTS", get: (e) => e.detail?.odds?.btts?.yes },
+];
+
+function renderFixturePanel(ctx: FixtureRowCtx): string {
+  const { event } = ctx;
+  // Full field set (identical column set to the xlsx Fixtures sheet).
+  const fields = FIXTURE_COLUMNS.map((c) => {
+    const v = c.get(ctx);
+    if (v === null || v === undefined || v === "") return "";
+    return `<div><span class="k">${escHtml(c.header)}</span><span class="v">${escHtml(v)}</span></div>`;
+  }).join("");
+
+  // This fixture's markets ladder.
+  const marketRows: string[] = [];
+  for (const m of event.detail?.odds?.allMarkets ?? []) {
+    const cat = lookupMarket(m.id);
+    const priceable = cat && PRICEABLE_FAMILIES.has(cat.family);
+    const family = cat
+      ? escHtml(cat.family) + (priceable ? ' <span class="priceable">★</span>' : "")
+      : "";
+    for (const o of m.outcomes ?? []) {
+      marketRows.push(
+        `<tr><td>${escHtml(m.id)}</td><td>${escHtml(m.desc || m.name || m.id)}</td>` +
+          `<td>${family}</td><td>${escHtml(m.group ?? "")}</td><td>${escHtml(m.specifier ?? "")}</td>` +
+          `<td>${escHtml(o.desc ?? o.id)}</td><td class="odds">${escHtml(o.odds ?? "")}</td></tr>`
+      );
+    }
+  }
+  const marketsTable = marketRows.length
+    ? `<div class="tblwrap"><table><thead><tr>${MARKET_HEAD.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${marketRows.join("")}</tbody></table></div>`
+    : `<div class="empty">No markets captured for this fixture yet.</div>`;
+
+  return `<div class="panel"><div class="h">Fixture data</div><div class="fields">${fields}</div><div class="h">Markets (${marketRows.length} outcomes · ★ = priceable by the engine)</div>${marketsTable}</div>`;
+}
+
+/** Render the whole slate as one self-contained HTML page. Pure — caller writes it. */
+export function renderFixturesMarketsPage(
+  events: SportyBetEvent[],
+  date: string,
+  deps: FixtureWorkbookDeps
+): string {
+  const cards = events
+    .map((event) => {
+      const lineup = findLineupSummary(deps.lineups, event.home, event.away);
+      const ctx: FixtureRowCtx = {
+        event,
+        lineup,
+        homeNews: deps.newsByTeam.get(teamSlug(event.home)) ?? [],
+        awayNews: deps.newsByTeam.get(teamSlug(event.away)) ?? [],
+      };
+      const ko = (event.kickoff_utc ?? "").slice(0, 16).replace("T", " ");
+      const odds = SUMMARY_ODDS.map((s) => {
+        const v = s.get(event);
+        return `<span>${s.label} <b>${v == null ? "—" : escHtml(v)}</b></span>`;
+      }).join("");
+      const mkCount = event.detail?.odds?.allMarkets?.length ?? 0;
+      return (
+        `<details><summary><span class="fx-title">${escHtml(event.home)} v ${escHtml(event.away)}` +
+        `<span class="lg">${escHtml(event.league ?? "")}</span></span>` +
+        `<span class="fx-meta"><span>${escHtml(ko)} UTC</span>${odds}<span>${mkCount} mkts</span>` +
+        `<span class="chev"></span></span></summary>${renderFixturePanel(ctx)}</details>`
+      );
+    })
+    .join("\n");
+
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ORACLE Fixtures &amp; Markets — ${escHtml(date)}</title>
+<style>${FIXTURES_MARKETS_PAGE_CSS}</style></head><body><div class="wrap">
+<h1>ORACLE — Fixtures &amp; Markets</h1>
+<p class="sub">${escHtml(date)} · ${events.length} fixtures · tap a fixture to reveal its full data + markets ladder</p>
+<div class="controls"><button onclick="for(const d of document.querySelectorAll('details'))d.open=true">Expand all</button><button onclick="for(const d of document.querySelectorAll('details'))d.open=false">Collapse all</button></div>
+${cards || '<p class="empty">No fixtures in this slate.</p>'}
+</div></body></html>`;
+}
+
+/** Write the single-page HTML report and return its path (best-effort caller). */
+export async function writeFixturesMarketsPage(
+  events: SportyBetEvent[],
+  date: string,
+  deps: FixtureWorkbookDeps,
+  outDir = ".tmp/reports"
+): Promise<string> {
+  await mkdir(outDir, { recursive: true });
+  const outPath = join(outDir, `oracle-fixtures-markets-${date}.html`);
+  await writeFile(outPath, renderFixturesMarketsPage(events, date, deps), "utf8");
+  return outPath;
+}
+
 /** Telegram delivery budget per file. The user cap is 2MB; keep headroom so a
  *  part sized from a serialization estimate can't land a few KB over. */
 export const TELEGRAM_FILE_BUDGET_BYTES = Math.floor(1.8 * 1024 * 1024);
@@ -712,6 +866,7 @@ export async function generateAndWriteFixtureWorkbook(
 ): Promise<{
   fixturesPath: string;
   marketsPaths: string[];
+  htmlPagePath: string;
   fixtureCount: number;
   marketsEmpty: boolean;
   xgCoverage: XgCoverage;
@@ -728,9 +883,12 @@ export async function generateAndWriteFixtureWorkbook(
     loadLineupSummaries(),
     buildNewsByTeamForWorkbook(index.events, date),
   ]);
-  const files = await writeFixtureReportFiles(index.events, date, { lineups, newsByTeam }, outDir);
+  const deps = { lineups, newsByTeam };
+  const files = await writeFixtureReportFiles(index.events, date, deps, outDir);
+  const htmlPagePath = await writeFixturesMarketsPage(index.events, date, deps, outDir);
   return {
     ...files,
+    htmlPagePath,
     fixtureCount: index.events.length,
     marketsEmpty,
     xgCoverage: computeXgCoverage(index.events),
