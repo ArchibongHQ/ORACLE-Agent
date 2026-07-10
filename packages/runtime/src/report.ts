@@ -56,7 +56,65 @@ h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 16px; color: #f1f5f9; }
 .error-body { color: #fca5a5; font-size: 0.82rem; margin-top: 6px; }
 .enrichment { margin-top: 8px; border-top: 1px solid #334155; padding-top: 8px; }
 .enrichment summary { cursor: pointer; color: #7dd3fc; font-weight: 600; font-size: 0.72rem; }
+.tallies { background: #1e293b; border-radius: 10px; padding: 14px 20px; margin-bottom: 24px; border: 1px solid #334155; display: flex; gap: 32px; flex-wrap: wrap; }
+.tally-group h3 { font-size: 0.68rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+.tally-row { font-size: 0.75rem; color: #cbd5e1; display: flex; justify-content: space-between; gap: 12px; min-width: 180px; }
+.tally-row span:last-child { font-weight: 700; color: #f1f5f9; }
 `;
+
+/** [Wave 2] Slate-wide tally of MLSafetyFilter's would-be-kill counts (Wave 1
+ *  P0-3 telemetry — populated regardless of safetyMode, so a filter demoted
+ *  from hard-reject to penalty still shows up here). Pure aggregation over
+ *  already-computed per-fixture data; never affects staking. */
+export function aggregateSafetyKillCounts(jobs: readonly BatchJobResult[]): Record<string, number> {
+  const totals: Record<string, number> = {};
+  for (const j of jobs) {
+    if (j.status !== "ok" || !j.safetyKillCounts) continue;
+    for (const [id, count] of Object.entries(j.safetyKillCounts)) {
+      totals[id] = (totals[id] ?? 0) + count;
+    }
+  }
+  return totals;
+}
+
+/** [Wave 2] Slate-wide tally of evGate's gateReason (Wave 1 P0-2) across every
+ *  v3 assessment on every fixture — surfaces WHY candidates didn't reach
+ *  "done" (class_edge, ev_floor, model_hot_longshot, etc.) in one place
+ *  instead of only per-fixture. Pure aggregation; never affects staking. */
+export function aggregateGateReasons(jobs: readonly BatchJobResult[]): Record<string, number> {
+  const totals: Record<string, number> = {};
+  for (const j of jobs) {
+    if (j.status !== "ok" || !j.v3AssessmentStats) continue;
+    for (const a of j.v3AssessmentStats) {
+      if (!a.gateReason) continue;
+      totals[a.gateReason] = (totals[a.gateReason] ?? 0) + 1;
+    }
+  }
+  return totals;
+}
+
+function renderTallySection(jobs: readonly BatchJobResult[]): string {
+  const killCounts = aggregateSafetyKillCounts(jobs);
+  const gateReasons = aggregateGateReasons(jobs);
+  if (Object.keys(killCounts).length === 0 && Object.keys(gateReasons).length === 0) return "";
+
+  const rows = (totals: Record<string, number>) =>
+    Object.entries(totals)
+      .sort(([, a], [, b]) => b - a)
+      .map(([k, v]) => `<div class="tally-row"><span>${esc(k)}</span><span>${v}</span></div>`)
+      .join("\n");
+
+  const killGroup =
+    Object.keys(killCounts).length > 0
+      ? `<div class="tally-group"><h3>Safety kill counts</h3>${rows(killCounts)}</div>`
+      : "";
+  const gateGroup =
+    Object.keys(gateReasons).length > 0
+      ? `<div class="tally-group"><h3>Gate reasons</h3>${rows(gateReasons)}</div>`
+      : "";
+
+  return `<div class="tallies">${killGroup}${gateGroup}</div>`;
+}
 
 function cardClass(job: BatchJobResult): string {
   if (job.status === "error") return "card card-error";
@@ -198,6 +256,7 @@ export function renderReport(
   <div class="stat"><span class="stat-label">Total Stake</span><span class="stat-val">${batch.totalRecommendedStakePct.toFixed(1)}%</span></div>
   ${hasHighCorr ? '<div class="stat"><span class="stat-label">Portfolio</span><span class="stat-val" style="color:#f97316">HIGH_CORR</span></div>' : ""}
 </div>
+${renderTallySection(batch.jobs as BatchJobResult[])}
 <div class="cards">
 ${cards}
 </div>

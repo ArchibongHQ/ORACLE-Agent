@@ -16,12 +16,15 @@ import {
   expectedCalibrationError,
   isotonicCalibrateFp,
   logLoss,
+  makeCalibFactorResolver,
   plattScale,
+  SIGNIFICANCE_MIN_N,
+  segmentKey,
   significanceAcceptGate,
 } from "@oracle/engine";
 import { MemoryAdapter } from "@oracle/storage";
 import { beforeAll, describe, expect, it } from "vitest";
-import type { BetRecord } from "../src/calibration/index.js";
+import type { BetRecord, CalibrationMetrics } from "../src/calibration/index.js";
 
 const storage = new MemoryAdapter();
 const engine = new CalibrationEngine(storage);
@@ -652,5 +655,191 @@ describe("applyPlatt (AP-1 — AP-3)", () => {
     expect(p).toBeGreaterThanOrEqual(0);
     expect(p).toBeLessThanOrEqual(1);
     expect(Number.isFinite(p)).toBe(true);
+  });
+});
+
+// ── [Wave 2, WS2-A] segmentKey ────────────────────────────────────────────────
+
+describe("[Wave 2] segmentKey", () => {
+  it("produces a deterministic league::family key", () => {
+    expect(segmentKey("Premier League", "goals_ou")).toBe("Premier League::goals_ou");
+    expect(segmentKey("Bundesliga", "btts")).toBe("Bundesliga::btts");
+  });
+
+  it("keys leagues and families independently — no collision between distinct pairs", () => {
+    expect(segmentKey("A", "goals_ou")).not.toBe(segmentKey("B", "goals_ou"));
+    expect(segmentKey("A", "goals_ou")).not.toBe(segmentKey("A", "btts"));
+  });
+});
+
+// ── [Wave 2, WS2-A] Per-segment calibFactor accumulation ─────────────────────
+
+describe("[Wave 2] per-segment calibFactor accumulation", () => {
+  const EPOCH_START = "2026-07-10";
+
+  function makeSegmentBet(overrides: Partial<BetRecord>): BetRecord {
+    return {
+      status: "resolved",
+      outcome: "loss",
+      mp: 0.3,
+      odds: 2.0,
+      stakeAmt: 50,
+      league: "Segment League",
+      family: "goals_ou",
+      epoch: EPOCH_START,
+      ...overrides,
+    };
+  }
+
+  it("below SIGNIFICANCE_MIN_N: accepted=false even though the segment's own factor is still computed", () => {
+    const bets: BetRecord[] = Array.from({ length: 250 }, (_, i) =>
+      makeSegmentBet({ outcome: i % 2 === 0 ? "win" : "loss" })
+    );
+    const metrics = engine.calculate(bets, EPOCH_START);
+    const seg = metrics.segmentCalibFactors[segmentKey("Segment League", "goals_ou")];
+    expect(seg).toBeDefined();
+    expect(seg?.n).toBe(250);
+    expect(seg?.accepted).toBe(false);
+  });
+
+  it(`at/above SIGNIFICANCE_MIN_N (${SIGNIFICANCE_MIN_N}) with a real effect: accepted=true and the segment resolves its own factor`, () => {
+    const n = SIGNIFICANCE_MIN_N;
+    // mp=0.3 modeled, but 3-in-5 (60%) actually win — a real, large effect.
+    const bets: BetRecord[] = Array.from({ length: n }, (_, i) =>
+      makeSegmentBet({ outcome: i % 5 < 3 ? "win" : "loss" })
+    );
+    const metrics = engine.calculate(bets, EPOCH_START);
+    const seg = metrics.segmentCalibFactors[segmentKey("Segment League", "goals_ou")];
+    expect(seg).toBeDefined();
+    expect(seg?.n).toBe(n);
+    expect(seg?.accepted).toBe(true);
+    // Observed win rate (60%) well above modeled mp (30%) → shrunk factor > 1.
+    expect(seg!.calibFactor).toBeGreaterThan(1.0);
+    expect(seg!.calibFactor).toBeLessThanOrEqual(1.5);
+  });
+
+  it("excludes bets whose epoch predates epochStart entirely", () => {
+    const preEpoch: BetRecord[] = Array.from({ length: 100 }, () =>
+      makeSegmentBet({ league: "PreEpoch League", family: "btts", epoch: "2026-01-01" })
+    );
+    const metrics = engine.calculate(preEpoch, EPOCH_START);
+    expect(metrics.segmentCalibFactors[segmentKey("PreEpoch League", "btts")]).toBeUndefined();
+  });
+
+  it("excludes bets with no epoch stamp at all (fail-safe default — never assume post-epoch)", () => {
+    const noEpoch: BetRecord[] = Array.from({ length: 100 }, () => {
+      const bet = makeSegmentBet({ league: "NoEpoch League", family: "dnb" });
+      delete bet.epoch;
+      return bet;
+    });
+    const metrics = engine.calculate(noEpoch, EPOCH_START);
+    expect(metrics.segmentCalibFactors[segmentKey("NoEpoch League", "dnb")]).toBeUndefined();
+  });
+
+  it("counts only post-epoch bets when pre- and post-epoch records are mixed in the same segment", () => {
+    const mixed: BetRecord[] = [
+      ...Array.from({ length: 50 }, () =>
+        makeSegmentBet({ league: "Mixed League", family: "team_total", epoch: "2026-01-01" })
+      ),
+      ...Array.from({ length: 60 }, () =>
+        makeSegmentBet({ league: "Mixed League", family: "team_total", epoch: EPOCH_START })
+      ),
+    ];
+    const metrics = engine.calculate(mixed, EPOCH_START);
+    const seg = metrics.segmentCalibFactors[segmentKey("Mixed League", "team_total")];
+    expect(seg).toBeDefined();
+    expect(seg?.n).toBe(60);
+  });
+});
+
+// ── [Wave 2, WS2-A] makeCalibFactorResolver ───────────────────────────────────
+// THE critical regression suite: every consumer (execution/index.ts,
+// marketExecutor.ts, batch/index.ts) now reads calibFactor exclusively through
+// this resolver. Non-"segment" modes MUST return exactly what a direct
+// `metrics.calibFactor` read returned pre-Wave-2 — the first test below proves
+// that even when segment/league data disagrees loudly with the global factor.
+
+describe("[Wave 2] makeCalibFactorResolver", () => {
+  const baseMetrics = engine.calculate([]); // CalibrationMetrics defaults (calibFactor=1.0)
+
+  it("off/shadow/on/unset modes ignore segment+league data entirely — byte-identical to a direct metrics.calibFactor read", () => {
+    const metrics: CalibrationMetrics = {
+      ...baseMetrics,
+      calibFactor: 0.85,
+      segmentCalibFactors: {
+        [segmentKey("Premier League", "goals_ou")]: {
+          calibFactor: 1.4,
+          shrinkage: 0.9,
+          n: 500,
+          accepted: true,
+        },
+      },
+      leagueData: {
+        _leagueCalibFactors: {
+          "Premier League": { calibFactor: 1.3, shrinkage: 0.8, n: 400 },
+        },
+      },
+    };
+
+    for (const mode of ["off", "shadow", "on", undefined] as const) {
+      const resolver = makeCalibFactorResolver(metrics, { calibrationLedger: mode });
+      expect(resolver("Premier League", "goals_ou")).toBe(0.85);
+      expect(resolver("Unknown League", "btts")).toBe(0.85);
+    }
+  });
+
+  it("segment mode returns the segment's own factor when accepted", () => {
+    const metrics: CalibrationMetrics = {
+      ...baseMetrics,
+      calibFactor: 1.0,
+      segmentCalibFactors: {
+        [segmentKey("Premier League", "goals_ou")]: {
+          calibFactor: 1.35,
+          shrinkage: 0.9,
+          n: 500,
+          accepted: true,
+        },
+      },
+      leagueData: {
+        _leagueCalibFactors: {
+          "Premier League": { calibFactor: 1.1, shrinkage: 0.8, n: 400 },
+        },
+      },
+    };
+    const resolver = makeCalibFactorResolver(metrics, { calibrationLedger: "segment" });
+    expect(resolver("Premier League", "goals_ou")).toBe(1.35);
+  });
+
+  it("segment mode falls back to the per-league factor when the segment isn't accepted", () => {
+    const metrics: CalibrationMetrics = {
+      ...baseMetrics,
+      calibFactor: 1.0,
+      segmentCalibFactors: {
+        [segmentKey("Premier League", "goals_ou")]: {
+          calibFactor: 1.35,
+          shrinkage: 0.5,
+          n: 100, // below SIGNIFICANCE_MIN_N
+          accepted: false,
+        },
+      },
+      leagueData: {
+        _leagueCalibFactors: {
+          "Premier League": { calibFactor: 1.1, shrinkage: 0.8, n: 400 },
+        },
+      },
+    };
+    const resolver = makeCalibFactorResolver(metrics, { calibrationLedger: "segment" });
+    expect(resolver("Premier League", "goals_ou")).toBe(1.1);
+  });
+
+  it("segment mode falls back to the global calibFactor when neither segment nor league data exist", () => {
+    const metrics: CalibrationMetrics = {
+      ...baseMetrics,
+      calibFactor: 0.95,
+      segmentCalibFactors: {},
+      leagueData: {},
+    };
+    const resolver = makeCalibFactorResolver(metrics, { calibrationLedger: "segment" });
+    expect(resolver("Unknown League", "btts")).toBe(0.95);
   });
 });

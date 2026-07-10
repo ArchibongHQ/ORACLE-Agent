@@ -178,9 +178,23 @@ export {
   SLIP_LABELS,
   shouldReprompt,
 } from "./puntState.js";
-export { CSS as REPORT_CSS, esc, pct, renderReport, writeReport } from "./report.js";
-export type { ResolveResult } from "./resolveFixtures.js";
-export { computeRealisedClv, formatClv, resolveRecords } from "./resolveFixtures.js";
+export {
+  aggregateGateReasons,
+  aggregateSafetyKillCounts,
+  CSS as REPORT_CSS,
+  esc,
+  pct,
+  renderReport,
+  writeReport,
+} from "./report.js";
+export type { EnrichedResolutionRecord, ResolveResult } from "./resolveFixtures.js";
+export {
+  computeRealisedClv,
+  computeSharpReferenceClv,
+  formatClv,
+  LEAGUE_TO_SPORT,
+  resolveRecords,
+} from "./resolveFixtures.js";
 export type { PuntResult } from "./runPunt.js";
 export { formatPuntResult, runPuntAnalysis } from "./runPunt.js";
 export type {
@@ -215,8 +229,14 @@ export {
   pickSafestGoalsLeg,
   selectGoalsAccumulator,
 } from "./selectGoals.js";
-export type { SharpOddsRecord } from "./sharpFeed.js";
-export { fetchSharpFairPrice } from "./sharpFeed.js";
+export type { SharpFeedContext, SharpOddsRecord } from "./sharpFeed.js";
+export {
+  computeSharpFeedCoverage,
+  DEFAULT_SHARP_FEED_TIMEOUT_MS,
+  fetchSharpFairPrice,
+  SHARP_ODDS_STORAGE_KEY,
+  sharpOddsRecordId,
+} from "./sharpFeed.js";
 export { blendRecencyScored, MIN_PLAYED_FOR_OVERRIDE } from "./sportyBetStats.js";
 export {
   isSrlTeamName,

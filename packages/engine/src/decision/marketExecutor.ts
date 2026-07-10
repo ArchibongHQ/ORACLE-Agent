@@ -16,6 +16,7 @@
  *  it can prove one out cleanly against the fixture's REAL quoted odds (never
  *  the LLM's restated odds — same Gate-1.5 philosophy as validateSelection). */
 
+import type { MarketFamily } from "../markets/index.js";
 import { familyOf } from "../markets/index.js";
 import { adjEV, clamp, hurdle, optimizedKelly } from "../math/index.js";
 import type {
@@ -38,7 +39,13 @@ export interface MarketExecutorRiskParams {
   councilPenalty: boolean;
   varMultiplier: number;
   drawdownPenalty: number;
-  calibFactor: number;
+  /** [Wave 2, WS2-A] Was a flat `calibFactor: number` — now a per-family
+   *  resolver so "segment" mode can return a different factor per market
+   *  family in the all-markets catalogue this executor picks from. Every
+   *  non-"segment" mode's resolver ignores `family` entirely and returns the
+   *  same flat value regardless of input, so behavior is byte-identical
+   *  there (see calibration/index.ts's makeCalibFactorResolver docstring). */
+  calibFactorFor: (family: MarketFamily | undefined) => number;
   bankroll: number;
 }
 
@@ -185,6 +192,11 @@ function validateAndBuild(
   const ev = adjEV(mp, odds);
   if (ev <= 0 || rawEdge < hurdle(mp)) return null;
 
+  // [Wave 2, WS2-A] found.market.id is the catalogue's raw market id — familyOf
+  // resolves it to ORACLE's canonical MarketFamily (undefined for uncatalogued
+  // ids, same as scanAllMarketsFallback's `cat?.family`); the resolver falls
+  // back to the plain global factor in that case.
+  const family = familyOf(found.market.id);
   const stake = clamp(
     optimizedKelly(
       rawEdge,
@@ -193,7 +205,7 @@ function validateAndBuild(
       risk.councilPenalty,
       risk.varMultiplier,
       risk.drawdownPenalty,
-      risk.calibFactor,
+      risk.calibFactorFor(family),
       0.25,
       mp
     ),

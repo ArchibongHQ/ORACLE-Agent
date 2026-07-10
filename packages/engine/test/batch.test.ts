@@ -199,6 +199,121 @@ describe("runBatch", () => {
     spy.mockRestore();
   });
 
+  // [review fix — Wave 2] BatchOptions.integrityByFixture (v5 Rule 0.14
+  // per-fixture stake downgrade) had zero test coverage — flagged by both
+  // the testing and adversarial review passes as the most actionable gap
+  // in the Wave-2 diff, given the hook is live in production (dailyBatch.ts
+  // populates it) and directly affects staking.
+  describe("integrityByFixture — v5 Rule 0.14 per-fixture downgrade", () => {
+    function integrityMockResult(): RunResult {
+      return {
+        fp: { home: 0.45, draw: 0.28, away: 0.27 },
+        evMarkets: [
+          {
+            cat: "1x2",
+            label: "Home Win",
+            market: "1x2",
+            side: "Home Win",
+            mp: 0.45,
+            modelProb: 0.45,
+            ip: 0.4,
+            rawEdge: 0.05,
+            ev: 0.05,
+            odds: 2.5,
+            stake: 0.02,
+            stakeAmt: 20,
+            rankingScore: 0.5,
+            varianceMod: 1.0,
+          },
+          {
+            cat: "Goals O/U",
+            label: "Over 2.5",
+            market: "Goals O/U",
+            side: "Over 2.5",
+            mp: 0.55,
+            modelProb: 0.55,
+            ip: 0.48,
+            rawEdge: 0.07,
+            ev: 0.07,
+            odds: 2.1,
+            stake: 0.03,
+            stakeAmt: 30,
+            rankingScore: 0.6,
+            varianceMod: 1.0,
+            veto: "PORTFOLIO_CORRELATION_VETO",
+          },
+        ],
+        oddsAvailable: true,
+        bayesian_lH: 1.5,
+        bayesian_lA: 1.2,
+        expectedScoreline: "1-1",
+        portfolioCorrelation: null,
+        correlatedParlayRisk: null,
+      };
+    }
+
+    it("halves stake on every non-vetoed market for a 'flagged' fixture", async () => {
+      const spy = vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(integrityMockResult());
+      const jobs = parseFixtureList("Arsenal vs Chelsea, Premier League, 2026-06-05");
+      const result = await runBatch(jobs, deps, {
+        integrityByFixture: {
+          "Arsenal|Chelsea": { verdict: "flagged", reason: "duplicate_block" },
+        },
+      });
+      const job = result.jobs[0] as FixtureJobSuccess;
+      const m1x2 = job.result.evMarkets.find((m) => m.cat === "1x2")!;
+      expect(m1x2.stake).toBeCloseTo(0.01, 5);
+      expect(m1x2.stakeAmt).toBeCloseTo(10, 5);
+      spy.mockRestore();
+    });
+
+    it("leaves an already-vetoed market's stake untouched", async () => {
+      const spy = vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(integrityMockResult());
+      const jobs = parseFixtureList("Arsenal vs Chelsea, Premier League, 2026-06-05");
+      const result = await runBatch(jobs, deps, {
+        integrityByFixture: { "Arsenal|Chelsea": { verdict: "flagged" } },
+      });
+      const job = result.jobs[0] as FixtureJobSuccess;
+      const vetoed = job.result.evMarkets.find((m) => m.cat === "Goals O/U")!;
+      expect(vetoed.stake).toBeCloseTo(0.03, 5); // untouched — the pre-existing veto short-circuits the loop
+      spy.mockRestore();
+    });
+
+    it("is a no-op when integrityByFixture has no entry for this fixture", async () => {
+      const spy = vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(integrityMockResult());
+      const jobs = parseFixtureList("Arsenal vs Chelsea, Premier League, 2026-06-05");
+      const result = await runBatch(jobs, deps, {
+        integrityByFixture: { "Some Other|Fixture": { verdict: "flagged" } },
+      });
+      const job = result.jobs[0] as FixtureJobSuccess;
+      const m1x2 = job.result.evMarkets.find((m) => m.cat === "1x2")!;
+      expect(m1x2.stake).toBeCloseTo(0.02, 5); // unchanged
+      spy.mockRestore();
+    });
+
+    it("is a no-op when integrityByFixture is undefined (regression guard — pre-Wave-2 behavior)", async () => {
+      const spy = vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(integrityMockResult());
+      const jobs = parseFixtureList("Arsenal vs Chelsea, Premier League, 2026-06-05");
+      const result = await runBatch(jobs, deps, {});
+      const job = result.jobs[0] as FixtureJobSuccess;
+      const m1x2 = job.result.evMarkets.find((m) => m.cat === "1x2")!;
+      expect(m1x2.stake).toBeCloseTo(0.02, 5); // unchanged
+      spy.mockRestore();
+    });
+
+    it("a 'clean' verdict entry (defensive — never actually emitted by runFeedIntegrity today) is a no-op", async () => {
+      const spy = vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(integrityMockResult());
+      const jobs = parseFixtureList("Arsenal vs Chelsea, Premier League, 2026-06-05");
+      const result = await runBatch(jobs, deps, {
+        integrityByFixture: { "Arsenal|Chelsea": { verdict: "clean" } },
+      });
+      const job = result.jobs[0] as FixtureJobSuccess;
+      const m1x2 = job.result.evMarkets.find((m) => m.cat === "1x2")!;
+      expect(m1x2.stake).toBeCloseTo(0.02, 5); // unchanged
+      spy.mockRestore();
+    });
+  });
+
   it("respects rankingMode option", async () => {
     const jobs = parseFixtureList("Arsenal vs Chelsea, Premier League, 2026-06-05");
     const result = await runBatch(jobs, deps, { rankingMode: "MAX_EV" });

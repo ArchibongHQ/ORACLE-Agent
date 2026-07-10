@@ -2,6 +2,49 @@
 
 import type { FamilyLabel, MarketFamily } from "./markets/index.js";
 
+// [Wave 2, WS2-D + review cleanup] Canonically defined here (this package's
+// foundational leaf module, where DecisionContext already lives) rather than
+// in decision/index.ts — the original split had types.ts importing these
+// shapes back from decision/index.ts while decision/index.ts imported
+// DecisionContext from types.ts, a genuine circular reference between the
+// two files. decision/index.ts re-exports these three for backward compat.
+
+/** [WS2-D] Duck-typed mirror of @oracle/runtime's `FeedIntegrityVerdict`
+ *  shape (packages/runtime/src/feedIntegrity.ts, v5 Rule 0.14) — @oracle/
+ *  engine cannot import @oracle/runtime directly (circular dependency, same
+ *  reason DecisionContext.rawStatsBlock stays a bare Record below), so the
+ *  prompt builders accept this narrower shape instead of the real type.
+ *  Optional and purely additive — omission renders no FEED INTEGRITY section
+ *  (safe default, never a false "clean" claim). */
+export interface FeedIntegritySignal {
+  verdict: "clean" | "contaminated" | "flagged";
+  reason?: string;
+  detail?: string;
+}
+
+/** [WS2-D] v5 Phase 0.5 / §0.4 completeness signal — lets the prompt tell the
+ *  LLM what data was actually acquired/available for this fixture so its
+ *  confidence calibration accounts for data quality, not just the raw model
+ *  edge (v5 Rule 0 posture: thin data behind a big edge is the exact failure
+ *  mode the completeness gate exists to catch, not free money). Same
+ *  optional/additive/safe-default contract as FeedIntegritySignal above. */
+export interface DataCompletenessSignal {
+  /** 0–1 weighted completeness score, v5 §0.4's convention. */
+  score?: number;
+  acquired?: string[];
+  missing?: string[];
+}
+
+/** [WS2-D] Minimal, duck-typed mirror of marketsV3/sanity.ts's
+ *  `V3SanityResult` (v5 §5.6 — cap-rate/directional skew, computed once per
+ *  slate) — narrowed to just what the per-fixture arbiter needs to factor
+ *  the slate-wide picture into an individual ratify/override call. Optional/
+ *  additive/safe-default, same contract as the two signals above. */
+export interface SlateSanitySignal {
+  flags: string[];
+  capRate?: number | null;
+}
+
 /** The real value space of PickRef.market/EVMarket.market: FAMILY_LABEL display
  *  strings emitted by scanMarkets' `check()`, plus the two special-path literals
  *  set outside the family system (execution/index.ts scanAllMarketsFallback,
@@ -675,6 +718,17 @@ export interface DecisionContext {
    *  all-markets LLM executor tier (decision/marketExecutor.ts) when
    *  config.enableLlmMarketExecutor is on; ignored otherwise. */
   allMarkets?: AllMarketEntry[];
+  /** [Wave 2, WS2-A] v5 Rule 0.14 feed-integrity verdict for this fixture —
+   *  passed through to buildPrompt/buildArbiterPrompt (decision/index.ts,
+   *  WS2-D) when populated by the caller (batch/index.ts). Optional/additive;
+   *  omission means the prompt simply skips the FEED INTEGRITY section. */
+  integrity?: FeedIntegritySignal;
+  /** [Wave 2, WS2-A] v5 Phase 0.5 data-completeness signal for this fixture —
+   *  same optional/additive contract as `integrity` above. */
+  completeness?: DataCompletenessSignal;
+  /** [Wave 2, WS2-A] v5 §5.6 slate-wide sanity-check result, shared across
+   *  every fixture in the same batch run — same optional/additive contract. */
+  slateSanity?: SlateSanitySignal;
 }
 
 // ── §11A Agent Ops Contract ────────────────────────────────────────────────────

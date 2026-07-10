@@ -2,7 +2,9 @@
  *  parseFixtureList: text → FixtureJob[]. runBatch: sequential, resilient, progress events. */
 
 import type { StoragePort } from "@oracle/storage";
-import type { DecisionContext } from "../decision/index.js";
+import type { CalibrationMetrics } from "../calibration/index.js";
+import { makeCalibFactorResolver } from "../calibration/index.js";
+import type { DecisionContext, FeedIntegritySignal, SlateSanitySignal } from "../decision/index.js";
 import {
   buildEligibleBets,
   decide,
@@ -10,7 +12,7 @@ import {
   validateSelection,
 } from "../decision/index.js";
 import type { MarketExecutorRiskParams } from "../decision/marketExecutor.js";
-import { ExecutionEngine } from "../execution/index.js";
+import { applyConvergenceTierToStake, ExecutionEngine } from "../execution/index.js";
 import { SHRINK_N } from "../goalsV3/lambda.js";
 import { devigThreeWay, FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import {
@@ -312,6 +314,10 @@ export type V3AssessmentStat = {
    *  algebraically. */
   adjustedEdge: number;
   cls: string;
+  /** [Wave 2] V3AllMarketsAssessment.gateReason (Wave 1) carried through so a
+   *  slate-level report can tally why candidates didn't reach "done" —
+   *  undefined on a passing assessment, same contract as the source field. */
+  gateReason?: string;
 };
 
 export interface FixtureJobSuccess {
@@ -355,6 +361,11 @@ export interface FixtureJobSuccess {
    *  v3Best/v3AssessmentStats) — feeds the slate-level rollupCoverage()
    *  (packages/runtime/src/marketsV3/slateOutputs.ts). */
   v3Coverage?: RouteCoverage;
+  /** [Wave 2] MLSafetyFilter.evaluate()'s killCounts for this fixture (Wave 1,
+   *  P0-3) — would-be-kill tally per filter id, populated regardless of
+   *  safetyMode so telemetry never goes dark just because a filter was
+   *  demoted from hard-reject to penalty. Feeds a slate-level report tally. */
+  safetyKillCounts?: Record<string, number>;
 }
 
 export interface FixtureJobError {
@@ -395,6 +406,35 @@ export interface BatchOptions {
   backoffMs?: (attempt: number) => number; // delay per retry attempt; default: exponential 1s/2s/4s ±10%
   concurrency?: number; // max fixtures processed in parallel (default config.batchConcurrency ?? 8)
   onProgress?: (event: { completed: number; total: number; current: string }) => void;
+  /** [Wave 2, WS2-A] v5 Rule 0.14 feed-integrity verdicts, keyed by
+   *  `${home}|${away}` (packages/runtime/src/marketsV3/slateGate.ts's
+   *  fixtureIntegrityKey convention) — the caller computes this via
+   *  prefilterMarketsV3Jobs's SlateGateOutcome.integrityReport +
+   *  checkFixtureIntegrity() (packages/runtime/src/feedIntegrity.ts) BEFORE
+   *  calling runBatch, then threads the per-fixture verdicts through here.
+   *  DEFERRED cross-file wiring: apps/worker/src/dailyBatch.ts (a different
+   *  file/workstream, out of this change's scope) does not yet populate this
+   *  option — the receiving side (this option + the processOne wiring it
+   *  feeds) is ready for it. Contaminated fixtures should never reach here
+   *  in practice (slateGate.ts's "on" mode discards them upstream, before
+   *  its survivors are ever turned into FixtureJobs) — "flagged" is the
+   *  expected live value; a stray "contaminated" entry (e.g. slateGate's
+   *  "shadow" mode) is treated the same as "flagged" defensively below
+   *  (stake downgrade, never silently ignored, never a second hard reject
+   *  this late in the pipeline). */
+  integrityByFixture?: Record<string, FeedIntegritySignal>;
+  /** [Wave 2, WS2-A] Slate-wide sanity result (marketsV3/sanity.ts's
+   *  slateSanityChecks), shared across every fixture in this batch.
+   *  DEFERRED — nothing in this file computes it: processOne runs one
+   *  fixture at a time (parallelized via runPool), and slateSanityChecks
+   *  needs every fixture's v3AssessmentStats already collected, which only
+   *  exist AFTER the whole batch completes. Computing it live inside this
+   *  loop would require restructuring runBatch into two passes (engine+v3
+   *  first, LLM arbiter second) — a real architectural change, not a
+   *  surgical wiring pass. This option lets a caller that already has a
+   *  slate-wide result (e.g. a prior run, or its own two-pass
+   *  orchestration) thread it through today. */
+  slateSanity?: SlateSanitySignal;
 }
 
 /** Parse newline-delimited fixture list.
@@ -516,7 +556,13 @@ export async function runBatch(
   deps: { storage: StoragePort; config: OracleConfig; goalsCrossCheck?: GoalsCrossCheckFn },
   options: BatchOptions = {}
 ): Promise<BatchResult> {
-  const { onProgress, marketWhitelist, rankingMode = "CONFIDENCE_WEIGHTED" } = options;
+  const {
+    onProgress,
+    marketWhitelist,
+    rankingMode = "CONFIDENCE_WEIGHTED",
+    integrityByFixture,
+    slateSanity,
+  } = options;
   const maxRetries = options.maxRetries ?? 3;
   const backoffMs =
     options.backoffMs ??
@@ -615,6 +661,38 @@ export async function runBatch(
             );
           }
 
+          // [Wave 2, WS2-A + review follow-up] v5 Rule 0.14 per-fixture
+          // integrity hook — installed per feedIntegrity.ts's "installed at
+          // the top of batch processOne" integration note. "flagged" (and,
+          // defensively, a stray "contaminated" that reaches here despite
+          // slateGate.ts's "on" mode discarding those upstream) downgrades
+          // every non-vetoed candidate's stake fixture-wide by a flat 0.5x —
+          // same magnitude S11/S13/S16 use in familyPenaltyMultiplier — via
+          // applyConvergenceTierToStake, never a hard reject.
+          //
+          // LIVE, not a no-op: apps/worker/src/dailyBatch.ts (same Wave-2
+          // diff) populates BatchOptions.integrityByFixture from
+          // prefilterMarketsV3Jobs's integrityReport, so this branch fires in
+          // production the moment this merges. It is an ADDITIONAL
+          // multiplicative factor, not folded into familyPenaltyMultiplier's
+          // own internal Math.min — a fixture that already carries a
+          // convergence-tier cut and a safety-family penalty will have this
+          // 0.5x applied on top of both (multiplicative stacking, no combined
+          // floor). This is the same multiplicative-stacking pattern
+          // execution/index.ts already uses for convergence-tier ×
+          // family-penalty (Wave 1) — not a regression Wave 2 introduces, and
+          // always stake-conservative (compounding can only shrink a stake,
+          // never grow one). Whether independent risk multipliers should be
+          // unified behind one floor instead of stacked is a legitimate open
+          // design question — deferred to Wave 3, not fixed here.
+          const integrityVerdict = integrityByFixture?.[`${job.home}|${job.away}`];
+          if (integrityVerdict && integrityVerdict.verdict !== "clean") {
+            for (const m of evMarkets) {
+              if (m.veto) continue;
+              applyConvergenceTierToStake(m, 0.5);
+            }
+          }
+
           const filteredResult: RunResult = { ...runResult, evMarkets };
           let eligible = buildEligibleBets(evMarkets);
 
@@ -627,6 +705,15 @@ export async function runBatch(
             state.pipeline?.fetched?.sportyBetOdds as { allMarkets?: AllMarketEntry[] } | undefined
           )?.allMarkets;
 
+          // [Wave 2, WS2-A] Same v3Completeness stamp buildV3Input already reads
+          // below (telemetry has no named field for it — see that call site's
+          // comment) — reused here for DecisionContext.completeness.score. Only
+          // the score is available at this stage; the acquired/missing string
+          // lists live inside gateMarketsV3Fixture's completeness computation
+          // (packages/runtime/src/marketsV3/pipeline.ts, a different file) and
+          // aren't surfaced through telemetry — left undefined rather than
+          // invented.
+          const v3CompletenessScore = state.telemetry?.v3Completeness;
           const decisionCtx: DecisionContext = {
             fixture: { home: job.home, away: job.away, league: job.league, kickoff: job.kickoff },
             fp: runResult.fp,
@@ -644,6 +731,10 @@ export async function runBatch(
             softContext: state.telemetry?.softContext as SoftContextItem[] | undefined,
             rawStatsBlock: state.telemetry?.rawStatsBlock as Record<string, unknown> | undefined,
             allMarkets,
+            integrity: integrityVerdict,
+            completeness:
+              typeof v3CompletenessScore === "number" ? { score: v3CompletenessScore } : undefined,
+            slateSanity,
           };
 
           // all-markets-analysis-prompt-v3 deterministic engine (config.
@@ -711,6 +802,7 @@ export async function runBatch(
                 rawEdge: a.rawEdge,
                 adjustedEdge: a.adjustedEdge,
                 cls: a.cls,
+                gateReason: a.gateReason,
               }));
             }
           }
@@ -736,12 +828,28 @@ export async function runBatch(
           // so the all-markets LLM executor tier's Kelly stake (Q4b) is consistent
           // with every other stake the engine produces — not a separate guess.
           const mcResult = runResult.mc as { varMultiplier?: number } | undefined;
+          // [Wave 2, WS2-A] Per-(league,family)-segment calibFactor resolver —
+          // mirrors execution/index.ts's calibFactorForFamily construction
+          // exactly (same makeCalibFactorResolver call, same fallback object
+          // shape) so the Q4 executor's Kelly stake stays consistent with
+          // every other stake this fixture's ExecutionEngine.run() produced.
+          // Byte-identical to the old flat `calibFactor` read for every mode
+          // except "segment".
+          const calibMetricsForExecutor: CalibrationMetrics =
+            (job.state?.ledger?.metrics as unknown as CalibrationMetrics | undefined) ??
+            ({ calibFactor: 1.0, segmentCalibFactors: {}, leagueData: {} } as CalibrationMetrics);
+          const calibResolverForExecutor = makeCalibFactorResolver(calibMetricsForExecutor, {
+            calibrationLedger: config.calibrationLedger,
+          });
           const marketExecutorRisk: MarketExecutorRiskParams = {
             dqs: (runResult.dqs as number | undefined) ?? 0.85,
             councilPenalty: (runResult.councilPenalty as boolean | undefined) ?? false,
             varMultiplier: mcResult?.varMultiplier ?? 1.0,
             drawdownPenalty: (runResult.drawdownPenalty as number | undefined) ?? 1.0,
-            calibFactor: (job.state?.ledger?.metrics?.calibFactor as number | undefined) ?? 1.0,
+            calibFactorFor: (family) =>
+              family
+                ? calibResolverForExecutor(job.league, family)
+                : calibMetricsForExecutor.calibFactor,
             bankroll: config.bankroll,
           };
 
@@ -957,6 +1065,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             v3Best,
             v3AssessmentStats,
             v3Coverage,
+            safetyKillCounts: mlResult?.killCounts as Record<string, number> | undefined,
           };
         },
         maxRetries,

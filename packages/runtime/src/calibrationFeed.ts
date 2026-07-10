@@ -35,7 +35,14 @@ import type {
   EVMarket,
   ResolutionRecord,
 } from "@oracle/engine";
-import { CalibrationEngine, dcCovers, dirOfDesc, lineOfDesc, sideOfDesc } from "@oracle/engine";
+import {
+  CalibrationEngine,
+  dcCovers,
+  dirOfDesc,
+  lineOfDesc,
+  segmentKey,
+  sideOfDesc,
+} from "@oracle/engine";
 import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS, withKeyLock } from "@oracle/storage";
 
@@ -161,6 +168,14 @@ function toBetRecord(rec: AnalysisRecord, res: ResolutionRecord): BetRecord | nu
     family: pick.family,
     resolvedAt: res.resolvedAt,
     loggedAt: rec.analysedAt,
+    // [Wave 2, WS2-A] segmentKey + epoch for calculate()'s per-segment
+    // calibFactor accumulation. `epoch` is the DECIDED date (analysedAt's
+    // date portion, the same field already used for `loggedAt` above) — not
+    // res.resolvedAt, which is when the fixture finished, not when the pick
+    // was priced (and therefore not the field the P0-2/P0-3 pricing-behavior
+    // boundary check needs).
+    segmentKey: rec.league && pick.family ? segmentKey(rec.league, pick.family) : undefined,
+    epoch: rec.analysedAt ? rec.analysedAt.slice(0, 10) : undefined,
   };
 }
 
@@ -178,7 +193,7 @@ export async function appendResolvedToLedger(
   storage: StoragePort,
   resolved: ResolutionRecord[],
   dayRecords: AnalysisRecord[],
-  opts: { maxLedger?: number } = {}
+  opts: { maxLedger?: number; epochStart?: string } = {}
 ): Promise<{
   appended: number;
   skipped: number;
@@ -210,7 +225,12 @@ export async function appendResolvedToLedger(
   const engine = new CalibrationEngine(storage);
   if (settled.length === 0) {
     const existing = (await storage.get<BetRecord[]>(STORAGE_KEYS.calibrationLedger)) ?? [];
-    return { appended: 0, skipped, byFamily, metrics: engine.calculate(existing) };
+    return {
+      appended: 0,
+      skipped,
+      byFamily,
+      metrics: engine.calculate(existing, opts.epochStart),
+    };
   }
 
   const metrics = await withKeyLock(STORAGE_KEYS.calibrationLedger, async () => {
@@ -219,21 +239,24 @@ export async function appendResolvedToLedger(
     for (const b of settled) byId.set(b.id!, b);
     const merged = Array.from(byId.values()).slice(-maxLedger);
     await storage.set(STORAGE_KEYS.calibrationLedger, merged);
-    return engine.calculate(merged);
+    return engine.calculate(merged, opts.epochStart);
   });
   return { appended: settled.length, skipped, byFamily, metrics };
 }
 
 /** Read side: load the ledger once and compute its metrics. Fail-open — a missing,
  *  corrupt, or non-array ledger returns null so the engine keeps calibFactor=1.0
- *  and the run continues (PR-7 hard constraint). */
+ *  and the run continues (PR-7 hard constraint). `epochStart` [Wave 2, WS2-A]:
+ *  threaded through to `calculate()` so segment-mode metrics use the caller's
+ *  configured `calibrationEpochStart` rather than the hardcoded fallback. */
 export async function loadLedgerState(
-  storage: StoragePort
+  storage: StoragePort,
+  epochStart?: string
 ): Promise<{ bets: BetRecord[]; metrics: CalibrationMetrics } | null> {
   try {
     const bets = await storage.get<BetRecord[]>(STORAGE_KEYS.calibrationLedger);
     if (!Array.isArray(bets)) return null;
-    return { bets, metrics: new CalibrationEngine(storage).calculate(bets) };
+    return { bets, metrics: new CalibrationEngine(storage).calculate(bets, epochStart) };
   } catch {
     return null;
   }

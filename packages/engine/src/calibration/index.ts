@@ -17,6 +17,19 @@ export interface CalibrationMetrics {
   roi: number;
   calibFactor: number;
   leagueData: Record<string, unknown>;
+  /** [Wave 2, WS2-A] Per-(league,family)-segment calibFactor — two-level
+   *  hierarchical shrinkage: a segment's own {wins,pSum} (post-epoch bets only,
+   *  see BetRecord.epoch) shrinks toward the league's already-shrunk factor
+   *  (leagueData._leagueCalibFactors, itself shrunk toward the global
+   *  `calibFactor` above) — segment leans on league which leans on global.
+   *  `accepted` gates whether a caller may trust this segment's own factor —
+   *  false when the segment has fewer than SIGNIFICANCE_MIN_N resolved bets;
+   *  `makeCalibFactorResolver` falls back to league/global when false. Keyed
+   *  by `segmentKey(league, family)`. */
+  segmentCalibFactors: Record<
+    string,
+    { calibFactor: number; shrinkage: number; n: number; accepted: boolean }
+  >;
   /** §8.3 hierarchical bbnParams: each entry carries shrinkage weight and sample count
    *  so callers know how much data backs the estimate. */
   bbnParams: Record<string, { homeAvg: number; awayAvg: number; shrinkage: number; n: number }>;
@@ -38,9 +51,30 @@ export interface BetRecord {
   home?: string;
   away?: string;
   league?: string;
+  /** Model's raw/uncalibrated win probability at pick time. NOTE: this field IS
+   *  `raw_p` for this ledger — `mp` has always been the pre-calibration model
+   *  probability settlement/Brier/log-loss compute against (see `calculate()`'s
+   *  `wins/pSum` and `((b.mp ?? 0) - a) ** 2` uses below). A separate `raw_p`
+   *  field would be a pure duplicate; don't add one. */
   mp?: number;
   odds?: number;
   stakeAmt?: number;
+  /** [Wave 2, WS2-A] Probability actually used for staking after calibration
+   *  (post per-segment/per-league/global adjustment via
+   *  `makeCalibFactorResolver`). Distinct from `mp` (the pre-calibration
+   *  model probability) — optional/advisory, not yet read by `calculate()`. */
+  calib_p?: number;
+  /** [Wave 2, WS2-A] `segmentKey(league, family)` computed at settlement time
+   *  (calibrationFeed.ts's toBetRecord) — lets `calculate()` accumulate
+   *  per-segment {n, wins, pSum} without recomputing the key from
+   *  league+family on every read. */
+  segmentKey?: string;
+  /** [Wave 2, WS2-A] ISO date (YYYY-MM-DD) the pick was DECIDED (not resolved)
+   *  — stamped from the source AnalysisRecord's `analysedAt`. Segment
+   *  accumulation only counts bets with `epoch >= epochStart` (calculate()'s
+   *  param); pre-epoch records reflect the OLD pre-P0-2/P0-3 pricing and would
+   *  poison segment factors if mixed in. See OracleConfig.calibrationEpochStart. */
+  epoch?: string;
   outcome?: string | null;
   clv?: number | null;
   qScore?: number;
@@ -195,6 +229,24 @@ const TIER_PRIOR: Record<Tier, { homeAvg: number; awayAvg: number }> = {
 
 // Pooling constant for calibFactor shrinkage (tuned via walk-forward per §8.4; never auto-optimized)
 const K_CALIB_FACTOR = 20;
+// [Wave 2, WS2-A] Segment (league×family) shrinkage reuses the same pooling
+// constant as league-level shrinkage — no evidence yet that segment-level
+// pooling needs different tuning, and diverging without data would just be a
+// second hand-picked number to justify. Revisit only with a walk-forward result.
+const K_SEGMENT = K_CALIB_FACTOR;
+
+/** Minimum resolved-bet sample size below which a candidate/segment is never
+ *  trusted — shared floor for `significanceAcceptGate`'s default `minN` and
+ *  the per-segment calibFactor accept gate below. [PR-16 audit item] Never
+ *  lowered for a core-param change. */
+export const SIGNIFICANCE_MIN_N = 300;
+
+/** [Wave 2, WS2-A] Deterministic key for a (league, market-family) segment —
+ *  shared by `calculate()`'s segment accumulation, `makeCalibFactorResolver`,
+ *  and calibrationFeed.ts's settlement stamp (BetRecord.segmentKey). */
+export function segmentKey(league: string, family: MarketFamily): string {
+  return `${league}::${family}`;
+}
 
 export class CalibrationEngine {
   constructor(private _storage: StoragePort) {}
@@ -218,6 +270,7 @@ export class CalibrationEngine {
       roi: 0,
       calibFactor: 1.0,
       leagueData: {},
+      segmentCalibFactors: {},
       bbnParams: {},
       driftAlert: false,
       resolvedCount: 0,
@@ -289,7 +342,14 @@ export class CalibrationEngine {
     return { bets, metrics: this.calculate(bets) };
   }
 
-  calculate(bets: BetRecord[]): CalibrationMetrics {
+  /** `epochStart` [Wave 2, WS2-A]: ISO date (YYYY-MM-DD) gating per-segment
+   *  calibFactor accumulation — bets with no `epoch` stamp, or an `epoch`
+   *  before this date, are excluded from `segmentCalibFactors` (they never
+   *  poison the global/per-league calcs either, which don't read `epoch` at
+   *  all). Defaults to the Wave-1 deploy date ("2026-07-10", same default as
+   *  OracleConfig.calibrationEpochStart) but callers should thread the real
+   *  configured value through — see calibrationFeed.ts/analyze.ts. */
+  calculate(bets: BetRecord[], epochStart = "2026-07-10"): CalibrationMetrics {
     const res = bets.filter((b) => b.status === "resolved");
     if (res.length === 0) return this._defaultMetrics();
     const MIN_CALIB = 10;
@@ -472,6 +532,53 @@ export class CalibrationEngine {
       };
     });
 
+    // [Wave 2, WS2-A] Per-(league,family)-segment calibFactor — two-level
+    // hierarchical shrinkage: segment's own {wins,pSum} shrinks toward the
+    // LEAGUE's already-globally-shrunk factor (leagueCalibFactors above, not
+    // straight to global) — segment leans on league which leans on global.
+    // Only bets stamped with an `epoch` on/after `epochStart` accumulate here;
+    // a missing `epoch` is treated as "not provably post-epoch" and excluded
+    // (fail-safe — never assume a record is safe to mix in).
+    const segData: Record<string, { wins: number; pSum: number; n: number; league: string }> = {};
+    res.forEach((b) => {
+      if (b.outcome === "push" || !b.league || !b.family) return;
+      if (!b.epoch || b.epoch < epochStart) return;
+      const key = segmentKey(b.league, b.family);
+      const iw = b.outcome === "win" ? 1 : b.outcome === "half-win" ? 0.5 : 0;
+      segData[key] ??= { wins: 0, pSum: 0, n: 0, league: b.league };
+      const sd = segData[key]!;
+      sd.wins += iw;
+      sd.pSum += b.mp ?? 0;
+      sd.n++;
+    });
+    const segmentCalibFactors: Record<
+      string,
+      { calibFactor: number; shrinkage: number; n: number; accepted: boolean }
+    > = {};
+    Object.entries(segData).forEach(([key, sd]) => {
+      const rawSegCF = sd.pSum > 0 ? Math.max(0.5, Math.min(1.5, sd.wins / sd.pSum)) : 1.0;
+      const leagueTarget = leagueCalibFactors[sd.league]?.calibFactor ?? calibFactor;
+      const w = sd.n / (sd.n + K_SEGMENT);
+      // Significance gate: a thin segment must never be trusted, full stop.
+      // Gated directly on sample size rather than routed through
+      // significanceAcceptGate — that gate's accept criterion (the ENTIRE
+      // bootstrap CI on the improvement side, i.e. one-directional) is built
+      // to compare two candidate models' scores, not to test whether a single
+      // segment's win-rate is distinguishable from its predicted
+      // probabilities, which is inherently two-sided (a segment can be
+      // significantly OVER- or UNDER-confident, and both matter equally
+      // here). SIGNIFICANCE_MIN_N is the exact same 300 floor
+      // significanceAcceptGate defaults to — one shared constant, never
+      // independently lowered.
+      const accepted = sd.n >= SIGNIFICANCE_MIN_N;
+      segmentCalibFactors[key] = {
+        calibFactor: parseFloat((rawSegCF * w + leagueTarget * (1 - w)).toFixed(4)),
+        shrinkage: parseFloat(w.toFixed(4)),
+        n: sd.n,
+        accepted,
+      };
+    });
+
     const winRateCalc = nonPush.length > 0 ? wins / nonPush.length : 0.5;
     const avgBetSize = res.length > 0 ? stk / Math.max(1, res.length) : 0;
     const currentBankroll = 1000; // injected externally in production; default for calculation
@@ -534,6 +641,7 @@ export class CalibrationEngine {
       calibFactor,
       resolvedCount: res.length,
       leagueData: { ...lData, _leagueCalibFactors: leagueCalibFactors },
+      segmentCalibFactors,
       bbnParams,
       driftAlert:
         (overallEce != null && overallEce > 0.05) ||
@@ -633,7 +741,7 @@ export function significanceAcceptGate(
   candidate: number[],
   options: SignificanceGateOptions = {}
 ): SignificanceGateResult {
-  const minN = options.minN ?? 300;
+  const minN = options.minN ?? SIGNIFICANCE_MIN_N;
   const effectSizeFloor = options.effectSizeFloor ?? 0.002;
   const alpha = options.alpha ?? 0.95;
   const nBoot = options.nBootstrap ?? 1000;
@@ -695,6 +803,39 @@ export function significanceAcceptGate(
     : `REJECTED: CI upper ${ciUpper.toFixed(5)} ≥ 0 — delta not reliably negative at ${(alpha * 100).toFixed(0)}% confidence`;
 
   return { accept, delta, ciLower, ciUpper, n, effectSize, reason };
+}
+
+/** [Wave 2, WS2-A] THE public API every calibFactor consumer wires to.
+ *  Returns a closure `(league, family) => calibFactor` a caller reads once
+ *  per staking decision.
+ *
+ *  - `config.calibrationLedger !== "segment"` (i.e. "off"/"shadow"/"on"/
+ *    unset): returns `metrics.calibFactor` unconditionally — byte-identical
+ *    to every pre-Wave-2 call site, which read `ledger?.metrics?.calibFactor
+ *    ?? 1.0` directly and never consumed `leagueCalibFactors` at all (verified
+ *    via grep across execution/index.ts, marketExecutor.ts, batch/index.ts
+ *    before this change — league-level shrinkage was computed but dead code).
+ *  - `"segment"`: returns the segment's own factor when
+ *    `segmentCalibFactors[segmentKey(league,family)].accepted` is true;
+ *    otherwise falls back to the per-league factor
+ *    (`leagueData._leagueCalibFactors[league]`, which itself already leans on
+ *    global); otherwise falls back to the global `metrics.calibFactor`. */
+export function makeCalibFactorResolver(
+  metrics: CalibrationMetrics,
+  config: { calibrationLedger?: string }
+): (league: string, family: MarketFamily) => number {
+  const mode = config.calibrationLedger ?? "shadow";
+  return (league: string, family: MarketFamily): number => {
+    if (mode !== "segment") return metrics.calibFactor;
+    const seg = metrics.segmentCalibFactors[segmentKey(league, family)];
+    if (seg?.accepted) return seg.calibFactor;
+    const leagueFactors = (
+      metrics.leagueData as { _leagueCalibFactors?: Record<string, { calibFactor: number }> }
+    )._leagueCalibFactors;
+    const lg = leagueFactors?.[league];
+    if (lg) return lg.calibFactor;
+    return metrics.calibFactor;
+  };
 }
 
 // ── §8.4 Isotonic regression calibration (PAVA) ──────────────────────────────

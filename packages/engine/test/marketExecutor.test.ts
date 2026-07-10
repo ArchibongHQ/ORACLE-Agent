@@ -46,7 +46,11 @@ const RISK: MarketExecutorRiskParams = {
   councilPenalty: false,
   varMultiplier: 1.0,
   drawdownPenalty: 1.0,
-  calibFactor: 1.0,
+  // [Wave 2, WS2-A] Was a flat `calibFactor: number` — now a per-family
+  // resolver (see marketExecutor.ts's MarketExecutorRiskParams). Returning a
+  // flat 1.0 regardless of family keeps every pre-existing test in this file
+  // byte-identical to its old flat-1.0 behavior.
+  calibFactorFor: () => 1.0,
   bankroll: 1000,
 };
 
@@ -149,5 +153,38 @@ describe("runAllMarketsLlmExecutor", () => {
     }));
     const result = await runAllMarketsLlmExecutor(BASE_CTX, RISK);
     expect(result).toBeNull();
+  });
+
+  // [Wave 2, WS2-A] direct coverage of the calibFactor->calibFactorFor rewiring.
+  it("invokes calibFactorFor with the picked outcome's resolved family (undefined for this fixture's uncatalogued id 999) and its return value scales the stake", async () => {
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          marketId: "999",
+          outcomeId: "1",
+          estimatedProb: 0.25,
+          rationale: "2-1 is the most probable scoreline given the lambdas.",
+        })
+      ),
+    }));
+
+    const calibFactorForSpy = vi.fn(() => 1.0);
+    const fullFactor = await runAllMarketsLlmExecutor(BASE_CTX, {
+      ...RISK,
+      calibFactorFor: calibFactorForSpy,
+    });
+    expect(calibFactorForSpy).toHaveBeenCalledWith(undefined); // id "999" isn't in the real catalog
+    expect(fullFactor).not.toBeNull();
+
+    const halfFactor = await runAllMarketsLlmExecutor(BASE_CTX, {
+      ...RISK,
+      calibFactorFor: () => 0.5,
+    });
+    expect(halfFactor).not.toBeNull();
+    // A lower calibFactor feeds optimizedKelly and must never produce a LARGER
+    // stake than the 1.0-factor run — proves the resolver's return value is
+    // actually wired into the Kelly calc, not ignored.
+    expect(halfFactor!.market.stake).toBeLessThan(fullFactor!.market.stake);
   });
 });
