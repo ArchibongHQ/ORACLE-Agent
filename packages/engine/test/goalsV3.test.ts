@@ -11,6 +11,7 @@ import {
   extractMarkets,
   gateV3Edge,
   poissonPMF,
+  ratingsBlendWeight,
   resolveRho,
   shrink,
   V3_LEAGUE_BASELINES,
@@ -459,6 +460,215 @@ describe("computeV3Lambdas (§3.1)", () => {
       )!;
       expect(result.xgBlended).toBe(false);
       expect(result.xgBlendedSides).toBeUndefined();
+    });
+  });
+
+  // Wave 2 WS2-B: third (pi-ratings) blend factor. Default OFF —
+  // opts.ratingsBlend must be explicitly true, mirroring xgBlend's opt-out
+  // pattern but inverted (safe-by-default for a brand-new live-pricing input).
+  describe("ratingsBlendWeight (Wave 2 WS2-B)", () => {
+    it("is 0 at n=0 or when n is missing/non-finite", () => {
+      expect(ratingsBlendWeight(0, 8)).toBe(0);
+      expect(ratingsBlendWeight(null, 8)).toBe(0);
+      expect(ratingsBlendWeight(undefined, 8)).toBe(0);
+      expect(ratingsBlendWeight(Number.NaN, 8)).toBe(0);
+    });
+
+    it("is exactly half the 0.25 ceiling at n=shrinkN (n/(n+shrinkN)=0.5 there)", () => {
+      expect(ratingsBlendWeight(8, 8)).toBeCloseTo(0.125, 10);
+      expect(ratingsBlendWeight(5, 5)).toBeCloseTo(0.125, 10);
+    });
+
+    it("asymptotically approaches but NEVER reaches the 0.25 hard ceiling, even at huge n", () => {
+      const w1 = ratingsBlendWeight(1_000, 8);
+      const w2 = ratingsBlendWeight(1_000_000, 8);
+      const w3 = ratingsBlendWeight(1_000_000_000, 8);
+      expect(w1).toBeLessThan(0.25);
+      expect(w2).toBeLessThan(0.25);
+      expect(w3).toBeLessThan(0.25);
+      // Monotonically closer to the ceiling as n grows, but always strictly below it.
+      expect(w2).toBeGreaterThan(w1);
+      expect(w3).toBeGreaterThan(w2);
+      expect(w3).toBeGreaterThan(0.2499);
+    });
+
+    it("is monotonically non-decreasing in n", () => {
+      const weights = [0, 1, 2, 4, 8, 16, 32].map((n) => ratingsBlendWeight(n, 8));
+      for (let i = 1; i < weights.length; i++)
+        expect(weights[i]).toBeGreaterThanOrEqual(weights[i - 1]!);
+    });
+
+    it("uses a strictly lower ceiling than the xG blend's 0.5 (never conflate the two constants)", () => {
+      expect(ratingsBlendWeight(1_000_000, 8)).toBeLessThan(0.25 + 1e-9);
+      expect(ratingsBlendWeight(1_000_000, 8)).toBeLessThan(xgBlendWeight(1_000_000, 8));
+    });
+  });
+
+  describe("computeV3Lambdas ratings blend (Wave 2 WS2-B, opts.ratingsBlend)", () => {
+    const base = {
+      league: "__unknown_league__",
+      homeScoredPer90: 1.7,
+      homeConcededPer90: 1.0,
+      awayScoredPer90: 1.2,
+      awayConcededPer90: 1.5,
+      nHome: 10,
+      nAway: 10,
+    };
+
+    it("CRITICAL REGRESSION GUARD: opts.ratingsBlend omitted produces IDENTICAL numeric output to before Wave 2", () => {
+      // Fixed input, computed independently of any ratings field, mirrors the
+      // very first test in this file (spec worked example) — exact numeric
+      // equality against the pre-existing (pre-Wave-2) formula, not just
+      // "close enough". This is the single most important test in this suite:
+      // a silent behavior change here is a real-money pricing risk.
+      const result = computeV3Lambdas(
+        {
+          league: "__unknown_league__",
+          homeScoredPer90: 1.7,
+          homeConcededPer90: 1.0,
+          awayScoredPer90: 1.2,
+          awayConcededPer90: 1.5,
+          nHome: 10,
+          nAway: 10,
+          // Deliberately ALSO supply ratings fields, to prove the presence of
+          // the data alone (without opts.ratingsBlend: true) changes nothing.
+          ratingsXgd: 0.9,
+          ratingsN: 500,
+        },
+        { xgBlend: false }
+      );
+      expect(result).not.toBeNull();
+      // toBeCloseTo (not toBe) — same convention as this file's very first
+      // test above: L is computed as V3_DEFAULT_LEAGUE_GPG/2 rather than the
+      // literal 1.3, so bit-exact equality against a hand-typed literal
+      // expression is not guaranteed even though the formula is identical.
+      expect(result!.lambdaHome).toBeCloseTo((1.7 / 1.3) * (1.5 / 1.3) * 1.3, 12);
+      expect(result!.lambdaAway).toBeCloseTo((1.2 / 1.3) * (1.0 / 1.3) * 1.3, 12);
+      expect(result!.mu).toBeCloseTo(result!.lambdaHome + result!.lambdaAway, 12);
+      expect(result!.method).toBe("multiplicative");
+      expect(result!.shrunk).toBe(false);
+      expect(result!.xgBlended).toBe(false);
+      expect(result!.ratingsBlended).toBe(false);
+
+      // And explicitly passing ratingsBlend: false must match exactly too.
+      const explicit = computeV3Lambdas(
+        {
+          league: "__unknown_league__",
+          homeScoredPer90: 1.7,
+          homeConcededPer90: 1.0,
+          awayScoredPer90: 1.2,
+          awayConcededPer90: 1.5,
+          nHome: 10,
+          nAway: 10,
+          ratingsXgd: 0.9,
+          ratingsN: 500,
+        },
+        { xgBlend: false, ratingsBlend: false }
+      );
+      expect(explicit!.lambdaHome).toBe(result!.lambdaHome);
+      expect(explicit!.lambdaAway).toBe(result!.lambdaAway);
+      expect(explicit!.ratingsBlended).toBe(false);
+    });
+
+    it("has zero effect when ratingsBlend:true but ratingsXgd/ratingsN are absent", () => {
+      const without = computeV3Lambdas(base, { xgBlend: false })!;
+      const withFlagNoData = computeV3Lambdas(base, { xgBlend: false, ratingsBlend: true })!;
+      expect(withFlagNoData.lambdaHome).toBeCloseTo(without.lambdaHome, 10);
+      expect(withFlagNoData.lambdaAway).toBeCloseTo(without.lambdaAway, 10);
+      expect(withFlagNoData.ratingsBlended).toBe(false);
+    });
+
+    it("has zero effect when ratingsN=0 (brand-new team, no shrinkage sample)", () => {
+      const without = computeV3Lambdas(base, { xgBlend: false })!;
+      const withZeroN = computeV3Lambdas(
+        { ...base, ratingsXgd: 0.9, ratingsN: 0 },
+        { xgBlend: false, ratingsBlend: true }
+      )!;
+      expect(withZeroN.lambdaHome).toBeCloseTo(without.lambdaHome, 10);
+      expect(withZeroN.ratingsBlended).toBe(false);
+    });
+
+    // A perfectly balanced fixture (goals-implied lambdaHome === lambdaAway,
+    // diff = 0) isolates the ratings signal's direction cleanly — the "base"
+    // fixture above already implies its own home/away gap (~1.04), which for
+    // a large ratingsXgd close to the ±1 tanh ceiling can be SMALLER than
+    // that pre-existing gap and would pull the split narrower, not wider;
+    // using a zero-diff base avoids that confound entirely.
+    const balancedBase = {
+      league: "__unknown_league__",
+      homeScoredPer90: 1.3,
+      homeConcededPer90: 1.3,
+      awayScoredPer90: 1.3,
+      awayConcededPer90: 1.3,
+      nHome: 10,
+      nAway: 10,
+    };
+
+    it("nudges lambdaHome up and lambdaAway down for a positive ratingsXgd (home expected stronger)", () => {
+      const without = computeV3Lambdas(balancedBase, { xgBlend: false })!;
+      const withRatings = computeV3Lambdas(
+        { ...balancedBase, ratingsXgd: 0.9, ratingsN: 50 },
+        { xgBlend: false, ratingsBlend: true }
+      )!;
+      expect(withRatings.ratingsBlended).toBe(true);
+      expect(withRatings.lambdaHome).toBeGreaterThan(without.lambdaHome);
+      expect(withRatings.lambdaAway).toBeLessThan(without.lambdaAway);
+      // Total goals expectation is preserved (a split adjustment, not a
+      // magnitude one) — mu should barely move (clamping aside).
+      expect(withRatings.mu).toBeCloseTo(without.mu, 5);
+    });
+
+    it("nudges lambdaHome down and lambdaAway up for a negative ratingsXgd (away expected stronger)", () => {
+      const without = computeV3Lambdas(balancedBase, { xgBlend: false })!;
+      const withRatings = computeV3Lambdas(
+        { ...balancedBase, ratingsXgd: -0.9, ratingsN: 50 },
+        { xgBlend: false, ratingsBlend: true }
+      )!;
+      expect(withRatings.lambdaHome).toBeLessThan(without.lambdaHome);
+      expect(withRatings.lambdaAway).toBeGreaterThan(without.lambdaAway);
+    });
+
+    it("never moves lambda further than the 0.25 hard-ceiling weight would allow, even at n=1e9", () => {
+      const without = computeV3Lambdas(balancedBase, { xgBlend: false })!;
+      const maxed = computeV3Lambdas(
+        { ...balancedBase, ratingsXgd: 0.9, ratingsN: 1_000_000_000 },
+        { xgBlend: false, ratingsBlend: true }
+      )!;
+      const totalMu = without.lambdaHome + without.lambdaAway;
+      const ratingsLH = totalMu / 2 + 0.9 / 2;
+      // At the theoretical weight ceiling (0.25, never quite reached), the
+      // maximum possible lambdaHome is bounded by this — the actual result
+      // (weight strictly < 0.25) must sit strictly inside that bound.
+      const theoreticalCeilingLH = without.lambdaHome * (1 - 0.25) + ratingsLH * 0.25;
+      expect(maxed.lambdaHome).toBeLessThan(theoreticalCeilingLH);
+      expect(maxed.lambdaHome).toBeGreaterThan(without.lambdaHome);
+    });
+
+    it("composes with the xG blend (both factors active) without throwing or producing NaN", () => {
+      const result = computeV3Lambdas(
+        {
+          ...base,
+          homeXg: { xgf: 2.2, xga: 0.6 },
+          awayXg: { xgf: 0.6, xga: 2.2 },
+          ratingsXgd: 0.5,
+          ratingsN: 20,
+        },
+        { ratingsBlend: true }
+      )!;
+      expect(result).not.toBeNull();
+      expect(Number.isFinite(result.lambdaHome)).toBe(true);
+      expect(Number.isFinite(result.lambdaAway)).toBe(true);
+      expect(result.xgBlended).toBe(true);
+      expect(result.ratingsBlended).toBe(true);
+    });
+
+    it("respects LAMBDA_MIN/LAMBDA_MAX clamps even under an extreme ratings signal", () => {
+      const result = computeV3Lambdas(
+        { ...base, ratingsXgd: -0.999, ratingsN: 1000 },
+        { xgBlend: false, ratingsBlend: true }
+      )!;
+      expect(result.lambdaHome).toBeGreaterThanOrEqual(0.05);
+      expect(result.lambdaAway).toBeLessThanOrEqual(4.5);
     });
   });
 });

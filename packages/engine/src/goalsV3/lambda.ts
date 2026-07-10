@@ -165,6 +165,19 @@ export interface V3LambdaInput {
    *  a diagnostic input, not a lambda input. */
   homeNpxgf?: number | null;
   awayNpxgf?: number | null;
+  /** Wave 2 WS2-B — pi-ratings-derived expected-goal-difference-ish signal
+   *  (ratings/index.ts's `ratingsXgd`, positive = home expected stronger).
+   *  Pre-computed by the CALLER (this module stays a pure function over an
+   *  input struct — it never instantiates TeamRatingsEngine itself). Only
+   *  consumed by computeV3Lambdas when `opts.ratingsBlend === true`; see
+   *  `ratings/index.ts`'s `buildRatingsLambdaInput` header for the Wave-3
+   *  wiring contract (ORACLE_V3_RATINGS defaults to "shadow" — diagnostic
+   *  only, never threaded into opts.ratingsBlend in production yet). */
+  ratingsXgd?: number | null;
+  /** min(home team's n, away team's n) from TeamRatingsEngine's pi sample
+   *  counter — the shrinkage weight's sample size, same role as nHome/nAway
+   *  above but for the ratings blend specifically. */
+  ratingsN?: number | null;
 }
 
 export interface V3Lambdas {
@@ -184,6 +197,11 @@ export interface V3Lambdas {
   leaguePerTeamAvg: number;
   /** True when HFA (home-field advantage) was applied to λ. */
   hfaApplied?: boolean;
+  /** Wave 2 WS2-B: true when the pi-ratings blend actually moved λ (requires
+   *  both `opts.ratingsBlend === true` and a usable `input.ratingsXgd`).
+   *  Always false/undefined when `opts.ratingsBlend` is false or omitted —
+   *  see RATINGS_BLEND_MAX_WEIGHT below for the shadow/live wiring contract. */
+  ratingsBlended?: boolean;
 }
 
 /** Exported: edgeGate.ts's graduated xG-missing penalty (Desktop-audit concept
@@ -224,6 +242,27 @@ const XG_BLEND_MAX_WEIGHT = 0.5;
 export function xgBlendWeight(n: number | null | undefined, shrinkN: number): number {
   if (typeof n !== "number" || !Number.isFinite(n) || n >= shrinkN) return XG_BLEND_MAX_WEIGHT;
   return (Math.max(0, n) / shrinkN) * XG_BLEND_MAX_WEIGHT;
+}
+
+/** Wave 2 WS2-B — HARD ceiling on how much weight the pi-ratings blend can
+ *  ever receive in λ, regardless of sample size. Deliberately NOT the same
+ *  constant as XG_BLEND_MAX_WEIGHT (0.5) above — the plan specifies pi-
+ *  ratings may never contribute more than 25% to λ even at unlimited n,
+ *  unlike the xG blend's 50% ceiling. Don't conflate the two. */
+const RATINGS_BLEND_MAX_WEIGHT = 0.25;
+
+/** 0..RATINGS_BLEND_MAX_WEIGHT, asymptotic in n/(n+shrinkN) — NOT the same
+ *  shape as xgBlendWeight's linear-to-a-hard-stop-at-shrinkN ramp. This one
+ *  approaches (but, by construction, never reaches) RATINGS_BLEND_MAX_WEIGHT
+ *  as n grows, which is what makes the 0.25 ceiling a true hard cap "even at
+ *  large n" per the plan, rather than a value the blend hits and then holds.
+ *  Reuses the SAME `shrinkN` computeV3Lambdas already resolved for the
+ *  goals/xG shrink (SHRINK_N=8 domestic, SHRINK_N_TOURNAMENT=5) — no new
+ *  constant invented for the ratings blend's own sample-size sensitivity. */
+export function ratingsBlendWeight(n: number | null | undefined, shrinkN: number): number {
+  const nn = typeof n === "number" && Number.isFinite(n) ? Math.max(0, n) : 0;
+  if (nn <= 0) return 0;
+  return RATINGS_BLEND_MAX_WEIGHT * (nn / (nn + shrinkN));
 }
 /** λ sanity clamp — a team model outside this range is a data artifact, not a
  *  forecast (0.05 keeps Poisson tails well-defined; 4.5 exceeds any real team). */
@@ -290,6 +329,15 @@ export function computeV3Lambdas(
     hfa?: number;
     lambdaV5?: boolean;
     lakeBaselines?: Record<string, number> | null;
+    /** Wave 2 WS2-B — gates the pi-ratings blend (mirrors the `xgBlend`
+     *  pattern above). Default FALSE (safe-by-default, opposite default of
+     *  `xgBlend`): this is a brand-new live-pricing input, so the caller must
+     *  explicitly opt in rather than the module opting in by omission. See
+     *  `ratings/index.ts`'s `buildRatingsLambdaInput` header for exactly when
+     *  a caller is allowed to pass true (only after the walk-forward harness
+     *  clears its bar — never true in production before then). Omitted/false
+     *  ⇒ this function is byte-identical to its pre-Wave-2 output. */
+    ratingsBlend?: boolean;
   } = {}
 ): V3Lambdas | null {
   const L = v3LeaguePerTeamAvg(input.league, input.leagueId, opts.lakeBaselines);
@@ -355,6 +403,29 @@ export function computeV3Lambdas(
     else if (blendA) xgBlendedSides = "away";
   }
 
+  // Wave 2 WS2-B: third factor, pi-ratings blend (opt-in — see opts.ratingsBlend
+  // JSDoc above). Applied after the goals/xG blend, before HFA: lH/lA at this
+  // point already represent the engine's best goals+xG estimate of each
+  // side's λ; the ratings signal nudges that estimate toward what pi-ratings
+  // independently expect, at a weight that is a HARD-capped 0.25 ceiling
+  // (ratingsBlendWeight) regardless of sample size — never allowed to
+  // dominate the goals/xG-based estimate the way xG can (0.5 ceiling).
+  // ratingsXgd is a goal-difference-ish signal (positive = home stronger), so
+  // it's applied as a split adjustment around the already-blended total mu,
+  // not as an independent per-side lambda the way xG's cross-pair model is.
+  let ratingsBlended = false;
+  if (opts.ratingsBlend === true) {
+    const wR = ratingsBlendWeight(input.ratingsN, shrinkN);
+    if (wR > 0 && typeof input.ratingsXgd === "number" && Number.isFinite(input.ratingsXgd)) {
+      const totalMu = lH + lA;
+      const ratingsLH = clamp(totalMu / 2 + input.ratingsXgd / 2, LAMBDA_MIN, LAMBDA_MAX);
+      const ratingsLA = clamp(totalMu / 2 - input.ratingsXgd / 2, LAMBDA_MIN, LAMBDA_MAX);
+      lH = lH * (1 - wR) + ratingsLH * wR;
+      lA = lA * (1 - wR) + ratingsLA * wR;
+      ratingsBlended = true;
+    }
+  }
+
   // Home-field-advantage adjustment (§3.1a v4 delta): apply HFA multiplier only
   // when the input data is team-overall stats, not true venue-split data.
   let hfaApplied = false;
@@ -377,5 +448,6 @@ export function computeV3Lambdas(
     xgBlendedSides,
     leaguePerTeamAvg: L,
     hfaApplied,
+    ratingsBlended,
   };
 }
