@@ -1,5 +1,7 @@
 /** Safety module — ported from ORACLE_v2026_8_0.jsx §8b/8c/§10, lines 2359-2990, 3349-4002.
  *  Rewrite #2: window.__ORACLE_CORE__ → injected config/llmKey param. */
+
+import { FAMILY_LABEL } from "../markets/index.js";
 import { clamp } from "../math/index.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -62,6 +64,39 @@ export interface ConvergenceResult {
   negativeEvAlert: string | null;
 }
 
+/** [P0-3] One MLSafetyFilter section's outcome. `hardRejected` records whether
+ *  this section's LEGACY hard-reject condition was true — independent of
+ *  `safetyMode`, so penalty mode's kill telemetry stays accurate even though
+ *  it no longer acts on the condition. */
+export interface FilterRecord {
+  id: string;
+  name: string;
+  pass: boolean;
+  hardRejected: boolean;
+  reason: string;
+}
+
+/** [P0-3] The fixture-level risk factors `familyPenaltyMultiplier` consumes to
+ *  turn a former hard reject into a market-family stake downgrade. Populated
+ *  by MLSafetyFilter.evaluate() regardless of `safetyMode` — legacy mode just
+ *  additionally acts on them via early hard rejects. */
+export interface SafetyPenaltySignals {
+  /** S7 — bayesian_lH + bayesian_lA, when both are present. */
+  totalXG: number | undefined;
+  /** _computeDrawRisk's 0-100 score (always present). */
+  drawRiskScore: number;
+  /** S11 — isDerby || keyInjury (the two conditions that trigger the legacy
+   *  hard reject; badWeather/newMgr remain scored-only, as before). */
+  redFlag: boolean;
+  /** S13 — league is in the HIGH_UPSET set. */
+  highUpsetLeague: boolean;
+  /** S16 — confirmed sharp books fading the selection (sharpDelta>0.1 with
+   *  bookCount>=2). */
+  sharpFade: boolean;
+  /** S17 — ledger/direct calibFactor, when present. */
+  calibFactor: number | undefined;
+}
+
 export interface MLSafetyResult {
   mlAllowed: boolean;
   safetyScore: number;
@@ -71,6 +106,16 @@ export interface MLSafetyResult {
   reason: string | null;
   altMarkets: string[];
   drawRisk: DrawRisk;
+  /** [P0-3] Every section evaluated this call, in order — previously computed
+   *  and discarded by _buildResult. Powers per-filter kill-count dashboards. */
+  filters: FilterRecord[];
+  /** [P0-3] id -> would-be-kill count (1 or absent) for this evaluate() call —
+   *  counted whenever a section's legacy hard-reject condition is true, even
+   *  in "penalty" mode where it no longer fires. "DRAW_RISK" covers the
+   *  drawRisk.mlBlocked (score>=61) former fixture-wide kill. */
+  killCounts: Record<string, number>;
+  /** [P0-3] Signals for execution/index.ts's familyPenaltyMultiplier() call. */
+  penaltySignals: SafetyPenaltySignals;
 }
 
 export interface DrawRisk {
@@ -107,6 +152,49 @@ const TIERS: ConvergenceTier[] = [
   { min: 0, max: 3, label: "NOISE", kelly: "Do not bet — signal too thin", kellyMultiplier: 0 },
 ];
 
+/** [P0-4] SIGNAL TABLE — ConvergenceScorer.scoreMarket's 14 additive signals,
+ *  sign and rationale. Score range is nominally 0-24 (TIERS table); S01 can
+ *  now contribute -3, so raw totals can go slightly negative — getTier's
+ *  `TIERS.find(...) ?? TIERS[4]!` fallback already resolves any score with no
+ *  matching tier (including negative scores, since the lowest tier's min is
+ *  0) to NOISE, so no separate clamp is needed (verified, not assumed).
+ *
+ *  S01  model/implied gap (POSITIVE-gap only, graduated, sign-aware — P0-4
+ *       fix). gap = mp-ip. (0.02,0.05] -> +3 (real model edge); (0.05,0.08]
+ *       -> 0 (neutral — edge growing suspicious); >0.08 -> -3 (a gap this
+ *       large is evidence of model error, not opportunity — see below);
+ *       <=0.02 -> 0 (noise band). Negative gap (mp<ip, market implies MORE
+ *       than the model) is deliberately NOT this signal's job — that's S14's
+ *       hard-reject territory (evExcess=ip-mp>0.05). Before this fix S01 was
+ *       `Math.abs(mp-ip)>0.08 -> +3`, i.e. direction-blind: it REWARDED the
+ *       exact gap magnitude S14 hard-rejects on when the sign flips. Now both
+ *       signals encode the same belief — small-to-moderate model edges are
+ *       trustworthy, huge gaps in EITHER direction are model-error smells —
+ *       instead of contradicting each other.
+ *  S02  sharp-book consensus (bookCount>=3, +crowd-rounding-bias bonus).
+ *       POSITIVE. [P1-4] Gated on sharpSignalsEnabled — see below.
+ *  S03  reverse line movement (RLM) without sharp compression. POSITIVE.
+ *       [P1-4] Gated on sharpSignalsEnabled.
+ *  S04  sharp compression without RLM. POSITIVE. [P1-4] Gated.
+ *  S05  CLV survival probability > 0.7. POSITIVE. [P1-4] Gated.
+ *  S06  EV excess beyond a 5pt baseline > 9pt. POSITIVE (bigger true edge).
+ *  S07  model probability >= 0.75 (high-confidence pick). POSITIVE.
+ *  S08  adversary ACCEPTed the bet AND referee verdict contains "+EV".
+ *       POSITIVE (debate-corroborated).
+ *  S09  calibFactor > 1.0 (ledger says the model has been underconfident).
+ *       POSITIVE.
+ *  S10  RAG analogue similarity>=0.8, same category, not survivorship-biased.
+ *       POSITIVE (historical precedent).
+ *  S11  crowd-wisdom dominant outcome aligns with this market's label.
+ *       POSITIVE. (Unrelated to MLSafetyFilter's own "S11" id — the two
+ *       classes number their sections independently.)
+ *  S12  false-positive-adjusted prob exceeds implied AND MC varMultiplier>0.8.
+ *       POSITIVE.
+ *  S13  market not suspended AND hoursToKO > 1.5h. POSITIVE (tradeable).
+ *  S14  evExcess=ip-mp sign-aware (UNCHANGED by P0-4 — this is the negative-
+ *       gap signal S01 must stay consistent with, not duplicate): >0.05 ->
+ *       0 + hard-reject alert; >0.03 -> 0 + IMPLIED_EV_FLAG; else -> +1.
+ */
 export class ConvergenceScorer {
   getTier(score: number): ConvergenceTier {
     return TIERS.find((t) => score >= t.min && score <= t.max) ?? TIERS[4]!;
@@ -115,7 +203,11 @@ export class ConvergenceScorer {
   scoreMarket(
     market: Record<string, unknown>,
     resData: Record<string, unknown>,
-    ragSimilar: Array<Record<string, unknown>> = []
+    ragSimilar: Array<Record<string, unknown>> = [],
+    /** [P1-4] True unless a verified sharp-reference feed exists
+     *  (config.sharpFeedVerified). Default true so direct unit-tested calls
+     *  are unaffected; execution/index.ts wires the real value explicitly. */
+    sharpSignalsEnabled = true
   ): MarketConvergenceResult {
     const signals: SignalMap = {};
     const mp = (market.mp ?? market.modelProb ?? 0) as number;
@@ -123,16 +215,25 @@ export class ConvergenceScorer {
       ((market.odds as number) > 1 ? 1 / (market.odds as number) : 0)) as number;
     const ev = (market.ev ?? 0) as number;
 
-    signals.S01 = Math.abs(mp - ip) > 0.08 ? 3 : 0;
+    // [P0-4] S01 — graduated, sign-aware model/implied gap. See SIGNAL TABLE.
+    const gap = mp - ip;
+    signals.S01 = gap > 0.08 ? -3 : gap > 0.05 ? 0 : gap > 0.02 ? 3 : 0;
     const frozenPayload = (resData.frozenOdds as Record<string, unknown> | null) ?? null;
     const sharpCount = ((frozenPayload?.sharp_consensus as Record<string, number> | undefined)
       ?.bookCount ?? 0) as number;
     const crowdRoundBias =
       (resData.crowdWisdom as Record<string, unknown> | undefined)?._crowdRoundingBias === true;
-    signals.S02 = sharpCount >= 3 ? (crowdRoundBias ? 4 : 3) : 0;
-    signals.S03 = resData.rlmDetected && !resData.sharpCompressionTag ? 2 : 0;
-    signals.S04 = resData.sharpCompressionTag && !resData.rlmDetected ? 2 : 0;
+    // [P1-4] S02-S05 are sharp-book-dependent — they compute on air when the
+    // only odds source is the soft book being bet into. Zero-weighted (point
+    // contribution only, not the underlying computation) until a verified
+    // sharp feed exists.
+    signals.S02 = sharpSignalsEnabled && sharpCount >= 3 ? (crowdRoundBias ? 4 : 3) : 0;
+    signals.S03 =
+      sharpSignalsEnabled && resData.rlmDetected && !resData.sharpCompressionTag ? 2 : 0;
+    signals.S04 =
+      sharpSignalsEnabled && resData.sharpCompressionTag && !resData.rlmDetected ? 2 : 0;
     signals.S05 =
+      sharpSignalsEnabled &&
       ((resData.clvProjection as Record<string, number> | undefined)?.survivalProb ?? 0) > 0.7
         ? 1
         : 0;
@@ -253,7 +354,9 @@ export class ConvergenceScorer {
 
   compute(
     resData: Record<string, unknown>,
-    ragSimilar: Array<Record<string, unknown>> = []
+    ragSimilar: Array<Record<string, unknown>> = [],
+    /** [P1-4] Forwarded to scoreMarket for every candidate — see there. */
+    opts?: { sharpSignalsEnabled?: boolean }
   ): ConvergenceResult {
     const candidates = [
       ...((resData.evMarkets as Array<Record<string, unknown>> | undefined) ?? []).filter(
@@ -272,7 +375,10 @@ export class ConvergenceScorer {
       negativeEvAlert: null,
     });
     if (candidates.length === 0) return noResult(true);
-    const scores = candidates.map((m) => this.scoreMarket(m, resData, ragSimilar));
+    const sharpSignalsEnabled = opts?.sharpSignalsEnabled ?? true;
+    const scores = candidates.map((m) =>
+      this.scoreMarket(m, resData, ragSimilar, sharpSignalsEnabled)
+    );
     scores.sort((a, b) => b.totalScore - a.totalScore);
     const apex = scores[0]!;
     const overallTier = this.getTier(apex.totalScore);
@@ -349,34 +455,97 @@ const LEAGUE_DRAW_RATES: Record<string, { drawRate: number; baseRho: number }> =
 };
 
 export class MLSafetyFilter {
+  /** [P0-3] `mode` selects the safety-layer posture (mirrors
+   *  OracleConfig.safetyMode, default "penalty"):
+   *   - "penalty": the mis-scoped hard rejects below (S1 odds-band, S7 xG,
+   *     S11 derby/injury, S13 upset league, S16 sharp fade, S17 miscalib,
+   *     and the drawRisk fixture-wide block) no longer short-circuit — every
+   *     section runs and feeds the existing scored gate (filtersPassed/Total
+   *     >=70%) instead. Callers (execution/index.ts) apply the returned
+   *     `penaltySignals` via familyPenaltyMultiplier() to downgrade only the
+   *     market families each risk factor actually concerns.
+   *   - "legacy": byte-identical to the pre-refactor behavior — each section
+   *     below still short-circuits with an early hard reject. Rollback lever.
+   *  `killCounts`/`filters` are populated identically in both modes (a
+   *  section's legacy hard-reject condition is recorded as a would-be kill
+   *  even when penalty mode doesn't act on it) so kill-count telemetry never
+   *  silently goes dark just because a filter was demoted.
+   *
+   *  No hard reject in this class qualifies as an "integrity failure" per
+   *  P0-3 (contaminated feed, missing mandatory data, promo markets,
+   *  withdrawn odds, started fixtures) — those belong to the P1-3
+   *  feed-integrity stage, a separate workstream. The early-return machinery
+   *  here is deliberately kept intact (not deleted) so that stage can reuse
+   *  the same short-circuit pattern once it lands. */
   evaluate(
     fetched: Record<string, unknown>,
     resData: Record<string, unknown>,
-    telemetry: Record<string, unknown>
+    telemetry: Record<string, unknown>,
+    opts?: { mode?: "legacy" | "penalty" }
   ): MLSafetyResult {
-    const filters: Array<{ id?: string; name: string; pass: boolean; reason: string }> = [];
+    const mode = opts?.mode ?? "penalty";
+    const filters: FilterRecord[] = [];
+    const killCounts: Record<string, number> = {};
+    const killed = (id: string) => {
+      killCounts[id] = (killCounts[id] ?? 0) + 1;
+    };
+    // [P0-3] Built incrementally as each section below computes its inputs;
+    // passed to _buildResult (early-return or final) so familyPenaltyMultiplier
+    // has what it needs regardless of which return path fires. Fields a
+    // short-circuited legacy-mode return never reaches keep their defaults —
+    // harmless, since penalty-only consumers (execution/index.ts) never see a
+    // legacy-mode early return's result used for staking.
+    const penaltySignals: Omit<SafetyPenaltySignals, "drawRiskScore"> = {
+      totalXG: undefined,
+      redFlag: false,
+      highUpsetLeague: false,
+      sharpFade: false,
+      calibFactor: undefined,
+    };
     const stats = (fetched.stats ?? {}) as Record<string, number>;
     const odds = (fetched.odds ?? {}) as Record<string, number>;
     const league = String(resData.league ?? "").toLowerCase();
 
+    // §1: "Odds Range" — origin traced to ORACLE_v2026_8_0.jsx §8c "17-section
+    // Money Line framework" (archive/ORACLE_v2026_8_0.jsx:3651): a legacy
+    // single-market "Money Line" (straight favorite win-bet) product's sweet
+    // spot, not a general-fixture constraint. Scoped per P0-3: it stays a
+    // SCORED filter (its pass/fail still counts toward the 70% threshold
+    // below) but the hard reject on the general path is removed in "penalty"
+    // mode — on the general DNB/DC/BTTS/OU path a favorite outside 1.3-1.7 is
+    // routine, not disqualifying.
     const favOdds = Math.min(odds.home ?? 9, odds.away ?? 9);
     const favIsHome = (odds.home ?? 9) < (odds.away ?? 9);
     const oddsOk = favOdds >= 1.35 && favOdds <= 1.65;
-    filters.push({ id: "S1", name: "Odds Range", pass: oddsOk, reason: `${favOdds}` });
-    if (favOdds < 1.3 || favOdds > 1.7)
-      return this._buildResult(
-        filters,
-        false,
-        "HARD REJECT: odds outside range",
-        resData,
-        telemetry
-      );
+    const s1HardReject = favOdds < 1.3 || favOdds > 1.7;
+    filters.push({
+      id: "S1",
+      name: "Odds Range",
+      pass: oddsOk,
+      hardRejected: s1HardReject,
+      reason: `${favOdds}`,
+    });
+    if (s1HardReject) {
+      killed("S1");
+      if (mode === "legacy")
+        return this._buildResult(
+          filters,
+          false,
+          "HARD REJECT: odds outside range",
+          resData,
+          telemetry,
+          mode,
+          killCounts,
+          penaltySignals
+        );
+    }
 
     const eloDiff = Math.abs((stats.home_pi_rating ?? 1500) - (stats.away_pi_rating ?? 1500));
     filters.push({
       id: "S2",
       name: "Team Strength Gap",
       pass: eloDiff >= 120,
+      hardRejected: false,
       reason: `Elo diff: ${eloDiff.toFixed(0)}`,
     });
 
@@ -386,6 +555,7 @@ export class MLSafetyFilter {
       id: "S3",
       name: "Home Advantage",
       pass: homeAdvOk,
+      hardRejected: false,
       reason: `Home win rate: ${(homeWinRate * 100).toFixed(0)}%`,
     });
 
@@ -398,6 +568,7 @@ export class MLSafetyFilter {
       id: "S4",
       name: "Attacking Superiority",
       pass: favXG >= 1.7 && (favGS >= 1.6 || favXG >= 1.8),
+      hardRejected: false,
       reason: `xG:${favXG.toFixed(2)}`,
     });
 
@@ -410,6 +581,7 @@ export class MLSafetyFilter {
       id: "S5",
       name: "Defensive Stability",
       pass: defenceOk,
+      hardRejected: false,
       reason: `GC:${favGC.toFixed(2)}`,
     });
 
@@ -418,42 +590,58 @@ export class MLSafetyFilter {
       id: "S6",
       name: "Underdog Attack Limited",
       pass: dogGS <= 1.1 || eloDiff >= 200,
+      hardRejected: false,
       reason: `Dog GS:${dogGS.toFixed(2)}`,
     });
 
     const bayesH = resData.bayesian_lH as number | undefined;
     const bayesA = resData.bayesian_lA as number | undefined;
     const totalXG = bayesH !== undefined && bayesA !== undefined ? bayesH + bayesA : undefined;
+    penaltySignals.totalXG = totalXG;
     // S7: only hard-reject when we have xG data AND it is genuinely low.
     // When sidecar-only (no sharp xG source), skip the gate rather than hard-reject on null.
+    // [P0-3] In "penalty" mode a low totalXG no longer kills the whole
+    // fixture — it downgrades goals-family markets specifically (goals_ou,
+    // team_total, btts) via familyPenaltyMultiplier; a low-scoring fixture is
+    // real signal for THOSE markets, not evidence the fixture is unbettable.
     if (totalXG !== undefined) {
       const goalsEnvOk = totalXG >= 2.3 && totalXG <= 3.2;
-      if (totalXG <= 2.1) {
+      const s7HardReject = totalXG <= 2.1;
+      if (s7HardReject) {
+        killed("S7");
         filters.push({
           id: "S7",
           name: "Goals Environment",
           pass: false,
+          hardRejected: true,
           reason: `xG ${totalXG.toFixed(2)} ≤ 2.1 (HARD REJECT)`,
         });
-        return this._buildResult(
-          filters,
-          false,
-          "HARD REJECT: low-scoring environment",
-          resData,
-          telemetry
-        );
+        if (mode === "legacy")
+          return this._buildResult(
+            filters,
+            false,
+            "HARD REJECT: low-scoring environment",
+            resData,
+            telemetry,
+            mode,
+            killCounts,
+            penaltySignals
+          );
+      } else {
+        filters.push({
+          id: "S7",
+          name: "Goals Environment 2.3–3.2",
+          pass: goalsEnvOk,
+          hardRejected: false,
+          reason: `xG ${totalXG.toFixed(2)}`,
+        });
       }
-      filters.push({
-        id: "S7",
-        name: "Goals Environment 2.3–3.2",
-        pass: goalsEnvOk,
-        reason: `xG ${totalXG.toFixed(2)}`,
-      });
     } else {
       filters.push({
         id: "S7",
         name: "Goals Environment",
         pass: true,
+        hardRejected: false,
         reason: "xG unavailable — skipped",
       });
     }
@@ -463,6 +651,7 @@ export class MLSafetyFilter {
       id: "S8",
       name: "No Schedule Congestion",
       pass: favRest >= 5,
+      hardRejected: false,
       reason: `Rest: ${favRest}d`,
     });
 
@@ -471,6 +660,7 @@ export class MLSafetyFilter {
       id: "S9",
       name: "Motivation Present",
       pass: motivScore >= 0.9,
+      hardRejected: false,
       reason: `Motiv: ${motivScore.toFixed(2)}`,
     });
 
@@ -482,6 +672,7 @@ export class MLSafetyFilter {
       id: "S10",
       name: "Market Movement",
       pass: favVelocity >= 0,
+      hardRejected: false,
       reason: `Vel: ${favVelocity.toFixed(4)}`,
     });
 
@@ -494,23 +685,38 @@ export class MLSafetyFilter {
     const newMgr =
       ((telemetry.newMgrH as boolean) ?? false) || ((telemetry.newMgrA as boolean) ?? false);
     const redFlagOk = !isDerby && !keyInjury && !badWeather && !newMgr;
+    // [P0-3] S11's hard-reject condition (isDerby || keyInjury, a strict
+    // subset of !redFlagOk which also covers badWeather/newMgr — those two
+    // were always scored-only) is a general fixture-risk factor, not scoped
+    // to one market family: it downgrades every candidate on this fixture in
+    // "penalty" mode via familyPenaltyMultiplier, rather than killing all of
+    // them outright.
+    const s11HardReject = !redFlagOk && (isDerby || keyInjury);
+    penaltySignals.redFlag = isDerby || keyInjury;
     filters.push({
       id: "S11",
       name: "No Red Flags",
       pass: redFlagOk,
+      hardRejected: s11HardReject,
       reason:
         [isDerby && "Derby", keyInjury && "KeyInjury", badWeather && "Weather", newMgr && "NewMgr"]
           .filter(Boolean)
           .join(",") || "Clean",
     });
-    if (!redFlagOk && (isDerby || keyInjury))
-      return this._buildResult(
-        filters,
-        false,
-        `HARD REJECT: ${isDerby ? "Derby" : "Key injury"}`,
-        resData,
-        telemetry
-      );
+    if (s11HardReject) {
+      killed("S11");
+      if (mode === "legacy")
+        return this._buildResult(
+          filters,
+          false,
+          `HARD REJECT: ${isDerby ? "Derby" : "Key injury"}`,
+          resData,
+          telemetry,
+          mode,
+          killCounts,
+          penaltySignals
+        );
+    }
 
     const trapCount = [
       totalXG !== undefined && totalXG <= 2.1,
@@ -523,28 +729,44 @@ export class MLSafetyFilter {
       id: "S12",
       name: "No Favorite Trap",
       pass: trapCount === 0,
+      hardRejected: false,
       reason: `${trapCount} traps`,
     });
 
     const highRel = HIGH_RELIABILITY.has(league);
     const highUpset = HIGH_UPSET.has(league);
+    // [P0-3] "High Reliability League" doubles as S13's hard-reject test
+    // (highUpset membership) — general fixture-risk factor, same scoping
+    // rationale as S11: downgrade every candidate on this fixture, not a
+    // family-specific one.
+    penaltySignals.highUpsetLeague = highUpset;
     filters.push({
       id: "S13",
       name: "High Reliability League",
       pass: highRel && !highUpset,
+      hardRejected: highUpset,
       reason: league,
     });
-    if (highUpset)
-      return this._buildResult(
-        filters,
-        false,
-        `HARD REJECT: high-upset league`,
-        resData,
-        telemetry
-      );
+    if (highUpset) {
+      killed("S13");
+      if (mode === "legacy")
+        return this._buildResult(
+          filters,
+          false,
+          `HARD REJECT: high-upset league`,
+          resData,
+          telemetry,
+          mode,
+          killCounts,
+          penaltySignals
+        );
+    }
 
     // S16: only hard-reject when we have confirmed sharp-book data fading the selection.
     // When sharpDelta is absent (sidecar-only, no Odds API), skip rather than hard-reject.
+    // [P0-3] General fixture-risk factor (same scoping as S11/S13) — sharp
+    // books fading a selection degrades confidence in every market on this
+    // fixture, not just the one the delta was measured against.
     const rawSharpDelta = resData.sharpDelta as number | undefined;
     const sharpBooks = (resData.fetched as Record<string, unknown> | undefined)?.odds as
       | Record<string, unknown>
@@ -552,76 +774,112 @@ export class MLSafetyFilter {
     const sharpBookCount =
       (sharpBooks?.sharp_consensus as Record<string, number> | undefined)?.bookCount ?? 0;
     if (rawSharpDelta !== undefined) {
-      if (rawSharpDelta > 0.1 && sharpBookCount >= 2) {
+      const s16HardReject = rawSharpDelta > 0.1 && sharpBookCount >= 2;
+      penaltySignals.sharpFade = s16HardReject;
+      if (s16HardReject) {
+        killed("S16");
         filters.push({
           id: "S16",
           name: "Sharp Consensus",
           pass: false,
+          hardRejected: true,
           reason: `Sharp fading (delta:${rawSharpDelta.toFixed(3)})`,
         });
-        return this._buildResult(
-          filters,
-          false,
-          "HARD REJECT: sharp books fading",
-          resData,
-          telemetry
-        );
+        if (mode === "legacy")
+          return this._buildResult(
+            filters,
+            false,
+            "HARD REJECT: sharp books fading",
+            resData,
+            telemetry,
+            mode,
+            killCounts,
+            penaltySignals
+          );
+      } else {
+        filters.push({
+          id: "S16",
+          name: "Sharp Consensus",
+          pass: rawSharpDelta <= 0.03 || sharpBookCount < 2,
+          hardRejected: false,
+          reason: `Delta:${rawSharpDelta.toFixed(3)}`,
+        });
       }
-      filters.push({
-        id: "S16",
-        name: "Sharp Consensus",
-        pass: rawSharpDelta <= 0.03 || sharpBookCount < 2,
-        reason: `Delta:${rawSharpDelta.toFixed(3)}`,
-      });
     } else {
       filters.push({
         id: "S16",
         name: "Sharp Consensus",
         pass: true,
+        hardRejected: false,
         reason: "sharp data unavailable — skipped",
       });
     }
 
     // S17: only hard-reject on confirmed miscalibration, not missing calibration data.
+    // [P0-3] NOISE/MARGINAL-tier-equivalent downgrade (0.25×, judgment call —
+    // see familyPenaltyMultiplier doc comment) applied fixture-wide, general
+    // risk factor like S11/S13/S16.
     const rawCalibFactor =
       (
         (resData.ledger as Record<string, unknown> | undefined)?.metrics as
           | Record<string, number>
           | undefined
       )?.calibFactor ?? (resData.calibFactor as number | undefined);
+    penaltySignals.calibFactor = rawCalibFactor;
     if (rawCalibFactor !== undefined) {
+      const s17HardReject = rawCalibFactor < 0.7;
       filters.push({
         id: "S17",
         name: "Model Calibration Gate",
         pass: rawCalibFactor >= 0.85,
+        hardRejected: s17HardReject,
         reason: `CF:${rawCalibFactor.toFixed(3)}`,
       });
-      if (rawCalibFactor < 0.7)
-        return this._buildResult(
-          filters,
-          false,
-          "HARD REJECT: severe miscalibration",
-          resData,
-          telemetry
-        );
+      if (s17HardReject) {
+        killed("S17");
+        if (mode === "legacy")
+          return this._buildResult(
+            filters,
+            false,
+            "HARD REJECT: severe miscalibration",
+            resData,
+            telemetry,
+            mode,
+            killCounts,
+            penaltySignals
+          );
+      }
     } else {
       filters.push({
         id: "S17",
         name: "Model Calibration Gate",
         pass: true,
+        hardRejected: false,
         reason: "calibration data unavailable — skipped",
       });
     }
 
-    return this._buildResult(filters, true, null, resData, telemetry);
+    return this._buildResult(
+      filters,
+      true,
+      null,
+      resData,
+      telemetry,
+      mode,
+      killCounts,
+      penaltySignals
+    );
   }
 
   private _buildResult(
-    filters: Array<{ pass: boolean }>,
+    filters: FilterRecord[],
     eligible: boolean,
     hardRejectReason: string | null,
     resData: Record<string, unknown>,
-    telemetry: Record<string, unknown>
+    telemetry: Record<string, unknown>,
+    mode: "legacy" | "penalty",
+    killCounts: Record<string, number>,
+    partialPenaltySignals: Omit<SafetyPenaltySignals, "drawRiskScore">
   ): MLSafetyResult {
     const filtersPassed = filters.filter((f) => f.pass).length;
     const filtersTotal = filters.length;
@@ -638,7 +896,13 @@ export class MLSafetyFilter {
       confidence = "REJECTED";
     }
     const drawRisk = this._computeDrawRisk(resData, telemetry);
-    if (drawRisk.mlBlocked) mlAllowed = false;
+    // [P0-3] drawRisk's fixture-wide mlBlocked kill only fires in "legacy"
+    // mode. In "penalty" mode it's a would-be kill (tracked below) that
+    // execution/index.ts downgrades on result-family markets only
+    // (match_result/dnb/double_chance) via familyPenaltyMultiplier —
+    // draw-prone fixtures are a result-market risk, not a fixture-wide one.
+    if (mode === "legacy" && drawRisk.mlBlocked) mlAllowed = false;
+    if (drawRisk.mlBlocked) killCounts.DRAW_RISK = (killCounts.DRAW_RISK ?? 0) + 1;
     return {
       mlAllowed,
       safetyScore: filtersPassed,
@@ -648,6 +912,9 @@ export class MLSafetyFilter {
       reason: hardRejectReason,
       altMarkets: [],
       drawRisk,
+      filters,
+      killCounts,
+      penaltySignals: { ...partialPenaltySignals, drawRiskScore: drawRisk.score },
     };
   }
 
@@ -692,6 +959,82 @@ export class MLSafetyFilter {
       score >= 81 ? 0.15 : score >= 61 ? 0.12 : score >= 41 ? 0.08 : score >= 21 ? 0.04 : 0;
     return { score, tier, drawAdjustment, mlBlocked: score >= 61 };
   }
+}
+
+// [P0-3] Family scoping for the two former hard rejects that ARE genuinely
+// market-family-specific (S7 xG dead zone, drawRisk mlBlocked). Keyed off
+// FAMILY_LABEL's display strings — the same values EVMarket.cat/market carry
+// at runtime (see markets/index.ts) — so this can never drift from the
+// canonical family taxonomy the rest of the engine routes off.
+const GOALS_FAMILY_LABELS = new Set<string>([
+  FAMILY_LABEL.goals_ou, // "Goals O/U"
+  FAMILY_LABEL.team_total, // "Team Total"
+  FAMILY_LABEL.btts, // "BTTS"
+]);
+const RESULT_FAMILY_LABELS = new Set<string>([
+  FAMILY_LABEL.match_result, // "1X2" — no separate "moneyline" FamilyLabel exists; 1X2 IS the moneyline family.
+  FAMILY_LABEL.dnb, // "Draw No Bet"
+  FAMILY_LABEL.double_chance, // "Double Chance"
+]);
+
+/**
+ * [P0-3] Converts MLSafetyFilter's former mis-scoped hard rejects into a
+ * per-market stake multiplier in (0,1] — never 0, so this is never itself a
+ * veto (that would just be the hard reject under a new name). Two signals
+ * are family-scoped (only apply to the families they're actually evidence
+ * against); four are general fixture-risk factors that apply regardless of
+ * `marketCategory` (a derby/injury-chaos fixture, a high-base-rate-upset
+ * league, sharp books fading the fixture, or a severely miscalibrated model
+ * are all reasons to distrust EVERY market on the fixture, not just one).
+ * Multipliers stack via `Math.min` (worst factor wins, not compounded
+ * multiplicatively) — mirrors the correlation-penalty block's `Math.min`
+ * pattern a few hundred lines up in execution/index.ts, not
+ * applyConvergenceTierToStake's own veto-below-zero semantics (there is
+ * nothing here to veto).
+ *
+ * Multiplier choices are judgment calls anchored to the existing
+ * TIERS.kellyMultiplier vocabulary (Full=1, Half=0.5, Quarter=0.25,
+ * NOISE=0 — see TIERS above) so a reader already fluent in the convergence
+ * tier language reads these the same way:
+ *   - S7 xG dead zone (goals-family only): 0.5 (VIABLE/Half-Kelly-equivalent).
+ *   - drawRisk mlBlocked (result-family only): 0.5 at VERY_HIGH (score 61-80),
+ *     0.25 at EXTREME (score >=81) — graduated with the existing DrawRisk
+ *     tier boundaries rather than one flat cut.
+ *   - S11 red flag (derby/key injury), S13 high-upset league, S16 sharp fade
+ *     (all fixture-wide): 0.5 each (VIABLE-equivalent).
+ *   - S17 severe miscalibration (calibFactor<0.7, fixture-wide): 0.25 per the
+ *     explicit P0-3 instruction ("NOISE-tier downgrade i.e. multiplier
+ *     0.25") — note TIERS' actual NOISE entry is kellyMultiplier 0 (a veto);
+ *     0.25 is read here as "the MARGINAL/Quarter-Kelly number", the
+ *     strongest non-zero downgrade available, since a literal 0 would just
+ *     be S17's old hard reject wearing a new name.
+ */
+export function familyPenaltyMultiplier(
+  marketCategory: string,
+  signals: SafetyPenaltySignals
+): number {
+  let multiplier = 1;
+
+  if (
+    GOALS_FAMILY_LABELS.has(marketCategory) &&
+    signals.totalXG !== undefined &&
+    signals.totalXG <= 2.1
+  ) {
+    multiplier = Math.min(multiplier, 0.5);
+  }
+
+  if (RESULT_FAMILY_LABELS.has(marketCategory) && signals.drawRiskScore >= 61) {
+    multiplier = Math.min(multiplier, signals.drawRiskScore >= 81 ? 0.25 : 0.5);
+  }
+
+  if (signals.redFlag) multiplier = Math.min(multiplier, 0.5);
+  if (signals.highUpsetLeague) multiplier = Math.min(multiplier, 0.5);
+  if (signals.sharpFade) multiplier = Math.min(multiplier, 0.5);
+  if (signals.calibFactor !== undefined && signals.calibFactor < 0.7) {
+    multiplier = Math.min(multiplier, 0.25);
+  }
+
+  return multiplier;
 }
 
 // ── AntiSycophancyCircuit — full 3-agent deterministic pipeline ───────────────
@@ -1158,54 +1501,8 @@ export interface ReversibilityVeto {
   scoreFloor: number;
 }
 
-/**
- * Apply reversibility-weighted veto logic (arXiv 2604.14228, principle #10).
- *
- * For irreversible actions (live stake, booking):
- *   - EV must exceed 0.12 (vs. standard 0.03).
- *   - Convergence score must be ≥ 13 (PRIME or better).
- *   - Any HARD_REJECT from MLSafetyFilter propagates unconditionally.
- *
- * For reversible actions the standard thresholds apply; this function
- * always returns vetoed=false so the caller can proceed normally.
- */
-export function weighReversibility(
-  kind: ActionKind,
-  ev: number,
-  convergenceScore: number,
-  mlAllowed: boolean
-): ReversibilityVeto {
-  if (kind === "reversible") {
-    return { vetoed: false, reason: null, evFloor: 0.03, scoreFloor: 8 };
-  }
-
-  // Irreversible — harder gates.
-  const EV_FLOOR = 0.12;
-  const SCORE_FLOOR = 13; // PRIME tier minimum
-
-  if (!mlAllowed) {
-    return {
-      vetoed: true,
-      reason: "REVERSIBILITY_VETO: MLSafetyFilter hard-rejected this fixture — live stake blocked",
-      evFloor: EV_FLOOR,
-      scoreFloor: SCORE_FLOOR,
-    };
-  }
-  if (ev < EV_FLOOR) {
-    return {
-      vetoed: true,
-      reason: `REVERSIBILITY_VETO: EV ${(ev * 100).toFixed(1)}% below irreversible floor (${(EV_FLOOR * 100).toFixed(0)}%) — live stake blocked`,
-      evFloor: EV_FLOOR,
-      scoreFloor: SCORE_FLOOR,
-    };
-  }
-  if (convergenceScore < SCORE_FLOOR) {
-    return {
-      vetoed: true,
-      reason: `REVERSIBILITY_VETO: Convergence score ${convergenceScore} below PRIME floor (${SCORE_FLOOR}) — live stake blocked`,
-      evFloor: EV_FLOOR,
-      scoreFloor: SCORE_FLOOR,
-    };
-  }
-  return { vetoed: false, reason: null, evFloor: EV_FLOOR, scoreFloor: SCORE_FLOOR };
-}
+// [P2-2 dead-code disposition] weighReversibility (formerly here, arXiv
+// 2604.14228 principle #10) had zero call sites and was deleted. ActionKind/
+// ReversibilityVeto are left in place — they're still re-exported from the
+// package barrel (src/index.ts) as part of the public type surface, and
+// deleting them is a larger surface change than this pass's scope covers.

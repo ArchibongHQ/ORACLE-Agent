@@ -13,7 +13,12 @@
  *       (JSX read from fetched.odds — adapted in T214/T217)
  */
 
-import { AntiSycophancyCircuit, ConvergenceScorer, MLSafetyFilter } from "@oracle/engine";
+import {
+  AntiSycophancyCircuit,
+  ConvergenceScorer,
+  familyPenaltyMultiplier,
+  MLSafetyFilter,
+} from "@oracle/engine";
 import { describe, expect, it } from "vitest";
 
 // ── ConvergenceScorer instance ────────────────────────────────────────────────
@@ -143,16 +148,21 @@ describe("MLSafetyFilter.evaluate (T155-T157, T184-T186)", () => {
   });
 });
 
-// ── MLSafetyFilter hard-reject paths ─────────────────────────────────────────
+// ── MLSafetyFilter hard-reject paths (LEGACY mode — the rollback lever) ───────
+// [P0-3] These former defaults are now hard rejects ONLY under safetyMode="legacy".
+// The "penalty" default converts them to market-family stake downgrades (see the
+// penalty-mode block below). Passing { mode: "legacy" } keeps coverage of the
+// preserved rollback behavior.
 
-describe("MLSafetyFilter hard-reject paths", () => {
+describe("MLSafetyFilter hard-reject paths (legacy mode)", () => {
   const f = new MLSafetyFilter();
 
   it("XG dead zone (totalXG <= 2.1) triggers hard reject", () => {
     const r = f.evaluate(
       { odds: { home: 1.5, away: 3.2, draw: 4.0 }, stats: {} },
       { bayesian_lH: 1.0, bayesian_lA: 1.0, league: "Bundesliga" },
-      { restH: 6, restA: 5, motivationScore: 0.95 }
+      { restH: 6, restA: 5, motivationScore: 0.95 },
+      { mode: "legacy" }
     );
     expect(r.mlAllowed).toBe(false);
     expect(r.reason).not.toBeNull();
@@ -162,7 +172,8 @@ describe("MLSafetyFilter hard-reject paths", () => {
     const r = f.evaluate(
       { odds: { home: 1.1, away: 4.0, draw: 5.0 }, stats: {} },
       { bayesian_lH: 1.7, bayesian_lA: 1.2, league: "Bundesliga" },
-      { restH: 6, restA: 5, motivationScore: 0.95 }
+      { restH: 6, restA: 5, motivationScore: 0.95 },
+      { mode: "legacy" }
     );
     expect(r.mlAllowed).toBe(false);
   });
@@ -171,9 +182,53 @@ describe("MLSafetyFilter hard-reject paths", () => {
     const r = f.evaluate(
       { odds: { home: 1.5, away: 3.2, draw: 4.0 }, stats: {} },
       { bayesian_lH: 1.7, bayesian_lA: 1.2, league: "Serie A" },
-      { restH: 6, restA: 5, motivationScore: 0.95 }
+      { restH: 6, restA: 5, motivationScore: 0.95 },
+      { mode: "legacy" }
     );
     expect(r.mlAllowed).toBe(false);
+  });
+});
+
+// ── P0-3 penalty mode (the default) — no hard rejects, family downgrades ──────
+describe("MLSafetyFilter penalty mode (default) + familyPenaltyMultiplier", () => {
+  const f = new MLSafetyFilter();
+
+  it("low-xG fixture does NOT hard-reject in penalty mode, but surfaces the signal", () => {
+    const r = f.evaluate(
+      { odds: { home: 1.5, away: 3.2, draw: 4.0 }, stats: {} },
+      { bayesian_lH: 1.0, bayesian_lA: 1.0, league: "Bundesliga" },
+      { restH: 6, restA: 5, motivationScore: 0.95 }
+    );
+    expect(r.confidence).not.toBe("HARD_REJECT");
+    expect(r.penaltySignals.totalXG).toBeCloseTo(2.0, 5);
+    // would-be kill is still counted for telemetry even though it didn't fire
+    expect(r.killCounts.S7).toBe(1);
+  });
+
+  it("familyPenaltyMultiplier downgrades goals-family on low xG, leaves result-family alone", () => {
+    const signals = {
+      totalXG: 2.0,
+      drawRiskScore: 10,
+      redFlag: false,
+      highUpsetLeague: false,
+      sharpFade: false,
+      calibFactor: undefined,
+    };
+    expect(familyPenaltyMultiplier("Goals O/U", signals)).toBeLessThan(1);
+    expect(familyPenaltyMultiplier("1X2", signals)).toBe(1);
+  });
+
+  it("familyPenaltyMultiplier downgrades result-family on high draw risk", () => {
+    const signals = {
+      totalXG: 3.0,
+      drawRiskScore: 85,
+      redFlag: false,
+      highUpsetLeague: false,
+      sharpFade: false,
+      calibFactor: undefined,
+    };
+    expect(familyPenaltyMultiplier("1X2", signals)).toBe(0.25);
+    expect(familyPenaltyMultiplier("Goals O/U", signals)).toBe(1);
   });
 });
 
@@ -216,7 +271,7 @@ describe("MLSafetyFilter null-guard skip paths", () => {
     expect(r.confidence).not.toBe("HARD_REJECT");
   });
 
-  it("S16 hard-reject still fires when sharpDelta IS present and high", () => {
+  it("S16 hard-reject still fires (legacy mode) when sharpDelta IS present and high", () => {
     const r = f.evaluate(
       safeFetched,
       {
@@ -226,13 +281,14 @@ describe("MLSafetyFilter null-guard skip paths", () => {
         league: "Bundesliga",
         fetched: { odds: { sharp_consensus: { bookCount: 3 } } },
       },
-      { restH: 6, restA: 5, motivationScore: 0.95 }
+      { restH: 6, restA: 5, motivationScore: 0.95 },
+      { mode: "legacy" }
     );
-    // sharpDelta 0.15 > 0.1 with bookCount implied — should block
+    // sharpDelta 0.15 > 0.1 with bookCount implied — should block in legacy mode
     expect(r.confidence).toBe("HARD_REJECT");
   });
 
-  it("S17 hard-reject still fires when calibFactor IS present and low", () => {
+  it("S17 hard-reject still fires (legacy mode) when calibFactor IS present and low", () => {
     const r = f.evaluate(
       safeFetched,
       {
@@ -242,7 +298,8 @@ describe("MLSafetyFilter null-guard skip paths", () => {
         league: "Bundesliga",
         calibFactor: 0.5,
       },
-      { restH: 6, restA: 5, motivationScore: 0.95 }
+      { restH: 6, restA: 5, motivationScore: 0.95 },
+      { mode: "legacy" }
     );
     expect(r.confidence).toBe("HARD_REJECT");
   });

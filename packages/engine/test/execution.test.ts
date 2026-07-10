@@ -447,5 +447,9 @@ describe("enableGoalsOnlyMode", () => {
     const cats = new Set(r.evMarkets.map((m) => m.cat));
     const anyNonGoals = NON_GOALS_CATS.some((cat) => cats.has(cat));
     expect(anyNonGoals).toBe(true);
-  }, 15_000);
+    // 30s (was 15s): the full ExecutionEngine.run path is timing-sensitive under
+    // full-file load on the resource-constrained dev box (see CLAUDE.local.md OOM
+    // note) — isolated it runs in ~2s. Bumped when the P0-3 family-penalty loop
+    // added a per-candidate pass on this same path.
+  }, 30_000);
 });

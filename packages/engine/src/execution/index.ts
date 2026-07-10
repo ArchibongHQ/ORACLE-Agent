@@ -54,7 +54,12 @@ import {
   skellamProbs,
 } from "../math/index.js";
 import { RAGSystem } from "../rag/index.js";
-import { AntiSycophancyCircuit, ConvergenceScorer, MLSafetyFilter } from "../safety/index.js";
+import {
+  AntiSycophancyCircuit,
+  ConvergenceScorer,
+  familyPenaltyMultiplier,
+  MLSafetyFilter,
+} from "../safety/index.js";
 import type {
   AllMarketEntry,
   AllMarketOutcome,
@@ -2226,11 +2231,30 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       if (!evMarket) continue;
       applyConvergenceTierToStake(evMarket, scored.tier.kellyMultiplier);
     }
-    rawRes.mlFilter = new MLSafetyFilter().evaluate(
+    // [P0-3] safetyMode="penalty" (default) turns the former MLSafetyFilter hard
+    // rejects (odds-band, low-xG, draw-risk, derby/injury, upset-league, sharp
+    // fade, miscalibration) into market-FAMILY stake downgrades instead of
+    // fixture-wide kills — the compensating half of dismantling the hard
+    // rejects. "legacy" preserves the old hard-reject behavior via evaluate()'s
+    // early returns. The penaltySignals the filter surfaces feed
+    // familyPenaltyMultiplier per candidate, reusing applyConvergenceTierToStake's
+    // stake-scaling mechanic (multiplier is always in (0,1], so it never vetoes).
+    const safetyMode = this._config.safetyMode ?? "penalty";
+    const mlFilterResult = new MLSafetyFilter().evaluate(
       fetched as Record<string, unknown>,
       rawRes as unknown as Record<string, unknown>,
-      tel as Record<string, unknown>
+      tel as Record<string, unknown>,
+      { mode: safetyMode }
     );
+    rawRes.mlFilter = mlFilterResult;
+    if (safetyMode === "penalty") {
+      const penaltySignals = mlFilterResult.penaltySignals;
+      for (const evMarket of rawRes.evMarkets) {
+        if (evMarket.veto) continue;
+        const mult = familyPenaltyMultiplier(evMarket.cat, penaltySignals);
+        if (mult < 1) applyConvergenceTierToStake(evMarket, mult);
+      }
+    }
 
     await rag.addToStore(rawRes as unknown as Record<string, unknown>, {
       evMarkets: rawRes.evMarkets,
