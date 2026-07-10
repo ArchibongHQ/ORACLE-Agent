@@ -32,6 +32,7 @@ import type { V3EngineCtx, V3Price } from "./engines/types.js";
 import {
   gateAllMarkets,
   impliedQ,
+  V3_EV_FLOOR_DEFAULT,
   type V3AllMarketsAssessment,
   type V3AllMarketsPenaltyFlags,
 } from "./evGate.js";
@@ -128,6 +129,20 @@ export interface V3AllMarketsInput {
    *  (StatsOverride.refereeCardsRate). Never affects cardsAvgH/cardsAvgA,
    *  ctx.cards, or any priced cards outcome above — diagnostic-only input. */
   refereeCardsRate?: number;
+  /** [refactor P0-2] Market-anchored blend (v5 §5.8) — see OracleConfig.v3Blend
+   *  for the three-state contract. "off"/undefined ⇒ every gateAllMarkets call
+   *  below runs with its own blendMode default ("off"), byte-identical to
+   *  pre-P0-2 gating. */
+  blendMode?: "off" | "shadow" | "on";
+  /** [refactor P0-2] Weighted data-completeness, 0-1 SCALE (NOT the 0-100
+   *  scale scoreCompleteness/MarketsV3GateResult.completeness.score use —
+   *  producers must divide by 100 before setting this field). Absent ⇒ 0,
+   *  the strictest wModel posture (see evGate.ts's computeMarketBlend). */
+  completeness?: number;
+  /** [refactor P0-2] True when this fixture's λ inputs include CONFIRMED,
+   *  non-estimated xG (RunState.telemetry.xgMode === "empirical") — feeds
+   *  wModel's +0.10 term. Absent/false ⇒ no xG-provenance credit. */
+  hasRealXg?: boolean;
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -330,6 +345,15 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         edgeCap: input.edgeCap,
         noiseGate: input.noiseGate,
         heightened: input.heightened,
+        // Bug fix (review finding): evFloor was wired into gateAllMarkets'
+        // pass condition but never actually passed by this, its only live
+        // call site — the default was silently doing the work invisibly.
+        // Explicit here so the contract is visible; V3_EV_FLOOR_DEFAULT (0)
+        // is unchanged, so this is not a behavior change.
+        evFloor: V3_EV_FLOOR_DEFAULT,
+        blendMode: input.blendMode,
+        completeness: input.completeness,
+        hasRealXg: input.hasRealXg,
       });
 
       const assessment: V3MarketOutcomeAssessment = {
