@@ -2,6 +2,49 @@
 
 import type { FamilyLabel, MarketFamily } from "./markets/index.js";
 
+// [Wave 2, WS2-D + review cleanup] Canonically defined here (this package's
+// foundational leaf module, where DecisionContext already lives) rather than
+// in decision/index.ts — the original split had types.ts importing these
+// shapes back from decision/index.ts while decision/index.ts imported
+// DecisionContext from types.ts, a genuine circular reference between the
+// two files. decision/index.ts re-exports these three for backward compat.
+
+/** [WS2-D] Duck-typed mirror of @oracle/runtime's `FeedIntegrityVerdict`
+ *  shape (packages/runtime/src/feedIntegrity.ts, v5 Rule 0.14) — @oracle/
+ *  engine cannot import @oracle/runtime directly (circular dependency, same
+ *  reason DecisionContext.rawStatsBlock stays a bare Record below), so the
+ *  prompt builders accept this narrower shape instead of the real type.
+ *  Optional and purely additive — omission renders no FEED INTEGRITY section
+ *  (safe default, never a false "clean" claim). */
+export interface FeedIntegritySignal {
+  verdict: "clean" | "contaminated" | "flagged";
+  reason?: string;
+  detail?: string;
+}
+
+/** [WS2-D] v5 Phase 0.5 / §0.4 completeness signal — lets the prompt tell the
+ *  LLM what data was actually acquired/available for this fixture so its
+ *  confidence calibration accounts for data quality, not just the raw model
+ *  edge (v5 Rule 0 posture: thin data behind a big edge is the exact failure
+ *  mode the completeness gate exists to catch, not free money). Same
+ *  optional/additive/safe-default contract as FeedIntegritySignal above. */
+export interface DataCompletenessSignal {
+  /** 0–1 weighted completeness score, v5 §0.4's convention. */
+  score?: number;
+  acquired?: string[];
+  missing?: string[];
+}
+
+/** [WS2-D] Minimal, duck-typed mirror of marketsV3/sanity.ts's
+ *  `V3SanityResult` (v5 §5.6 — cap-rate/directional skew, computed once per
+ *  slate) — narrowed to just what the per-fixture arbiter needs to factor
+ *  the slate-wide picture into an individual ratify/override call. Optional/
+ *  additive/safe-default, same contract as the two signals above. */
+export interface SlateSanitySignal {
+  flags: string[];
+  capRate?: number | null;
+}
+
 /** The real value space of PickRef.market/EVMarket.market: FAMILY_LABEL display
  *  strings emitted by scanMarkets' `check()`, plus the two special-path literals
  *  set outside the family system (execution/index.ts scanAllMarketsFallback,
@@ -343,8 +386,12 @@ export interface OracleConfig {
   //              engine still runs at calibFactor=1.0 (no behaviour change)
   //   "on"     — write side settles + read side stamps state.ledger so the engine's
   //              calibFactor + isotonic 1x2 calibration activate live
+  //   "segment" — [Wave 2, WS2-A] like "on", but calibFactorFor resolves a
+  //              per-(league,family)-segment factor once that segment clears
+  //              its own significanceAcceptGate (minN 300, effect 0.002),
+  //              falling back to the existing global factor otherwise.
   // Default "shadow" (ORACLE_CALIBRATION_LEDGER) for the first 1-2 weeks.
-  calibrationLedger?: "off" | "shadow" | "on";
+  calibrationLedger?: "off" | "shadow" | "on" | "segment";
   // [refactor P0-2] Market-anchored blend (v5 §5.8): the de-vigged market price
   // is the prior, the model adjusts it. Three-state:
   //   "off"    — blend fields not computed (byte-identical to pre-P0-2 gating)
@@ -373,6 +420,23 @@ export interface OracleConfig {
   // S04 compression, S05 CLV survival) are zero-weighted — they'd otherwise
   // compute on air when the only odds source is the soft book being bet into.
   sharpFeedVerified?: boolean;
+  // [Wave 2, WS2-A] ISO date (e.g. "2026-07-10") marking the Wave-1 deploy —
+  // the P0-2/P0-3 pricing-behavior boundary. Per-segment calibration must only
+  // accumulate {n,wins,pSum} from picks whose BetRecord.epoch is on/after this
+  // date; pre-epoch records reflect the OLD pricing and would poison segment
+  // factors if mixed in. Sourced from ORACLE_CALIBRATION_EPOCH_START.
+  calibrationEpochStart?: string;
+  // [Wave 2, WS2-B] pi-ratings blended into goalsV3 lambda as a third factor.
+  // "shadow" (default) computes diagnostic deltas only — never applied to a
+  // live lambda — until the walk-forward harness clears +0.002 RPS; "on" only
+  // ever hand-set after that bar is cleared, never as a rollout default.
+  v3Ratings?: "off" | "shadow" | "on";
+  // [Wave 2, WS2-C] Sharp-reference odds feed (Odds API primary + Playwright/
+  // Google-AI-Mode fallback). "shadow" (default) persists CLV records
+  // ({pick_odds, sharp_fair_at_pick, sharp_fair_at_close}) without yet being
+  // the criterion that flips `sharpFeedVerified` — that flip requires the
+  // documented ≥95%-coverage-over-7-slates bar, checked separately.
+  sharpFeed?: "off" | "shadow" | "on";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
@@ -654,6 +718,17 @@ export interface DecisionContext {
    *  all-markets LLM executor tier (decision/marketExecutor.ts) when
    *  config.enableLlmMarketExecutor is on; ignored otherwise. */
   allMarkets?: AllMarketEntry[];
+  /** [Wave 2, WS2-A] v5 Rule 0.14 feed-integrity verdict for this fixture —
+   *  passed through to buildPrompt/buildArbiterPrompt (decision/index.ts,
+   *  WS2-D) when populated by the caller (batch/index.ts). Optional/additive;
+   *  omission means the prompt simply skips the FEED INTEGRITY section. */
+  integrity?: FeedIntegritySignal;
+  /** [Wave 2, WS2-A] v5 Phase 0.5 data-completeness signal for this fixture —
+   *  same optional/additive contract as `integrity` above. */
+  completeness?: DataCompletenessSignal;
+  /** [Wave 2, WS2-A] v5 §5.6 slate-wide sanity-check result, shared across
+   *  every fixture in the same batch run — same optional/additive contract. */
+  slateSanity?: SlateSanitySignal;
 }
 
 // ── §11A Agent Ops Contract ────────────────────────────────────────────────────

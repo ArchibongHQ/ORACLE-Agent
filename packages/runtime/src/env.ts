@@ -400,6 +400,21 @@ export function buildConfig(
     // flipped manually (ORACLE_SHARP_FEED_VERIFIED=true) only after the feed
     // meets its documented coverage criteria; gates ConvergenceScorer S02-S05.
     sharpFeedVerified: env.ORACLE_SHARP_FEED_VERIFIED?.toLowerCase() === "true",
+    // [refactor P0-1, Wave 2] ISO date marking the Wave-1 deploy — the P0-2/P0-3
+    // pricing-behavior boundary. Per-segment calibration (calibrationLedger
+    // "segment" mode) must only accumulate {n,wins,pSum} from picks stamped
+    // on/after this date; pre-epoch records reflect the OLD (pre-blend,
+    // pre-penalty) pricing and would poison segment factors if mixed in.
+    calibrationEpochStart: env.ORACLE_CALIBRATION_EPOCH_START?.trim() || "2026-07-10",
+    // [refactor P1-1, Wave 2] pi-ratings blend into goalsV3 lambda. Default
+    // shadow — diagnostic deltas only; live only after clearing the +0.002 RPS
+    // walk-forward significance bar (never hand-flipped, see plan's standing
+    // rules).
+    v3Ratings: parseTriState(env.ORACLE_V3_RATINGS, "shadow"),
+    // [refactor P1-4, Wave 2] Sharp-reference odds feed (Odds API primary +
+    // Playwright/Google-AI-Mode fallback). Default shadow — persists CLV
+    // records without yet being the criterion that flips sharpFeedVerified.
+    sharpFeed: parseTriState(env.ORACLE_SHARP_FEED, "shadow"),
   };
 }
 
@@ -414,12 +429,16 @@ function parseTriState(
   return dflt;
 }
 
-/** ORACLE_CALIBRATION_LEDGER → off|shadow|on. Default shadow (write-only, no live
- *  behaviour change) for the initial rollout window; explicit off disables the
- *  write side too. Unknown values fall back to the safe shadow default. */
-function parseCalibrationMode(raw: string | undefined): "off" | "shadow" | "on" {
+/** ORACLE_CALIBRATION_LEDGER → off|shadow|on|segment. Default shadow (write-only,
+ *  no live behaviour change) for the initial rollout window; explicit off
+ *  disables the write side too. [Wave 2] "segment" is the per-segment live mode
+ *  (WS2-A) — calibFactorFor returns a segment-specific factor once its gate
+ *  passes, global factor otherwise; ops flip to it only after verifying one
+ *  clean slate of dual raw_p/calib_p persistence post-Wave-2. Unknown values
+ *  fall back to the safe shadow default. */
+function parseCalibrationMode(raw: string | undefined): "off" | "shadow" | "on" | "segment" {
   const v = raw?.toLowerCase().trim();
-  if (v === "off" || v === "on") return v;
+  if (v === "off" || v === "on" || v === "segment") return v;
   return "shadow";
 }
 

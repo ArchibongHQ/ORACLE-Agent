@@ -31,10 +31,18 @@ export {
   expectedCalibrationError,
   isotonicCalibrateFp,
   logLoss,
+  makeCalibFactorResolver,
   plattScale,
+  SIGNIFICANCE_MIN_N,
+  segmentKey,
   significanceAcceptGate,
 } from "./calibration/index.js";
-export type { DecisionResult } from "./decision/index.js";
+export type {
+  DataCompletenessSignal,
+  DecisionResult,
+  FeedIntegritySignal,
+  SlateSanitySignal,
+} from "./decision/index.js";
 export {
   buildEligibleBets,
   decide,
@@ -92,6 +100,7 @@ export {
 export type { V3LambdaInput, V3Lambdas, V3TeamXg } from "./goalsV3/lambda.js";
 export {
   computeV3Lambdas,
+  ratingsBlendWeight,
   resolveRho,
   shrink,
   V3_LEAGUE_BASELINES,
@@ -290,7 +299,12 @@ export * from "./math/index.js";
 export type { PostmortemEntry, RAGEntry, RootCause } from "./rag/index.js";
 export { PostmortemRegistry, postmortemRegistry, RAGSystem, ROOT_CAUSES } from "./rag/index.js";
 export type { TeamRating } from "./ratings/index.js";
-export { TeamRatingsEngine } from "./ratings/index.js";
+export { buildRatingsLambdaInput, ratingsXgd, TeamRatingsEngine } from "./ratings/index.js";
+export type {
+  RatingsWalkForwardFixture,
+  RatingsWalkForwardResult,
+} from "./ratings/walkForward.js";
+export { runRatingsWalkForward } from "./ratings/walkForward.js";
 export * from "./regime/index.js";
 export type {
   ActionKind,

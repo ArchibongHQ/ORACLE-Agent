@@ -3,7 +3,8 @@
  *  LEAGUE_PARAMS, POPULAR_TEAMS, MarketMakerEngine all inlined.
  *  SensitivityEngine refactored as private method (recursive via this._run). */
 import type { StoragePort } from "@oracle/storage";
-import { isotonicCalibrateFp } from "../calibration/index.js";
+import type { CalibrationMetrics } from "../calibration/index.js";
+import { isotonicCalibrateFp, makeCalibFactorResolver } from "../calibration/index.js";
 import { type GbmModel, loadGbmModel, predictGbm } from "../gbm/index.js";
 import { devigTwoWay, FAMILY_LABEL, lookupMarket, type MarketFamily } from "../markets/index.js";
 import type {
@@ -668,7 +669,12 @@ export class ExecutionEngine {
   private scanMarkets(
     markets: MarketBook,
     _fp: { home: number; draw: number; away: number },
-    calibFactor: number,
+    // [Wave 2, WS2-A] Was a flat `calibFactor: number` — now a per-family
+    // resolver so "segment" mode can return a different factor per market
+    // family sharing this fixture's league. Every non-"segment" mode's
+    // resolver ignores `family` entirely and returns the same flat value
+    // regardless of input, so behavior is byte-identical there.
+    calibFactorFor: (family: MarketFamily) => number,
     bankroll: number,
     dqs: number,
     oddsData: Record<string, number>,
@@ -749,7 +755,7 @@ export class ExecutionEngine {
           councilPenalty,
           mVarMult,
           drawdownPenalty,
-          calibFactor,
+          calibFactorFor(cat),
           0.25,
           mp
         );
@@ -1190,7 +1196,10 @@ export class ExecutionEngine {
   private scanAllMarketsFallback(
     finalMat: Matrix,
     allMarkets: AllMarketEntry[] | undefined,
-    calibFactor: number,
+    // [Wave 2, WS2-A] Was a flat `calibFactor: number` — now a per-family
+    // resolver (family may be undefined for uncatalogued market ids, in which
+    // case the caller's resolver falls back to the plain global factor).
+    calibFactorFor: (family: MarketFamily | undefined) => number,
     bankroll: number,
     dqs: number,
     councilPenalty: boolean,
@@ -1229,7 +1238,7 @@ export class ExecutionEngine {
             councilPenalty,
             varMultiplier,
             drawdownPenalty,
-            calibFactor,
+            calibFactorFor(family),
             0.25,
             mp
           ),
@@ -1543,6 +1552,30 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       rawOddsPay ?? { home: homeOdds, draw: drawOdds, away: awayOdds }) as Record<string, number>;
 
     const league = String(fixture.league ?? "");
+
+    // [Wave 2, WS2-A] Per-(league,family)-segment calibFactor resolver — built
+    // once per fixture. For every mode except "segment" this is byte-identical
+    // to the pre-Wave-2 `ledger?.metrics?.calibFactor ?? 1.0` read every
+    // staking call site below used directly (verified via grep: leagueCalibFactors
+    // was computed in calibration/index.ts but never consumed at any call site
+    // in this file before this change). `ledger?.metrics` is the full
+    // CalibrationMetrics object cast down to RunState's narrow ledger type by
+    // analyze.ts's stamping step — safe to cast back here, same pattern this
+    // file already uses for other ledger.metrics fields (e.g. zipCoeffs/
+    // ahAccuracy below).
+    const calibMetricsForResolver: CalibrationMetrics =
+      (ledger?.metrics as unknown as CalibrationMetrics | undefined) ??
+      ({ calibFactor: 1.0, segmentCalibFactors: {}, leagueData: {} } as CalibrationMetrics);
+    const calibFactorResolver = makeCalibFactorResolver(calibMetricsForResolver, {
+      calibrationLedger: cfg.calibrationLedger,
+    });
+    // scanAllMarketsFallback prices uncatalogued market ids too, where `family`
+    // can be undefined — segment resolution needs a known family, so fall back
+    // to the plain global factor (same value every non-"segment" mode already
+    // returns for a KNOWN family too) rather than guessing a family.
+    const calibFactorForFamily = (family: MarketFamily | undefined): number =>
+      family ? calibFactorResolver(league, family) : calibMetricsForResolver.calibFactor;
+
     const lp: LeagueParam = {
       ...(LEAGUE_PARAMS[league] ?? LEAGUE_PARAMS.Default!),
       ...((ledger?.metrics?.bbnParams as Record<string, Partial<LeagueParam>> | undefined)?.[
@@ -1939,7 +1972,9 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
             councilPenalty,
             mc.varMultiplier,
             drawdownPenaltyFinal,
-            calibFactor,
+            // [Wave 2, WS2-A] match_result is the 1x2 family — byte-identical
+            // to the old flat `calibFactor` read for every mode except "segment".
+            calibFactorResolver(league, "match_result"),
             0.25,
             mp
           )
@@ -2111,7 +2146,7 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
     rawRes.evMarkets = this.scanMarkets(
       finalMkt,
       fp,
-      calibFactor,
+      (family) => calibFactorResolver(league, family),
       bankroll,
       dqs,
       oddsData,
@@ -2141,7 +2176,7 @@ softContext: 0-2 items: {"kind":"motivation","text":"...","source":"Gemini T3","
       const scanned = this.scanAllMarketsFallback(
         finalMat,
         allMarkets,
-        calibFactor,
+        calibFactorForFamily,
         bankroll,
         dqs,
         councilPenalty,

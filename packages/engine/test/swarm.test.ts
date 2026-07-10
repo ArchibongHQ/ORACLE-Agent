@@ -2,8 +2,13 @@
  *  Guarantees: swarm is disabled without a key/flag; aggregation is confidence-weighted;
  *  high divergence is flagged; swarm output is advisory softContext only (augment, not replace). */
 import { describe, expect, it, vi } from "vitest";
-import type { SwarmResult } from "../src/swarm/index.js";
-import { runSwarm, swarmToSoftContext, swarmWorkersForTier } from "../src/swarm/index.js";
+import type { SwarmResult, SwarmVote } from "../src/swarm/index.js";
+import {
+  computeDisagreementRate,
+  runSwarm,
+  swarmToSoftContext,
+  swarmWorkersForTier,
+} from "../src/swarm/index.js";
 import type { EVMarket, OracleConfig } from "../src/types.js";
 
 const baseConfig: OracleConfig = { geminiApiKey: "", claudeApiKey: "", bankroll: 1000 };
@@ -226,5 +231,71 @@ describe("swarmToSoftContext — augment, not replace", () => {
     };
     const items = swarmToSoftContext(result);
     expect(items.some((i) => i.text.includes("SWARM_HIGH_DIVERGENCE"))).toBe(true);
+  });
+});
+
+describe("computeDisagreementRate", () => {
+  const mkVote = (pick: string, confidence = 0.5): SwarmVote => ({
+    pick,
+    confidence,
+    rationale: "",
+    model: "kimi-k2.6",
+  });
+
+  it("returns 0 when every vote matches the consensus pick", () => {
+    const result: SwarmResult = {
+      consensusPick: "Over 2.5",
+      divergence: 0,
+      votes: [mkVote("Over 2.5"), mkVote("Over 2.5"), mkVote("Over 2.5")],
+      workers: 3,
+      model: "kimi-k2.6",
+      highDivergence: false,
+    };
+    expect(computeDisagreementRate(result)).toBe(0);
+  });
+
+  it("computes the unweighted dissent fraction, independent of vote confidence weighting", () => {
+    // 3-vs-2 split: 3 low-confidence votes for the consensus outweigh 2
+    // high-confidence dissenters on a WEIGHTED basis, but the unweighted
+    // disagreement rate is a plain headcount — 2/5, not confidence-derived.
+    const result: SwarmResult = {
+      consensusPick: "Over 2.5",
+      divergence: 0.2, // weighted metric — deliberately different from the 2/5 headcount below
+      votes: [
+        mkVote("Over 2.5", 0.3),
+        mkVote("Over 2.5", 0.3),
+        mkVote("Over 2.5", 0.3),
+        mkVote("Under 2.5", 0.9),
+        mkVote("Under 2.5", 0.9),
+      ],
+      workers: 5,
+      model: "kimi-k2.6",
+      highDivergence: false,
+    };
+    expect(computeDisagreementRate(result)).toBeCloseTo(2 / 5);
+  });
+
+  it("returns 1 when no vote matches the consensus pick", () => {
+    const result: SwarmResult = {
+      consensusPick: "NO_EDGE",
+      divergence: 1,
+      votes: [mkVote("Over 2.5"), mkVote("Under 2.5")],
+      workers: 2,
+      model: "kimi-k2.6",
+      highDivergence: true,
+    };
+    expect(computeDisagreementRate(result)).toBe(1);
+  });
+
+  it("returns 0 for an empty vote list rather than dividing by zero", () => {
+    const result: SwarmResult = {
+      consensusPick: "NO_EDGE",
+      divergence: 1,
+      votes: [],
+      workers: 0,
+      model: "kimi-k2.6",
+      highDivergence: false,
+    };
+    expect(computeDisagreementRate(result)).toBe(0);
   });
 });

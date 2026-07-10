@@ -21,6 +21,7 @@ import type {
 } from "@oracle/engine";
 import { isPopularTeam, lstmMarketDecoderProxy, RESOLUTION_SCHEMA_VERSION } from "@oracle/engine";
 import { resolvePythonBin } from "./fixtures.js";
+import type { SharpOddsRecord } from "./sharpFeed.js";
 import { namesMatch } from "./teamNames.js";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
@@ -33,8 +34,11 @@ const BASE_URL = "https://api.football-data.org/v4";
 const APIFOOTBALL_BASE = "https://v3.football.api-sports.io";
 const ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 
-// Odds API sport keys for CLV-eligible leagues
-const LEAGUE_TO_SPORT: Record<string, string> = {
+// Odds API sport keys for CLV-eligible leagues. Exported so sharpFeed.ts (and
+// its callers in apps/worker) can resolve the same sport-key mapping when
+// deciding whether Tier 1 (Odds API) of fetchSharpFairPrice applies to a
+// given league — single source of truth, not duplicated in a second map.
+export const LEAGUE_TO_SPORT: Record<string, string> = {
   "Premier League": "soccer_epl",
   "La Liga": "soccer_spain_la_liga",
   Bundesliga: "soccer_germany_bundesliga",
@@ -269,6 +273,31 @@ export function formatClv(clv: number): string {
   return `${clv >= 0 ? "+" : ""}${(clv * 100).toFixed(2)}pp`;
 }
 
+/**
+ * realisedSharpClv = 1/sharpFairAtClose − 1/sharpFairAtPick — the sharp-
+ * reference twin of computeRealisedClv, using ORACLE's own devigged sharp
+ * fair price (packages/runtime/src/sharpFeed.ts's fetchSharpFairPrice) at
+ * both ends instead of SportyBet's own closing line. This is genuine
+ * independent evidence of whether the market moved in ORACLE's favor —
+ * computeRealisedClv answers "did SportyBet's own line move", which isn't
+ * independent evidence since SportyBet is the book being bet into. The two
+ * metrics ADD to the ledger; neither replaces the other (see
+ * EnrichedResolutionRecord below, which carries both side by side).
+ * Same units/shape as computeRealisedClv (implied-probability pp, positive =
+ * favorable move), null whenever either endpoint is missing/invalid so a
+ * partially-captured pick (e.g. sharp_fair_at_close never landed because the
+ * closing-odds sweep missed its window) reports null rather than a
+ * misleading number computed from only one side.
+ */
+export function computeSharpReferenceClv(
+  sharpFairAtPick: number | null | undefined,
+  sharpFairAtClose: number | null | undefined
+): number | null {
+  if (sharpFairAtPick == null || sharpFairAtPick <= 1) return null;
+  if (sharpFairAtClose == null || sharpFairAtClose <= 1) return null;
+  return parseFloat((1 / sharpFairAtClose - 1 / sharpFairAtPick).toFixed(6));
+}
+
 /** SportyBet odds sometimes arrive as numeric strings (raw API passthrough) —
  *  coerce to a finite number or undefined, never NaN/Infinity. */
 function toNum(v: unknown): number | undefined {
@@ -309,8 +338,9 @@ async function resolveRecord(
   match: FDMatch,
   runId: string,
   oddsApiKey?: string,
-  closingSnapshot?: ClosingOddsSnapshot
-): Promise<ResolutionRecord | null> {
+  closingSnapshot?: ClosingOddsSnapshot,
+  sharpOddsRecord?: SharpOddsRecord
+): Promise<EnrichedResolutionRecord | null> {
   const { home: hGoals, away: aGoals } = match.score.fullTime;
   if (hGoals == null || aGoals == null) return null;
 
@@ -376,6 +406,20 @@ async function resolveRecord(
     }
   }
 
+  // Sharp-reference CLV (P1-4, Wave 2) — genuinely independent of
+  // realisedCLV above (which is only ever SportyBet's OWN closing line, not
+  // independent evidence). ADDS to the ledger; never gates on liquidityTag/
+  // CLV_ELIGIBLE the way realisedCLV does, since that gate exists to protect
+  // SportyBet's-own-line trust, which doesn't apply to an externally-sourced
+  // sharp reference — this is computed whenever both endpoints were captured,
+  // for any fixture.
+  const realisedSharpClv = sharpOddsRecord
+    ? computeSharpReferenceClv(
+        sharpOddsRecord.sharp_fair_at_pick,
+        sharpOddsRecord.sharp_fair_at_close
+      )
+    : null;
+
   return {
     fixtureId: record.fixtureId,
     runId,
@@ -390,13 +434,43 @@ async function resolveRecord(
     rpsContribution: parseFloat(rps.toFixed(6)),
     drawCalibrationPoint,
     resolvedAt: new Date().toISOString(),
+    pickOdds: sharpOddsRecord?.pick_odds ?? null,
+    sharpFairAtPick: sharpOddsRecord?.sharp_fair_at_pick ?? null,
+    sharpFairAtPickSource: sharpOddsRecord?.source ?? null,
+    sharpFairAtClose: sharpOddsRecord?.sharp_fair_at_close ?? null,
+    sharpFairAtCloseSource: sharpOddsRecord?.sharp_fair_at_close_source ?? null,
+    realisedSharpClv,
   };
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/** ResolutionRecord (packages/engine/src/types.ts) plus the sharp-reference
+ *  CLV fields (P1-4, Wave 2) — a superset, not a replacement, so every
+ *  existing consumer typed against ResolutionRecord[] keeps working
+ *  unchanged. Declared here (not in @oracle/engine's types.ts) to avoid
+ *  touching a shared engine file other concurrent Wave-2 workstreams may be
+ *  editing right now; see sharpFeed.ts's file header for why this workstream
+ *  couldn't just extend the dormant `sharp_consensus` plumbing instead. */
+export interface EnrichedResolutionRecord extends ResolutionRecord {
+  /** The price actually taken for this pick, when a SharpOddsRecord was
+   *  captured for it — null when no sharp-feed record exists for this
+   *  fixture (feed unavailable, or the pick predates this workstream). */
+  pickOdds: number | null;
+  sharpFairAtPick: number | null;
+  /** "odds_api" | "ai_mode_fallback" | "unavailable" | null (no record at all). */
+  sharpFairAtPickSource: string | null;
+  sharpFairAtClose: number | null;
+  sharpFairAtCloseSource: string | null;
+  /** computeSharpReferenceClv(sharpFairAtPick, sharpFairAtClose) — null until
+   *  both endpoints are captured. Coexists with realisedCLV; see that field's
+   *  own doc comment (packages/engine/src/types.ts) for why the two are not
+   *  interchangeable. */
+  realisedSharpClv: number | null;
+}
+
 export interface ResolveResult {
-  resolved: ResolutionRecord[];
+  resolved: EnrichedResolutionRecord[];
   unmatched: string[]; // fixtureIds with no match in the API response
 }
 
@@ -405,7 +479,8 @@ export async function resolveRecords(
   footballDataApiKey?: string,
   oddsApiKey?: string,
   apiFootballKey?: string,
-  closingSnapshotsByFixture?: Map<string, ClosingOddsSnapshot>
+  closingSnapshotsByFixture?: Map<string, ClosingOddsSnapshot>,
+  sharpOddsByFixture?: Map<string, SharpOddsRecord>
 ): Promise<ResolveResult> {
   if (!records.length) return { resolved: [], unmatched: [] };
 
@@ -432,7 +507,7 @@ export async function resolveRecords(
     }
   }
 
-  const resolved: ResolutionRecord[] = [];
+  const resolved: EnrichedResolutionRecord[] = [];
   const unmatched: string[] = [];
 
   for (const record of records) {
@@ -447,7 +522,8 @@ export async function resolveRecords(
       match,
       runId,
       oddsApiKey,
-      closingSnapshotsByFixture?.get(record.fixtureId)
+      closingSnapshotsByFixture?.get(record.fixtureId),
+      sharpOddsByFixture?.get(record.fixtureId)
     );
     if (rec) {
       resolved.push(rec);
@@ -537,7 +613,7 @@ export async function resolveUnmatchedViaWebSearch(
     });
   });
 
-  const resolved: ResolutionRecord[] = [];
+  const resolved: EnrichedResolutionRecord[] = [];
   const unmatched: string[] = [];
 
   for (const record of targets) {
@@ -570,6 +646,16 @@ export async function resolveUnmatchedViaWebSearch(
           realised: payload.actual_result === "draw" ? 1 : 0,
         },
         resolvedAt: new Date().toISOString(),
+        // No sharp-feed lookup on the web-search fallback path — this branch
+        // exists precisely for fixtures neither structured-results API could
+        // find, so there's no fixtureId to key a SharpOddsRecord lookup by
+        // that would be any more reliable.
+        pickOdds: null,
+        sharpFairAtPick: null,
+        sharpFairAtPickSource: null,
+        sharpFairAtClose: null,
+        sharpFairAtCloseSource: null,
+        realisedSharpClv: null,
       });
     } catch {
       unmatched.push(record.fixtureId);

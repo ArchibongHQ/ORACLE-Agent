@@ -6,13 +6,16 @@ import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS, withKeyLock } from "@oracle/storage";
 import type {
   ConfidenceGrade,
+  DataCompletenessSignal,
   DecisionContext,
   DecisionOutput,
   DecisionReplay,
   DecisionShadow,
   EVMarket,
+  FeedIntegritySignal,
   OracleConfig,
   PickRef,
+  SlateSanitySignal,
 } from "../types.js";
 import { type MarketExecutorRiskParams, runAllMarketsLlmExecutor } from "./marketExecutor.js";
 
@@ -95,8 +98,66 @@ function deterministicDecide(
 }
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
+// [review fix — circular-dependency cleanup] FeedIntegritySignal/
+// DataCompletenessSignal/SlateSanitySignal moved to types.ts (they're
+// re-exported from there below) — types.ts is this package's foundational
+// leaf module and DecisionContext already lives there; defining these three
+// shapes here made types.ts import back from decision/index.ts, inverting
+// the normal dependency direction. Re-exported here for backward compat with
+// any existing `import { FeedIntegritySignal } from "./decision/index.js"`.
+export type { DataCompletenessSignal, FeedIntegritySignal, SlateSanitySignal } from "../types.js";
 
-function buildPrompt(eligibleBets: EVMarket[], ctx: DecisionContext): string {
+/** [review fix — prompt-injection defense] FeedIntegritySignal.detail/reason
+ *  embed raw team-name substrings sourced from the unauthenticated scraped
+ *  SportyBet feed (see feedIntegrity.ts — e.g. `...odds-identical to SRL twin
+ *  "${key}"`). A malformed/spoofed feed could smuggle text resembling prompt
+ *  structure into this section. Impact is bounded (validateSelection only
+ *  admits picks from the enumerated eligible list, so no arbitrary pick can be
+ *  forced), but neutralize the soft-influence surface anyway: collapse all
+ *  whitespace/newlines to single spaces, defang `===` section-marker runs, and
+ *  hard-cap the length so an injected blob can't dominate the prompt. */
+function _sanitizePromptData(s: string, max = 200): string {
+  const cleaned = s.replace(/\s+/g, " ").replace(/={2,}/g, "=").trim();
+  return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+}
+
+function formatIntegrityLine(integrity: FeedIntegritySignal | undefined): string | undefined {
+  if (!integrity || integrity.verdict === "clean") return undefined;
+  const label = integrity.verdict === "contaminated" ? "CONTAMINATED" : "FLAGGED";
+  const detail = _sanitizePromptData(
+    integrity.detail ?? integrity.reason ?? "no further detail supplied"
+  );
+  return `${label} — ${detail}`;
+}
+
+/** Verdict-specific v5 Rule 0.14 guidance — CONTAMINATED (0.14a/b: SRL-twin or
+ *  headline mismatch) restricts the fixture to fixtures-sheet headline markets;
+ *  FLAGGED (0.14c: duplicate-block scan) is a softer "reduced trust" signal —
+ *  the fixture already reached this prompt because slateGate.ts's "on" mode
+ *  only hard-discards CONTAMINATED, not FLAGGED. */
+function integrityGuidance(verdict: FeedIntegritySignal["verdict"]): string {
+  return verdict === "contaminated"
+    ? "Only fixtures-sheet headline markets are trustworthy for this fixture — treat any other market data as unreliable and say so in your rationale."
+    : "Treat this fixture's detailed market data with reduced trust; if your pick or rationale relies on the disputed data, name the flag and lower confidence accordingly.";
+}
+
+function formatCompletenessLine(
+  completeness: DataCompletenessSignal | undefined
+): string | undefined {
+  if (!completeness) return undefined;
+  const scoreLine =
+    completeness.score !== undefined ? `${(completeness.score * 100).toFixed(0)}%` : "unknown";
+  const acquired = completeness.acquired?.length ? completeness.acquired.join(", ") : "none";
+  const missing = completeness.missing?.length ? completeness.missing.join(", ") : "none";
+  return `Score: ${scoreLine}  |  Acquired: ${acquired}  |  Missing: ${missing}`;
+}
+
+export function buildPrompt(
+  eligibleBets: EVMarket[],
+  ctx: DecisionContext,
+  integrity?: FeedIntegritySignal,
+  completeness?: DataCompletenessSignal
+): string {
   const {
     fixture,
     fp,
@@ -125,6 +186,11 @@ function buildPrompt(eligibleBets: EVMarket[], ctx: DecisionContext): string {
     .map((s) => `[${s.kind.toUpperCase()}] ${s.text}`)
     .join("\n");
 
+  const integrityLine = formatIntegrityLine(integrity);
+  const integrityGuidanceLine =
+    integrity && integrity.verdict !== "clean" ? integrityGuidance(integrity.verdict) : "";
+  const completenessLine = formatCompletenessLine(completeness);
+
   return `You are ORACLE's gated betting decision engine. Return ONLY valid JSON — no markdown, no preamble.
 
 === FIXTURE ===
@@ -140,7 +206,7 @@ ML Filter: ${mlAllowed ? "PASS" : "BLOCKED"}  |  Draw Risk: ${drawRisk}
 Ante-Post Debate Trigger: ${betTrigger}
 Portfolio Correlation: ${portfolioCorrelation !== null ? portfolioCorrelation.toFixed(3) : "N/A"}
 Hours to Kickoff: ${hoursToKO !== undefined ? hoursToKO.toFixed(1) : "unknown"}
-
+${integrityLine ? `\n=== FEED INTEGRITY (v5 Rule 0.14) ===\n${integrityLine}\n${integrityGuidanceLine}\n` : ""}${completenessLine ? `\n=== DATA COMPLETENESS (v5 Phase 0.5) ===\n${completenessLine}\n` : ""}
 === ELIGIBLE BETS (ranked by model score) ===
 ${betLines || "NONE"}
 ${softLines ? `\n=== SOFT CONTEXT ===\n${softLines}` : ""}
@@ -149,6 +215,8 @@ Accept (STRONG) when: convergence STRONG or MODERATE, mlAllowed=true, ev>4%, hou
 Grade LEAN when: betTrigger=RED without strong independent evidence, mlAllowed=false, portfolioCorrelation>0.6, or ev<5%
 Grade NO_EDGE when: ev<=0 — still return the best-ranked market in primaryPick
 MoneyLine picks forbidden when drawRisk=VERY_HIGH
+If a FEED INTEGRITY section above is present, treat it as instructed there and name the flag in your rationale — never pick a market as if the fixture were clean when it isn't.
+If a DATA COMPLETENESS section above is present, a low score is a reason to prefer LEAN over STRONG even when the raw edge looks strong — thin data behind a big edge is the exact failure mode Phase 0.5 exists to catch, not free money.
 Treat [STATS] soft-context lines (SportyBet form/standings/H2H/season goals/over-under/fixture-load) as real evidence, not background colour: when they reinforce the model-favoured side, that supports grading toward STRONG; when they contradict it (e.g. one-sided H2H or standings gap against the model's pick, heavy fixture congestion for the favourite), lower confidence accordingly or prefer altPick — you may only choose among the ELIGIBLE BETS above, never invent a market.
 
 === REQUIRED OUTPUT (JSON only, no other text) ===
@@ -216,16 +284,30 @@ function renderRawStatsBlock(block: Record<string, unknown> | undefined): string
   return lines.join("\n");
 }
 
-function buildArbiterPrompt(
+export function buildArbiterPrompt(
   eligibleBets: EVMarket[],
   ctx: DecisionContext,
   draft: DecisionOutput,
-  draftModel: string
+  draftModel: string,
+  integrity?: FeedIntegritySignal,
+  completeness?: DataCompletenessSignal,
+  slateSanity?: SlateSanitySignal
 ): string {
   const { fixture, fp, lambdaH, lambdaA, expectedScoreline, regime, softContext, rawStatsBlock } =
     ctx;
 
   const rawStatsLines = renderRawStatsBlock(rawStatsBlock);
+  const integrityStepLine = formatIntegrityLine(integrity) ?? "(no feed-integrity flags supplied)";
+  const completenessStepLine =
+    formatCompletenessLine(completeness) ?? "(no data-completeness signal supplied)";
+  const slateSanityStepLine =
+    slateSanity && slateSanity.flags.length > 0
+      ? `Slate-wide flags: ${slateSanity.flags.join(", ")}${
+          slateSanity.capRate != null
+            ? `  |  cap-rate=${(slateSanity.capRate * 100).toFixed(0)}%`
+            : ""
+        }`
+      : "(no slate-wide sanity flags supplied for this run — v5 §5.6 runs once per slate, not per fixture)";
   const statsLines = (softContext ?? [])
     .filter((s) => s.kind === "stats")
     .map((s) => `- ${s.text}`)
@@ -247,14 +329,24 @@ deterministic engine and upstream models produced and issue the FINAL pick — y
 the last checkpoint before this goes to the user, not a draft generator. Return ONLY
 valid JSON — no markdown, no preamble, no commentary outside the JSON object.
 
-Work through these five steps in order before you decide. Do not skip a step even if
+Work through these steps in order before you decide. Do not skip a step even if
 you think you already know the answer — each step exists to catch a different failure
 mode (stale stats, ignored injury news, a plausible-sounding rationale built on a math
-error, an engine number that doesn't match the market).
+error, an engine number that doesn't match the market, a contaminated feed, or a slate
+that's already showing a systematic bias).
 
 STEP 0 — RAW PER-CATEGORY DATA (form/standings/goals/H2H/xG/over-under/congestion/
 shots-corners-possession, straight from the source — not summarized into prose)
 ${rawStatsLines || "(none supplied)"}
+
+STEP 0.5 — FEED INTEGRITY & DATA COMPLETENESS (v5 Rule 0.14 / Phase 0.5)
+Feed integrity: ${integrityStepLine}
+Data completeness: ${completenessStepLine}
+If feed integrity is FLAGGED or CONTAMINATED, treat this fixture's disputed data as
+unreliable and name it in your rationale — a CONTAMINATED fixture's non-headline
+markets should not be ratified on the strength of that data. A low data-completeness
+score is a reason to prefer LEAN/NO_EDGE over STRONG even when the draft's raw edge
+looks strong.
 
 STEP 1 — STATS (does the hard data support a side?)
 ${statsLines || "(none supplied)"}
@@ -277,14 +369,23 @@ Poisson: λH=${lambdaH.toFixed(2)}  λA=${lambdaA.toFixed(2)}  xScore=${expected
 Eligible markets (ranked):
 ${betLines || "NONE — no positive-EV market exists for this fixture"}
 
+STEP 5 — SLATE SANITY (v5 §5.6 — directional/cap-rate skew, computed once for the whole
+day's run, not just this fixture)
+${slateSanityStepLine}
+This is a caution signal, not an automatic override: if this fixture's pick would
+reinforce an already-flagged slate-wide skew (e.g. another home-leaning result pick when
+result_skew_home is flagged), weigh that into your confidence and mention it in your
+rationale — it is not by itself grounds to override an otherwise-sound draft pick.
+
 === YOUR VERDICT ===
 Choose exactly one of:
-(a) RATIFY the draft pick as-is if steps 0-4 hold up under your own review.
+(a) RATIFY the draft pick as-is if steps 0-5 hold up under your own review.
 (b) OVERRIDE with a different market from the eligible list above if your review of
     steps 0-3 contradicts the draft (e.g. the raw data or news intel the draft
-    under-weighted, a stats signal pointing the other way, or a math/rationale
-    mismatch you caught in step 4). You may only choose a market that appears in the
-    eligible list — never invent one.
+    under-weighted, a stats signal pointing the other way, a math/rationale mismatch you
+    caught in step 4, a feed-integrity flag from step 0.5 the draft ignored, or a step-5
+    slate-sanity concern strong enough to change your confidence). You may only choose a
+    market that appears in the eligible list — never invent one.
 (c) FLAG missing data: if the raw-data, stats, and news-intel sections are too thin to
     support a confident verdict either way (e.g. all are "(none supplied)" or
     near-empty, or a key data point like lineups/injuries is conspicuously absent for a
@@ -327,7 +428,15 @@ async function arbitrate(
   }
 
   const draftModel = draft.replay?.model ?? "deterministic";
-  const prompt = buildArbiterPrompt(eligibleBets, ctx, draft.decision, draftModel);
+  const prompt = buildArbiterPrompt(
+    eligibleBets,
+    ctx,
+    draft.decision,
+    draftModel,
+    ctx.integrity,
+    ctx.completeness,
+    ctx.slateSanity
+  );
   const raw = await callClaudeCode(prompt, { timeoutMs: ARBITER_TIMEOUT_MS });
   const parsed = raw ? parseDecisionResponse(raw) : null;
 
@@ -541,7 +650,7 @@ async function decideInner(
   // Skip paid LLM tiers when context is missing
   if (!ctx) return deterministicDecide(eligibleBets);
 
-  const prompt = buildPrompt(eligibleBets, ctx);
+  const prompt = buildPrompt(eligibleBets, ctx, ctx.integrity, ctx.completeness);
   const geminiKey = config?.geminiApiKey ?? "";
   const openrouterKey = config?.openrouterApiKey ?? "";
 

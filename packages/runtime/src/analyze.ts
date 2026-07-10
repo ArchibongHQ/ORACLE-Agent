@@ -144,20 +144,25 @@ export async function runAnalysis(
   // each job's state.ledger so the engine's calibFactor + isotonic 1x2 calibration
   // (execution/index.ts:1709/1813) activate live; in "shadow" mode only log the
   // would-be metrics without applying (no behaviour change); "off" skips entirely.
+  // [Wave 2, WS2-A] "segment" stamps state.ledger exactly like "on" — the ledger
+  // still needs to be live for makeCalibFactorResolver's per-segment read to have
+  // anything to resolve against; only the READ (which factor gets picked, inside
+  // calibration/index.ts) differs between "on" and "segment", not whether the
+  // ledger is attached at all.
   // Fail-open: loadLedgerState returns null on any read/parse error → calibFactor 1.0.
   const calibMode = config.calibrationLedger ?? "shadow";
   if (calibMode !== "off") {
-    const ledgerState = await loadLedgerState(storage);
+    const ledgerState = await loadLedgerState(storage, config.calibrationEpochStart);
     if (ledgerState && ledgerState.metrics.resolvedCount > 0) {
       const summary = formatCalibrationMetrics(ledgerState.metrics);
-      if (calibMode === "on") {
+      if (calibMode === "on" || calibMode === "segment") {
         for (const job of jobs) {
           job.state = {
             ...(job.state ?? {}),
             ledger: ledgerState as unknown as NonNullable<FixtureJob["state"]>["ledger"],
           };
         }
-        process.stdout.write(`[calibration] ledger active — ${summary}\n`);
+        process.stdout.write(`[calibration] ledger active (${calibMode}) — ${summary}\n`);
       } else {
         process.stdout.write(`[calibration] shadow (not applied) — ${summary}\n`);
       }
@@ -390,7 +395,16 @@ export async function resolveDay(
   },
   date: string,
   webSearchFallback: { enabled?: boolean; minConsensus?: number } = {},
-  calibration: { mode?: "off" | "shadow" | "on"; maxLedger?: number } = {}
+  // [Wave-2, WS2-A] "segment" write-settles exactly like "on" (the `!== "off"`
+  // check below already covers it — no branch needed for the write side); only
+  // makeCalibFactorResolver's READ side (calibration/index.ts) resolves a
+  // per-segment factor differently. `epochStart` threads OracleConfig.
+  // calibrationEpochStart down to calculate()'s segment accumulation gate.
+  calibration: {
+    mode?: "off" | "shadow" | "on" | "segment";
+    maxLedger?: number;
+    epochStart?: string;
+  } = {}
 ): Promise<ResolveDayResult> {
   const allRecords = (await storage.get<AnalysisRecord[]>(STORAGE_KEYS.analysisRecords)) ?? [];
   const dayRecords = allRecords.filter((r) => r.kickoff.startsWith(date));
@@ -453,6 +467,7 @@ export async function resolveDay(
     try {
       const r = await appendResolvedToLedger(storage, resolved, dayRecords, {
         maxLedger: calibration.maxLedger,
+        epochStart: calibration.epochStart,
       });
       ledgerAppended = r.appended;
       calibrationMetrics = r.metrics;

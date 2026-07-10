@@ -7,7 +7,12 @@
  *  the daily-batch back-online trigger, and the --run-now one-shot flag. */
 
 import { join } from "node:path";
-import type { BatchResult, FixtureJobSuccess, RunManifest } from "@oracle/engine";
+import type {
+  BatchResult,
+  FeedIntegritySignal,
+  FixtureJobSuccess,
+  RunManifest,
+} from "@oracle/engine";
 import { buildNotifiers, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
   buildMarketsV3GateConfig,
@@ -106,6 +111,12 @@ export async function runDailyBatch(
   const sportyIndex = await loadSportyBetIndex(watDateString());
   logMemoryUsage("daily-batch:sportyIndex-loaded");
   let gatedJobs = jobs;
+  // [Wave 2, WS2-A follow-up] "flagged" (non-contaminated) fixtures survive the
+  // slate gate — this map lets batch/index.ts apply a fixture-wide stake
+  // downgrade for them via BatchOptions.integrityByFixture, keyed the same
+  // `${home}|${away}` way feedIntegrity.ts/slateGate.ts already use. Truly
+  // contaminated fixtures never reach here (discarded in prefilterMarketsV3Jobs).
+  let integrityByFixture: Record<string, FeedIntegritySignal> | undefined;
   if (config.enableMarketsV3 === "on" && config.marketsV3Gate !== false) {
     const {
       jobs: survivors,
@@ -113,9 +124,25 @@ export async function runDailyBatch(
       integrityReport,
     } = prefilterMarketsV3Jobs(jobs, sportyIndex?.detailByKey, buildMarketsV3GateConfig(env), {
       completenessV4: config.v3CompletenessV4,
+      // [review fix] config.feedIntegrity was never threaded through — this
+      // call always fell back to prefilterMarketsV3Jobs's own hardcoded "on"
+      // default regardless of ORACLE_FEED_INTEGRITY's actual value. Silently
+      // masked since the two defaults happen to match; a real bug the moment
+      // anyone sets the env var to "shadow" or "off".
+      feedIntegrity: config.feedIntegrity,
     });
     if (summary)
       process.stdout.write(`[markets-v3] ${formatSlateGateLog(summary, integrityReport)}\n`);
+    if (integrityReport?.results.length) {
+      integrityByFixture = {};
+      for (const r of integrityReport.results) {
+        integrityByFixture[r.fixtureKey] = {
+          verdict: r.verdict,
+          reason: r.reason,
+          detail: r.detail,
+        };
+      }
+    }
     if (survivors.length > 0) {
       gatedJobs = survivors;
     } else {
@@ -165,6 +192,7 @@ export async function runDailyBatch(
                 `[batch] ${analyzedSoFar + completed}/${gatedJobs.length}: ${current}\n`
               );
           },
+          integrityByFixture,
         },
       }
     );

@@ -11,13 +11,23 @@ import { join } from "node:path";
 import type { ClosingOddsSnapshot } from "@oracle/engine";
 import { sendTelegramDocument, sendTelegramText } from "@oracle/notify";
 import {
+  fetchSharpFairPrice,
   findSportyBetEventId,
   generateAndWriteFixtureWorkbook,
+  LEAGUE_TO_SPORT,
   loadSportyBetIndex,
+  SHARP_ODDS_STORAGE_KEY,
+  type SharpOddsRecord,
+  sharpOddsRecordId,
 } from "@oracle/runtime";
 import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
 import { awaitAcquireOrTimeout, trackAcquireJob } from "./acquireChain.js";
-import { type SweepCandidate, selectDueFixtures } from "./closingOddsSweep.js";
+import {
+  type SharpSweepCandidate,
+  type SweepCandidate,
+  selectDueFixtures,
+  selectDueSharpFixtures,
+} from "./closingOddsSweep.js";
 import {
   config,
   env,
@@ -402,6 +412,80 @@ export function runFotmobXgRefresh(): Promise<void> {
   );
 }
 
+// ── Sharp-reference fair-price capture — sharp_fair_at_pick (P1-4, Wave 2) ──
+// fetchSharpFairPrice's capture PRIMITIVE for the moment a pick's price is
+// first known. NOT wired into the real decision path from this file — the
+// place a pick's price actually first gets recorded is
+// packages/engine/src/batch/index.ts (AnalysisRecord creation) via
+// apps/worker/src/dailyBatch.ts, both owned by other concurrent Wave-2
+// workstreams and explicitly off-limits to WS2-C (see this workstream's task
+// brief). This function is the ready-to-call capture primitive those call
+// sites should invoke once a pick's {fixtureId, home, away, league, kickoff,
+// market, side, pickOdds} is known — callers MUST treat it as fire-and-forget
+// (`void captureSharpFairAtPick(pick)`, never an inline blocking await in a
+// per-fixture decision loop) since fetchSharpFairPrice's subprocess call can
+// take several seconds on the AI-Mode fallback tier. Fail-open: any sharp-
+// feed miss still persists a record with sharp_fair_at_pick:null,
+// source:"unavailable" — the pick itself is never blocked or delayed by this
+// (the caller already logged/priced the pick before invoking this), and a
+// persisted "unavailable" record still counts toward pick-coverage
+// accounting (sharpFeed.ts's computeSharpFeedCoverage) so a genuine feed
+// outage is visible in the ≥95% criterion rather than silently absent.
+export interface PickDecidedForSharpCapture {
+  fixtureId: string;
+  home: string;
+  away: string;
+  league: string;
+  kickoff: string;
+  market: string;
+  side: string;
+  pickOdds: number;
+}
+
+export async function captureSharpFairAtPick(pick: PickDecidedForSharpCapture): Promise<void> {
+  const storage = new MemoryAdapter(STORE_PATH);
+  const now = new Date().toISOString();
+
+  let fair: { fair: number; source: string } | null = null;
+  try {
+    fair = await fetchSharpFairPrice(pick.fixtureId, pick.market, pick.side, {
+      home: pick.home,
+      away: pick.away,
+      league: pick.league,
+      kickoff: pick.kickoff,
+      sportKey: LEAGUE_TO_SPORT[pick.league],
+      oddsApiKey: config.oddsApiKey,
+    });
+  } catch {
+    fair = null; // belt-and-braces — fetchSharpFairPrice already fails open
+  }
+
+  const record: SharpOddsRecord = {
+    id: sharpOddsRecordId(pick.fixtureId, pick.market, pick.side),
+    fixtureKey: pick.fixtureId,
+    market: pick.market,
+    side: pick.side,
+    pick_odds: pick.pickOdds,
+    sharp_fair_at_pick: fair?.fair ?? null,
+    sharp_fair_at_close: null,
+    source: fair?.source ?? "unavailable",
+    capturedAt: now,
+  };
+
+  try {
+    await storage.upsertBulk(
+      SHARP_ODDS_STORAGE_KEY,
+      [record as unknown as Record<string, unknown>],
+      "id"
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(
+      `[sharp-odds] failed to persist sharp_fair_at_pick for ${pick.fixtureId}: ${msg}\n`
+    );
+  }
+}
+
 // ── T-30m closing-odds sweep (every 5 min, PR-8a) ────────────────────────────
 // Persisted-state, periodically-swept design (not an in-memory setTimeout per
 // fixture): restart-safe by construction — every tick re-reads AnalysisRecords
@@ -438,11 +522,78 @@ function fetchClosingOddsSnapshot(
   );
 }
 
+/** sharp_fair_at_close capture (P1-4, Wave 2) — rides the same 25-35min
+ *  pre-kickoff tick as the SportyBet odds-only snapshot above, but is fully
+ *  independent: its own storage key (SHARP_ODDS_STORAGE_KEY), its own dedup
+ *  set, and it never touches closingOddsSnapshots. A fixture only advances
+ *  here if it already has a sharp_fair_at_pick record to attach the close
+ *  price to (see captureSharpFairAtPick) — nothing to do otherwise. Never
+ *  throws: any per-fixture fetchSharpFairPrice miss just leaves that record
+ *  without a close price for this tick, retried automatically next tick like
+ *  every other step in this sweep. */
+async function sweepSharpFairAtClose(
+  storage: MemoryAdapter,
+  candidates: SharpSweepCandidate[],
+  now: Date
+): Promise<void> {
+  if (candidates.length === 0) return;
+
+  const existing = (await storage.get<SharpOddsRecord[]>(SHARP_ODDS_STORAGE_KEY)) ?? [];
+  if (existing.length === 0) return; // nothing captured at pick-time yet — nothing to close out
+
+  const byId = new Map(existing.map((r) => [sharpOddsRecordId(r.fixtureKey, r.market, r.side), r]));
+  const alreadyClosed = new Set(
+    existing.filter((r) => r.sharp_fair_at_close != null).map((r) => r.fixtureKey)
+  );
+
+  const due = selectDueSharpFixtures(candidates, alreadyClosed, now);
+  if (due.length === 0) return;
+
+  let captured = 0;
+  for (const f of due) {
+    const record = byId.get(sharpOddsRecordId(f.fixtureId, f.market, f.side));
+    if (!record) continue; // no at-pick capture exists for this exact market/side
+
+    let result: { fair: number; source: string } | null = null;
+    try {
+      result = await fetchSharpFairPrice(f.fixtureId, f.market, f.side, {
+        home: f.home,
+        away: f.away,
+        league: f.league,
+        kickoff: f.kickoff,
+        sportKey: f.league ? LEAGUE_TO_SPORT[f.league] : undefined,
+        oddsApiKey: config.oddsApiKey,
+      });
+    } catch {
+      result = null; // belt-and-braces — fetchSharpFairPrice already fails open
+    }
+    if (!result) continue;
+
+    record.sharp_fair_at_close = result.fair;
+    record.sharp_fair_at_close_source = result.source;
+    record.closeCapturedAt = now.toISOString();
+    captured++;
+  }
+
+  if (captured > 0) {
+    await storage.set(SHARP_ODDS_STORAGE_KEY, existing);
+    process.stdout.write(
+      `[sharp-odds] captured sharp_fair_at_close for ${captured}/${due.length} due fixture(s)\n`
+    );
+  }
+}
+
 /** One sweep tick: find today's/yesterday's analysed fixtures currently 25-35
  *  min from kickoff that don't already have a snapshot, resolve their
  *  SportyBet eventId via today's sidecar index, batch-fetch odds-only, and
  *  upsert the results keyed by fixtureId. Never throws — every step degrades
- *  to "try again next tick" rather than aborting the cron daemon. */
+ *  to "try again next tick" rather than aborting the cron daemon.
+ *
+ *  Also runs the independent sharp_fair_at_close sweep (P1-4, Wave 2) —
+ *  see sweepSharpFairAtClose above — before the SportyBet-specific steps
+ *  below have a chance to early-return, so a fixture with nothing new for
+ *  the SportyBet snapshot (already captured, no eventId, etc.) still gets a
+ *  sharp-close attempt. */
 export async function closingOddsSweepJob(): Promise<void> {
   const storage = new MemoryAdapter(STORE_PATH);
   const today = watDateString();
@@ -450,15 +601,32 @@ export async function closingOddsSweepJob(): Promise<void> {
 
   const allRecords =
     (await storage.get<
-      Array<{ fixtureId: string; home: string; away: string; kickoff: string; analysedAt: string }>
+      Array<{
+        fixtureId: string;
+        home: string;
+        away: string;
+        league?: string;
+        kickoff: string;
+        analysedAt: string;
+        deterministicTopPick?: { market?: string; label?: string; odds?: number } | null;
+      }>
     >(STORAGE_KEYS.analysisRecords)) ?? [];
   // Coarse candidate narrowing only (today/yesterday tolerant, covers a kickoff
   // just after WAT midnight relative to when the record was analysed the prior
   // WAT day) — the real gate is selectDueFixtures' epoch-instant window check.
-  const candidates: SweepCandidate[] = allRecords.filter(
+  const todaysOrYesterdays = allRecords.filter(
     (r) => r.kickoff.startsWith(today) || r.kickoff.startsWith(yesterday)
   );
+  const candidates: SweepCandidate[] = todaysOrYesterdays;
   if (candidates.length === 0) return;
+
+  const sharpCandidates: SharpSweepCandidate[] = todaysOrYesterdays.map((r) => ({
+    ...r,
+    market: r.deterministicTopPick?.market,
+    side: r.deterministicTopPick?.label?.toLowerCase(),
+    pickOdds: r.deterministicTopPick?.odds,
+  }));
+  await sweepSharpFairAtClose(storage, sharpCandidates, new Date());
 
   const existingSnapshots =
     (await storage.get<ClosingOddsSnapshot[]>(STORAGE_KEYS.closingOddsSnapshots)) ?? [];

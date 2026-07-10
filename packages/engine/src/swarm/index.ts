@@ -170,6 +170,20 @@ export async function runSwarm(
   };
 }
 
+/** [Wave-2 P2-4 option (a)] Unweighted disagreement rate: the fraction of
+ *  swarm workers whose vote did NOT match the (confidence-weighted)
+ *  consensus pick. Distinct from SwarmResult.divergence, which is a
+ *  weight-share metric (1 - consensus's share of total confidence weight);
+ *  this is a plain headcount, useful as a second, weighting-independent
+ *  diagnostic signal — e.g. 5 workers all at confidence 0.9 could still be
+ *  a 3-vs-2 split with low weighted divergence but a real 40% disagreement
+ *  rate. Pure — no I/O, never throws. Returns 0 when there are no votes. */
+export function computeDisagreementRate(result: SwarmResult): number {
+  if (!result.votes.length) return 0;
+  const dissenting = result.votes.filter((v) => v.pick !== result.consensusPick).length;
+  return dissenting / result.votes.length;
+}
+
 /** Convert a swarm result into advisory SoftContextItems for the decision prompt. */
 export function swarmToSoftContext(result: SwarmResult): SoftContextItem[] {
   const observedAt = new Date().toISOString();

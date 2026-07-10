@@ -73,3 +73,67 @@ export function selectDueFixtures(
   }
   return due;
 }
+
+// ── Sharp-reference fair-price capture at T-30m (P1-4, Wave 2) ──────────────
+// Rides the SAME 25-35min pre-kickoff window as the SportyBet odds-only
+// snapshot above, but is a fully separate pure selection: a fixture only
+// needs a sharp_fair_at_close capture if it already has a sharp_fair_at_pick
+// record (dailyAcquisition.ts's captureSharpFairAtPick) AND we know which
+// market/side/price to re-price. Kept here (not inline in dailyAcquisition.ts)
+// for the same reason selectDueFixtures is: pure epoch-instant math, no
+// cron/execFile/storage imports, unit-testable in isolation.
+
+/** SweepCandidate plus the top-pick identity needed to re-price it via the
+ *  sharp feed. market/side/pickOdds are optional because not every
+ *  AnalysisRecord necessarily carries a resolvable deterministic top pick at
+ *  sweep time — a candidate missing any of them simply can't be sharp-swept
+ *  (selectDueSharpFixtures drops it, never throws). */
+export interface SharpSweepCandidate extends SweepCandidate {
+  league?: string;
+  market?: string;
+  side?: string;
+  pickOdds?: number;
+}
+
+export interface DueSharpFixture extends DueFixture {
+  league?: string;
+  market: string;
+  side: string;
+  pickOdds: number;
+}
+
+/** Same dedup-by-fixtureId + 25-35min window logic as selectDueFixtures,
+ *  additionally requiring a resolvable market/side/pickOdds (nothing to
+ *  re-price without them) and excluding fixtureIds whose SharpOddsRecord
+ *  already has a sharp_fair_at_close (alreadySharpClosed) — independent of
+ *  alreadySnapshotted above, since the two captures live in separate
+ *  storage. */
+export function selectDueSharpFixtures(
+  candidates: SharpSweepCandidate[],
+  alreadySharpClosed: ReadonlySet<string>,
+  now: Date = new Date()
+): DueSharpFixture[] {
+  const latestByFixture = new Map<string, SharpSweepCandidate>();
+  for (const c of candidates) {
+    const existing = latestByFixture.get(c.fixtureId);
+    if (!existing || c.analysedAt > existing.analysedAt) latestByFixture.set(c.fixtureId, c);
+  }
+
+  const due: DueSharpFixture[] = [];
+  for (const c of latestByFixture.values()) {
+    if (alreadySharpClosed.has(c.fixtureId)) continue;
+    if (!isDueForSnapshot(minutesToKickoff(c.kickoff, now))) continue;
+    if (!c.market || !c.side || c.pickOdds == null) continue;
+    due.push({
+      fixtureId: c.fixtureId,
+      home: c.home,
+      away: c.away,
+      kickoff: c.kickoff,
+      league: c.league,
+      market: c.market,
+      side: c.side,
+      pickOdds: c.pickOdds,
+    });
+  }
+  return due;
+}

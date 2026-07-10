@@ -233,6 +233,63 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-10** — Refactor Wave 2 (branch `feature/wave-2`, multi-workstream).
+  **Per-segment calibration** (`calibration/index.ts`): `ORACLE_CALIBRATION_LEDGER=segment`
+  mode accumulates `{n,wins,pSum}` factors scoped to `ORACLE_CALIBRATION_EPOCH_START`
+  (default `2026-07-10`, the Wave-1 P0-2/P0-3 pricing-behavior boundary) so
+  pre-epoch records don't poison segment factors derived from the new
+  blend/penalty pricing. **pi-ratings blend, WS2-B, built but UNWIRED**
+  (`ratings/index.ts`, `goalsV3/lambda.ts`, new `ratings/walkForward.ts`):
+  `TeamRatingsEngine`'s `PiStore` gained a per-team `n` sample counter
+  (`getPiN`, incremented in `updatePi`, missing `n` on old persisted data
+  defaults to 0); new pure `ratingsXgd(homePi, awayPi)` derives a
+  goal-difference-ish signal reusing `updatePi`'s own `/3` tanh
+  normalization, and `buildRatingsLambdaInput(engine, home, away)` packages
+  `{ratingsXgd, ratingsN}` for a caller. `goalsV3/lambda.ts`'s
+  `V3LambdaInput` carries `ratingsXgd`/`ratingsN`; `computeV3Lambdas` gained
+  a THIRD blend factor (after goals+xG, before HFA) behind
+  `opts.ratingsBlend` (default **false**, opposite default of `xgBlend` —
+  brand-new live-pricing input, opt-in only), weighted by new
+  `ratingsBlendWeight(n, shrinkN)` = `min(0.25, 0.25) * n/(n+shrinkN)` — a
+  HARD 0.25 ceiling that only asymptotically approaches, never reaches,
+  unlike `xgBlendWeight`'s 0.5-ceiling linear ramp that hits its cap exactly
+  at n=shrinkN. New `ratings/walkForward.ts` (`runRatingsWalkForward`)
+  wraps `rankedProbabilityScore` + `significanceAcceptGate` into a reusable
+  baseline-vs-candidate RPS harness. **As of this entry, NONE of this has a
+  call site anywhere in `batch/`/`execution/`/`goalsV3/`/`marketsV3/`** —
+  `opts.ratingsBlend` is never passed `true` by any caller yet, so
+  `computeV3Lambdas`'s live output is unchanged. `ORACLE_V3_RATINGS`
+  defaulting to `shadow` and actually wiring `buildRatingsLambdaInput` +
+  `opts.ratingsBlend: true` into a real call site is explicitly Wave-3 scope,
+  gated on the walk-forward harness clearing its +0.002 RPS bar against real
+  historical data first (see `buildRatingsLambdaInput`'s own JSDoc for the
+  exact contract). **Sharp feed + CLV persistence**
+  (`runtime/sharpFeed.ts`, new `tools/fetch_sharp_odds.py`): sharp-reference
+  odds capture (Odds API primary + Playwright/Google-AI-Mode fallback) gated
+  `ORACLE_SHARP_FEED` (default `shadow`), persisting CLV records without yet
+  flipping `sharpFeedVerified`. **v5 prompt adoption** (`decision/index.ts`):
+  decision-layer prompt cascade updated to the v5 spec. **Telemetry additions
+  (WS2-E, this entry's author)**: `runtime/columnFillReport.ts`'s
+  `buildColumnFillReport()` — pure per-slate stats/xG/odds column-fill
+  counter, run pre-pricing so data gaps are visible before completeness
+  downgrades happen silently; `swarm/index.ts`'s `computeDisagreementRate()`
+  — unweighted worker-dissent fraction, a second diagnostic alongside
+  `SwarmResult.divergence`'s confidence-weighted metric, exported for a
+  future ledger call site; `apps/worker/src/index.ts`'s new GBM
+  re-validation cron (Sunday 03:00 WAT, internally gated to ~4 gameweeks) —
+  runs `tools/gbm_residual.py` and logs the RPS-delta verdict vs the +0.002
+  accept gate; **strictly read-only w.r.t. config** — it never flips
+  `ORACLE_V3_RATINGS` or any other flag regardless of the result. See
+  `workflows/markets_v3.md`'s flag table for the three new Wave-2 flags
+  (`ORACLE_CALIBRATION_EPOCH_START`, `ORACLE_V3_RATINGS`, `ORACLE_SHARP_FEED`).
+  **Known Wave-2 gap** (not this workstream's to close): `FixtureJobSuccess`/
+  `BatchResult` (`batch/index.ts`) carry no per-fixture `safety.killCounts`
+  or `evGate.gateReason` tally — the daily fixture report
+  (`runtime/dailyFixtureReport.ts`) also runs at 09:30 WAT, before the
+  09:35 WAT pricing batch even executes, so it structurally cannot surface
+  either signal without either (a) a new post-batch report call site, or
+  (b) wiring into `runtime/report.ts` (the report that already receives
+  `BatchResult`) instead.
 - **2026-07-10** — Refactor Wave 1 (branch `feature/wave-1`, 6 commits). **P0-2
   market-anchored blend** (`marketsV3/evGate.ts`): `gateAllMarkets` now computes
   `wModel = min(0.40, 0.15 + 0.15·completeness + 0.10·realXg)`,
