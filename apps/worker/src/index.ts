@@ -30,12 +30,13 @@ import { runDailyBatch } from "./dailyBatch.js";
 import { printEffectiveConfig } from "./effectiveConfig.js";
 import { runGoalsBatch } from "./goalsAccumulator.js";
 import { resolveYesterdayFixtures } from "./resolveYesterday.js";
-import { config, env, MARKET_CATALOG_OVERLAY_PATH, ROOT } from "./workerContext.js";
+import { config, env, MARKET_CATALOG_OVERLAY_PATH, PYTHON_BIN, ROOT } from "./workerContext.js";
 import {
   HEARTBEAT_FILE,
   isLakeFreshForToday,
   logMemoryUsage,
   readFixtureReportState,
+  runPythonScript,
   WAT_TZ,
   watDateString,
   watMinutesSinceMidnight,
@@ -477,6 +478,88 @@ async function sendDailyPuntPrompt(retry: boolean): Promise<void> {
   }
 }
 
+// ── GBM re-validation (Wave-2 telemetry, WS2-E) ─────────────────────────────
+// tools/gbm_residual.py re-trains + walk-forward validates the residual GBM
+// against Pinnacle-devigged closing odds and reports the RPS delta vs the
+// +0.002 accept-gate threshold (PRD §8.3 / RPS_IMPROVEMENT_THRESHOLD in that
+// script). This is intentionally cadenced to ~4 gameweeks (~28 days), not
+// weekly: a gameweek's worth of new results barely moves a walk-forward RPS
+// estimate, so re-running every 7 days would just burn CPU/log noise for no
+// new signal. node-cron has no native "every N weeks" expression that stays
+// aligned across month boundaries (cron's day-of-month field can't express
+// "every 28 days" without drifting once months of differing length are
+// involved), so this uses the simpler, more robust combination: a WEEKLY cron
+// tick (same Sunday 03:00 WAT slot pattern as the other off-peak jobs in this
+// file) gated by an internal last-run timestamp — the job itself is a no-op
+// on any tick inside the 28-day window, and self-heals if a tick is missed
+// (a dead process across several Sundays just runs late on the next tick,
+// same back-online philosophy as the other staleness checks above).
+//
+// ⚠️ NON-NEGOTIABLE: this job NEVER flips ORACLE_V3_RATINGS, ORACLE_GBM_*, or
+// any other config flag, no matter what the validation reports. Per this
+// repo's standing rule, GBM/ratings graduate to shadow/live ONLY by a human
+// reading this log and clearing the +0.002 RPS significance bar by hand —
+// never by code. This job's ENTIRE job is to log the result somewhere a
+// human will see it; it must not import or call anything from env.ts,
+// workerContext.ts's config, or any flag-writing path.
+const GBM_REVALIDATION_STATE_FILE = join(ROOT, ".tmp", "gbm_revalidation_state.json");
+const GBM_REVALIDATION_INTERVAL_MS = 28 * 24 * 60 * 60 * 1000; // ~4 gameweeks
+
+function shouldRunGbmRevalidation(): boolean {
+  try {
+    const raw = readFileSync(GBM_REVALIDATION_STATE_FILE, "utf8");
+    const state = JSON.parse(raw) as { lastRunAt?: string };
+    if (!state.lastRunAt) return true;
+    return Date.now() - new Date(state.lastRunAt).getTime() >= GBM_REVALIDATION_INTERVAL_MS;
+  } catch {
+    return true; // no state file yet (first tick ever) or corrupt — run and (re)establish it
+  }
+}
+
+function writeGbmRevalidationState(): void {
+  try {
+    const tmpPath = `${GBM_REVALIDATION_STATE_FILE}.tmp`;
+    writeFileSync(
+      tmpPath,
+      JSON.stringify({ lastRunAt: new Date().toISOString() }, null, 2),
+      "utf8"
+    );
+    renameSync(tmpPath, GBM_REVALIDATION_STATE_FILE); // atomic, same pattern as writeProcessState above
+  } catch (err) {
+    process.stderr.write(`[gbm-revalidation] state write failed: ${String(err)}\n`);
+  }
+}
+
+/** Runs tools/gbm_residual.py to completion and logs its RPS-delta verdict.
+ *  Read-only w.r.t. config/flags — see the non-negotiable comment above. Same
+ *  best-effort execFile pattern as the other Python-tool crons in this repo
+ *  (see dailyAcquisition.ts's runFotmobXgRefresh): a failure here degrades to
+ *  a stderr log line, never throws, never takes down the worker daemon. */
+async function runGbmRevalidation(): Promise<void> {
+  if (!shouldRunGbmRevalidation()) {
+    process.stdout.write("[gbm-revalidation] skipped — last run within the 28-day window\n");
+    return;
+  }
+  const python = PYTHON_BIN;
+  const script = join(ROOT, "tools", "gbm_residual.py");
+  const start = Date.now();
+  const { err, stdout, stderr } = await runPythonScript(python, script, [], { cwd: ROOT });
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+  const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+  if (err) {
+    process.stderr.write(`[gbm-revalidation] FAILED after ${elapsed}s — ${err.message}\n`);
+    // Do NOT update the state timestamp on failure — a failed run should not
+    // block a retry on the next weekly tick from re-attempting sooner than 28 days.
+    return;
+  }
+  process.stdout.write(
+    `[gbm-revalidation] done in ${elapsed}s — see PASS/FAIL verdict above vs the +0.002 RPS ` +
+      "accept gate. Read-only: no flag was touched by this job regardless of the result.\n"
+  );
+  writeGbmRevalidationState();
+}
+
 // Cron daemon — skipped entirely in one-shot CLI mode (see IS_ONE_SHOT above) so a
 // single --run-* invocation exits cleanly instead of being held open by these timers.
 if (!IS_ONE_SHOT) {
@@ -610,6 +693,16 @@ if (!IS_ONE_SHOT) {
   // the hourly/10-min jobs above. Restart-safe: re-derives "who's due" from
   // storage every tick rather than tracking any in-memory per-fixture timer.
   cron.schedule("*/5 * * * *", () => logJob("closing-odds-sweep", closingOddsSweepJob), {
+    timezone: WAT_TZ,
+  });
+
+  // 10. GBM re-validation — Sunday 03:00 WAT (weekly cron tick, internally
+  // gated to ~4 gameweeks — see runGbmRevalidation's header comment for why
+  // this shape was chosen over trying to express "every 28 days" in cron
+  // syntax directly). Telemetry only: logs the tools/gbm_residual.py RPS-delta
+  // verdict vs the +0.002 accept gate. NEVER auto-enables ORACLE_V3_RATINGS or
+  // any other flag — see the loud warning on runGbmRevalidation itself.
+  cron.schedule("0 3 * * 0", () => logJob("gbm-revalidation@sun-03:00-WAT", runGbmRevalidation), {
     timezone: WAT_TZ,
   });
 }
