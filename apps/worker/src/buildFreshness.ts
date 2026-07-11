@@ -1,17 +1,23 @@
 /** Build-freshness watchdog — flags any workspace package whose dist/ predates
  *  its own src/, i.e. a `pnpm build` was skipped/forgotten before this deploy
- *  started. Compares the newest file mtime under each package's src/ against
- *  the newest under its dist/; a src that's newer by more than
+ *  started. Compares the newest dist/ file mtime against the last git commit
+ *  touching that package's src/; a src commit newer than dist by more than
  *  STALE_THRESHOLD_MS means the shipped dist is stale code.
  *
- *  Pure sync fs, no git dependency (a git-based "changed since last build"
- *  check would need a shell-out and a known last-build commit; mtimes are
- *  simpler and work identically for a Servy-managed service with no working
- *  git repo access). Never throws — checkBuildFreshness degrades to [] plus
- *  one console.warn on any fs error, so a misread here can never block worker
- *  startup (mirrors every other best-effort check in this app, e.g.
- *  effectiveConfig.ts's printEffectiveConfig). */
+ *  Git commit time is the truth source, not src file mtimes: a `git pull`
+ *  rewrites src mtimes to checkout time (and a turbo cache hit restores dist/
+ *  with its original archive mtimes), so mtime-vs-mtime cried wolf after every
+ *  pull even when the build was current. Deploy gaps always arrive via
+ *  commits, so commit time can't false-positive that way — the deliberate
+ *  trade is that uncommitted local src edits don't trigger the watchdog.
+ *  When git is unavailable (missing binary, not a repo), falls back to the
+ *  old mtime comparison with one console.warn so logs show which mode ran.
+ *  Never throws — checkBuildFreshness degrades to [] plus one console.warn on
+ *  any fs error, so a misread here can never block worker startup (mirrors
+ *  every other best-effort check in this app, e.g. effectiveConfig.ts's
+ *  printEffectiveConfig). */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -48,6 +54,25 @@ function newestMtimeMs(dir: string): number | null {
   return newest;
 }
 
+/** Epoch ms of the last commit touching `relPath` (forward-slash pathspec),
+ *  or null when git is unavailable, times out, errors, or the path has no
+ *  commit history — callers fall back to the mtime comparison on null. */
+function lastCommitMs(repoRoot: string, relPath: string): number | null {
+  try {
+    const out = execFileSync("git", ["log", "-1", "--format=%ct", "--", relPath], {
+      cwd: repoRoot,
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    if (!/^\d+$/.test(out)) return null;
+    return Number(out) * 1000;
+  } catch {
+    return null;
+  }
+}
+
 /** package.json's "name" field (e.g. "@oracle/engine") for the warning label,
  *  falling back to the "<group>/<dirName>" path when unreadable — the
  *  freshness signal itself is what matters, not the label. */
@@ -69,6 +94,7 @@ function packageName(repoRoot: string, group: string, dirName: string): string {
 export function checkBuildFreshness(repoRoot: string): string[] {
   try {
     const warnings: string[] = [];
+    let warnedFallback = false;
     for (const group of WORKSPACE_GROUPS) {
       const groupDir = join(repoRoot, group);
       let pkgDirs: string[];
@@ -85,7 +111,14 @@ export function checkBuildFreshness(repoRoot: string): string[] {
         const distDir = join(pkgRoot, "dist");
         if (!existsSync(srcDir) || !existsSync(distDir)) continue; // skip missing
 
-        const newestSrc = newestMtimeMs(srcDir);
+        let newestSrc = lastCommitMs(repoRoot, `${group}/${dirName}/src`);
+        if (newestSrc === null) {
+          if (!warnedFallback) {
+            console.warn("[build-freshness] git unavailable — falling back to mtime comparison");
+            warnedFallback = true;
+          }
+          newestSrc = newestMtimeMs(srcDir);
+        }
         const newestDist = newestMtimeMs(distDir);
         if (newestSrc === null || newestDist === null) continue;
 
