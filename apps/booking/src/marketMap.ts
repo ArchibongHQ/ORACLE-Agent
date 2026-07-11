@@ -8,6 +8,18 @@ export interface MarketMapping {
   sportyMarket: string;
   /** Text to match against the selection button label on SportyBet */
   sportySelection: string;
+  /** Numeric goal/handicap line parsed from the selection text, when this
+   *  market has one (e.g. "Over 1.5" -> 1.5, "Home -0.5" -> -0.5). Absent for
+   *  line-free markets (1X2, BTTS, Double Chance, ...) — resolveSelection.ts
+   *  uses its presence/absence to reject a candidate whose specifier doesn't
+   *  line up (or, for a line-free pick, carries a line at all). */
+  line?: number;
+  /** Canonical ORACLE market family, when known (same FAMILY_LABEL/
+   *  MARKET_CATALOG value space as @oracle/engine). Absent for the one
+   *  hand-rolled branch (Asian 2 Goals / "Asian Total Goals") whose market
+   *  has never been confirmed to exist live — see resolvePageTarget's
+   *  "NOT FOUND live" note below; left unclassified rather than guessed. */
+  family?: MarketFamily;
 }
 
 /** Normalise a string for fuzzy comparison (lowercase, strip punctuation). */
@@ -38,9 +50,12 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
 
   // ── 1x2 / Match Result ───────────────────────────────────────────────────
   if (c.includes("1x2") || c.includes("match result") || c.includes("full time result")) {
-    if (s.includes("home") || s.includes("1")) return { sportyMarket: "1X2", sportySelection: "1" };
-    if (s.includes("draw") || s === "x") return { sportyMarket: "1X2", sportySelection: "X" };
-    if (s.includes("away") || s.includes("2")) return { sportyMarket: "1X2", sportySelection: "2" };
+    if (s.includes("home") || s.includes("1"))
+      return { sportyMarket: "1X2", sportySelection: "1", family: "match_result" };
+    if (s.includes("draw") || s === "x")
+      return { sportyMarket: "1X2", sportySelection: "X", family: "match_result" };
+    if (s.includes("away") || s.includes("2"))
+      return { sportyMarket: "1X2", sportySelection: "2", family: "match_result" };
   }
 
   // ── Team Total (e.g. "Home Total Over 0.5") ──────────────────────────────
@@ -51,9 +66,19 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
     if (line && (s.includes("over") || s.includes("under"))) {
       const dir = s.includes("under") ? "Under" : "Over";
       if (s.includes("home"))
-        return { sportyMarket: "Home Team Total", sportySelection: `${dir} ${line}` };
+        return {
+          sportyMarket: "Home Team Total",
+          sportySelection: `${dir} ${line}`,
+          line: parseFloat(line),
+          family: "team_total",
+        };
       if (s.includes("away"))
-        return { sportyMarket: "Away Team Total", sportySelection: `${dir} ${line}` };
+        return {
+          sportyMarket: "Away Team Total",
+          sportySelection: `${dir} ${line}`,
+          line: parseFloat(line),
+          family: "team_total",
+        };
     }
   }
 
@@ -68,9 +93,17 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
   if (c.includes("asian") && c.includes("goal")) {
     const line = lineFrom(side);
     if (line && s.includes("over"))
-      return { sportyMarket: "Asian Total Goals", sportySelection: `Over ${line}` };
+      return {
+        sportyMarket: "Asian Total Goals",
+        sportySelection: `Over ${line}`,
+        line: parseFloat(line),
+      };
     if (line && s.includes("under"))
-      return { sportyMarket: "Asian Total Goals", sportySelection: `Under ${line}` };
+      return {
+        sportyMarket: "Asian Total Goals",
+        sportySelection: `Under ${line}`,
+        line: parseFloat(line),
+      };
   }
 
   // ── Goals Over/Under ─────────────────────────────────────────────────────
@@ -78,18 +111,28 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
     const line = lineFrom(side);
     if (line) {
       if (s.includes("over") || s.startsWith("o"))
-        return { sportyMarket: "Over/Under", sportySelection: `Over ${line}` };
+        return {
+          sportyMarket: "Over/Under",
+          sportySelection: `Over ${line}`,
+          line: parseFloat(line),
+          family: "goals_ou",
+        };
       if (s.includes("under") || s.startsWith("u"))
-        return { sportyMarket: "Over/Under", sportySelection: `Under ${line}` };
+        return {
+          sportyMarket: "Over/Under",
+          sportySelection: `Under ${line}`,
+          line: parseFloat(line),
+          family: "goals_ou",
+        };
     }
   }
 
   // ── Both Teams to Score ───────────────────────────────────────────────────
   if (c.includes("btts") || c.includes("both teams") || c.includes("gg")) {
     if (s.includes("yes") || s.includes("gg"))
-      return { sportyMarket: "Both Teams to Score", sportySelection: "Yes" };
+      return { sportyMarket: "Both Teams to Score", sportySelection: "Yes", family: "btts" };
     if (s.includes("no") || s.includes("ng"))
-      return { sportyMarket: "Both Teams to Score", sportySelection: "No" };
+      return { sportyMarket: "Both Teams to Score", sportySelection: "No", family: "btts" };
   }
 
   // ── Asian Handicap ────────────────────────────────────────────────────────
@@ -97,25 +140,37 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
     const lineMatch = s.match(/([+-]?[\d.]+)/);
     const line = lineMatch ? lineMatch[1] : "0";
     if (s.includes("home") || s.includes("ah home"))
-      return { sportyMarket: "Asian Handicap", sportySelection: `Home ${line}` };
+      return {
+        sportyMarket: "Asian Handicap",
+        sportySelection: `Home ${line}`,
+        line: parseFloat(line),
+        family: "asian_handicap",
+      };
     if (s.includes("away") || s.includes("ah away"))
-      return { sportyMarket: "Asian Handicap", sportySelection: `Away ${line}` };
+      return {
+        sportyMarket: "Asian Handicap",
+        sportySelection: `Away ${line}`,
+        line: parseFloat(line),
+        family: "asian_handicap",
+      };
   }
 
   // ── Double Chance ─────────────────────────────────────────────────────────
   if (c.includes("double chance") || c.includes("dc")) {
     if (s.includes("1x") || (s.includes("home") && s.includes("draw")))
-      return { sportyMarket: "Double Chance", sportySelection: "1X" };
+      return { sportyMarket: "Double Chance", sportySelection: "1X", family: "double_chance" };
     if (s.includes("x2") || (s.includes("away") && s.includes("draw")))
-      return { sportyMarket: "Double Chance", sportySelection: "X2" };
+      return { sportyMarket: "Double Chance", sportySelection: "X2", family: "double_chance" };
     if (s.includes("12") || (s.includes("home") && s.includes("away")))
-      return { sportyMarket: "Double Chance", sportySelection: "12" };
+      return { sportyMarket: "Double Chance", sportySelection: "12", family: "double_chance" };
   }
 
   // ── Draw No Bet ───────────────────────────────────────────────────────────
   if (c.includes("draw no bet") || c.includes("dnb")) {
-    if (s.includes("home")) return { sportyMarket: "Draw No Bet", sportySelection: "Home" };
-    if (s.includes("away")) return { sportyMarket: "Draw No Bet", sportySelection: "Away" };
+    if (s.includes("home"))
+      return { sportyMarket: "Draw No Bet", sportySelection: "Home", family: "dnb" };
+    if (s.includes("away"))
+      return { sportyMarket: "Draw No Bet", sportySelection: "Away", family: "dnb" };
   }
 
   // ── Win Either Half (e.g. "Win Either Half (H)" / "Win Either Half (A)") ──
@@ -123,19 +178,25 @@ export function mapMarket(cat: string, side: string | null): MarketMapping | nul
   if (c.includes("win either half")) {
     // normalise() strips parens, so "Win Either Half (H)" → "win either half h"
     if (s.endsWith(" h") || s.includes("home"))
-      return { sportyMarket: "Win Either Half", sportySelection: "Home" };
+      return { sportyMarket: "Win Either Half", sportySelection: "Home", family: "half" };
     if (s.endsWith(" a") || s.includes("away"))
-      return { sportyMarket: "Win Either Half", sportySelection: "Away" };
+      return { sportyMarket: "Win Either Half", sportySelection: "Away", family: "half" };
   }
 
   // ── First Half (e.g. "FH Under 1.5 Goals" / "FH Draw") ───────────────────
   // NOTE: label unverified live — see Asian 2 Goals note above.
   if (c.includes("first half")) {
-    if (s.includes("draw")) return { sportyMarket: "1st Half Result", sportySelection: "X" };
+    if (s.includes("draw"))
+      return { sportyMarket: "1st Half Result", sportySelection: "X", family: "half" };
     const line = lineFrom(side);
     if (line && (s.includes("over") || s.includes("under"))) {
       const dir = s.includes("under") ? "Under" : "Over";
-      return { sportyMarket: "1st Half Goals", sportySelection: `${dir} ${line}` };
+      return {
+        sportyMarket: "1st Half Goals",
+        sportySelection: `${dir} ${line}`,
+        line: parseFloat(line),
+        family: "half",
+      };
     }
   }
 
@@ -186,7 +247,18 @@ function catalogFallback(cat: string, side: string | null): MarketMapping | null
   const sideTrimmed = side.trim().toLowerCase();
   const findOutcome = (entry: (typeof MARKET_CATALOG)[number]): MarketMapping | null => {
     const matchedOutcome = entry.outcomes.find((o) => o.trim().toLowerCase() === sideTrimmed);
-    return matchedOutcome ? { sportyMarket: entry.name, sportySelection: matchedOutcome } : null;
+    if (!matchedOutcome) return null;
+    // Best-effort trailing-line extraction ("Over 1.5" -> 1.5, "Home (-0.5)"
+    // -> -0.5). Most catalog outcomes (Yes/No, Odd/Even, Home/Draw/Away) have
+    // no trailing digit and correctly come back line-free.
+    const lineMatch = matchedOutcome.trim().match(/([+-]?\d+(?:\.\d+)?)\s*\)?\s*$/);
+    const line = lineMatch?.[1] !== undefined ? parseFloat(lineMatch[1]) : undefined;
+    return {
+      sportyMarket: entry.name,
+      sportySelection: matchedOutcome,
+      family: entry.family,
+      ...(line !== undefined ? { line } : {}),
+    };
   };
 
   const family = FAMILY_BY_LABEL.get(normCat);
