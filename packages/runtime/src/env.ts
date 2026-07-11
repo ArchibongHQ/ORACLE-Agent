@@ -267,11 +267,11 @@ export function buildConfig(
     enableWebSearchResultsFallback:
       env.ENABLE_WEB_SEARCH_RESULTS_FALLBACK?.toLowerCase() !== "false",
     webResultsMinConsensus: Number(env.WEB_RESULTS_MIN_CONSENSUS ?? 2),
-    // T0 news intel + swarm — opt-in; on when the flag is set AND any provider key
-    // is present. Gemini-only enables the Google AI-Mode fallback (no Perplexity needed).
-    enableNewsIntel:
-      env.ENABLE_NEWS_INTEL?.toLowerCase() === "true" &&
-      (!!env.PERPLEXITY_API_KEY || !!env.GEMINI_API_KEY),
+    // T0 news intel + swarm — opt-in; on whenever the flag is set. No provider key
+    // is required: a missing key is never a blocker (owner rule) — keyless mode
+    // runs the Google AI-Mode scrape + local-Claude reshape ensemble tier instead
+    // of Perplexity Sonar/Gemini.
+    enableNewsIntel: env.ENABLE_NEWS_INTEL?.toLowerCase() === "true",
     enableSwarm: enableSwarmFlag && (!!env.KIMI_API_KEY || !!env.OPENROUTER_API_KEY),
     batchConcurrency,
     // Pre-analysis fixture cap — bounds per-run odds/LLM quota spend

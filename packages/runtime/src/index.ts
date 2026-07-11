@@ -163,7 +163,8 @@ export {
   formatMiniAccaAppendix,
   rollupCoverage,
 } from "./marketsV3/slateOutputs.js";
-export { enrichWithNewsIntel } from "./newsIntel.js";
+export type { NewsIntelYield } from "./newsIntel.js";
+export { enrichWithNewsIntel, enrichWithNewsIntelReport } from "./newsIntel.js";
 export type { CounterLeg, LegVerdict, PuntLeg } from "./punt.js";
 export {
   ADJUST_MIN_CONFIDENCE_DELTA,

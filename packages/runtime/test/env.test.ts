@@ -217,6 +217,25 @@ describe("buildConfig llmExecutorScope + enableLlmMarketExecutor (PR-23 tri-stat
   });
 });
 
+describe("buildConfig enableNewsIntel", () => {
+  it("defaults to false when the flag is unset", () => {
+    expect(buildConfig({}).enableNewsIntel).toBe(false);
+  });
+
+  it("is true when ENABLE_NEWS_INTEL=true even with no provider keys present — a missing key is never a blocker; keyless mode runs the Google AI-Mode + local-Claude ensemble tier", () => {
+    expect(buildConfig({ ENABLE_NEWS_INTEL: "true" }).enableNewsIntel).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(buildConfig({ ENABLE_NEWS_INTEL: "TRUE" }).enableNewsIntel).toBe(true);
+  });
+
+  it("stays false for any value other than 'true'", () => {
+    expect(buildConfig({ ENABLE_NEWS_INTEL: "false" }).enableNewsIntel).toBe(false);
+    expect(buildConfig({ ENABLE_NEWS_INTEL: "banana" }).enableNewsIntel).toBe(false);
+  });
+});
+
 describe("loadLakeBaselines (audit P0-2)", () => {
   const withTempJson = (content: string, fn: (path: string) => void) => {
     const dir = mkdtempSync(join(tmpdir(), "lake-baselines-"));
