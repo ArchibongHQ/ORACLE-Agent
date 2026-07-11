@@ -42,7 +42,7 @@ import {
   deriveLineHitRates,
   enrichWithH2H,
   enrichWithLineups,
-  enrichWithNewsIntel,
+  enrichWithNewsIntelReport,
   findSidecarDetail,
   generateAndWriteGoalsWorkbook,
   heightenedTrendsAligned,
@@ -59,7 +59,7 @@ import {
   sportyEventToFixtureJob,
 } from "@oracle/runtime";
 import { MemoryAdapter, STORAGE_KEYS } from "@oracle/storage";
-import { finalizeGoalsSelection } from "./goalsAccumulator.js";
+import { buildNewsIntelNote, finalizeGoalsSelection } from "./goalsAccumulator.js";
 import { config, env, goalsV3Config, ROOT, STORE_PATH } from "./workerContext.js";
 import { watDateString } from "./workerUtils.js";
 
@@ -404,9 +404,19 @@ export async function runGoalsBatchV3(
     preJobs.map((x) => x.job),
     config.footballDataApiKey
   );
-  const withNews = config.enableNewsIntel
-    ? await enrichWithNewsIntel(withH2H, { storage, cacheOnly: true })
-    : withH2H;
+  let withNews = withH2H;
+  let newsIntelNote: string;
+  if (config.enableNewsIntel) {
+    const report = await enrichWithNewsIntelReport(withH2H, { storage, cacheOnly: true });
+    withNews = report.jobs;
+    newsIntelNote = buildNewsIntelNote(report.yield);
+  } else {
+    newsIntelNote = buildNewsIntelNote({
+      attempted: 0,
+      enriched: 0,
+      disabledReason: "disabled (ORACLE_ENABLE_NEWS_INTEL=false)",
+    });
+  }
   const enrichedJobs = await enrichWithLineups(withNews);
 
   // ── Phase 0 — weighted completeness gate ─────────────────────────────────
@@ -577,9 +587,17 @@ export async function runGoalsBatchV3(
     );
   }
 
-  await finalizeGoalsSelection(selection, date, analysisErrors, trigger, {
-    arbiterStatus: verdicts.status,
-    cappedCount: cappedLog.length,
-    sanityLine: goalsSanityLine,
-  });
+  await finalizeGoalsSelection(
+    selection,
+    date,
+    analysisErrors,
+    trigger,
+    {
+      arbiterStatus: verdicts.status,
+      cappedCount: cappedLog.length,
+      sanityLine: goalsSanityLine,
+      arbiterModel: verdicts.model,
+    },
+    newsIntelNote
+  );
 }

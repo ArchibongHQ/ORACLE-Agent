@@ -155,6 +155,51 @@ describe("buildAnalysisModelNote", () => {
   it("returns undefined for an empty slip", () => {
     expect(buildAnalysisModelNote([])).toBeUndefined();
   });
+
+  describe("v3 goals slate-arbiter honesty (opts.arbiter)", () => {
+    it("reports the deterministic engine + arbiter split when every leg is null and the arbiter verified", () => {
+      const note = buildAnalysisModelNote([null, null, null], {
+        arbiter: { status: "verified", model: "claude-code-arbiter" },
+      });
+      expect(note).toMatch(/deterministic v3 engine priced all 3 leg\(s\)/);
+      expect(note).toMatch(/slate arbiter \(claude-code-arbiter\) reviewed the slate/);
+      expect(note).not.toMatch(/Claude NOT used/);
+      expect(note).not.toMatch(/Claude unavailable/);
+    });
+
+    it("does not contradict itself: no 'Claude unavailable' claim when the arbiter actually ran", () => {
+      const note = buildAnalysisModelNote([null, null], {
+        arbiter: { status: "verified", model: "claude-code-arbiter" },
+      });
+      expect(note).not.toMatch(/unavailable/);
+    });
+
+    it("falls back to honest 'no LLM tier ran' plus an arbiter-failure caveat when the arbiter is unverified", () => {
+      const note = buildAnalysisModelNote([null, null], {
+        arbiter: { status: "unverified" },
+      });
+      expect(note).toMatch(/Claude NOT used/);
+      expect(note).toMatch(/no LLM tier ran/);
+      expect(note).toMatch(/Slate arbiter also did not verify/);
+    });
+
+    it("leaves the no-opts null-model behavior byte-identical (regression pin)", () => {
+      const withoutOpts = buildAnalysisModelNote([null, null]);
+      const withUndefinedArbiter = buildAnalysisModelNote([null, null], {});
+      expect(withoutOpts).toBe(withUndefinedArbiter);
+      expect(withoutOpts).toMatch(/Claude NOT used/);
+      expect(withoutOpts).toMatch(/deterministic engine only/);
+      expect(withoutOpts).not.toMatch(/Slate arbiter/);
+    });
+
+    it("does not apply the arbiter branch on a mixed (non-goals) slip even if opts.arbiter is passed", () => {
+      const note = buildAnalysisModelNote(["claude-opus-4-8", "gemini-3.5-flash", null], {
+        arbiter: { status: "verified", model: "claude-code-arbiter" },
+      });
+      expect(note).toMatch(/Claude on 1\/3/);
+      expect(note).not.toMatch(/Slate arbiter/);
+    });
+  });
 });
 
 describe("formatSummaryText analysisModelNote", () => {
@@ -208,6 +253,50 @@ describe("formatSummaryText/formatSummaryHtml marketCoverageNote (PR-20)", () =>
     expect(formatSummaryHtml(withCoverage)).toMatch(
       /markets: 100 total \/ 80 routed \/ 70 priced \/ 5 gate-passed/
     );
+  });
+});
+
+describe("formatSummaryText/formatSummaryHtml newsIntelNote", () => {
+  it("renders without throwing and omits the note when newsIntelNote is absent", () => {
+    expect(() => formatSummaryText(sampleSummary)).not.toThrow();
+    expect(() => formatSummaryHtml(sampleSummary)).not.toThrow();
+    expect(formatSummaryText(sampleSummary)).not.toMatch(/news intel/);
+    expect(formatSummaryHtml(sampleSummary)).not.toMatch(/news intel/);
+  });
+
+  it("renders the news-intel yield line when present, in both text and HTML output", () => {
+    const withNews: BatchSummary = {
+      ...sampleSummary,
+      newsIntelNote: "📰 news intel: 12/30 enriched",
+    };
+    expect(formatSummaryText(withNews)).toMatch(/📰 news intel: 12\/30 enriched/);
+    expect(formatSummaryHtml(withNews)).toMatch(/📰 news intel: 12\/30 enriched/);
+  });
+
+  it("renders the disabledReason variant", () => {
+    const disabled: BatchSummary = {
+      ...sampleSummary,
+      newsIntelNote: "📰 news intel: disabled (ORACLE_ENABLE_NEWS_INTEL=false)",
+    };
+    expect(formatSummaryText(disabled)).toMatch(/📰 news intel: disabled/);
+  });
+});
+
+describe("formatSummaryText/formatSummaryHtml staleBuildNote", () => {
+  it("renders without throwing and omits the note when staleBuildNote is absent", () => {
+    expect(() => formatSummaryText(sampleSummary)).not.toThrow();
+    expect(() => formatSummaryHtml(sampleSummary)).not.toThrow();
+    expect(formatSummaryText(sampleSummary)).not.toMatch(/build freshness/);
+    expect(formatSummaryHtml(sampleSummary)).not.toMatch(/build freshness/);
+  });
+
+  it("renders the stale-build watchdog line when present, in both text and HTML output", () => {
+    const withStale: BatchSummary = {
+      ...sampleSummary,
+      staleBuildNote: "⚠️ build freshness: @oracle/engine dist STALE (src > dist by 4200s)",
+    };
+    expect(formatSummaryText(withStale)).toMatch(/⚠️ build freshness: @oracle\/engine dist STALE/);
+    expect(formatSummaryHtml(withStale)).toMatch(/⚠️ build freshness: @oracle\/engine dist STALE/);
   });
 });
 

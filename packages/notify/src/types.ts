@@ -67,6 +67,19 @@ export interface BatchSummary {
    *  tail's size, never suppresses picks. Present only when v3 ran with
    *  ORACLE_MARKETS_COVERAGE on (default). */
   marketCoverageNote?: string;
+  /** News-intel enrichment yield for this run — "📰 news intel: X/Y enriched"
+   *  or "📰 news intel: <disabledReason>" when enrichment was skipped
+   *  entirely. Built by the worker from the news-enrichment call it made
+   *  (apps/worker's goalsAccumulator.ts/goalsV3Pipeline.ts) — never suppresses
+   *  picks, purely a coverage-visibility line. Absent when the caller made no
+   *  news-intel call for this run. */
+  newsIntelNote?: string;
+  /** Build-freshness watchdog line (apps/worker's buildFreshness.ts) — set
+   *  when a workspace package's dist/ predates its own src/ by more than the
+   *  watchdog's staleness threshold, i.e. a rebuild was likely skipped before
+   *  this deploy. Already carries its own "⚠️" prefix (set at the source —
+   *  see buildFreshness.ts). Absent when every package's dist is fresh. */
+  staleBuildNote?: string;
 }
 
 /** Build the "which model did the final analysis" attribution line for a goals
@@ -76,8 +89,23 @@ export interface BatchSummary {
  *  When some/all legs fell through to a non-Claude tier, the note says so and
  *  gives the implied reason (Claude tier unavailable/unreached for that fixture),
  *  per the owner requirement that the Telegram message state when Claude was and
- *  wasn't used and why. Returns undefined for an empty slip. */
-export function buildAnalysisModelNote(models: (string | null | undefined)[]): string | undefined {
+ *  wasn't used and why. Returns undefined for an empty slip.
+ *
+ *  `opts.arbiter`, when given, is the v3 goals-slate arbiter's outcome
+ *  (packages/runtime/src/goalsV3/slateArbiter.ts's reviewGoalsSlate result —
+ *  `status` is "verified"/"unverified", `model` is "claude-code-arbiter" when
+ *  that single slate-level Claude call actually ran). The v3 goals engine has
+ *  NO per-fixture LLM by design (every leg's decisionReplay.model is null),
+ *  so before this option existed every v3 goals slip printed "no LLM tier ran
+ *  … Claude unavailable" even when the arbiter had just reviewed the same
+ *  slate — a stated contradiction against the "✅ Slate arbiter: reviewed"
+ *  line rendered immediately below it (formatSummaryText). When every leg is
+ *  null AND the arbiter verified, this reports the true division of labor
+ *  instead of the false "Claude unavailable" claim. */
+export function buildAnalysisModelNote(
+  models: (string | null | undefined)[],
+  opts?: { arbiter?: { status: string; model?: string } }
+): string | undefined {
   if (models.length === 0) return undefined;
   const isClaude = (m: string | null | undefined) => !!m && m.toLowerCase().startsWith("claude");
   const claudeCount = models.filter(isClaude).length;
@@ -90,11 +118,22 @@ export function buildAnalysisModelNote(models: (string | null | undefined)[]): s
     return `🧠 Final analysis: Claude (${[...new Set(models as string[])].join(", ")}) on all ${total} leg(s).`;
   }
   if (claudeCount === 0) {
+    const allNullAndArbiterRan = noneAttr === total && !!opts?.arbiter;
+    if (allNullAndArbiterRan && opts?.arbiter?.status === "verified") {
+      const arbiterModel = opts.arbiter.model ?? "claude-code-arbiter";
+      return `🧠 Final analysis: deterministic v3 engine priced all ${total} leg(s); slate arbiter (${arbiterModel}) reviewed the slate.`;
+    }
     const why =
       others.length > 0
         ? `Claude decision tier not reached — analysed by ${others.join(", ")} (cascade fell through: Claude key/quota unavailable or call failed, used next tier).`
         : `no LLM tier ran (deterministic engine only) — Claude unavailable for these fixtures.`;
-    return `🧠 Final analysis: Claude NOT used. ${why}`;
+    // Arbiter genuinely failed/skipped (fail-open, unverified) — still honest
+    // about "no LLM tier ran" per-leg, but states why the arbiter itself
+    // didn't verify rather than leaving that unexplained.
+    const arbiterCaveat = allNullAndArbiterRan
+      ? " Slate arbiter also did not verify this run (fail-open — slate unchanged)."
+      : "";
+    return `🧠 Final analysis: Claude NOT used. ${why}${arbiterCaveat}`;
   }
   const parts = [
     `🧠 Final analysis: Claude on ${claudeCount}/${total} leg(s).`,
@@ -186,6 +225,8 @@ export function formatSummaryText(s: BatchSummary): string {
   if (s.analysisModelNote) lines.push(`\n${s.analysisModelNote}`);
   if (s.sanityNote) lines.push(`\n${s.sanityNote}`);
   if (s.marketCoverageNote) lines.push(`\n${s.marketCoverageNote}`);
+  if (s.newsIntelNote) lines.push(`\n${s.newsIntelNote}`);
+  if (s.staleBuildNote) lines.push(`\n${s.staleBuildNote}`);
   if (s.arbiterStatus) {
     lines.push(
       s.arbiterStatus === "verified"
@@ -239,6 +280,8 @@ ${
 ${s.analysisModelNote ? `<p><em>${s.analysisModelNote}</em></p>` : ""}
 ${s.sanityNote ? `<p><em>${s.sanityNote}</em></p>` : ""}
 ${s.marketCoverageNote ? `<p><em>${s.marketCoverageNote}</em></p>` : ""}
+${s.newsIntelNote ? `<p><em>${s.newsIntelNote}</em></p>` : ""}
+${s.staleBuildNote ? `<p><em>${s.staleBuildNote}</em></p>` : ""}
 ${
   s.bookingCode
     ? `<p><strong>🎟 SportyBet Booking Code: <code>${s.bookingCode}</code></strong><br>
