@@ -234,6 +234,19 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-11** — Wave-4-accuracy (branch `feature/wave-4-accuracy`). Fixes the 2026-07-10 live
+  pathologies. **Kelly staking wired** — `analyzeFixtureMarketsV3` picks now carry real
+  `optimizedKelly` stakes via `v3AssessmentsToEvMarkets` (was hardcoded `stake:0` → every pick
+  reported 0.0% Kelly). **Market-anchored blend pricing on ALL candidates** (`ORACLE_V3_BLEND_PRICING`,
+  default on) — `evGate.ts` gains `CLASS_GATE_BLEND`/`CLASS_GATE_BLEND_HEIGHTENED` (rescaled ~1/3 raw
+  bars; heightened ×1.30; Class X unreachable by construction); gates/EV/confidence/ranking/stake use
+  blended values, caps+noise stay on RAW edge (hard invariant). Kills fake soft-market edges (HSH).
+  **Totals empirical blend** (`ORACLE_V3_TOTALS_EMPIRICAL`, default on) — goals O/U 1.5/2.5/3.5 blend
+  hit-rates (goals counter only). **Eligibility rework** (`goalsV3/eligibility.ts`) — league whitelist
+  demoted to non-gating `off_whitelist`; WC/internationals included; friendlies restricted to
+  goals-Over markets (not discarded); derby→heightened. **News intel keyless** + real yield reporting.
+  **Booking** anchored matcher (no wrong-market binds). **v5.1 prompt doc** + parity tests
+  (`packages/{engine,runtime}/test/promptDocParity.test.ts`) make doc/constant drift a CI failure.
 - **2026-07-10** — Refactor Wave 3, WS3-C hygiene sweep (branch `feature/wave-3`, P2-2/P2-3,
   comment-only — no executable-logic changes). `math/index.ts`: distinguished the §8.2 Skellam
   cross-check's Wilkens (2026) citation — **verified** (standard result: independent-Poisson goal

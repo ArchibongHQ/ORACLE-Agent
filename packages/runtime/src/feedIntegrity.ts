@@ -57,14 +57,14 @@ export interface MarketsBlockEntry {
  *  offer 1X2 + one O/U line) is coincidence, not contamination. The France v
  *  Morocco incident had 736 shared rows; 20 is a conservative floor well
  *  below any real accidental-overlap scenario for a full markets catalogue. */
-const MIN_MEANINGFUL_PAIRED_ENTRIES = 20;
+export const MIN_MEANINGFUL_PAIRED_ENTRIES = 20;
 
 /** ≥90% odds identity across the paired markets ⇒ contaminated (v5 Rule 0.14a). */
-const SRL_TWIN_IDENTITY_RATIO = 0.9;
+export const SRL_TWIN_IDENTITY_RATIO = 0.9;
 
 /** Relative tolerance for the fixtures-sheet vs markets-tab 1X2 cross-check —
  *  absorbs book rounding to 2dp without absorbing a genuinely different price. */
-const HEADLINE_TOLERANCE = 0.02;
+export const HEADLINE_TOLERANCE = 0.02;
 
 function entryKey(e: MarketsBlockEntry): string {
   return `${e.market}|${e.specifier ?? ""}|${e.outcome}`;
