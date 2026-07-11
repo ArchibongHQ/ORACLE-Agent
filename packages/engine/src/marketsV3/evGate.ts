@@ -116,6 +116,49 @@ export const V3_BLEND_W_CAP = 0.4;
 export const V3_BLEND_GATE_ODDS_FLOOR = 4.0;
 export const V3_BLEND_MIN_EDGE = 0.05;
 
+/** [Wave 4-accuracy] v3BlendPricing (OracleConfig.v3BlendPricing) rescaled
+ *  class bars — active ONLY when gateAllMarkets' opts.blendPricing is true.
+ *  Legacy CLASS_GATE/CLASS_GATE_HEIGHTENED above are UNTOUCHED (flag-off path
+ *  stays byte-identical). Blended probabilities are anchored close to the
+ *  de-vigged market price (wModel tops out at 0.40 — see computeMarketBlend),
+ *  so the residual edge after blending is naturally much smaller than a raw
+ *  modelP-vs-q edge; the point bars below are the exact per-class values the
+ *  Wave-4 spec calls for (~1/3 of the raw CLASS_GATE point values), with
+ *  independently-set (mostly lower) EV floors measured on blendEV rather than
+ *  adjEvPct. Units: minAdjEdgeBlend in probability (0.01 = 1pt), same
+ *  convention as CLASS_GATE.minAdjEdge. */
+export const CLASS_GATE_BLEND: Record<
+  V3MarketClass,
+  { minAdjEdgeBlend: number; minBlendEvPct: number | null; maxOdds: number | null }
+> = {
+  S: { minAdjEdgeBlend: 0.01, minBlendEvPct: 0.04, maxOdds: null },
+  M: { minAdjEdgeBlend: 0.015, minBlendEvPct: null, maxOdds: null },
+  L: { minAdjEdgeBlend: 0.02, minBlendEvPct: 0.08, maxOdds: null },
+  X: { minAdjEdgeBlend: 0.02, minBlendEvPct: 0.12, maxOdds: 15 },
+};
+
+/** [Wave 4-accuracy] Heightened blend bars — X excluded entirely (mirrors
+ *  CLASS_GATE_HEIGHTENED's own X-exclusion). JUDGMENT CALL, flagged for
+ *  review: the spec line this implements ("point bars ×0.30, EV floors on
+ *  blendEV") is terse to the point of genuine ambiguity about direction. A
+ *  literal ×0.30 multiplier would make heightened bars LAXER than the base
+ *  table, which would contradict every other heightened gate in this file
+ *  (all of them raise the bar, never lower it) and the entire point of
+ *  "heightened" (stricter-data-uncertainty posture). This implementation
+ *  reads "×0.30" as "a further 30% increase over the base blend bars" (i.e.
+ *  ×1.30 of CLASS_GATE_BLEND) — stricter, consistent with CLASS_GATE_HEIGHTENED's
+ *  own direction. Re-derive from the spec author if a different reading was
+ *  intended; the numbers below are exact ×1.30 multiples of CLASS_GATE_BLEND. */
+export const CLASS_GATE_BLEND_HEIGHTENED: Record<
+  V3MarketClass,
+  { minAdjEdgeBlend: number; minBlendEvPct: number | null; maxOdds: number | null } | null
+> = {
+  S: { minAdjEdgeBlend: 0.013, minBlendEvPct: 0.052, maxOdds: null },
+  M: { minAdjEdgeBlend: 0.0195, minBlendEvPct: null, maxOdds: null },
+  L: { minAdjEdgeBlend: 0.026, minBlendEvPct: 0.104, maxOdds: null },
+  X: null, // X excluded in v4/blend heightened mode
+};
+
 export type V3Confidence = "very_high" | "high" | "medium";
 export type V3AllGateOutcome = "done" | "capped" | "noise" | "below_gate";
 
@@ -163,6 +206,22 @@ export interface V3AllMarketsAssessment {
   /** blendEdge >= V3_BLEND_MIN_EDGE, independent of whether it was actually
    *  enforced (enforcement is odds>=4.00 AND blendMode==="on" only). */
   blendGatePass?: boolean;
+  /** [Wave 4-accuracy] pBlend − q — the "probability-points" edge measured
+   *  against the BLENDED prior instead of raw modelP. `rawEdge` above always
+   *  stays the RAW value regardless of blendPricing — HARD INVARIANT, see
+   *  gateAllMarkets' blendPricing branch. Present whenever blend was computed
+   *  (blendMode !== "off" OR opts.blendPricing === true). */
+  rawEdgeBlend?: number;
+  /** rawEdgeBlend − penaltyPts (same penalty table `adjustedEdge` uses — the
+   *  −5 exotic-class penalty etc. flow through identically). */
+  adjustedEdgeBlend?: number;
+  /** pBlend * odds − 1 — true EV at the offered price under the blended
+   *  prior. Numerically identical to `blendEdge` above (both compute
+   *  pBlend*odds-1); kept as a separate, distinctly-named field because
+   *  v3BlendPricing's rescaled class gates/EV floor/confidence key off THIS
+   *  name while `blendEdge`/`blendGatePass` keep their pre-existing
+   *  odds>=4.00 mandatory-gate semantics completely untouched. */
+  blendEV?: number;
 }
 
 /** [refactor P0-2] Pure blend math, factored out so it's independently
@@ -206,6 +265,38 @@ export function v3Confidence(
   return null;
 }
 
+/** [Wave 4-accuracy] Confidence bands under v3BlendPricing. JUDGMENT CALL: no
+ *  explicit thresholds were specified by the spec line ("confidence...
+ *  switch to blended"), so these are DERIVED from each class's own
+ *  CLASS_GATE_BLEND floor rather than hardcoded — medium = right at the
+ *  class's own gate floor (so passing the gate always yields at least
+ *  "medium", never null), high = 1.4x the floor, very_high = 2.0x. Those
+ *  ratios reproduce v3Confidence's own non-S flat thresholds (0.07/0.05=1.4,
+ *  0.10/0.05=2.0) relative to its 0.05 base. S keys off blendEV (mirrors
+ *  v3Confidence's own adjEvPct-based S branch); S's blendEV floor (0.04)
+ *  equals v3Confidence's raw medium threshold, so the 1.75x/2.5x ratios here
+ *  reproduce v3Confidence's existing 0.07/0.10 S thresholds exactly. */
+export function v3ConfidenceBlend(
+  cls: V3MarketClass,
+  adjustedEdgeBlend: number,
+  blendEV: number,
+  gate: { minAdjEdgeBlend: number; minBlendEvPct: number | null }
+): V3Confidence | null {
+  if (cls === "S") {
+    const floor = gate.minBlendEvPct;
+    if (floor === null || floor <= 0) return null;
+    if (blendEV >= floor * 2.5) return "very_high";
+    if (blendEV >= floor * 1.75) return "high";
+    if (blendEV >= floor) return "medium";
+    return null;
+  }
+  const floor = gate.minAdjEdgeBlend;
+  if (adjustedEdgeBlend >= floor * 2.0) return "very_high";
+  if (adjustedEdgeBlend >= floor * 1.4) return "high";
+  if (adjustedEdgeBlend >= floor) return "medium";
+  return null;
+}
+
 /** Run the full Phase-5 gate for one selection. `modelP` must already be the
  *  conditional p′ where the market can push. When `heightened` is true, use v4
  *  heightened gates (stricter bars, X excluded). */
@@ -229,6 +320,16 @@ export function gateAllMarkets(
      *  computeMarketBlend's header comment). */
     completeness?: number;
     hasRealXg?: boolean;
+    /** [Wave 4-accuracy] v3BlendPricing (OracleConfig.v3BlendPricing) — when
+     *  true, class gates/EV floor/confidence price off pBlend via the
+     *  rescaled CLASS_GATE_BLEND(_HEIGHTENED) bars instead of raw modelP.
+     *  Independent of blendMode: true here FORCES the blend computation even
+     *  if blendMode is "off" (the two flags are separate contracts — see
+     *  OracleConfig.v3BlendPricing vs v3Blend). Caps and the noise gate below
+     *  ALWAYS evaluate raw rawEdge/q regardless of this flag — HARD
+     *  INVARIANT: blending must never rescue a raw-capped/raw-noise
+     *  candidate. Default false ⇒ byte-identical to pre-Wave-4 gating. */
+    blendPricing?: boolean;
   } = {}
 ): V3AllMarketsAssessment {
   const edgeCap = opts.edgeCap ?? V3_EDGE_CAP_DEFAULT;
@@ -236,6 +337,7 @@ export function gateAllMarkets(
   const heightened = opts.heightened ?? false;
   const evFloor = opts.evFloor ?? V3_EV_FLOOR_DEFAULT;
   const blendMode = opts.blendMode ?? "off";
+  const blendPricing = opts.blendPricing ?? false;
 
   const rawEdge = modelP - q.q;
   const penaltyPts = allMarketsPenaltyPts(flags);
@@ -243,14 +345,22 @@ export function gateAllMarkets(
   const adjEvPct = q.q > 0 ? adjustedEdge / q.q : 0;
   const ev = modelP * odds - 1;
 
-  // [refactor P0-2] Computed unconditionally (whenever blendMode !== "off"),
-  // BEFORE any gate branching below, so the fields land on every outcome —
-  // capped/noise/below_gate included — for calibration-ledger persistence in
-  // both "shadow" and "on" modes.
+  // [refactor P0-2 / Wave 4-accuracy] Computed unconditionally whenever
+  // blendMode !== "off" OR blendPricing is true (the two flags independently
+  // require the blend math), BEFORE any gate branching below, so the fields
+  // land on every outcome — capped/noise/below_gate included — for
+  // calibration-ledger persistence in every mode.
   const blend =
-    blendMode !== "off"
+    blendMode !== "off" || blendPricing
       ? computeMarketBlend(modelP, q.q, odds, opts.completeness ?? 0, opts.hasRealXg ?? false)
       : null;
+  // [Wave 4-accuracy] See V3AllMarketsAssessment's field docs — blendEV is
+  // numerically identical to blend.blendEdge (both pBlend*odds-1); kept as a
+  // distinct field name so the v3BlendPricing gate below and the pre-existing
+  // odds>=4.00 blendEdge gate read independently-named fields.
+  const rawEdgeBlend = blend ? blend.pBlend - q.q : undefined;
+  const adjustedEdgeBlend = blend ? rawEdgeBlend! - penaltyPts : undefined;
+  const blendEV = blend ? blend.blendEdge : undefined;
 
   const base = {
     q: q.q,
@@ -267,11 +377,16 @@ export function gateAllMarkets(
           pBlend: blend.pBlend,
           blendEdge: blend.blendEdge,
           blendGatePass: blend.blendGatePass,
+          rawEdgeBlend,
+          adjustedEdgeBlend,
+          blendEV,
         }
       : {}),
   };
 
-  // v4 heightened: X excluded entirely
+  // v4 heightened: X excluded entirely — covers both the legacy raw path AND
+  // the blendPricing path (CLASS_GATE_BLEND_HEIGHTENED.X is also null), since
+  // this check runs before either gate table is consulted.
   if (heightened && cls === "X") {
     return {
       ...base,
@@ -281,6 +396,9 @@ export function gateAllMarkets(
     };
   }
 
+  // HARD INVARIANT: caps + the noise gate ALWAYS evaluate the RAW edge, never
+  // the blended one — a candidate the raw math would cap/discard as noise can
+  // never be rescued by blend-anchored pricing, regardless of blendPricing.
   if (rawEdge > edgeCap) {
     return {
       ...base,
@@ -304,6 +422,55 @@ export function gateAllMarkets(
     return { ...base, outcome: "noise", confidence: null, gateReason: "noise" };
   }
 
+  // [refactor P0-2] MANDATORY gate, blendMode "on" only: odds>=4.00
+  // candidates must ALSO clear the blend-anchored EV bar — additive to
+  // whichever class table below applies (legacy or v3BlendPricing), never a
+  // relaxation of it. Unaffected by blendPricing itself.
+  const blendGateRequired =
+    blendMode === "on" && odds >= V3_BLEND_GATE_ODDS_FLOOR && blend !== null;
+  const blendGateOk = !blendGateRequired || blend!.blendGatePass;
+
+  // [Wave 4-accuracy] v3BlendPricing: class gates/EV floor/confidence switch
+  // to the blended quantities via the rescaled CLASS_GATE_BLEND(_HEIGHTENED)
+  // tables. Branches separately from the legacy raw path below (different
+  // gate-table field names) — both share the identical caps/noise/
+  // heightened-X-exclusion logic above and the same blendGateOk requirement.
+  if (blendPricing && blend) {
+    const blendGateTable = heightened ? CLASS_GATE_BLEND_HEIGHTENED : CLASS_GATE_BLEND;
+    const blendGate = blendGateTable[cls];
+    if (blendGate === null) {
+      return {
+        ...base,
+        outcome: "below_gate",
+        confidence: null,
+        gateReason: "heightened_x_excluded",
+      };
+    }
+    const classOk =
+      adjustedEdgeBlend! >= blendGate.minAdjEdgeBlend &&
+      (blendGate.minBlendEvPct === null || blendEV! >= blendGate.minBlendEvPct) &&
+      (blendGate.maxOdds === null || odds <= blendGate.maxOdds) &&
+      blendEV! >= evFloor;
+    const passes = classOk && blendGateOk;
+
+    if (!passes) {
+      let gateReason: V3AllGateReason;
+      if (adjustedEdgeBlend! < blendGate.minAdjEdgeBlend) gateReason = "class_edge";
+      else if (blendGate.minBlendEvPct !== null && blendEV! < blendGate.minBlendEvPct)
+        gateReason = "class_evpct";
+      else if (blendGate.maxOdds !== null && odds > blendGate.maxOdds) gateReason = "max_odds";
+      else if (blendEV! < evFloor) gateReason = "ev_floor";
+      else gateReason = "model_hot_longshot"; // classOk but blendGateOk failed
+      return { ...base, outcome: "below_gate", confidence: null, gateReason };
+    }
+
+    return {
+      ...base,
+      outcome: "done",
+      confidence: v3ConfidenceBlend(cls, adjustedEdgeBlend!, blendEV!, blendGate),
+    };
+  }
+
   const gateTable = heightened ? CLASS_GATE_HEIGHTENED : CLASS_GATE;
   const gate = gateTable[cls];
   if (gate === null) {
@@ -314,13 +481,6 @@ export function gateAllMarkets(
       gateReason: "heightened_x_excluded",
     };
   }
-
-  // [refactor P0-2] MANDATORY gate, "on" mode only: odds>=4.00 candidates must
-  // ALSO clear the blend-anchored EV bar — additive to the class tiers below,
-  // never a relaxation of them (Class L/X bars are untouched).
-  const blendGateRequired =
-    blendMode === "on" && odds >= V3_BLEND_GATE_ODDS_FLOOR && blend !== null;
-  const blendGateOk = !blendGateRequired || blend!.blendGatePass;
 
   const classOk =
     adjustedEdge >= gate.minAdjEdge &&

@@ -72,6 +72,10 @@ export function buildV3Input(
     v3ShotsOu?: boolean;
     /** [refactor P0-2] Market-anchored blend three-state — see OracleConfig.v3Blend. */
     v3Blend?: "off" | "shadow" | "on";
+    /** [Wave 4-accuracy] See OracleConfig.v3BlendPricing. */
+    v3BlendPricing?: "on" | "off";
+    /** [Wave 4-accuracy] See OracleConfig.v3TotalsEmpirical. */
+    v3TotalsEmpirical?: "on" | "off";
   },
   /** [Wave 3, WS3-A] Diagnostic-only pi-ratings signal (see ratings/index.ts's
    *  buildRatingsLambdaInput header) — attached to lambdaInput but never
@@ -207,6 +211,11 @@ export function buildV3Input(
     // an exact derivation, not an approximation: "empirical" means real xG
     // was actually supplied, not the SHRINK_N-gated raw-goals estimate.
     hasRealXg: t.xgMode === "empirical",
+    // [Wave 4-accuracy] Both default "on" per OracleConfig's contract —
+    // undefined config (e.g. tests constructing buildV3Input's 4th arg
+    // manually) behaves the same as an explicit "on".
+    blendPricing: config?.v3BlendPricing !== "off",
+    totalsEmpirical: config?.v3TotalsEmpirical !== "off",
   };
 }
 
@@ -847,8 +856,33 @@ export async function runBatch(
                 kickoff: job.kickoff,
               });
             }
-            if (config.enableMarketsV3 === "on" && v3Result?.evMarkets.length) {
-              eligible = v3Result.evMarkets.slice(0, V3_ARBITER_CANDIDATE_LIMIT);
+            // [Wave 4-accuracy] Kelly wiring fix: v3Result.evMarkets carries
+            // stake:0/stakeAmt:0 placeholders (analyzeFixtureMarketsV3 only
+            // gates/ranks, it never stakes — see that file's header). Every
+            // v3 pick showed 0.0% Kelly as a result. v3AssessmentsToEvMarkets
+            // (safety/pipeline.ts) is the canonical Kelly staker; call it
+            // ONCE here, AFTER applyGoalsCrossCheck above (cross-check
+            // mutates v3Result.assessments in place — order matters, this
+            // must see the corrected state), and reuse the SAME result for
+            // both `eligible` below and the stage-2 shadow-safety-pipeline
+            // diagnostic further down (previously computed twice
+            // independently — deduped now). Same rankingScore-descending
+            // shape v3Result.evMarkets already sorted to (both derive from
+            // the identical assessments, filtered to outcome==="done"), so
+            // arbiter candidate identity/order is unchanged — only stakes
+            // move 0→real.
+            const v3StakedEvMarkets = v3Result
+              ? v3AssessmentsToEvMarkets(v3Result.assessments, {
+                  bankroll: marketExecutorRisk.bankroll,
+                  dqs: marketExecutorRisk.dqs,
+                  councilPenalty: marketExecutorRisk.councilPenalty,
+                  varMultiplier: marketExecutorRisk.varMultiplier,
+                  drawdownPenalty: marketExecutorRisk.drawdownPenalty,
+                  calibFactorFor: marketExecutorRisk.calibFactorFor,
+                })
+              : [];
+            if (config.enableMarketsV3 === "on" && v3StakedEvMarkets.length) {
+              eligible = v3StakedEvMarkets.slice(0, V3_ARBITER_CANDIDATE_LIMIT);
               usedV3 = true;
             }
             // Populated whenever v3 ran ("on" OR "shadow") — shadow-mode
@@ -898,14 +932,10 @@ export async function runBatch(
             // around a diagnostic side-channel).
             if (usedV3 && v3Result) {
               try {
-                const v3EvMarkets = v3AssessmentsToEvMarkets(v3Result.assessments, {
-                  bankroll: marketExecutorRisk.bankroll,
-                  dqs: marketExecutorRisk.dqs,
-                  councilPenalty: marketExecutorRisk.councilPenalty,
-                  varMultiplier: marketExecutorRisk.varMultiplier,
-                  drawdownPenalty: marketExecutorRisk.drawdownPenalty,
-                  calibFactorFor: marketExecutorRisk.calibFactorFor,
-                });
+                // [Wave 4-accuracy] Reuses v3StakedEvMarkets computed above
+                // (same v3AssessmentsToEvMarkets call, deduped — was called a
+                // second time independently here pre-Wave-4).
+                const v3EvMarkets = v3StakedEvMarkets;
                 const v3SafetyResult = await runSafetyPipeline({
                   evMarkets: v3EvMarkets,
                   // v3 has no single unified scoreline matrix the way the

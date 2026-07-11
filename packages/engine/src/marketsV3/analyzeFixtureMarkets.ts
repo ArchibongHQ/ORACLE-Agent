@@ -143,6 +143,17 @@ export interface V3AllMarketsInput {
    *  non-estimated xG (RunState.telemetry.xgMode === "empirical") — feeds
    *  wModel's +0.10 term. Absent/false ⇒ no xG-provenance credit. */
   hasRealXg?: boolean;
+  /** [Wave 4-accuracy] v3BlendPricing (OracleConfig.v3BlendPricing) — see
+   *  evGate.ts's gateAllMarkets opts.blendPricing for the full contract.
+   *  Independent of blendMode above: forces the blend computation even when
+   *  blendMode is "off". Default/absent ⇒ false, byte-identical gating AND
+   *  byte-identical evMarket/assessment output to pre-Wave-4 behavior. */
+  blendPricing?: boolean;
+  /** [Wave 4-accuracy] v3TotalsEmpirical (OracleConfig.v3TotalsEmpirical) —
+   *  threads into ctx.totalsEmpirical, gating engines/totals.ts's O/U
+   *  1.5/2.5/3.5 empirical hit-rate blend. Absent behaves as true (default on
+   *  per OracleConfig's contract) — set false explicitly to withhold. */
+  totalsEmpirical?: boolean;
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -153,6 +164,24 @@ export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
   desc: string;
   odds: number;
   mp: number;
+  /** [Wave 4-accuracy] When v3BlendPricing is on, this outcome's `mp`/
+   *  `rawEdge`/`adjustedEdge`/`ev` above are OVERWRITTEN with their blended
+   *  equivalents (pBlend/rawEdgeBlend/adjustedEdgeBlend/blendEV) — see the
+   *  per-outcome loop in analyzeFixtureMarketsV3 below for exactly where.
+   *  This is the ONLY way to make safety/pipeline.ts's v3AssessmentsToEvMarkets
+   *  (a different workstream's file, read-only to this change, which reads
+   *  a.adjustedEdge/a.mp/a.rawEdge/a.ev directly) Kelly-stake off the
+   *  anchored probability without editing that file. These four fields stash
+   *  the TRUE model-only values that were displaced by the overwrite, so nothing
+   *  is silently lost for any downstream consumer that wants the raw model
+   *  read (R10 cross-check, v3Best/v3AssessmentStats reporting, calibration
+   *  ledger). Present ONLY when the overwrite happened (v3BlendPricing on AND
+   *  this candidate had blend fields — i.e. always, whenever blendPricing was
+   *  requested, since evGate.ts computes blend unconditionally once asked). */
+  mpModel?: number;
+  rawEdgeModel?: number;
+  adjustedEdgeModel?: number;
+  evModel?: number;
 }
 
 export interface V3AllMarketsResult {
@@ -211,7 +240,7 @@ function priceOutcome(
 ): V3Price | null {
   switch (route.engine) {
     case "totals":
-      return priceTotalsOutcome(ctx, route, desc);
+      return priceTotalsOutcome(ctx, route, desc, ctx.totalsEmpirical === true);
     case "result":
       return priceResultOutcome(ctx, route, marketName, desc);
     case "shape":
@@ -318,6 +347,7 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     cards: cardsMeans({ cardsAvgH: input.cardsAvgH, cardsAvgA: input.cardsAvgA }),
     cornersCardsExt: input.v3CornersCardsExt !== false,
     shots: shotsMeans({ sotForH: input.sotForH, sotForA: input.sotForA }),
+    totalsEmpirical: input.totalsEmpirical !== false,
   };
 
   const coverage = routeCoverage(input.allMarkets);
@@ -361,7 +391,22 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         blendMode: input.blendMode,
         completeness: input.completeness,
         hasRealXg: input.hasRealXg,
+        blendPricing: input.blendPricing,
       });
+
+      // [Wave 4-accuracy] When blendPricing is on, gate.pBlend/rawEdgeBlend/
+      // adjustedEdgeBlend/blendEV are always populated (evGate.ts computes
+      // blend unconditionally whenever blendPricing is requested) — swap them
+      // in as the PRIMARY mp/rawEdge/adjustedEdge/ev values for both the
+      // assessment and the evMarket below, per this file's own
+      // V3MarketOutcomeAssessment doc comment. Off (or a candidate that
+      // somehow lacks blend fields — defensive) ⇒ every value below is
+      // exactly the pre-Wave-4 model-only quantity, byte-identical output.
+      const useBlendPrimary = input.blendPricing === true && gate.pBlend !== undefined;
+      const mpValue = useBlendPrimary ? gate.pBlend! : price.p;
+      const rawEdgeValue = useBlendPrimary ? gate.rawEdgeBlend! : gate.rawEdge;
+      const adjustedEdgeValue = useBlendPrimary ? gate.adjustedEdgeBlend! : gate.adjustedEdge;
+      const evValue = useBlendPrimary ? gate.blendEV! : gate.ev;
 
       const assessment: V3MarketOutcomeAssessment = {
         ...gate,
@@ -371,7 +416,18 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         outcomeId: outcome.id,
         desc,
         odds,
-        mp: round3(price.p),
+        mp: round3(mpValue),
+        rawEdge: rawEdgeValue,
+        adjustedEdge: adjustedEdgeValue,
+        ev: evValue,
+        ...(useBlendPrimary
+          ? {
+              mpModel: round3(price.p),
+              rawEdgeModel: gate.rawEdge,
+              adjustedEdgeModel: gate.adjustedEdge,
+              evModel: gate.ev,
+            }
+          : {}),
       };
       assessments.push(assessment);
       if (gate.outcome === "capped") capped.push(assessment);
@@ -384,15 +440,15 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         market: label,
         side: desc,
         family: route.family,
-        mp: price.p,
-        modelProb: price.p,
+        mp: mpValue,
+        modelProb: mpValue,
         ip: gate.q,
         rawEdge: gate.rawEdge,
-        ev: price.p * odds - 1,
+        ev: evValue,
         odds,
         stake: 0,
         stakeAmt: 0,
-        rankingScore: gate.adjustedEdge,
+        rankingScore: adjustedEdgeValue,
         varianceMod: 1,
       });
     });

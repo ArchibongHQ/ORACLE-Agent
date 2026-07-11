@@ -191,6 +191,8 @@ export type {
 export {
   allMarketsPenaltyPts,
   CLASS_GATE,
+  CLASS_GATE_BLEND,
+  CLASS_GATE_BLEND_HEIGHTENED,
   CLASS_GATE_HEIGHTENED,
   gateAllMarkets,
   impliedQ,
@@ -199,6 +201,7 @@ export {
   RELATIVE_CAP_RATIO_X,
   V3_ALLMARKETS_PENALTY_PTS,
   v3Confidence,
+  v3ConfidenceBlend,
 } from "./marketsV3/evGate.js";
 export type {
   RouteCoverage,
