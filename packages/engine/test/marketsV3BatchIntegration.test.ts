@@ -135,6 +135,35 @@ function v3EvMarketAt(rank: number): EVMarket {
   };
 }
 
+// [Wave 4-accuracy] Since batch/index.ts now derives `eligible` from
+// v3Result.assessments (via v3AssessmentsToEvMarkets — the Kelly-wiring fix,
+// see batch/index.ts's usedV3 block), a mock that only sets `evMarkets` and
+// leaves `assessments: []` no longer produces a live eligible candidate.
+// This builds a matching "done" assessment from an EVMarket fixture so
+// existing/new tests below stay representative of the real pipeline shape.
+// biome-ignore lint/suspicious/noExplicitAny: test-only synthetic assessment
+function v3DoneAssessmentFor(m: EVMarket, overrides: Record<string, any> = {}): any {
+  return {
+    family: m.family,
+    marketId: "m1",
+    marketName: m.cat,
+    outcomeId: "o1",
+    desc: m.label,
+    odds: m.odds,
+    mp: m.mp,
+    q: m.ip,
+    devigged: true,
+    rawEdge: m.rawEdge,
+    penaltyPts: 0,
+    adjustedEdge: m.rankingScore,
+    adjEvPct: m.ev,
+    cls: "M",
+    outcome: "done",
+    confidence: "medium",
+    ...overrides,
+  };
+}
+
 describe("batch/index.ts — enableMarketsV3 wiring", () => {
   it("never calls analyzeFixtureMarketsV3 when enableMarketsV3 is unset (default off at the OracleConfig level)", async () => {
     vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
@@ -164,7 +193,7 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
       fhShare: 0.44,
       fhShareIsDefault: true,
       coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
-      assessments: [],
+      assessments: [v3DoneAssessmentFor(v3EvMarket)],
       capped: [],
       evMarkets: [v3EvMarket],
       best: v3EvMarket,
@@ -316,7 +345,7 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
       fhShare: 0.44,
       fhShareIsDefault: true,
       coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
-      assessments: [],
+      assessments: many.map((m, i) => v3DoneAssessmentFor(m, { outcomeId: `o${i}` })),
       capped: [],
       evMarkets: many,
       best: many[0],
@@ -350,7 +379,7 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
       fhShare: 0.44,
       fhShareIsDefault: true,
       coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
-      assessments: [],
+      assessments: [v3DoneAssessmentFor(v3EvMarket)],
       capped: [],
       evMarkets: [v3EvMarket],
       best: v3EvMarket,
@@ -376,7 +405,7 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
       fhShare: 0.44,
       fhShareIsDefault: true,
       coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
-      assessments: [],
+      assessments: [v3DoneAssessmentFor(v3EvMarket)],
       capped: [],
       evMarkets: [v3EvMarket],
       best: v3EvMarket,
@@ -495,6 +524,75 @@ describe("batch/index.ts — enableMarketsV3 wiring", () => {
     });
 
     expect(runAllMarketsLlmExecutorMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("batch/index.ts — Kelly wiring (Wave 4-accuracy)", () => {
+  it("a gate-passing v3 pick carries a real Kelly stake (was stake:0/stakeAmt:0 before the fix), within the optimizedKelly hard cap", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    // v3Result.evMarkets itself still carries the stake:0 placeholder (that's
+    // analyzeFixtureMarketsV3's own contract — it only gates/ranks) — the fix
+    // is that batch/index.ts no longer uses this list verbatim for `eligible`.
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [v3DoneAssessmentFor(v3EvMarket)],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    const pick = success.eligibleBets?.find((m) => m.label === "Home or Draw");
+    expect(pick).toBeDefined();
+    // The mocked v3Result.evMarkets entry itself is still stake:0 — proves
+    // `eligible` came from the Kelly-staked assessment derivation, not a
+    // pass-through of v3Result.evMarkets.
+    expect(v3EvMarket.stake).toBe(0);
+    expect(pick!.stake).toBeGreaterThan(0);
+    expect(pick!.stake).toBeLessThanOrEqual(0.15); // optimizedKelly's hard cap (math/index.ts)
+    expect(pick!.stakeAmt).toBeCloseTo(pick!.stake * baseConfig.bankroll, 5);
+  });
+
+  it("a below_gate/capped assessment never reaches eligible with a stake — v3AssessmentsToEvMarkets filters to outcome==='done' only", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const notDone = v3DoneAssessmentFor(v3EvMarket, { outcome: "below_gate", confidence: null });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [notDone],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    // Fails open to the legacy candidate — v3 produced nothing staked.
+    expect(success.eligibleBets?.[0]?.label).toBe("Over 2.5");
   });
 });
 

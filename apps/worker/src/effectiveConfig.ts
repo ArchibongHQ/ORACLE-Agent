@@ -44,6 +44,9 @@ export function printEffectiveConfig(
     // same "visible from the first log line" rationale as Waves 1-2's rows.
     v3Safety: cfg.v3Safety,
     legacyPricer: cfg.legacyPricer,
+    // [Wave 4-accuracy] blend-priced gating + totals empirical blend levers.
+    v3BlendPricing: cfg.v3BlendPricing,
+    v3TotalsEmpirical: cfg.v3TotalsEmpirical,
     enableGoalsOnlyMode: cfg.enableGoalsOnlyMode,
     enableNewsIntel: cfg.enableNewsIntel,
     enableLlmMarketExecutor: cfg.enableLlmMarketExecutor,

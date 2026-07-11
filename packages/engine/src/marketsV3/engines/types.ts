@@ -57,6 +57,14 @@ export interface V3EngineCtx {
    *  ORACLE_V3_SHOTS_OU=off withheld them upstream), same convention as
    *  corners/cards. */
   shots: V3ShotsMeans | null;
+  /** [Wave 4-accuracy] v3TotalsEmpirical (OracleConfig.v3TotalsEmpirical) —
+   *  gates the goals O/U 1.5/2.5/3.5 empirical hit-rate blend in
+   *  engines/totals.ts's priceOU/priceTotalsOutcome. Explicit flag, not
+   *  inferred — corners/cards/team-total O/U pricers never read this (they
+   *  have their own separate implementations, not priceOU). Absent behaves
+   *  as true (ORACLE_V3_TOTALS_EMPIRICAL defaults on), same convention as
+   *  cornersCardsExt above. */
+  totalsEmpirical?: boolean;
 }
 
 export interface V3Price {

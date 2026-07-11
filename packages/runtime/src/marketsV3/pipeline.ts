@@ -2,17 +2,18 @@
  *  gate for the ALL-MARKETS pipeline.
  *
  *  Reuses the goals-only v3 modules verbatim rather than duplicating them:
- *  `classifyEligibility` (league whitelist, SRL/virtual hard-discard,
- *  heightened youth/women/friendly/cup-final treatment) and `scoreCompleteness`
- *  (the exact §0.4 weighted gate: odds15/form15/scored15/conceded15/
- *  hitRate10/xg10/h2h10/lineups5/rest5, mandatory-block discard, <70 discard).
+ *  `classifyEligibility` (SRL/virtual hard-discard, missing-mandatory-odds
+ *  discard, heightened youth/women/derby/friendly/cup-final treatment — the
+ *  league whitelist is no longer a discard gate, see eligibility.ts's module
+ *  docstring) and `scoreCompleteness` (the exact §0.4 weighted gate:
+ *  odds15/form15/scored15/conceded15/hitRate10/xg10/h2h10/lineups5/rest5,
+ *  mandatory-block discard, <70 discard).
  *
- *  Known simplification (documented, not silent): §1.2's low-scoring-derby
- *  hard-discard is spec'd as "goals markets only — result markets may stand".
- *  `classifyEligibility` discards derbies outright for ALL markets, which is
- *  conservative rather than exactly spec-faithful — acceptable for launch
- *  since it only ever removes candidates, never admits bad ones; a market-
- *  aware split can follow if it proves too aggressive in practice.
+ *  [Wave-4 WS-A3] `restrictOddsToGoalsOverOnly` below is the choke point for
+ *  friendlies' `marketRestriction: "goals_over_only"` (set by
+ *  classifyEligibility) — applied to a survivor's `fetched.sportyBetOdds` by
+ *  slateGate.ts's prefilterMarketsV3Jobs before the job is kept, so the
+ *  restricted market table is what reaches pricing.
  *
  *  This module is a standalone, tested gate — NOT yet wired into the worker's
  *  slate-level fixture filtering (that remains a follow-up; see workflows/
@@ -34,7 +35,7 @@ import {
   type V3Eligibility,
   type V3EligibilityStatus,
 } from "../goalsV3/eligibility.js";
-import type { SportyBetEvent, SportyBetEventDetail } from "../selectFixtures.js";
+import type { SportyBetEvent, SportyBetEventDetail, SportyBetOdds } from "../selectFixtures.js";
 
 export type { V3Completeness, V3Eligibility, V3EligibilityStatus, V3EnrichmentState };
 export { classifyEligibility, heightenedTrendsAligned };
@@ -72,15 +73,20 @@ export interface MarketsV3GateResult {
   completenessScore01: number;
   /** True ⇒ fixture clears both the eligibility and completeness gates. */
   passes: boolean;
-  /** Machine-readable reason when passes=false (for slate-level discard logs). */
+  /** Machine-readable reason when passes=false (for slate-level discard logs).
+   *  [Wave-4 WS-A3] "not_whitelisted" removed (whitelist no longer gates —
+   *  off-list fixtures now carry a non-gating `off_whitelist` eligibility
+   *  annotation instead) and "derby" removed (derbies are heightened, not
+   *  discarded, per the same change). "already_kicked_off" added — produced
+   *  by slateGate.ts's prefilterMarketsV3Jobs (kickoff ≤ now belt-and-braces
+   *  guard), not by this module's own gateMarketsV3Fixture. */
   discardReason?:
     | "srl_virtual"
-    | "not_whitelisted"
     | "missing_mandatory_odds"
-    | "derby"
     | "mandatory_data_missing"
     | "below_completeness_floor"
-    | "heightened_trends_not_aligned";
+    | "heightened_trends_not_aligned"
+    | "already_kicked_off";
 }
 
 /** Run the full Phase 0/1 gate for one fixture. `enrich` carries the
@@ -159,4 +165,61 @@ export function gateMarketsV3Slate(
       discardCounts[r.discardReason] = (discardCounts[r.discardReason] ?? 0) + 1;
   }
   return { results, summary: { total: events.length, passed, discardCounts } };
+}
+
+type OverUnder = { over?: number | null; under?: number | null } | null | undefined;
+
+/** Keep only the `over` side of an O/U pair, dropping `under`. */
+function overOnly(ou: OverUnder): OverUnder {
+  return ou ? { over: ou.over } : ou;
+}
+
+/** Same, applied to every line in a keyed O/U record (e.g. half.ht_ou's
+ *  `{ "0.5": {over,under}, "1.5": {...} }` shape). */
+function recordOverOnly(
+  rec: Record<string, { over?: number | null; under?: number | null }> | null | undefined
+): Record<string, { over?: number | null; under?: number | null }> | null | undefined {
+  if (!rec) return rec;
+  const out: Record<string, { over?: number | null; under?: number | null }> = {};
+  for (const [line, v] of Object.entries(rec)) out[line] = overOnly(v) ?? {};
+  return out;
+}
+
+/** [Wave-4 WS-A3] Choke point for `V3Eligibility.marketRestriction ===
+ *  "goals_over_only"` (friendlies — see eligibility.ts's classifyEligibility
+ *  step 2). Friendly defenses/rotation make RESULT markets unmodelable, but
+ *  goals still flow at a modelable base rate, so the fixture's market table
+ *  is rewritten down to exactly three Over-only families:
+ *    - match goals O/U Over (ou15 / ou25 / ou35)
+ *    - 1st-half match-total goals Over (half.ht_ou, per line)
+ *    - team-total goals Over (tt_home_05 / tt_away_05)
+ *  Every other family is dropped: "1x2" and its derivatives (dc/dnb/ah),
+ *  btts, combo markets, 2nd-half and team-half exotics, and Under sides of
+ *  the three kept families.
+ *
+ *  `allMarkets` (the generic 900+-entry catalogue — corners, cards, clean
+ *  sheets, half-results, etc.) is dropped WHOLESALE rather than filtered:
+ *  this codebase has no documented market-id → family map beyond gismo id
+ *  "1" = 1X2 (see slateGate.ts's toMarketsBlockEntries comment), and per the
+ *  no-invented-data constraint we don't build one here. Dropping it whole is
+ *  the conservative choice — it can only remove candidate markets, never
+ *  admit an out-of-policy one.
+ *
+ *  Called by slateGate.ts's prefilterMarketsV3Jobs against a survivor's
+ *  `state.pipeline.fetched.sportyBetOdds` — the exact field
+ *  packages/engine/src/batch/index.ts reads to build the pricing input
+ *  (`state.pipeline?.fetched?.sportyBetOdds.allMarkets`), so rewriting it
+ *  here is what actually keeps the restricted markets from reaching pricing. */
+export function restrictOddsToGoalsOverOnly(
+  odds: SportyBetOdds | null | undefined
+): SportyBetOdds | null {
+  if (!odds) return odds ?? null;
+  return {
+    ou15: overOnly(odds.ou15),
+    ou25: overOnly(odds.ou25),
+    ou35: overOnly(odds.ou35),
+    tt_home_05: overOnly(odds.tt_home_05),
+    tt_away_05: overOnly(odds.tt_away_05),
+    half: odds.half ? { ht_ou: recordOverOnly(odds.half.ht_ou) } : odds.half,
+  };
 }

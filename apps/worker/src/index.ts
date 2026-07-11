@@ -17,6 +17,7 @@ import { sendPuntPrompt } from "@oracle/bot";
 import { type BatchSummary, buildNotifiers, notifyAll } from "@oracle/notify";
 import { markPrompted, SLIP_LABELS, shouldReprompt } from "@oracle/runtime";
 import cron from "node-cron";
+import { checkBuildFreshness, setStaleBuildNote } from "./buildFreshness.js";
 import { loadCatalogOverlay } from "./catalogOverlay.js";
 import {
   acquireDailyJob,
@@ -61,6 +62,20 @@ const IS_ONE_SHOT = process.argv.some((a) => ONE_SHOT_FLAGS.includes(a as never)
 // the cron daemon — a misconfigured deploy should be visible from the first
 // log line, not discovered hours later from unexplained behavior.
 printEffectiveConfig();
+
+// Build-freshness watchdog — flags any workspace package whose dist/ predates
+// its own src/ (a rebuild was skipped/forgotten before this deploy started).
+// Ahead of the IS_ONE_SHOT branch below, same rationale as printEffectiveConfig
+// just above: a stale-dist deploy should be visible from the first log lines,
+// for one-shot CLI runs too, not just the cron daemon. Never throws
+// (checkBuildFreshness's own try/catch) and never blocks startup either way.
+const staleBuildWarnings = checkBuildFreshness(ROOT);
+for (const w of staleBuildWarnings) {
+  process.stderr.write(`[build-freshness] WARN ${w}\n`);
+}
+if (staleBuildWarnings.length > 0) {
+  setStaleBuildNote(`⚠️ build freshness: ${staleBuildWarnings.join("; ")}`);
+}
 
 // PR-21: runtime catalog overlay (markets observed since catalog.generated.ts
 // was last regenerated) — loaded once at process start, ahead of the

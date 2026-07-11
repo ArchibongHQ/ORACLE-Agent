@@ -448,6 +448,19 @@ export interface OracleConfig {
   // eventual cutover flag, gated on a ≥7-slate parity report +
   // UNPRICED_BY_DESIGN registry closing the coverage gap.
   legacyPricer?: "on" | "off";
+  // [Wave 4-accuracy] Market-anchored blend pricing for ALL v3 candidates (not
+  // just odds ≥ 4.00): gates/EV/confidence/ranking/stakes evaluate on
+  // pBlend = (1−wModel)·q_fair + wModel·P_model with rescaled class bars
+  // (S≥1.0/M≥1.5/L≥2.0/X≥2.0 blended pts + blend-EV floors). Caps + noise
+  // floor stay on RAW edge so shrunken edges can never admit a capped pick.
+  // "on" (default) per owner decision, validated by the Phase-0 slate replay;
+  // "off" = byte-identical legacy gating (rollback lever).
+  v3BlendPricing?: "on" | "off";
+  // [Wave 4-accuracy] Empirical hit-rate blend for totals O/U 1.5/2.5/3.5
+  // (same w = 0.3·min(n,5)/5 convention shape.ts already uses for BTTS%/CS%).
+  // Applies ONLY to the default goals counter — corners/cards/team-total
+  // reuse of priceOU must stay model-only. "on" (default, owner decision).
+  v3TotalsEmpirical?: "on" | "off";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

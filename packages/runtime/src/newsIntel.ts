@@ -247,28 +247,52 @@ async function readGbrain(
   return null;
 }
 
-/** Enrich up to MAX_JOBS fixtures with news intelligence.
+/** Per-slate yield report for enrichWithNewsIntelReport — makes news-intel
+ *  coverage visible to callers (e.g. a batch summary) instead of only ever
+ *  logging to stderr. `disabledReason` is not set by this module for a
+ *  populated slate; it exists so a caller that short-circuits BEFORE invoking
+ *  enrichment (e.g. ENABLE_NEWS_INTEL=false upstream) can still hand back a
+ *  well-formed NewsIntelYield with a reason attached, using the exact same
+ *  shape as a real run. */
+export interface NewsIntelYield {
+  attempted: number;
+  enriched: number;
+  failed: number;
+  disabledReason?: string; // set when enrichment was skipped entirely (e.g. "flag off")
+}
+
+/** Enrich up to MAX_JOBS fixtures with news intelligence, reporting per-fixture
+ *  yield counts alongside the enriched jobs.
  *  Lookup order per fixture: daily Parquet lake (free, no key) -> file cache
- *  -> GBrain -> live ensemble acquisition (requires a key). Persists live
- *  acquisitions to BOTH file cache and GBrain. Never throws. */
-export async function enrichWithNewsIntel(
+ *  -> GBrain -> live ensemble acquisition (Perplexity if keyed, else the
+ *  keyless Google AI-Mode + local-Claude reshape tier — see callNewsIntel.ts).
+ *  Persists live acquisitions to BOTH file cache and GBrain. Never throws. */
+export async function enrichWithNewsIntelReport(
   jobs: FixtureJob[],
   opts: NewsIntelOpts
-): Promise<FixtureJob[]> {
+): Promise<{ jobs: FixtureJob[]; yield: NewsIntelYield }> {
   const { perplexityApiKey, geminiApiKey, storage, cacheOnly } = opts;
   const hasLiveKeys = !!perplexityApiKey || !!geminiApiKey || isLocalRuntime();
   // Whether to look beyond the daily lake (file cache + GBrain + maybe live ensemble).
   // In cacheOnly mode we still read file cache + GBrain but never invoke the live
   // ensemble — so the deeper lookup runs whenever there are live keys OR cacheOnly.
   const useDeeperLookup = hasLiveKeys || !!cacheOnly;
+  // No provider key at all: the live ensemble, if it runs, falls through to the
+  // keyless Google AI-Mode + local-Claude reshape tier only. Surfaced once per
+  // slate (not per fixture) so the degraded mode is visible without log spam.
+  const keylessMode = !perplexityApiKey && !geminiApiKey;
+  let warnedKeyless = false;
 
   const eligible = jobs.map((job, idx) => ({ job, idx })).slice(0, MAX_JOBS);
-  if (eligible.length === 0) return jobs;
+  if (eligible.length === 0) {
+    return { jobs, yield: { attempted: 0, enriched: 0, failed: 0 } };
+  }
 
   const today = new Date().toISOString().slice(0, 10);
   const enriched = [...jobs];
   let apiCalls = 0;
   let filled = 0;
+  let failed = 0;
   let lakeHits = 0;
 
   for (const { job, idx } of eligible) {
@@ -295,6 +319,10 @@ export async function enrichWithNewsIntel(
         //    news enriched during the daily-scrape phase, never launch live
         //    per-fixture scraping mid-analysis.
         if (!cached && !cacheOnly) {
+          if (keylessMode && !warnedKeyless) {
+            console.warn("[newsIntel] no provider key — running keyless AI-Mode tier only");
+            warnedKeyless = true;
+          }
           if (apiCalls > 0) await new Promise((r) => setTimeout(r, REQ_DELAY_MS));
           const intel = await fetchNewsEnsemble(job.home, job.away, job.league, job.kickoff, {
             perplexityKey: perplexityApiKey,
@@ -318,7 +346,10 @@ export async function enrichWithNewsIntel(
         if (cached) items = toSoftContext(cached);
       }
 
-      if (!items.length) continue;
+      if (!items.length) {
+        failed++;
+        continue;
+      }
 
       const existingState = enriched[idx]?.state ?? {};
       const existingTel = existingState.telemetry ?? {};
@@ -336,6 +367,7 @@ export async function enrichWithNewsIntel(
       };
       filled++;
     } catch (err) {
+      failed++;
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[newsIntel] WARN ${job.home} vs ${job.away}: ${msg}\n`);
     }
@@ -343,5 +375,16 @@ export async function enrichWithNewsIntel(
 
   process.stderr.write(`[newsIntel] filled=${filled}/${eligible.length} (lake=${lakeHits})\n`);
 
-  return enriched;
+  return { jobs: enriched, yield: { attempted: eligible.length, enriched: filled, failed } };
+}
+
+/** Enrich up to MAX_JOBS fixtures with news intelligence. Thin wrapper over
+ *  enrichWithNewsIntelReport for callers that only need the enriched jobs —
+ *  same signature/behavior as before yield-reporting was added. Never throws. */
+export async function enrichWithNewsIntel(
+  jobs: FixtureJob[],
+  opts: NewsIntelOpts
+): Promise<FixtureJob[]> {
+  const { jobs: result } = await enrichWithNewsIntelReport(jobs, opts);
+  return result;
 }

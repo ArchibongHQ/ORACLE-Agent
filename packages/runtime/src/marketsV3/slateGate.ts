@@ -51,6 +51,7 @@ import {
 import {
   gateMarketsV3Fixture,
   type MarketsV3GateConfig,
+  restrictOddsToGoalsOverOnly,
   type V3EnrichmentState,
 } from "./pipeline.js";
 
@@ -93,6 +94,26 @@ function stampHeightened(job: FixtureJob, heightened: boolean): FixtureJob {
     state: {
       ...(job.state ?? {}),
       telemetry: { ...(job.state?.telemetry ?? {}), v3Heightened: heightened },
+    },
+  };
+}
+
+/** [Wave-4 WS-A3] Choke point for a friendly's `marketRestriction:
+ *  "goals_over_only"` (set by classifyEligibility). Rewrites
+ *  `state.pipeline.fetched.sportyBetOdds` — the exact field
+ *  packages/engine/src/batch/index.ts reads to build the pricing input
+ *  (`state.pipeline?.fetched?.sportyBetOdds.allMarkets`) — via
+ *  pipeline.ts's restrictOddsToGoalsOverOnly, so the restricted market table
+ *  is what actually reaches pricing, not just what the gate saw. */
+function applyMarketRestriction(job: FixtureJob): FixtureJob {
+  const fetched = { ...(job.state?.pipeline?.fetched ?? {}) } as Record<string, unknown>;
+  const odds = fetched.sportyBetOdds as SportyBetOdds | null | undefined;
+  fetched.sportyBetOdds = restrictOddsToGoalsOverOnly(odds);
+  return {
+    ...job,
+    state: {
+      ...(job.state ?? {}),
+      pipeline: { ...(job.state?.pipeline ?? {}), fetched },
     },
   };
 }
@@ -187,6 +208,18 @@ export function prefilterMarketsV3Jobs(
       }
       mapped += 1;
 
+      // [Wave-4 WS-A3] Belt-and-braces guard: selectFixtures.ts's candidate
+      // pool already filters to `kickoff > now` at selection time (see its
+      // `ko > now.getTime()` check in scoreFixture's caller), so this should
+      // be a no-op on the normal daily-batch path. Kept anyway in case a
+      // caller feeds jobs into this gate directly (tests, future call
+      // sites) or enough wall-clock time elapses between selection and this
+      // gate running for a fixture to cross kickoff.
+      if (new Date(job.kickoff).getTime() <= Date.now()) {
+        discardCounts.already_kicked_off = (discardCounts.already_kicked_off ?? 0) + 1;
+        continue;
+      }
+
       if (feedIntegrityMode === "on") {
         const integrity = checkFixtureIntegrity(fixtureIntegrityKey(job), integrityReport);
         if (integrity?.verdict === "contaminated") {
@@ -220,7 +253,11 @@ export function prefilterMarketsV3Jobs(
         continue;
       }
       passed += 1;
-      kept.push(stampHeightened(job, result.eligibility.status === "heightened"));
+      let survivor = stampHeightened(job, result.eligibility.status === "heightened");
+      if (result.eligibility.marketRestriction === "goals_over_only") {
+        survivor = applyMarketRestriction(survivor);
+      }
+      kept.push(survivor);
     }
     return {
       jobs: kept,

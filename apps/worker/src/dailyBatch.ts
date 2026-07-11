@@ -30,6 +30,7 @@ import {
   runAnalysis,
 } from "@oracle/runtime";
 import { MemoryAdapter } from "@oracle/storage";
+import { getStaleBuildNote } from "./buildFreshness.js";
 import { acquireDaily } from "./dailyAcquisition.js";
 import { buildGoalsCrossCheckHook } from "./goalsV3Pipeline.js";
 import { ANALYSIS_CHUNK_SIZE, config, env, PYTHON_BIN, ROOT, STORE_PATH } from "./workerContext.js";
@@ -232,6 +233,13 @@ export async function runDailyBatch(
   const summary = summarizeBatch(batch, undefined, (home, away) =>
     sportyIndex ? findSidecarDetail(sportyIndex.detailByKey, home, away)?.eventId : undefined
   );
+
+  // Build-freshness watchdog (apps/worker/src/buildFreshness.ts) — set once at
+  // process startup (index.ts), surfaced here so a stale-dist deploy shows up
+  // on the actual Telegram summary, not just in the startup log a human has to
+  // go looking for.
+  const staleBuildNote = getStaleBuildNote();
+  if (staleBuildNote) summary.staleBuildNote = staleBuildNote;
 
   // ── PR-5b: v3 slate outputs A–D + sanity (fail-open to the legacy trim) ──
   if (config.enableMarketsV3 === "on" && config.marketsV3Outputs !== false) {

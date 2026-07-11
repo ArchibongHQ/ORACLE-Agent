@@ -6,7 +6,8 @@
  *  needed for the booking step — Playwright is only used by loadCode.ts. */
 
 import type { ActionablePick } from "@oracle/notify";
-import { mapMarket, normalise } from "./marketMap.js";
+import { mapMarket } from "./marketMap.js";
+import { resolveSelection, type SportyBetEventData } from "./resolveSelection.js";
 
 export type { LoadedSlip, RawLeg } from "./loadCode.js";
 export { loadBookingCode } from "./loadCode.js";
@@ -49,28 +50,6 @@ export interface BookingResult {
   error?: string;
 }
 
-interface SportyBetOutcome {
-  id: string;
-  desc?: string | null;
-  odds?: string | null;
-}
-
-interface SportyBetMarket {
-  id: string;
-  name?: string | null;
-  desc?: string | null;
-  specifier?: string | null;
-  outcomes?: SportyBetOutcome[];
-}
-
-interface SportyBetEventData {
-  eventId: string;
-  gameId: string | number;
-  sportId?: string;
-  estimateStartTime?: number;
-  markets?: SportyBetMarket[];
-}
-
 /** Fetch the SportyBet event data for one pick's eventId. Returns null on any error. */
 async function fetchEventData(eventId: string): Promise<SportyBetEventData | null> {
   try {
@@ -82,46 +61,6 @@ async function fetchEventData(eventId: string): Promise<SportyBetEventData | nul
   } catch {
     return null;
   }
-}
-
-/** Match an ORACLE (market, side) pair to a SportyBet market+outcome using the
- *  event's market list. Returns null when no matching market/outcome is found. */
-function resolveSelection(
-  eventData: SportyBetEventData,
-  pick: ActionablePick
-): { marketId: string; specifier: string; outcomeId: string; odds: number; label: string } | null {
-  const mapping = mapMarket(pick.market, pick.side);
-  if (!mapping) return null;
-
-  const { sportyMarket, sportySelection } = mapping;
-  const markets = eventData.markets ?? [];
-
-  // Normalise for fuzzy matching
-  const normSel = normalise(sportySelection);
-
-  for (const mkt of markets) {
-    const mktName = normalise(mkt.name ?? mkt.desc ?? "");
-    const normSportyMarket = normalise(sportyMarket);
-
-    // Header match: must contain the mapped market name
-    if (!mktName.includes(normSportyMarket) && !normSportyMarket.includes(mktName)) continue;
-
-    for (const outcome of mkt.outcomes ?? []) {
-      const outNorm = normalise(outcome.desc ?? "");
-      if (outNorm === normSel || outNorm.includes(normSel) || normSel.includes(outNorm)) {
-        const odds = parseFloat(outcome.odds ?? "0");
-        if (odds <= 1) continue; // suspended or invalid
-        return {
-          marketId: mkt.id,
-          specifier: mkt.specifier ?? "",
-          outcomeId: outcome.id,
-          odds,
-          label: outcome.desc ?? sportySelection,
-        };
-      }
-    }
-  }
-  return null;
 }
 
 /** Book all picks as a single accumulator on SportyBet (anonymous, no-stake).
@@ -167,15 +106,30 @@ export async function bookAccumulator(picks: ActionablePick[]): Promise<BookingR
       continue;
     }
 
-    const sel = resolveSelection(eventData, pick);
-    if (!sel) {
+    const mapping = mapMarket(pick.market, pick.side);
+    if (!mapping) {
       process.stderr.write(
-        `[booking] no market match for ${pick.home} vs ${pick.away}: ${pick.market} / ${pick.side ?? ""}\n`
+        `[booking] no market mapping for ${pick.home} vs ${pick.away}: ${pick.market} / ${pick.side ?? ""}\n`
       );
       unmatched.push(pick);
       continue;
     }
 
+    // Never book a leg whose market/outcome/line/odds don't ALL check out —
+    // resolveSelection collects every surviving candidate and only returns a
+    // match when exactly one distinct (market, outcome) survives every gate
+    // (see apps/booking/src/resolveSelection.ts). More unmatched legs is the
+    // accepted trade-off for eliminating wrong-market binds.
+    const resolution = resolveSelection(eventData, { mapping, odds: pick.odds });
+    if (!resolution.matched) {
+      process.stderr.write(
+        `[booking] no market match for ${pick.home} vs ${pick.away}: ${pick.market} / ${pick.side ?? ""} (${resolution.unmatched.reason})\n`
+      );
+      unmatched.push(pick);
+      continue;
+    }
+
+    const sel = resolution.selection;
     bookedLegs.push({ pick, selectionLabel: sel.label, odds: String(sel.odds) });
     selections.push({
       eventId: pick.eventId,

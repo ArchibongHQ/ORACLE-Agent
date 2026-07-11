@@ -6,7 +6,12 @@ describe("mapMarket — team total", () => {
     // Regression: cat "Team Total" contains "total" and previously fell through
     // to the generic Over/Under (match-total) branch, mapping to the wrong market.
     const m = mapMarket("Team Total", "Home Total Over 0.5");
-    expect(m).toEqual({ sportyMarket: "Home Team Total", sportySelection: "Over 0.5" });
+    expect(m).toEqual({
+      sportyMarket: "Home Team Total",
+      sportySelection: "Over 0.5",
+      line: 0.5,
+      family: "team_total",
+    });
     // Crucially NOT the match-total market:
     expect(m?.sportyMarket).not.toBe("Over/Under");
   });
@@ -15,6 +20,8 @@ describe("mapMarket — team total", () => {
     expect(mapMarket("Team Total", "Away Total Over 0.5")).toEqual({
       sportyMarket: "Away Team Total",
       sportySelection: "Over 0.5",
+      line: 0.5,
+      family: "team_total",
     });
   });
 
@@ -22,6 +29,8 @@ describe("mapMarket — team total", () => {
     expect(mapMarket("Team Total", "Home Total Under 1.5")).toEqual({
       sportyMarket: "Home Team Total",
       sportySelection: "Under 1.5",
+      line: 1.5,
+      family: "team_total",
     });
   });
 
@@ -31,6 +40,8 @@ describe("mapMarket — team total", () => {
     expect(mapMarket("Team Total", "Total Over 0.5")).toEqual({
       sportyMarket: "Over/Under",
       sportySelection: "Over 0.5",
+      line: 0.5,
+      family: "goals_ou",
     });
   });
 
@@ -44,10 +55,14 @@ describe("mapMarket — match goals total still works", () => {
     expect(mapMarket("Goals O/U", "Over 1.5")).toEqual({
       sportyMarket: "Over/Under",
       sportySelection: "Over 1.5",
+      line: 1.5,
+      family: "goals_ou",
     });
     expect(mapMarket("Goals O/U", "Over 2.5")).toEqual({
       sportyMarket: "Over/Under",
       sportySelection: "Over 2.5",
+      line: 2.5,
+      family: "goals_ou",
     });
   });
 });
@@ -59,7 +74,9 @@ describe("mapMarket — Asian 2 Goals", () => {
   // null and silently dropped every leg in this category.
   it("routes Asian Over 2 Goals to its own market, not Asian Handicap", () => {
     const m = mapMarket("Asian 2 Goals", "Asian Over 2 Goals");
-    expect(m).toEqual({ sportyMarket: "Asian Total Goals", sportySelection: "Over 2" });
+    // No `family`: "Asian Total Goals" has never been confirmed to exist
+    // live (see marketMap.ts's note) — left unclassified, not guessed.
+    expect(m).toEqual({ sportyMarket: "Asian Total Goals", sportySelection: "Over 2", line: 2 });
     expect(m?.sportyMarket).not.toBe("Asian Handicap");
   });
 
@@ -67,6 +84,7 @@ describe("mapMarket — Asian 2 Goals", () => {
     expect(mapMarket("Asian 2 Goals", "Asian Under 2 Goals")).toEqual({
       sportyMarket: "Asian Total Goals",
       sportySelection: "Under 2",
+      line: 2,
     });
   });
 });
@@ -78,6 +96,7 @@ describe("mapMarket — Win Either Half", () => {
     expect(mapMarket("Win Either Half", "Win Either Half (H)")).toEqual({
       sportyMarket: "Win Either Half",
       sportySelection: "Home",
+      family: "half",
     });
   });
 
@@ -85,6 +104,7 @@ describe("mapMarket — Win Either Half", () => {
     expect(mapMarket("Win Either Half", "Win Either Half (A)")).toEqual({
       sportyMarket: "Win Either Half",
       sportySelection: "Away",
+      family: "half",
     });
   });
 });
@@ -96,6 +116,8 @@ describe("mapMarket — First Half", () => {
     expect(mapMarket("First Half", "FH Under 1.5 Goals")).toEqual({
       sportyMarket: "1st Half Goals",
       sportySelection: "Under 1.5",
+      line: 1.5,
+      family: "half",
     });
   });
 
@@ -103,6 +125,7 @@ describe("mapMarket — First Half", () => {
     expect(mapMarket("First Half", "FH Draw")).toEqual({
       sportyMarket: "1st Half Result",
       sportySelection: "X",
+      family: "half",
     });
   });
 });
@@ -114,10 +137,12 @@ describe("mapMarket — catalog fallback (PR-15)", () => {
     expect(mapMarket("Odd/Even", "Odd")).toEqual({
       sportyMarket: "Odd/Even",
       sportySelection: "Odd",
+      family: "odd_even",
     });
     expect(mapMarket("Odd/Even", "Even")).toEqual({
       sportyMarket: "Odd/Even",
       sportySelection: "Even",
+      family: "odd_even",
     });
   });
 
@@ -125,6 +150,7 @@ describe("mapMarket — catalog fallback (PR-15)", () => {
     expect(mapMarket("Odd/Even", "  odd  ")).toEqual({
       sportyMarket: "Odd/Even",
       sportySelection: "Odd",
+      family: "odd_even",
     });
   });
 
@@ -141,7 +167,11 @@ describe("mapMarket — catalog fallback (PR-15)", () => {
   });
 
   it("still prefers the hand-rolled branches over the catalog fallback (1x2 unaffected)", () => {
-    expect(mapMarket("1x2", "Home")).toEqual({ sportyMarket: "1X2", sportySelection: "1" });
+    expect(mapMarket("1x2", "Home")).toEqual({
+      sportyMarket: "1X2",
+      sportySelection: "1",
+      family: "match_result",
+    });
   });
 
   // Review regression: the original version fuzzy-matched cat against every

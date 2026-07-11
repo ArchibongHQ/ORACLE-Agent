@@ -1427,4 +1427,83 @@ describe("priceOU / priceTotalsOutcome — per-line O/U hit-rate flag (PR-4)", (
     const withoutRate = priceOU(totalsCtx({}), parseOUDesc("over 2.5")!);
     expect(withRate.p).toBeCloseTo(withoutRate.p, 10);
   });
+
+  // ── [Wave 4-accuracy] v3TotalsEmpirical — empirical hit-rate blend ───────
+  describe("priceOU — v3TotalsEmpirical empirical hit-rate blend (Wave 4-accuracy)", () => {
+    it("blends when both sides' hit-rate exist and empiricalBlend=true — same convention as shape.ts (blendEmpirical, w=0.3*min(n,5)/5)", () => {
+      const ctx = totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55, nH: 4, nA: 5 });
+      const modelOnly = priceOU(ctx, parseOUDesc("over 2.5")!);
+      const blended = priceOU(ctx, parseOUDesc("over 2.5")!, undefined, true);
+      const empOver = (0.6 + 0.55) / 2; // 0.575
+      const n = Math.min(4, 5); // 4
+      expect(blended.p).toBeCloseTo(blendEmpirical(modelOnly.p, empOver, n), 10);
+      expect(blended.p).not.toBeCloseTo(modelOnly.p, 5); // actually blended, not a no-op
+    });
+
+    it("empiricalBlend=false (explicit) is model-only, byte-identical to omitting the param", () => {
+      const ctx = totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55, nH: 4, nA: 5 });
+      const withoutFlag = priceOU(ctx, parseOUDesc("over 2.5")!);
+      const explicitFalse = priceOU(ctx, parseOUDesc("over 2.5")!, undefined, false);
+      expect(withoutFlag).toEqual(explicitFalse);
+    });
+
+    it("one side missing the hit-rate ⇒ model-only even with empiricalBlend=true — and marketStatMissing stays true, unaffected by the empirical-blend flag", () => {
+      const ctx = totalsCtx({ ou25PctH: 0.6 }); // ou25PctA absent
+      const modelOnly = priceOU(ctx, parseOUDesc("over 2.5")!);
+      const attemptedBlend = priceOU(ctx, parseOUDesc("over 2.5")!, undefined, true);
+      expect(attemptedBlend.p).toBeCloseTo(modelOnly.p, 10);
+      expect(attemptedBlend.marketStatMissing).toBe(true);
+    });
+
+    it("under = 1 - overRate: the empirical side fed to blendEmpirical for 'under' is the complement of the averaged over-rate", () => {
+      const ctx = totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55 });
+      const overModel = priceOU(ctx, parseOUDesc("over 2.5")!);
+      const underModel = priceOU(ctx, parseOUDesc("under 2.5")!);
+      const overBlended = priceOU(ctx, parseOUDesc("over 2.5")!, undefined, true);
+      const underBlended = priceOU(ctx, parseOUDesc("under 2.5")!, undefined, true);
+      const empOver = (0.6 + 0.55) / 2;
+      expect(overBlended.p).toBeCloseTo(blendEmpirical(overModel.p, empOver, undefined), 10);
+      expect(underBlended.p).toBeCloseTo(blendEmpirical(underModel.p, 1 - empOver, undefined), 10);
+    });
+
+    it("n-scaling: a thin sample (n=1) pulls LESS toward the empirical rate than the flat 0.3 weight (n omitted/>=5)", () => {
+      const thinCtx = totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55, nH: 1, nA: 5 }); // n=min(1,5)=1
+      const flatCtx = totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55 }); // n omitted ⇒ flat 0.3
+      const modelOnly = priceOU(thinCtx, parseOUDesc("over 2.5")!); // same model prob either way
+      const thinN = priceOU(thinCtx, parseOUDesc("over 2.5")!, undefined, true);
+      const flatWeight = priceOU(flatCtx, parseOUDesc("over 2.5")!, undefined, true);
+      expect(Math.abs(thinN.p - modelOnly.p)).toBeLessThan(Math.abs(flatWeight.p - modelOnly.p));
+    });
+
+    it("wires through priceTotalsOutcome (the routed entry point) via its 4th param", () => {
+      const ctx = totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55 });
+      const modelOnly = priceTotalsOutcome(
+        ctx,
+        { engine: "totals", family: "goals_ou" },
+        "Over 2.5"
+      );
+      const blended = priceTotalsOutcome(
+        ctx,
+        { engine: "totals", family: "goals_ou" },
+        "Over 2.5",
+        true
+      );
+      expect(blended!.p).not.toBeCloseTo(modelOnly!.p, 6);
+    });
+
+    it("untracked lines (0.5) are never blended even when empiricalBlend=true — they never had a hit-rate to begin with", () => {
+      const ctx = totalsCtx({});
+      const modelOnly = priceOU(ctx, parseOUDesc("over 0.5")!);
+      const attemptedBlend = priceOU(ctx, parseOUDesc("over 0.5")!, undefined, true);
+      expect(attemptedBlend.p).toBeCloseTo(modelOnly.p, 10);
+    });
+
+    it("odd/even and whole-line (push-handled) outcomes are unaffected by empiricalBlend — 1.5/2.5/3.5 are always half-lines", () => {
+      const ctx = totalsCtx({ ou25PctH: 0.6, ou25PctA: 0.55 });
+      const modelOnly = priceOU(ctx, parseOUDesc("over 2")!);
+      const attemptedBlend = priceOU(ctx, parseOUDesc("over 2")!, undefined, true);
+      expect(attemptedBlend.p).toBeCloseTo(modelOnly.p, 10);
+      expect(attemptedBlend.conditional).toBe(true);
+    });
+  });
 });

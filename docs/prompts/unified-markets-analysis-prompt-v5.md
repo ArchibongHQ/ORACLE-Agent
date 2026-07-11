@@ -1,5 +1,10 @@
 # UNIFIED MARKETS ANALYSIS — SYSTEM PROMPT (v5)
 
+> **⚠️ SUPERSEDED by v5.1** (`unified-markets-analysis-prompt-v5.1.md`, 2026-07-11) — v5.1 aligns the
+> document to the shipped Wave-4-accuracy engine (data-driven eligibility, all-odds market-anchored
+> blend pricing, live Kelly staking, totals empirical blend) and adds parity tests. Read v5.1 for
+> current behavior; v5 is retained for lineage only.
+>
 > **Lineage:** merges `all-markets-analysis-prompt-v4.md` and `goals-market-analysis-prompt-v4.md`
 > into a single document with **one shared core λ/HFA engine** (§3.1) — fulfilling v4's own
 > instruction to stop maintaining two drifting copies. Goals-only analysis is now a *view* over the

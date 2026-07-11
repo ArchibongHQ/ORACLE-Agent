@@ -26,6 +26,17 @@ export interface SlateArbiterVerdicts {
   /** legKey → note. Flagged legs stay but carry the annotation. */
   flags: Map<string, string>;
   status: "verified" | "unverified";
+  /** The decision-layer model attribution for THIS arbiter call — set to
+   *  "claude-code-arbiter" (same id packages/engine/src/decision/index.ts
+   *  stamps on its own local-Claude arbiter call) only when callClaudeCode
+   *  actually ran and returned parseable verdicts. Undefined on the
+   *  empty-slate shortcut (verified trivially, no call made) and on any
+   *  fail-open path (unverified) — a caller must not claim "Claude reviewed
+   *  this" when no call happened. Lets @oracle/notify's buildAnalysisModelNote
+   *  report the arbiter honestly instead of contradicting itself against
+   *  "no LLM tier ran" when every per-leg model is null (v3 goals path has no
+   *  per-fixture LLM by design — the arbiter is the only Claude call). */
+  model?: string;
 }
 
 /** Stable per-leg key shared between the prompt and the verdict parser. */
@@ -124,7 +135,7 @@ export async function reviewGoalsSlate(
   if (!raw) return unverified;
   const verdicts = parseVerdicts(raw, legs);
   if (!verdicts) return unverified;
-  return { ...verdicts, status: "verified" };
+  return { ...verdicts, status: "verified", model: "claude-code-arbiter" };
 }
 
 /** Apply arbiter verdicts: dropped legs removed from every output (never

@@ -42,7 +42,7 @@ import {
 import {
   enrichWithH2H,
   enrichWithLineups,
-  enrichWithNewsIntel,
+  enrichWithNewsIntelReport,
   type GoalsSelectionResult,
   loadSportyBetIndex,
   ORACLE_PRIORITY_LEAGUES,
@@ -64,6 +64,24 @@ import {
   STORE_PATH,
 } from "./workerContext.js";
 import { mergeBatchChunks, runPythonScript, watDateString, writeHeartbeat } from "./workerUtils.js";
+
+// ── News-intel yield telemetry ──────────────────────────────────────────────
+/** Renders the news-intel coverage line for a goals slip from the real
+ *  enrichWithNewsIntelReport yield (attempted = MAX_JOBS-capped eligible pool,
+ *  enriched = fixtures whose softContext was actually merged, failed = empty/
+ *  errored lookups). Exported so goalsV3Pipeline.ts (the v3 path) renders the
+ *  identical format rather than duplicating it. A NewsIntelYield is structurally
+ *  assignable to this param, so callers pass the yield object directly. */
+export function buildNewsIntelNote(y: {
+  attempted: number;
+  enriched: number;
+  failed?: number;
+  disabledReason?: string;
+}): string {
+  if (y.disabledReason) return `📰 news intel: ${y.disabledReason}`;
+  const tail = y.failed && y.failed > 0 ? ` (${y.failed} failed)` : "";
+  return `📰 news intel: ${y.enriched}/${y.attempted} enriched${tail}`;
+}
 
 // ── Fixture scraper ───────────────────────────────────────────────────────────
 
@@ -174,8 +192,8 @@ export async function sendGoalsSlip(
   combinedProb: number,
   combinedOdds: number,
   logPrefix: string,
-  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number },
-  sanityNote?: string
+  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number; arbiterModel?: string },
+  sanityNote?: string,
   // PR-20's marketCoverageNote (all-markets route-coverage telemetry) is
   // intentionally NOT threaded through here — RunManifest.marketCoverage is
   // still computed for goals runs (same shared runAnalysis path), but the
@@ -183,6 +201,7 @@ export async function sendGoalsSlip(
   // the all-markets catalogue goals-only mode deliberately narrows away
   // from, so it isn't a useful reader-facing line on a goals-only slip. No
   // dailyBatch.ts-style Telegram surface is planned for it here.
+  newsIntelNote?: string
 ): Promise<BatchSummary> {
   // v3 legs carry mp = model probability (unchanged) but ActionablePick.edge is
   // what formatSummaryText renders as the edge/tier line — feed it the ADJUSTED
@@ -202,7 +221,14 @@ export async function sendGoalsSlip(
   }));
 
   const modelNote =
-    actionable.length > 0 ? buildAnalysisModelNote(legs.map((l) => l.decisionModel)) : undefined;
+    actionable.length > 0
+      ? buildAnalysisModelNote(
+          legs.map((l) => l.decisionModel),
+          v3Meta
+            ? { arbiter: { status: v3Meta.arbiterStatus, model: v3Meta.arbiterModel } }
+            : undefined
+        )
+      : undefined;
 
   const summary: BatchSummary = {
     date: `${date} — ${tag}`,
@@ -220,6 +246,7 @@ export async function sendGoalsSlip(
         }
       : {}),
     ...(sanityNote ? { sanityNote } : {}),
+    ...(newsIntelNote ? { newsIntelNote } : {}),
   };
 
   // ── SportyBet booking (off by default; never blocks delivery) ──────────────
@@ -294,7 +321,13 @@ export async function finalizeGoalsSelection(
   date: string,
   errorCount: number,
   trigger: RunManifest["trigger"],
-  v3Meta?: { arbiterStatus: "verified" | "unverified"; cappedCount: number; sanityLine?: string }
+  v3Meta?: {
+    arbiterStatus: "verified" | "unverified";
+    cappedCount: number;
+    sanityLine?: string;
+    arbiterModel?: string;
+  },
+  newsIntelNote?: string
 ): Promise<void> {
   process.stdout.write(
     `[goals] long=${selection.legs.length}/${selection.target} short=${selection.shortSlipLegs.length} ` +
@@ -316,7 +349,8 @@ export async function finalizeGoalsSelection(
     selection.combinedOdds,
     "goals-supplement",
     v3Meta,
-    sanityNote
+    sanityNote,
+    newsIntelNote
   );
 
   writeHeartbeat("lastGoalsBatch", {
@@ -428,9 +462,19 @@ export async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"):
   // into the hot path. cacheOnly:true reads lake/file/GBrain only, never the live
   // ensemble. H2H + lineups are local file reads (no live scraping) and stay as-is.
   const withH2H = await enrichWithH2H(funnelResult.jobs, config.footballDataApiKey);
-  const withNews = config.enableNewsIntel
-    ? await enrichWithNewsIntel(withH2H, { storage, cacheOnly: true })
-    : withH2H;
+  let withNews = withH2H;
+  let newsIntelNote: string;
+  if (config.enableNewsIntel) {
+    const report = await enrichWithNewsIntelReport(withH2H, { storage, cacheOnly: true });
+    withNews = report.jobs;
+    newsIntelNote = buildNewsIntelNote(report.yield);
+  } else {
+    newsIntelNote = buildNewsIntelNote({
+      attempted: 0,
+      enriched: 0,
+      disabledReason: "disabled (ORACLE_ENABLE_NEWS_INTEL=false)",
+    });
+  }
   const enrichedJobs = await enrichWithLineups(withNews);
 
   // Hard-tier sort: priority leagues first, then others. The chunk loop below then
@@ -502,5 +546,12 @@ export async function runGoalsBatch(trigger: RunManifest["trigger"] = "manual"):
     eventIdByKey,
   });
 
-  await finalizeGoalsSelection(selection, batch.date, batch.errorCount, trigger);
+  await finalizeGoalsSelection(
+    selection,
+    batch.date,
+    batch.errorCount,
+    trigger,
+    undefined,
+    newsIntelNote
+  );
 }

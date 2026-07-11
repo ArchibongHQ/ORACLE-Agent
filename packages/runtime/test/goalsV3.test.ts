@@ -52,10 +52,28 @@ describe("classifyEligibility (§1)", () => {
     expect(classifyEligibility(e).reasons).toContain("srl_virtual");
   });
 
-  it("discards a fixture in a league not on the union whitelist", () => {
+  it("[Wave-4 WS-A3] FIFA World Cup exact whitelist label passes with no off_whitelist annotation", () => {
+    const e = event({ league: "FIFA World Cup" });
+    const r = classifyEligibility(e);
+    expect(r.status).toBe("eligible");
+    expect(r.reasons).not.toContain("off_whitelist");
+  });
+
+  it("[Wave-4 WS-A3] a World-Cup-ish label off the exact whitelist string still passes eligibility, annotated off_whitelist only", () => {
+    // The real regression this closes: a sidecar league label that reads as
+    // "World Cup" but isn't the exact "FIFA World Cup" string in V3_WHITELIST
+    // (e.g. Spain v Belgium under a non-exact label) used to hard-discard.
+    const e = event({ league: "World Cup 2026 - Group Stage" });
+    const r = classifyEligibility(e);
+    expect(r.status).toBe("eligible");
+    expect(r.reasons).toContain("off_whitelist");
+  });
+
+  it("[Wave-4 WS-A3] a fixture in a league not on the union whitelist is no longer discarded — off_whitelist annotation only", () => {
     const e = event({ league: "Some Made-Up Regional League" });
-    expect(classifyEligibility(e).status).toBe("discard");
-    expect(classifyEligibility(e).reasons).toContain("not_whitelisted");
+    const r = classifyEligibility(e);
+    expect(r.status).toBe("eligible");
+    expect(r.reasons).toContain("off_whitelist");
   });
 
   it("passes a whitelisted league with mandatory odds present", () => {
@@ -76,22 +94,35 @@ describe("classifyEligibility (§1)", () => {
     expect(classifyEligibility(event({ home: "England Women" })).status).toBe("heightened");
   });
 
-  it("discards a friendly league not on the union whitelist", () => {
-    // League-whitelist membership is checked before the heightened classifiers
-    // (§1 processing order) — an unlisted "Friendly" league league-string never
-    // reaches the FRIENDLY_RE heightened check; it discards on not_whitelisted.
-    expect(classifyEligibility(event({ league: "International Friendly" })).status).toBe("discard");
+  it("[Wave-4 WS-A3] friendly (club or international) → heightened + marketRestriction goals_over_only, not discarded", () => {
+    const club = classifyEligibility(event({ league: "Club Friendly" }));
+    expect(club.status).toBe("heightened");
+    expect(club.reasons).toContain("friendly");
+    expect(club.marketRestriction).toBe("goals_over_only");
+
+    const intl = classifyEligibility(event({ league: "International Friendly" }));
+    expect(intl.status).toBe("heightened");
+    expect(intl.reasons).toContain("friendly");
+    expect(intl.marketRestriction).toBe("goals_over_only");
   });
 
-  it("discards a low-scoring derby in a non-goals-rich league", () => {
+  it("[Wave-4 WS-A3] a non-friendly fixture carries no marketRestriction", () => {
+    expect(
+      classifyEligibility(event({ league: "Premier League" })).marketRestriction
+    ).toBeUndefined();
+  });
+
+  it("[Wave-4 WS-A3] a low-scoring derby in a non-goals-rich league is heightened, not discarded", () => {
     const e = event({ league: "Premier League", home: "North London Derby FC" });
-    expect(classifyEligibility(e).status).toBe("discard");
-    expect(classifyEligibility(e).reasons).toContain("derby");
+    const r = classifyEligibility(e);
+    expect(r.status).toBe("heightened");
+    expect(r.reasons).toContain("derby");
   });
 
-  it("exempts international tournaments from the derby discard", () => {
+  it("exempts international tournaments from the derby heightened flag", () => {
     const e = event({ league: "FIFA World Cup", home: "Derby County" });
     expect(classifyEligibility(e).status).not.toBe("discard");
+    expect(classifyEligibility(e).reasons).not.toContain("derby");
   });
 });
 

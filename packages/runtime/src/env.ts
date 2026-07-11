@@ -267,11 +267,11 @@ export function buildConfig(
     enableWebSearchResultsFallback:
       env.ENABLE_WEB_SEARCH_RESULTS_FALLBACK?.toLowerCase() !== "false",
     webResultsMinConsensus: Number(env.WEB_RESULTS_MIN_CONSENSUS ?? 2),
-    // T0 news intel + swarm — opt-in; on when the flag is set AND any provider key
-    // is present. Gemini-only enables the Google AI-Mode fallback (no Perplexity needed).
-    enableNewsIntel:
-      env.ENABLE_NEWS_INTEL?.toLowerCase() === "true" &&
-      (!!env.PERPLEXITY_API_KEY || !!env.GEMINI_API_KEY),
+    // T0 news intel + swarm — opt-in; on whenever the flag is set. No provider key
+    // is required: a missing key is never a blocker (owner rule) — keyless mode
+    // runs the Google AI-Mode scrape + local-Claude reshape ensemble tier instead
+    // of Perplexity Sonar/Gemini.
+    enableNewsIntel: env.ENABLE_NEWS_INTEL?.toLowerCase() === "true",
     enableSwarm: enableSwarmFlag && (!!env.KIMI_API_KEY || !!env.OPENROUTER_API_KEY),
     batchConcurrency,
     // Pre-analysis fixture cap — bounds per-run odds/LLM quota spend
@@ -427,6 +427,13 @@ export function buildConfig(
     // "off" is Wave 4's eventual cutover flag, gated on a ≥7-slate parity
     // report + UNPRICED_BY_DESIGN registry closing the coverage gap.
     legacyPricer: env.ORACLE_LEGACY_PRICER?.toLowerCase() === "off" ? "off" : "on",
+    // [Wave 4-accuracy] Market-anchored blend pricing for ALL v3 candidates —
+    // "on" (default, owner decision after Phase-0 replay); "off" = legacy
+    // raw-edge gating, byte-identical rollback.
+    v3BlendPricing: env.ORACLE_V3_BLEND_PRICING?.toLowerCase() === "off" ? "off" : "on",
+    // [Wave 4-accuracy] Empirical hit-rate blend for totals O/U half-lines
+    // (goals counter only). "on" (default, owner decision).
+    v3TotalsEmpirical: env.ORACLE_V3_TOTALS_EMPIRICAL?.toLowerCase() === "off" ? "off" : "on",
   };
 }
 
