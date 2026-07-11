@@ -1,11 +1,27 @@
 /** goals-market-analysis-prompt-v3 Phase 1 — eligibility filter.
  *
- *  Whitelist membership is necessary, not sufficient: a fixture must be on the
- *  union whitelist (v3 §1.1 + the researched GOALS_RICH_LEAGUES set — locked
- *  plan decision) AND survive the hard discards (§1.2). Youth / women /
- *  friendlies / cup finals are not discarded but flagged "heightened": they
- *  need near-perfect data with aligned trends (§1.2 heightened bar, enforced by
- *  the completeness gate downstream).
+ *  [Wave-4 WS-A3, data-driven fixture gating] League whitelist membership is
+ *  NO LONGER a discard gate: an exact-string whitelist was silently dropping
+ *  the majority of a real slate (89/99 fixtures on 2026-07-10, including
+ *  FIFA World Cup Spain v Belgium under a non-exact league label) — the
+ *  sidecar's league-name strings simply don't reliably match a fixed list.
+ *  `GOALS_V3_WHITELIST`/`V3_WHITELIST` stay exported for priority/workbook
+ *  ordering elsewhere; off-list fixtures now survive with a non-gating
+ *  `off_whitelist` annotation instead.
+ *
+ *  Youth / women / cup finals are not discarded but flagged "heightened":
+ *  they need near-perfect data with aligned trends (§1.2 heightened bar,
+ *  enforced by the completeness gate downstream). Derbies (non-international)
+ *  moved from a hard discard to the same heightened treatment — raises the
+ *  data bar, never loosens it.
+ *
+ *  Friendlies (club OR international) are also no longer discarded: results
+ *  are genuinely unmodelable under rotation/defensive-experiment intent, but
+ *  goals still flow at a modelable base rate. A friendly survives as
+ *  heightened PLUS `marketRestriction: "goals_over_only"` — consumed
+ *  downstream (marketsV3/pipeline.ts's `restrictOddsToGoalsOverOnly`,
+ *  applied at the slateGate.ts choke point) to strip the fixture's market
+ *  table to goals-Over-only families before it can reach pricing.
  *
  *  Dead rubbers have no reliable deterministic signal at this layer — fixtures
  *  that look like one (both mid-table, late season) are flagged as context for
@@ -135,29 +151,59 @@ export interface V3Eligibility {
   status: V3EligibilityStatus;
   /** Machine-readable reasons (discard causes / heightened classes / arbiter flags). */
   reasons: string[];
+  /** Set only for friendlies: results are unmodelable but goals still flow.
+   *  Consumed by the slateGate.ts choke point to strip the fixture's market
+   *  table down to goals-Over-only families before pricing. */
+  marketRestriction?: "goals_over_only";
 }
 
 function fixtureText(event: SportyBetEvent): string {
   return `${event.league ?? ""} ${event.home} ${event.away}`;
 }
 
-/** Classify one fixture per v3 Phase 1. Order matters:
+/** Classify one fixture per v3 Phase 1 (rewritten Wave-4 WS-A3 — see module
+ *  docstring for the full rationale). Order matters:
  *    1. SRL/virtual → discard (applies to everything).
- *    2. League whitelist (union) → discard when absent.
+ *    2. Friendlies (club OR international) → NOT discarded: heightened +
+ *       marketRestriction "goals_over_only" (results unmodelable, goals
+ *       still flow).
  *    3. Missing 1X2 or O/U 2.5 odds → discard (Rule 0 mandatory pre-check;
  *       the completeness gate re-verifies against the full table).
- *    4. Derby (non-international) → discard (§1.2 low-scoring derby rule).
- *    5. Youth / women / friendly / cup-final → heightened.
- *    6. Late-season mid-table pairing → eligible, flagged dead-rubber-risk
+ *    4. League whitelist (union) → NO LONGER a discard gate; off-list leagues
+ *       get a non-gating `off_whitelist` annotation only.
+ *    5. Derby (non-international) → heightened (was discard; §1.2 low-
+ *       scoring derby rule now only raises the data bar, never a gate).
+ *    6. Youth / women / cup-final → heightened.
+ *    7. Late-season mid-table pairing → eligible, flagged dead-rubber-risk
  *       (context for the slate arbiter, not a gate). */
 export function classifyEligibility(event: SportyBetEvent): V3Eligibility {
   const league = event.league ?? "";
   const text = fixtureText(event);
   const reasons: string[] = [];
 
+  // 1. SRL / virtual — hard discard, applies to everything.
   if (SRL_RE.test(text)) return { status: "discard", reasons: ["srl_virtual"] };
-  if (!GOALS_V3_WHITELIST.has(league)) return { status: "discard", reasons: ["not_whitelisted"] };
 
+  // 2. Friendlies (club OR international): survive as "restricted" — the
+  //    heightened data bar applies AND the market table is later stripped to
+  //    goals-Over-only families (see marketsV3/pipeline.ts's
+  //    restrictOddsToGoalsOverOnly, applied at the slateGate.ts choke point).
+  let heightened = false;
+  let marketRestriction: V3Eligibility["marketRestriction"];
+  if (FRIENDLY_RE.test(text)) {
+    heightened = true;
+    marketRestriction = "goals_over_only";
+    reasons.push("friendly");
+    // Time-format loophole (non-90-min friendlies skew Overs further, e.g.
+    // 2x30/3x20 exhibition formats): no duration/period/format field exists
+    // anywhere in SportyBetEvent/SportyBetEventDetail (checked
+    // selectFixtures.ts in full — the sidecar only ever captures
+    // full-fixture odds/stats, never a match-length signal). Documenting the
+    // gap per instructions rather than inventing one — add a
+    // `nonstandard_duration` reason here the day such a field exists.
+  }
+
+  // 3. Missing 1X2 or O/U 2.5 odds — Rule 0 mandatory pre-check, discard.
   const odds = event.detail?.odds;
   const has1x2 = odds?.["1x2"]?.home != null && odds?.["1x2"]?.away != null;
   const hasOu25 = odds?.ou25?.over != null;
@@ -165,18 +211,27 @@ export function classifyEligibility(event: SportyBetEvent): V3Eligibility {
     return { status: "discard", reasons: ["missing_mandatory_odds"] };
   }
 
-  // §1.2 low-scoring derby guard. International tournaments are exempt (same
-  // convention as the leg-level gate); goals-rich leagues keep their Tier-A
-  // designation even when a fixture name carries derby wording.
+  // 4. League whitelist is no longer a gate — see module docstring (89/99
+  //    fixtures wrongly discarded 2026-07-10, incl. FIFA World Cup Spain v
+  //    Belgium under a non-exact league label). Off-list leagues survive
+  //    with a non-gating annotation; GOALS_V3_WHITELIST stays exported for
+  //    priority/workbook ordering elsewhere.
+  if (!GOALS_V3_WHITELIST.has(league)) reasons.push("off_whitelist");
+
+  // 5. §1.2 low-scoring derby guard — now heightened, not discard.
+  // International tournaments are exempt (same convention as the leg-level
+  // gate); goals-rich leagues keep their Tier-A designation even when a
+  // fixture name carries derby wording.
   if (
     !INTL_TOURNAMENT_RE.test(league) &&
     !GOALS_RICH_LEAGUES.has(league) &&
     /derby|derbi|clasico|clásico/i.test(text)
   ) {
-    return { status: "discard", reasons: ["derby"] };
+    heightened = true;
+    reasons.push("derby");
   }
 
-  let heightened = false;
+  // 6. Youth / women / cup-final → heightened (unchanged).
   if (YOUTH_RE.test(text)) {
     heightened = true;
     reasons.push("youth");
@@ -184,10 +239,6 @@ export function classifyEligibility(event: SportyBetEvent): V3Eligibility {
   if (WOMEN_RE.test(text)) {
     heightened = true;
     reasons.push("women");
-  }
-  if (FRIENDLY_RE.test(text)) {
-    heightened = true;
-    reasons.push("friendly");
   }
   if (CUP_FINAL_RE.test(league)) {
     heightened = true;
@@ -213,5 +264,9 @@ export function classifyEligibility(event: SportyBetEvent): V3Eligibility {
     reasons.push("dead_rubber_risk");
   }
 
-  return { status: heightened ? "heightened" : "eligible", reasons };
+  return {
+    status: heightened ? "heightened" : "eligible",
+    reasons,
+    ...(marketRestriction ? { marketRestriction } : {}),
+  };
 }
