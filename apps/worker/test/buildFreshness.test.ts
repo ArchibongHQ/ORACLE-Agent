@@ -1,12 +1,20 @@
-/** Build-freshness watchdog — unit tests for checkBuildFreshness's src-vs-dist
- *  mtime comparison and the getStaleBuildNote/setStaleBuildNote stash, using a
- *  disposable fake repoRoot (packages/<name>/{src,dist}) so this never touches
- *  the real repo's actual build output. Mirrors catalogOverlay.test.ts's
- *  mkdtemp + afterEach cleanup convention. */
+/** Build-freshness watchdog — unit tests for checkBuildFreshness's
+ *  git-commit-time-vs-dist comparison (plus its mtime fallback) and the
+ *  getStaleBuildNote/setStaleBuildNote stash, using a disposable fake repoRoot
+ *  (packages/<name>/{src,dist}) so this never touches the real repo's actual
+ *  build output. node:child_process is mocked (dataHealthLine.test.ts
+ *  convention) — the default implementation throws, simulating "no git", so
+ *  every mtime-based test below exercises the fallback path; git-mode tests
+ *  override the mock per-test. Mirrors catalogOverlay.test.ts's mkdtemp +
+ *  afterEach cleanup convention. */
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ execFileSync: vi.fn() }));
+vi.mock("node:child_process", () => ({ execFileSync: mocks.execFileSync }));
+
 import {
   checkBuildFreshness,
   getStaleBuildNote,
@@ -17,6 +25,10 @@ let repoRoot: string;
 
 beforeEach(() => {
   repoRoot = mkdtempSync(join(tmpdir(), "oracle-build-freshness-"));
+  mocks.execFileSync.mockReset();
+  mocks.execFileSync.mockImplementation(() => {
+    throw new Error("git: command not found");
+  });
 });
 
 afterEach(() => {
@@ -115,6 +127,68 @@ describe("checkBuildFreshness", () => {
   it("never throws given a nonexistent repoRoot entirely", () => {
     expect(() => checkBuildFreshness(join(repoRoot, "does-not-exist"))).not.toThrow();
     expect(checkBuildFreshness(join(repoRoot, "does-not-exist"))).toEqual([]);
+  });
+});
+
+describe("checkBuildFreshness — git commit-time mode", () => {
+  it("REGRESSION: no warning when the last src commit predates dist, even though src mtimes are newer (post-git-pull shape)", () => {
+    // git pull rewrote src mtimes to "now" (10000s past dist) but the last
+    // commit touching src predates the dist build — the build is current.
+    makePackage("packages", "engine", { srcAtSec: 1_010_000, distAtSec: 1_000_000 });
+    mocks.execFileSync.mockReturnValue(Buffer.from("999000\n"));
+    expect(checkBuildFreshness(repoRoot)).toEqual([]);
+  });
+
+  it("flags when the last src commit is newer than dist by more than 60s, ignoring src mtimes", () => {
+    // src mtimes equal dist (would be fresh under the old check) — but the
+    // last commit touching src postdates the dist build by 4200s.
+    makePackage("packages", "engine", {
+      pkgName: "@oracle/engine",
+      srcAtSec: 1_000_000,
+      distAtSec: 1_000_000,
+    });
+    mocks.execFileSync.mockReturnValue(Buffer.from("1004200\n"));
+    expect(checkBuildFreshness(repoRoot)).toEqual([
+      "@oracle/engine dist STALE (src > dist by 4200s)",
+    ]);
+  });
+
+  it("asks git for the package's forward-slash src pathspec with repoRoot as cwd", () => {
+    makePackage("packages", "engine", {});
+    mocks.execFileSync.mockReturnValue(Buffer.from("999000\n"));
+    checkBuildFreshness(repoRoot);
+    expect(mocks.execFileSync).toHaveBeenCalledWith(
+      "git",
+      ["log", "-1", "--format=%ct", "--", "packages/engine/src"],
+      expect.objectContaining({ cwd: repoRoot })
+    );
+  });
+
+  it("falls back to the mtime comparison when git output is empty (no commit history)", () => {
+    makePackage("packages", "engine", {
+      pkgName: "@oracle/engine",
+      srcAtSec: 1_004_200,
+      distAtSec: 1_000_000,
+    });
+    mocks.execFileSync.mockReturnValue(Buffer.from("\n"));
+    expect(checkBuildFreshness(repoRoot)).toEqual([
+      "@oracle/engine dist STALE (src > dist by 4200s)",
+    ]);
+  });
+
+  it("warns about the fallback exactly once per scan, no matter how many packages", () => {
+    makePackage("packages", "engine", {});
+    makePackage("apps", "worker", {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      checkBuildFreshness(repoRoot); // default mock throws → fallback for both packages
+      const fallbackWarns = warnSpy.mock.calls.filter((c) =>
+        String(c[0]).includes("falling back to mtime")
+      );
+      expect(fallbackWarns).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
