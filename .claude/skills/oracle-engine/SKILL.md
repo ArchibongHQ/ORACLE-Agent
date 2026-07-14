@@ -234,12 +234,41 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-11** — X-carveout (branch `feature/x-carveout`), same day, later than the Wave-4-accuracy
+  entry below. New tri-state flag `ORACLE_V3_X_CARVEOUT` (config `v3XCarveout`; `off`/`shadow`/`on`,
+  **default off**) — **the repo's only deliberate gate relaxation**; every other flag in this codebase
+  only raises bars. Background: Wave-4's `ORACLE_V3_BLEND_PRICING` made Class X exotics unreachable by
+  construction (raw-space −5pt exotic penalty vs blend-space edges: max rawEdgeBlend=0.40×0.12=0.048,
+  minus 0.05 ⇒ can never reach X's 0.02 blend floor). This carve-out re-evaluates ONLY the blend-edge
+  floor, with the raw-space penalty rescaled into blend units (`X_CARVEOUT_PENALTY_RESCALE=1/3`, the
+  same raw→blend ratio the class bars already use) — every other X bar stays at full strength and is
+  NOT relaxed: `maxOdds≤15`, `blendEV≥12%`, the EV floor, raw absolute/relative edge caps + the noise
+  gate (untouched, evaluated first, exactly as before), and the heightened-fixture X-exclusion
+  (untouched). Additionally gates on data-quality conviction: confirmed real xG AND
+  completeness≥0.8 (`X_CARVEOUT_MIN_COMPLETENESS=0.8`, ⇒ wModel≥0.37/0.40). Reachable window is
+  deliberately narrow — shortish-odds exotics (roughly 3.0–3.5) with near-cap raw edge and near-full
+  data quality; at long odds the 30% relative raw cap keeps X unreachable regardless. `shadow`: tags
+  would-pass assessments (`xCarveout:"shadow_pass"`, carried into `V3AssessmentStat` for slate reports)
+  without changing any outcome — this is the required first step. `on`: admits qualifiers, but pins
+  `confidence:"medium"` (floor band, never higher) — a carve-out pick is never treated as high-confidence
+  regardless of its raw numbers. Admitted picks stake/rank on `adjustedEdgeCarveout` (the rescaled
+  carve-out edge, ≥0.02 by construction; `analyzeFixtureMarkets` swaps it in as the primary
+  `adjustedEdge`) — the standard `adjustedEdgeBlend` is ≤ −0.002 for every X candidate and would
+  zero-Kelly + bottom-rank the pick (Opus review finding, fixed pre-merge); shadow rows carry the
+  same field as the counterfactual for ledger analysis. **Promotion bar is ledger evidence accumulated from shadow-tagged
+  assessments across real slates — never a hand-flip**, same discipline as every other shadow-gated
+  flag in this table (`ORACLE_V3_RATINGS`, `ORACLE_SHARP_FEED`, `ORACLE_CALIBRATION_LEDGER`).
+  Implemented in `packages/engine/src/marketsV3/evGate.ts` (constants `X_CARVEOUT_PENALTY_RESCALE=1/3`,
+  `X_CARVEOUT_MIN_COMPLETENESS=0.8`), threaded `env.ts` → `OracleConfig` → `buildV3Input` →
+  `gateAllMarkets`; new test file `packages/engine/test/xCarveout.test.ts`. See
+  `workflows/markets_v3.md`'s env-flag table for the full row.
 - **2026-07-11** — Wave-4-accuracy (branch `feature/wave-4-accuracy`). Fixes the 2026-07-10 live
   pathologies. **Kelly staking wired** — `analyzeFixtureMarketsV3` picks now carry real
   `optimizedKelly` stakes via `v3AssessmentsToEvMarkets` (was hardcoded `stake:0` → every pick
   reported 0.0% Kelly). **Market-anchored blend pricing on ALL candidates** (`ORACLE_V3_BLEND_PRICING`,
   default on) — `evGate.ts` gains `CLASS_GATE_BLEND`/`CLASS_GATE_BLEND_HEIGHTENED` (rescaled ~1/3 raw
-  bars; heightened ×1.30; Class X unreachable by construction); gates/EV/confidence/ranking/stake use
+  bars; heightened ×1.30; Class X unreachable by construction (later same-day: default-off
+  `ORACLE_V3_X_CARVEOUT` carve-out — see entry above)); gates/EV/confidence/ranking/stake use
   blended values, caps+noise stay on RAW edge (hard invariant). Kills fake soft-market edges (HSH).
   **Totals empirical blend** (`ORACLE_V3_TOTALS_EMPIRICAL`, default on) — goals O/U 1.5/2.5/3.5 blend
   hit-rates (goals counter only). **Eligibility rework** (`goalsV3/eligibility.ts`) — league whitelist

@@ -154,6 +154,10 @@ export interface V3AllMarketsInput {
    *  1.5/2.5/3.5 empirical hit-rate blend. Absent behaves as true (default on
    *  per OracleConfig's contract) — set false explicitly to withhold. */
   totalsEmpirical?: boolean;
+  /** [X-carveout] OracleConfig.v3XCarveout — high-conviction Class X exception
+   *  to the blendPricing gate. See evGate.ts's X_CARVEOUT_PENALTY_RESCALE
+   *  header for conditions. Absent/"off" ⇒ byte-identical gating. */
+  xCarveout?: "off" | "shadow" | "on";
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -392,6 +396,7 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         completeness: input.completeness,
         hasRealXg: input.hasRealXg,
         blendPricing: input.blendPricing,
+        xCarveout: input.xCarveout,
       });
 
       // [Wave 4-accuracy] When blendPricing is on, gate.pBlend/rawEdgeBlend/
@@ -405,7 +410,17 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
       const useBlendPrimary = input.blendPricing === true && gate.pBlend !== undefined;
       const mpValue = useBlendPrimary ? gate.pBlend! : price.p;
       const rawEdgeValue = useBlendPrimary ? gate.rawEdgeBlend! : gate.rawEdge;
-      const adjustedEdgeValue = useBlendPrimary ? gate.adjustedEdgeBlend! : gate.adjustedEdge;
+      // [X-carveout] An admitted carve-out pick stakes/ranks on the rescaled
+      // edge the carve-out itself evaluated (≥ 0.02 by construction) — the
+      // standard adjustedEdgeBlend is ≤ −0.002 for every X candidate (the
+      // unreachability the flag bypasses), and passing that downstream would
+      // zero-Kelly and bottom-rank the pick. Shadow passes stay on the honest
+      // blend value (they never reach evMarkets anyway).
+      const adjustedEdgeValue = useBlendPrimary
+        ? gate.xCarveout === "passed" && gate.adjustedEdgeCarveout !== undefined
+          ? gate.adjustedEdgeCarveout
+          : gate.adjustedEdgeBlend!
+        : gate.adjustedEdge;
       const evValue = useBlendPrimary ? gate.blendEV! : gate.ev;
 
       const assessment: V3MarketOutcomeAssessment = {

@@ -434,6 +434,11 @@ export function buildConfig(
     // [Wave 4-accuracy] Empirical hit-rate blend for totals O/U half-lines
     // (goals counter only). "on" (default, owner decision).
     v3TotalsEmpirical: env.ORACLE_V3_TOTALS_EMPIRICAL?.toLowerCase() === "off" ? "off" : "on",
+    // [X-carveout 2026-07-11] High-conviction Class X exception to the blend
+    // gate. Default OFF (owner decision — this is a gate RELAXATION, unlike
+    // every other flag): flip to "shadow" first for ledger evidence of
+    // would-pass X candidates, then "on" only on evidence.
+    v3XCarveout: parseTriState(env.ORACLE_V3_X_CARVEOUT, "off"),
   };
 }
 
