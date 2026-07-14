@@ -47,6 +47,8 @@ export function printEffectiveConfig(
     // [Wave 4-accuracy] blend-priced gating + totals empirical blend levers.
     v3BlendPricing: cfg.v3BlendPricing,
     v3TotalsEmpirical: cfg.v3TotalsEmpirical,
+    // [X-carveout] default-off Class X carve-out lever.
+    v3XCarveout: cfg.v3XCarveout,
     enableGoalsOnlyMode: cfg.enableGoalsOnlyMode,
     enableNewsIntel: cfg.enableNewsIntel,
     enableLlmMarketExecutor: cfg.enableLlmMarketExecutor,

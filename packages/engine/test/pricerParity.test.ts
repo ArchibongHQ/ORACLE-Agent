@@ -21,8 +21,9 @@ describe("pricer parity (WS3-B) — legacy vs v3 market coverage", () => {
 
   it("every legacy-priceable market is either v3-priced or registered in UNPRICED_BY_DESIGN", () => {
     const report = runParityAudit();
-    // biome-ignore lint: intentional console output — this IS the deliverable
-    // (the parity ledger Wave 4's scanMarkets-deletion gate reads).
+    // Intentional console output — this IS the deliverable (the parity ledger
+    // Wave 4's scanMarkets-deletion gate reads).
+    // biome-ignore lint/suspicious/noConsole: parity-ledger deliverable, see above
     console.log(`\n${formatParityReport(report)}\n`);
     expect(report.totalOutcomes).toBeGreaterThan(0);
     expect(report.gaps).toEqual([]);

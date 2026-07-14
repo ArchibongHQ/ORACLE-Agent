@@ -159,6 +159,29 @@ export const CLASS_GATE_BLEND_HEIGHTENED: Record<
   X: null, // X excluded in v4/blend heightened mode
 };
 
+/** [X-carveout, owner decision 2026-07-11] High-conviction Class X exception
+ *  to the blend gate — the ONLY deliberate gate RELAXATION in this file
+ *  (every other flag raises bars). Rationale: under v3BlendPricing, Class X
+ *  is unreachable by construction — rawEdgeBlend = wModel·rawEdge tops out at
+ *  0.40 × 0.12 (V3_BLEND_W_CAP × V3_EDGE_CAP_DEFAULT) = 0.048, and the −5pt
+ *  exotic penalty (calibrated in RAW-edge space, where the class bars are ~3×
+ *  the blend bars) drags adjustedEdgeBlend to ≤ −0.002, below X's 0.02 floor
+ *  (see blendGate.test.ts's "DOCUMENTED CONTRADICTION" test). The unit
+ *  mismatch — blend-space edge, raw-space penalty — is the exact mechanism,
+ *  so the carve-out re-evaluates ONLY the edge floor with the penalty
+ *  rescaled by the same ~1/3 ratio the blend bars themselves use
+ *  (CLASS_GATE_BLEND vs CLASS_GATE: S .01/.03, M .015/.05, L .02/.06).
+ *  Every other X bar still applies at full strength: odds ≤ 15, blendEV ≥
+ *  12%, the EV floor, the odds≥4 mandatory blend bar, raw caps/noise (which
+ *  run first and are untouched), and the heightened X-exclusion. On top,
+ *  data-quality conviction is required: confirmed real xG AND completeness ≥
+ *  X_CARVEOUT_MIN_COMPLETENESS (⇒ wModel ≥ 0.37 of its 0.40 cap). The
+ *  reachable window is deliberately narrow — shortish-odds exotics with a
+ *  near-cap raw edge and near-full data quality; at long odds the 30%
+ *  relative raw cap keeps X unreachable regardless of this flag. */
+export const X_CARVEOUT_PENALTY_RESCALE = 1 / 3;
+export const X_CARVEOUT_MIN_COMPLETENESS = 0.8;
+
 export type V3Confidence = "very_high" | "high" | "medium";
 export type V3AllGateOutcome = "done" | "capped" | "noise" | "below_gate";
 
@@ -222,6 +245,22 @@ export interface V3AllMarketsAssessment {
    *  name while `blendEdge`/`blendGatePass` keep their pre-existing
    *  odds>=4.00 mandatory-gate semantics completely untouched. */
   blendEV?: number;
+  /** [X-carveout] Set ONLY when the high-conviction Class X carve-out (see
+   *  X_CARVEOUT_PENALTY_RESCALE's header) evaluated this candidate as
+   *  qualifying: "passed" = flag "on", candidate admitted (outcome "done",
+   *  confidence pinned to "medium"); "shadow_pass" = flag "shadow", candidate
+   *  would have been admitted but outcome stays "below_gate" (ledger evidence
+   *  only). Undefined everywhere else — including every non-X class, flag
+   *  "off", and X candidates that fail any carve-out condition. */
+  xCarveout?: "passed" | "shadow_pass";
+  /** [X-carveout] The rescaled-penalty edge the carve-out evaluated:
+   *  rawEdgeBlend − penaltyPts·X_CARVEOUT_PENALTY_RESCALE (≥ the X blend
+   *  floor 0.02 whenever set). Present exactly when xCarveout is set. For
+   *  "passed" picks this — not the structurally-negative adjustedEdgeBlend —
+   *  is what downstream staking/ranking uses (analyzeFixtureMarkets swaps it
+   *  in as the primary adjustedEdge); for "shadow_pass" it's the
+   *  counterfactual for ledger analysis. */
+  adjustedEdgeCarveout?: number;
 }
 
 /** [refactor P0-2] Pure blend math, factored out so it's independently
@@ -330,6 +369,13 @@ export function gateAllMarkets(
      *  INVARIANT: blending must never rescue a raw-capped/raw-noise
      *  candidate. Default false ⇒ byte-identical to pre-Wave-4 gating. */
     blendPricing?: boolean;
+    /** [X-carveout] OracleConfig.v3XCarveout — high-conviction Class X
+     *  exception to the blendPricing gate (see X_CARVEOUT_PENALTY_RESCALE's
+     *  header for the full derivation and conditions). Only consulted inside
+     *  the blendPricing branch for cls === "X" candidates that failed the
+     *  standard CLASS_GATE_BLEND.X bar. "off" (default) ⇒ byte-identical to
+     *  pre-carveout gating. */
+    xCarveout?: "off" | "shadow" | "on";
   } = {}
 ): V3AllMarketsAssessment {
   const edgeCap = opts.edgeCap ?? V3_EDGE_CAP_DEFAULT;
@@ -338,6 +384,7 @@ export function gateAllMarkets(
   const evFloor = opts.evFloor ?? V3_EV_FLOOR_DEFAULT;
   const blendMode = opts.blendMode ?? "off";
   const blendPricing = opts.blendPricing ?? false;
+  const xCarveout = opts.xCarveout ?? "off";
 
   const rawEdge = modelP - q.q;
   const penaltyPts = allMarketsPenaltyPts(flags);
@@ -454,6 +501,41 @@ export function gateAllMarkets(
     const passes = classOk && blendGateOk;
 
     if (!passes) {
+      // [X-carveout] High-conviction Class X exception — see
+      // X_CARVEOUT_PENALTY_RESCALE's header for the derivation. Reached only
+      // when !heightened (the heightened X-exclusion returned above), AFTER
+      // the raw caps/noise gates (untouched), and re-checks every standard X
+      // bar EXCEPT the edge floor, which it re-evaluates with the raw-space
+      // penalty rescaled into blend-space units. Data-quality conviction
+      // (real xG + completeness) is required on top.
+      // The rescaled-penalty edge the carve-out evaluates — and, for admitted
+      // picks, the edge downstream staking/ranking must use: the standard
+      // adjustedEdgeBlend is ≤ −0.002 for every X candidate by construction
+      // (that's the unreachability this flag exists to bypass), so staking off
+      // it would zero-Kelly and bottom-rank every admitted pick.
+      const adjustedEdgeCarveout = rawEdgeBlend! - penaltyPts * X_CARVEOUT_PENALTY_RESCALE;
+      const carveoutQualifies =
+        cls === "X" &&
+        xCarveout !== "off" &&
+        blendGateOk &&
+        (blendGate.maxOdds === null || odds <= blendGate.maxOdds) &&
+        blendGate.minBlendEvPct !== null &&
+        blendEV! >= blendGate.minBlendEvPct &&
+        blendEV! >= evFloor &&
+        (opts.hasRealXg ?? false) &&
+        (opts.completeness ?? 0) >= X_CARVEOUT_MIN_COMPLETENESS &&
+        adjustedEdgeCarveout >= blendGate.minAdjEdgeBlend;
+      if (carveoutQualifies && xCarveout === "on") {
+        // Confidence pinned to the floor band — a carve-out pass is by
+        // construction right at the (rescaled) gate floor, never banded up.
+        return {
+          ...base,
+          outcome: "done",
+          confidence: "medium",
+          xCarveout: "passed",
+          adjustedEdgeCarveout,
+        };
+      }
       let gateReason: V3AllGateReason;
       if (adjustedEdgeBlend! < blendGate.minAdjEdgeBlend) gateReason = "class_edge";
       else if (blendGate.minBlendEvPct !== null && blendEV! < blendGate.minBlendEvPct)
@@ -461,7 +543,15 @@ export function gateAllMarkets(
       else if (blendGate.maxOdds !== null && odds > blendGate.maxOdds) gateReason = "max_odds";
       else if (blendEV! < evFloor) gateReason = "ev_floor";
       else gateReason = "model_hot_longshot"; // classOk but blendGateOk failed
-      return { ...base, outcome: "below_gate", confidence: null, gateReason };
+      return {
+        ...base,
+        outcome: "below_gate",
+        confidence: null,
+        gateReason,
+        // shadow_pass also carries the counterfactual edge so ledger analysis
+        // can see what an admitted pick WOULD have staked/ranked on.
+        ...(carveoutQualifies ? { xCarveout: "shadow_pass" as const, adjustedEdgeCarveout } : {}),
+      };
     }
 
     return {

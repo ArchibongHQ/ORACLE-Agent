@@ -462,6 +462,19 @@ export interface OracleConfig {
   // Applies ONLY to the default goals counter — corners/cards/team-total
   // reuse of priceOU must stay model-only. "on" (default, owner decision).
   v3TotalsEmpirical?: "on" | "off";
+  // [X-carveout 2026-07-11] High-conviction Class X exception to the blend
+  // gate — the repo's FIRST deliberate gate-RELAXATION flag (every other flag
+  // only raises bars; owner decision). Class X is otherwise unreachable under
+  // v3BlendPricing (rawEdgeBlend ≤ 0.40×0.12 = 0.048 minus the raw-space −5pt
+  // exotic penalty can never reach the 0.02 blend floor). "off" (default) =
+  // byte-identical gating. "shadow" = tag would-pass X assessments
+  // (xCarveout: "shadow_pass") for ledger evidence; outcome unchanged. "on" =
+  // admit qualifying X candidates at confidence "medium" (floor band, never
+  // higher). Every other X bar still applies at full strength: odds ≤ 15,
+  // blendEV ≥ 12%, EV floor, raw caps/noise, heightened X-exclusion, plus
+  // required data-quality conviction (real xG AND completeness ≥ 0.8). See
+  // evGate.ts X_CARVEOUT_PENALTY_RESCALE.
+  v3XCarveout?: "off" | "shadow" | "on";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

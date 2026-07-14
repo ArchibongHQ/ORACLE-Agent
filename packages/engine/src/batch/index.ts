@@ -76,6 +76,8 @@ export function buildV3Input(
     v3BlendPricing?: "on" | "off";
     /** [Wave 4-accuracy] See OracleConfig.v3TotalsEmpirical. */
     v3TotalsEmpirical?: "on" | "off";
+    /** [X-carveout] See OracleConfig.v3XCarveout. */
+    v3XCarveout?: "off" | "shadow" | "on";
   },
   /** [Wave 3, WS3-A] Diagnostic-only pi-ratings signal (see ratings/index.ts's
    *  buildRatingsLambdaInput header) — attached to lambdaInput but never
@@ -216,6 +218,9 @@ export function buildV3Input(
     // manually) behaves the same as an explicit "on".
     blendPricing: config?.v3BlendPricing !== "off",
     totalsEmpirical: config?.v3TotalsEmpirical !== "off",
+    // [X-carveout] default-off — undefined config behaves as "off"
+    // (gateAllMarkets' own default).
+    xCarveout: config?.v3XCarveout,
   };
 }
 
@@ -342,6 +347,10 @@ export type V3AssessmentStat = {
    *  slate-level report can tally why candidates didn't reach "done" —
    *  undefined on a passing assessment, same contract as the source field. */
   gateReason?: string;
+  /** [X-carveout] V3AllMarketsAssessment.xCarveout carried through ("passed" |
+   *  "shadow_pass") so slate reports can tally shadow/actual carve-out
+   *  passes — undefined everywhere else. */
+  xCarveout?: string;
 };
 
 export interface FixtureJobSuccess {
@@ -916,6 +925,7 @@ export async function runBatch(
                 adjustedEdge: a.adjustedEdge,
                 cls: a.cls,
                 gateReason: a.gateReason,
+                xCarveout: a.xCarveout,
               }));
             }
             // [Wave 3, WS3-A] Stage-2 dual-run shadow diff — DIAGNOSTIC ONLY.
