@@ -59,6 +59,14 @@ Dedicated (`_DEDICATED_NEWS_FEEDS` → own `source` name → routed to specific 
 | Evening Standard | `evening_standard` | `news` | `https://www.standard.co.uk/sport/football/rss` | ✅ Working |
 | FootballCritic | `footballcritic` | `news` | `https://www.footballcritic.com/rss` | ✅ Working — requires Chrome UA header (returns 403 without); `_fetch_rss` sends `_RSS_HDR` globally; confirmed 200 2026-06-28; wide global club/transfer/injury coverage |
 
+## Tier 0.5 — Cloud routine (oracle-news-intel)
+
+A daily Claude Code cloud routine (07:45 WAT — SOP: `workflows/cloud_news_intel.md`) gathers agentic news via WebSearch/WebFetch on Anthropic cloud infra — no browser-page caps, no 1500MB memory gate, no `MAX_JOBS=30` cap — and commits per-fixture `NewsIntelResult` JSONs to the git `data` branch.
+
+Locally, `tools/sync_cloud_news.py` (flag `ORACLE_CLOUD_NEWS_SYNC=true`, runs in the 09:30 WAT job AFTER `enrich_news.py`) merges them into the lake `news` partition as `source="cloud_news"` rows — structured `raw_json`, parsed by the same `lakeRowToSoftContext` branch as `perplexity` rows.
+
+**ORDER MATTERS**: `enrich_news.py`'s `daily_store.write_table` REPLACES the news partition — the sync must run after it, which the worker wiring enforces.
+
 ## Cost Gate (Perplexity)
 
 Owner decision 2026-06-21: only teams in a priority league (mirrors `ORACLE_PRIORITY_LEAGUES`) or with market_count ≥ 40 (mirrors `selectFixtures.ts`'s saturation point) get a Perplexity call by default — keeps spend roughly flat vs. the old analysis-time cap, just moved earlier in the pipeline. `--perplexity-full-slate` lifts the gate; `--no-perplexity` / `--limit` control cost further.
@@ -71,7 +79,7 @@ The three new browser-page batches (Google AI, FotMob, Sofascore) run SEQUENTIAL
 
 ## LLM Decision-Layer Wiring
 
-All six sources reach the LLM's soft-context prompt via `packages/runtime/src/newsIntel.ts`'s `lakeRowToSoftContext()`: `perplexity` → structured `injury`/`lineup`/`motivation`/`news` items; `google_ai`/`rss_news` → a single `news` item (raw summary text); `transfermarkt`/`fotmob`/`sofascore` → a single `stats` item (the same soft-context kind `sportyBetStats.ts`'s `buildStatsSoftContext` uses for SportyBet sidecar stats). A row with an empty `summary` or an unrecognised `source` string maps to `[]` — silently inert, not an error. Before adding a 7th source, add its branch here too, or its lake rows will be written but never seen by the LLM (this exact gap existed for `rss_news` until 2026-06-23 — it was being written since the RSS feeds shipped but had no `lakeRowToSoftContext` branch until this same pass added the three newer sources).
+All six sources reach the LLM's soft-context prompt via `packages/runtime/src/newsIntel.ts`'s `lakeRowToSoftContext()`: `perplexity` → structured `injury`/`lineup`/`motivation`/`news` items; `google_ai`/`rss_news` → a single `news` item (raw summary text); `transfermarkt`/`fotmob`/`sofascore` → a single `stats` item (the same soft-context kind `sportyBetStats.ts`'s `buildStatsSoftContext` uses for SportyBet sidecar stats). A row with an empty `summary` or an unrecognised `source` string maps to `[]` — silently inert, not an error. Before adding a 7th source, add its branch here too, or its lake rows will be written but never seen by the LLM (this exact gap existed for `rss_news` until 2026-06-23 — it was being written since the RSS feeds shipped but had no `lakeRowToSoftContext` branch until this same pass added the three newer sources). `cloud_news` (the Tier 0.5 cloud routine above) is now an explicitly handled structured source in `lakeRowToSoftContext()` — parsed like `perplexity`, not the generic summary fallback.
 
 ## Edge Cases & Known Constraints
 

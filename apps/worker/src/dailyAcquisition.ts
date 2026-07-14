@@ -129,10 +129,28 @@ function runNewsEnrichment(): Promise<void> {
   });
 }
 
+// Cloud-routine news/xG sync runs AFTER news enrichment, never before or
+// alongside it: enrich_news.py's daily_store.write_table REPLACES the news
+// partition wholesale, so if it ran second it would wipe the cloud_news rows
+// this step merges in. tools/sync_cloud_news.py must therefore always be the
+// last writer of the day for the news partition. Best-effort like every
+// other Python subprocess here — a failure never blocks the acquisition run.
+function runCloudNewsSync(): Promise<void> {
+  if (!config.cloudNewsSync) return Promise.resolve();
+  const python = PYTHON_BIN;
+  const script = join(ROOT, "tools", "sync_cloud_news.py");
+  return runPythonScript(python, script, [], { cwd: ROOT }).then(({ err, stdout, stderr }) => {
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    if (err) process.stderr.write(`sync_cloud_news error: ${err.message}\n`);
+  });
+}
+
 /** Full 09:30 WAT acquisition job: scrape -> lake write -> news enrichment ->
- *  heartbeat. Only stamps lastAcquire when fixtures were actually acquired, so
- *  a failed run leaves the lake-staleness check above free to keep retrying
- *  rather than masking the failure with a fresh timestamp.
+ *  cloud news/xG sync -> heartbeat. Only stamps lastAcquire when fixtures
+ *  were actually acquired, so a failed run leaves the lake-staleness check
+ *  above free to keep retrying rather than masking the failure with a fresh
+ *  timestamp.
  *
  *  [audit fix, P0-4] Tracked via trackAcquireJob so the 09:35/09:40 cron slots
  *  (and the daily-batch back-online trigger) can await its actual completion
@@ -142,6 +160,9 @@ export function acquireDailyJob(): Promise<void> {
     (async () => {
       const count = await acquireDaily();
       await runNewsEnrichment();
+      // Must run after runNewsEnrichment — see runCloudNewsSync's comment
+      // above (write_table partition-replace semantics).
+      await runCloudNewsSync();
       if (count > 0) {
         writeHeartbeat("lastAcquire", { date: watDateString(), fixtures: count });
       }

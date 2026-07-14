@@ -180,3 +180,9 @@ Two SEPARATE concurrency-cap functions — do not conflate them:
 **Why two functions, not one:** reusing the thin-worker cap (8) for a browser-page workload caused two real BSODs (`0x50`/`0x3B`) within ~10 minutes on this box's integrated GPU — see memory `oracle_swarm_gpu_bsod_incident`. Any new concurrency-tuned call site must pick the correct one for its workload type; if a third workload class is ever added (e.g. a heavier per-worker subprocess), give it its own cap function rather than reusing either of these.
 
 LLM extraction fallback cascade (`llm_extract_fallback`): Kimi K2.6 (Moonshot API, `KIMI_API_KEY`) first, then the local Claude Code CLI pinned to `--model haiku` (free, no network dependency) as fallback, then `None`. Haiku is appropriate here specifically because this is data-extraction, not analysis/decision-making — the codebase's "Opus/Fable only" rule (`packages/llm/src/callClaudeCode.ts`) is scoped to the decision layer, not the acquisition layer.
+
+### Cloud portability
+
+Claude Code cloud sessions/routines CANNOT run Playwright — the security proxy lacks HTTP CONNECT (anthropics/claude-code#11791), and this applies at every network-access level. Pure-HTTP paths (ESPN/Sky fixture listing, the entire SportyBet gismo sidecar via `urllib`) work in cloud; all Playwright scrapers must run either on this box or on GitHub Actions runners (`.github/workflows/browser-scrape.yml` — the nightly off-box browser tier committing to the `data` branch; it currently ships Understat only — FotMob is deferred because its team list comes from the worker's on-disk sidecar).
+
+The browser-page caps in `tools/swarm_dispatch.py` apply only on local Windows; GH runners/Linux are uncapped but must keep politeness pacing.
