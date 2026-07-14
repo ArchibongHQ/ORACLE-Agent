@@ -113,7 +113,9 @@ export interface NewsIntelOpts {
  *  Python writer already condenses its raw_json into a one-line `summary`
  *  (see tools/enrich_news.py's _summary_from_* helpers), so this just emits
  *  that string under "stats" — the LLM-decision soft-context kind already
- *  used by sportyBetStats.ts's buildStatsSoftContext for the same purpose. A
+ *  used by sportyBetStats.ts's buildStatsSoftContext for the same purpose.
+ *  "cloud_news" rows (written by tools/sync_cloud_news.py from the daily
+ *  cloud routine) carry the same structured shape and parse identically. A
  *  malformed/unparseable row degrades to []. */
 function lakeRowToSoftContext(row: {
   source: string;
@@ -121,7 +123,7 @@ function lakeRowToSoftContext(row: {
   rawJson: string;
   scrapedAt: string;
 }): SoftContextItem[] {
-  if (row.source === "perplexity") {
+  if (row.source === "perplexity" || row.source === "cloud_news") {
     try {
       const obj = JSON.parse(row.rawJson) as {
         injuries?: string[];
@@ -131,7 +133,8 @@ function lakeRowToSoftContext(row: {
         travelFlags?: string[];
         model?: string;
       };
-      const model = obj.model ?? "perplexity-lake";
+      const model =
+        obj.model ?? (row.source === "cloud_news" ? "cloud-routine-lake" : "perplexity-lake");
       const items: SoftContextItem[] = [];
       const push = (kind: SoftContextItem["kind"], texts: string[] | undefined) => {
         for (const text of texts ?? [])

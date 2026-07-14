@@ -1,0 +1,146 @@
+# browser-scrape — nightly off-box home for ORACLE's browser-bound xG tiers.
+#
+# WHY THIS EXISTS: Claude Code's cloud sandbox cannot launch a real Chromium/
+# Playwright browser (anthropics/claude-code#11791), and this project's
+# CLAUDE.md operating rule #6 forbids treating that as a blocker — the
+# fallback tier for anything browser-bound is "run it somewhere that can."
+# GitHub Actions is that somewhere: a scheduled job that scrapes Understat
+# xG (tools/fetch_xg.py) and consolidates it (tools/build_xg_table.py), then
+# commits the JSON output to the long-lived `data` branch under data/xg/.
+# The local worker's tools/sync_cloud_news.py is the downstream consumer —
+# it copies data/xg/*.json from that branch into .tmp/xg/ so the engine
+# reads it exactly like a locally-produced artifact. The worker itself never
+# launches a browser for this tier.
+#
+# MINUTE BUDGET: tools/fetch_xg.py's default invocation (no --leagues/
+# --seasons filter) sweeps all 5 Understat top-flight leagues x its full
+# SEASONS range with no cross-run cache (a fresh runner every night has
+# nothing on disk to skip) — observed/expected ~15-20 min/day against
+# GitHub's free 2,000 min/month private-repo allowance, i.e. well inside
+# budget even run nightly (~450-600 min/month).
+#
+# DELIBERATELY DEFERRED (not wired into this workflow, v1):
+#  - FotMob live-xG refresh (tools/acquire_daily.py --live-xg-refresh, which
+#    apps/worker/src/dailyAcquisition.ts's runFotmobXgRefresh shells out to).
+#    Verified via acquire_daily.py's run_live_xg_refresh docstring: it reads
+#    the SportyBet sidecar JSON already on disk from the WORKER's own prior
+#    acquire() run to get its team list, rather than re-scraping fixtures
+#    itself. That sidecar file never exists on a fresh GitHub Actions
+#    runner, so on this runner it would just no-op every night ("no sidecar
+#    on disk yet — skipping") — zero yield for the Playwright cost. Revisit
+#    only if a runner-independent team-list source is added.
+#  - Sofascore / any tier that needs a virtual display (Xvfb) for headed or
+#    anti-bot-hardened scraping: not verified feasible on ubuntu-latest
+#    without extra setup — out of scope for this v1 pass.
+
+name: browser-scrape
+
+on:
+  schedule:
+    - cron: "30 1 * * *" # 02:30 Africa/Lagos (WAT = UTC+1) daily
+  workflow_dispatch: {}
+
+concurrency:
+  group: browser-scrape
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    name: nightly browser-bound xG refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so origin/data is reachable for the commit step below
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python deps + Chromium
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Understat xG fetch (tools/fetch_xg.py)
+        continue-on-error: true
+        run: |
+          echo "::notice::browser-scrape: starting Understat xG fetch (tools/fetch_xg.py)"
+          python tools/fetch_xg.py
+
+      - name: Build consolidated xG table (tools/build_xg_table.py)
+        continue-on-error: true
+        run: |
+          echo "::notice::browser-scrape: consolidating .tmp/xg CSVs into team_xg_table.json"
+          python tools/build_xg_table.py
+
+      - name: Check for produced outputs
+        id: outputs
+        run: |
+          shopt -s nullglob
+          files=(.tmp/xg/*.json)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::notice::browser-scrape: no .tmp/xg/*.json produced this run — nothing to commit"
+            echo "has_output=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::browser-scrape: produced ${#files[@]} JSON file(s): ${files[*]}"
+            echo "has_output=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit outputs to data branch
+        if: steps.outputs.outputs.has_output == 'true'
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+
+          STAGE="$(mktemp -d)"
+          cp .tmp/xg/*.json "$STAGE"/
+          WT="$RUNNER_TEMP/data-worktree"
+
+          attempt_push() {
+            git fetch origin data || true
+            rm -rf "$WT"
+
+            if git rev-parse --verify origin/data >/dev/null 2>&1; then
+              git worktree add --detach "$WT" origin/data
+            else
+              echo "::notice::browser-scrape: origin/data does not exist yet — creating orphan branch"
+              git worktree add --detach "$WT"
+              (cd "$WT" && git checkout --orphan data && git rm -rf . >/dev/null)
+            fi
+
+            mkdir -p "$WT/data/xg"
+            cp "$STAGE"/*.json "$WT/data/xg/"
+
+            (
+              cd "$WT"
+              if [ -n "$(git status --porcelain)" ]; then
+                git add data/xg
+                git commit -m "data(xg): nightly browser-tier refresh $(date -u +%F)"
+                git push origin HEAD:data
+              else
+                echo "::notice::browser-scrape: no change vs origin/data — skipping commit"
+              fi
+            )
+          }
+
+          if ! attempt_push; then
+            echo "::warning::browser-scrape: push attempt 1 failed (likely a race with another writer) — retrying once"
+            if ! attempt_push; then
+              echo "::error::browser-scrape: push attempt 2 also failed — giving up for tonight"
+              exit 1
+            fi
+          fi
+
+          git worktree remove --force "$WT" 2>/dev/null || true

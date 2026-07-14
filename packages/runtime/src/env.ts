@@ -272,6 +272,8 @@ export function buildConfig(
     // runs the Google AI-Mode scrape + local-Claude reshape ensemble tier instead
     // of Perplexity Sonar/Gemini.
     enableNewsIntel: env.ENABLE_NEWS_INTEL?.toLowerCase() === "true",
+    // Gates the post-enrichment cloud data sync (tools/sync_cloud_news.py).
+    cloudNewsSync: env.ORACLE_CLOUD_NEWS_SYNC?.toLowerCase() === "true",
     enableSwarm: enableSwarmFlag && (!!env.KIMI_API_KEY || !!env.OPENROUTER_API_KEY),
     batchConcurrency,
     // Pre-analysis fixture cap — bounds per-run odds/LLM quota spend

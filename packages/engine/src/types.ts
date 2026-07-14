@@ -221,6 +221,7 @@ export interface OracleConfig {
   enableCVL?: boolean; // B2: Claude Sonnet adversarial verification
   // T0 + swarm (all default false/undefined)
   enableNewsIntel?: boolean; // T0: Perplexity Sonar news/injury/lineup intelligence
+  cloudNewsSync?: boolean; // merge cloud-routine news/xG from the git `data` branch post-enrichment
   enableSwarm?: boolean; // Level-2: per-fixture sub-agent swarm (APEX/PRIME)
   batchConcurrency?: number; // Level-1: max concurrent fixtures (default 8)
   maxFixturesPerRun?: number; // pre-analysis fixture selection cap (default 50)
