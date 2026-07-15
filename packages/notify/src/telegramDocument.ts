@@ -41,11 +41,15 @@ export async function sendTelegramDocument(
   chatId: string,
   filePath: string,
   caption: string
-): Promise<void> {
-  if (!botToken || !chatId || !existsSync(filePath)) return;
+): Promise<boolean> {
+  if (!botToken || !chatId || !existsSync(filePath)) return false;
   const fileName = filePath.split(/[\\/]/).pop() ?? "report.bin";
   const fileBuf = readFileSync(filePath);
   const mime = mimeForFile(fileName);
+  // Flat 30s was tuned for small payloads and timed out on large attachments
+  // (e.g. the 12.3MB HTML fixture report) purely on upload bandwidth, not
+  // latency — scale the budget with file size instead.
+  const timeoutMs = 30_000 + Math.round((fileBuf.length / (1024 * 1024)) * 10_000);
 
   try {
     const form = new FormData();
@@ -56,9 +60,10 @@ export async function sendTelegramDocument(
     const res = await fetch(API(botToken, "sendDocument"), {
       method: "POST",
       body: form,
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!res.ok) throw new Error(`Telegram sendDocument failed: ${res.status} ${await res.text()}`);
+    return true;
   } catch {
     // fetch threw (transport error) — retry via node:https with a manual multipart body.
     try {
@@ -68,14 +73,17 @@ export async function sendTelegramDocument(
         caption,
         fileName,
         fileBuf,
-        mime
+        mime,
+        timeoutMs
       );
+      return true;
     } catch (err) {
       // best-effort — a report-attachment failure must never block the run, but it
       // must be visible in logs instead of vanishing silently.
       process.stderr.write(
         `[telegram-document] send failed — ${err instanceof Error ? err.message : String(err)}\n`
       );
+      return false;
     }
   }
 }
@@ -88,7 +96,8 @@ function postMultipartViaHttps(
   caption: string,
   fileName: string,
   fileBuf: Buffer,
-  mime: string
+  mime: string,
+  timeoutMs: number
 ): Promise<void> {
   const boundary = `----oracle${Date.now().toString(16)}`;
   const textPart = (name: string, value: string): Buffer =>
@@ -116,7 +125,7 @@ function postMultipartViaHttps(
           "content-type": `multipart/form-data; boundary=${boundary}`,
           "content-length": body.length,
         },
-        timeout: 30_000,
+        timeout: timeoutMs,
       },
       (res) => {
         const chunks: Buffer[] = [];
