@@ -1,0 +1,23 @@
+{
+  "home": "Malisheva", "away": "KS Vllaznia Shkoder", "league": "UEFA Conference League - First Qualifying Round (2nd leg)", "kickoff": "2026-07-15T15:30:00+02:00",
+  "injuries": [],
+  "suspensions": [
+    "Andreas Skovgaard (Malisheva) — suspended after a red card in the first leg"
+  ],
+  "lineupHints": [
+    "Laurent Xhylani (Vllaznia) — scored in the first leg, expected to start alongside Kreshnik Uka"
+  ],
+  "motivationFlags": [
+    "Malisheva trail 1-2 from the first leg and must overturn the deficit at home",
+    "Vllaznia unbeaten in their last five matches with no fresh injuries or suspensions"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.mightytips.com/football-predictions/malisheva-vs-vllaznia-prediction-15-07-2026/",
+    "https://www.sportsmole.co.uk/football/europa-conference-league/vllaznia-shkoder-vs-malisheva_game_249832.html",
+    "https://www.uefa.com/uefaconferenceleague/match/2048686--vllaznia-vs-malisheva/"
+  ],
+  "confidence": 0.55,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-15T16:58:00Z"
+}

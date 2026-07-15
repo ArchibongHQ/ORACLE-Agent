@@ -1,6 +1,6 @@
 {
-  "date": "2026-07-15", "slateSize": 6, "attempted": 6, "written": 6,
-  "withNews": 6,
-  "sourcesUsed": {"rss": 0, "transfermarkt": 0, "perplexity": 0, "agentic": 6},
-  "startedAt": "2026-07-15T16:42:00Z", "finishedAt": "2026-07-15T16:46:02Z"
+  "date": "2026-07-15", "slateSize": 7, "attempted": 7, "written": 7,
+  "withNews": 7,
+  "sourcesUsed": {"rss": 0, "transfermarkt": 0, "perplexity": 0, "agentic": 7},
+  "startedAt": "2026-07-15T16:42:00Z", "finishedAt": "2026-07-15T17:02:00Z"
 }
