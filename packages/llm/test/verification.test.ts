@@ -156,6 +156,54 @@ describe("callVerification — Tier 0 local Claude Code", () => {
   });
 });
 
+describe("callVerification diagnostic logging", () => {
+  it("logs 'no JSON object found' when Claude Opus returns unparseable text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockResolvedValue(claudeText("I cannot verify this pick."));
+    await callVerification("p", ctxClaude);
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callVerification] no JSON object found in response")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the invalid status field when the model returns an unknown status", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockResolvedValue(claudeText('{"status":"MAYBE","rationale":"hmm"}'));
+    await callVerification("p", ctxClaude);
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[callVerification] invalid status field: "MAYBE"')
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error reason when the Claude Opus tier throws", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockRejectedValue(new Error("claude down"));
+    fetchMock.mockResolvedValue(chatResponse('{"status":"APPROVED","rationale":"sound"}'));
+    await callVerification("p", makeCtx({ claudeApiKey: "ck", openrouterApiKey: "or" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callVerification] Claude Opus tier")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("claude down"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs when the tier-0 local CLI produces no text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.env.ORACLE_RUNTIME = "local";
+    spawn.mockImplementation(() => {
+      throw new Error("spawn ENOENT");
+    });
+    messagesCreateMock.mockResolvedValue(claudeText('{"status":"APPROVED","rationale":"sound"}'));
+    await callVerification("p", ctxClaude);
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callVerification] tier 0 local CLI produced no text")
+    );
+    writeSpy.mockRestore();
+  });
+});
+
 describe("callVerification — terminal SKIPPED behavior", () => {
   it("returns SKIPPED 'all tiers failed' when Claude throws and OpenRouter fails", async () => {
     messagesCreateMock.mockRejectedValue(new Error("down"));

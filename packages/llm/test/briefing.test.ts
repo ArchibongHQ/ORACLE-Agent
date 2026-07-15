@@ -193,6 +193,72 @@ describe("callBriefing — Tier 0 local Claude Code", () => {
   });
 });
 
+describe("callBriefing diagnostic logging", () => {
+  it("logs when the tier-0 local CLI produces no text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.env.ORACLE_RUNTIME = "local";
+    spawn.mockImplementation(() => {
+      throw new Error("spawn ENOENT");
+    });
+    messagesCreateMock.mockResolvedValueOnce(claudeText('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] tier 0 local CLI produced no text")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs an empty-response-text diagnostic when Claude Opus returns no text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockResolvedValueOnce(claudeText(""));
+    fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck", openrouterApiKey: "ok" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] Claude Opus tier: empty response text")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error reason when the Claude Opus tier throws", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockRejectedValue(new Error("rate limit"));
+    fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck", openrouterApiKey: "ok" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] Claude Opus tier")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("rate limit"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs each rejected temperature-ensemble call plus the Gemini-tier catch when every call fails", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    generateContentMock.mockRejectedValue(new Error("gemini down"));
+    fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ geminiApiKey: "gk", openrouterApiKey: "ok" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] temperature ensemble T=0.4")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] Gemini ensemble tier")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error reason when the framing-bias check throws", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock
+      .mockResolvedValueOnce(claudeText('{"primaryPick":"Over 2.5","stake":0.05}'))
+      .mockRejectedValueOnce(new Error("rate limit"));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] framing-bias check")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("rate limit"));
+    writeSpy.mockRestore();
+  });
+});
+
 describe("callBriefing — exhaustion", () => {
   it("throws when no keys are configured at all", async () => {
     await expect(callBriefing("p", makeCtx())).rejects.toThrow(/callBriefing: no LLM available/);

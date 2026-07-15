@@ -13,6 +13,37 @@ import type { LLMCallContext } from "./types.js";
  *  model after it (and the entire fixture) indefinitely. */
 const REQUEST_TIMEOUT_MS = 20_000;
 
+/** Redact substrings shaped like secrets (bearer tokens, API keys, JWTs) before
+ *  logging — Google's own APIs are known to echo an invalid key's value back
+ *  in error text, so any err.message reaching a log line must be scrubbed
+ *  first. Mirrors callClaudeCode.ts's _redact (kept file-local — that helper
+ *  is private to its own module). */
+function _redact(s: string): string {
+  return s
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9]{10,}/g, "[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]")
+    .replace(/\bAIza[A-Za-z0-9_-]{10,}\b/g, "[REDACTED]"); // Google API-key shape
+}
+
+/** Prepare a diagnostic string for a log line: redact secret-shaped substrings,
+ *  strip control/line-break characters, then truncate. Mirrors
+ *  callClaudeCode.ts's _sanitizeForLog. */
+function _sanitizeForLog(s: string, max = 300): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0 control chars from untrusted upstream output before logging
+  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f\u2028\u2029\u0085]+/g, " ");
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** Log one diagnostic line for a callGemini failure branch. Returns nothing
+ *  meaningful — call sites in this file use it as a side-effecting statement
+ *  mid-loop (control flow already falls through to the next cascade tier
+ *  unchanged), not as a `return` value, unlike callClaudeCode.ts's _fail. */
+function _fail(reason: string): null {
+  process.stderr.write(`[callGemini] ${reason}\n`);
+  return null;
+}
+
 /** fetchGeminiWithCascade — lifted from ORACLE_v2026_8_0.jsx §2.
  *  Tries each model in the acquisition cascade; returns first successful text. */
 export async function fetchGeminiWithCascade(prompt: string, ctx: LLMCallContext): Promise<string> {
@@ -31,8 +62,11 @@ export async function fetchGeminiWithCascade(prompt: string, ctx: LLMCallContext
       });
       const text = result.text;
       if (text) return text;
+      _fail(`${modelId}: empty response text`);
     } catch (err) {
-      errors.push(`${modelId}: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`${modelId}: ${msg}`);
+      _fail(`${modelId}: ${_sanitizeForLog(msg)}`);
     }
   }
 
@@ -95,8 +129,11 @@ export async function callGeminiDecision(prompt: string, ctx: LLMCallContext): P
       });
       const text = result.text;
       if (text) return text;
+      _fail(`${modelId}: empty response text`);
     } catch (err) {
-      errors.push(`${modelId}: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`${modelId}: ${msg}`);
+      _fail(`${modelId}: ${_sanitizeForLog(msg)}`);
     }
   }
 

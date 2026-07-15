@@ -55,6 +55,42 @@ function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map(String).filter(Boolean).slice(0, 12) : [];
 }
 
+/** Redact substrings shaped like secrets (bearer tokens, API keys, JWTs) before
+ *  logging. This file is the one place in the pipeline that logs raw
+ *  Playwright-scraped web content and third-party API error text verbatim —
+ *  neither is under this codebase's control, so both must be scrubbed before
+ *  reaching a log line. Mirrors callClaudeCode.ts's _redact (kept file-local
+ *  — that helper is private to its own module). */
+function _redact(s: string): string {
+  return s
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9]{10,}/g, "[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]");
+}
+
+/** Prepare a diagnostic string for a log line: redact secret-shaped
+ *  substrings, strip control characters and Unicode line-breaking code
+ *  points (a scraped web page or an LLM reshape response is untrusted input
+ *  that could otherwise smuggle in fake `[callNewsIntel]`-prefixed lines),
+ *  then truncate. Mirrors callClaudeCode.ts's _sanitizeForLog. */
+function _sanitizeForLog(s: string, max = 300): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0 control chars from untrusted scraped/upstream content before logging
+  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f\u2028\u2029\u0085]+/g, " ");
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** Log one diagnostic line for a callNewsIntel failure branch, then return
+ *  null — every acquisition-path failure funnels through here, same
+ *  convention as callClaudeCode.ts's _fail. "No work to do" preconditions
+ *  (missing key, wrong runtime, no providers configured) and low-confidence
+ *  "no relevant news found" outcomes are deliberately NOT routed through
+ *  this — those are expected non-failure outcomes per this file's own
+ *  contract (see MIN_CONFIDENCE doc), not a rung that tried and failed. */
+function _fail(reason: string): null {
+  process.stderr.write(`[callNewsIntel] ${reason}\n`);
+  return null;
+}
+
 interface SonarResponse {
   choices?: Array<{ message?: { content?: string } }>;
   citations?: string[];
@@ -80,10 +116,10 @@ async function callSonar(
       temperature: 0,
     }),
   });
-  if (!resp.ok) return null;
+  if (!resp.ok) return _fail(`sonar HTTP ${resp.status} (model=${model})`);
   const data = (await resp.json()) as SonarResponse;
   const content = data.choices?.[0]?.message?.content;
-  if (!content) return null;
+  if (!content) return _fail(`sonar empty response content (model=${model})`);
   return { content, citations: Array.isArray(data.citations) ? data.citations : [] };
 }
 
@@ -111,7 +147,10 @@ export async function fetchNewsIntelligence(
         .trim();
       const start = cleaned.indexOf("{");
       const end = cleaned.lastIndexOf("}");
-      if (start === -1 || end === -1) continue;
+      if (start === -1 || end === -1) {
+        _fail(`no JSON object found in sonar content (model=${model})`);
+        continue;
+      }
 
       const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
       const confidence = Math.max(0, Math.min(1, Number(obj.confidence ?? 0)));
@@ -128,11 +167,15 @@ export async function fetchNewsIntelligence(
         model: `perplexity-${model}`,
         observedAt: new Date().toISOString(),
       };
-    } catch {
+    } catch (err) {
+      _fail(
+        `sonar cascade (model=${model}): ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+      );
       // cascade to next model
     }
   }
 
+  _fail("perplexity sonar cascade exhausted (sonar-pro, sonar)");
   return null;
 }
 
@@ -154,7 +197,7 @@ export async function fetchNewsViaGoogleAiMode(
   const query = `${home} vs ${away} ${league} ${date} confirmed team news injuries suspensions lineup`;
 
   const scraped = await scrapeGoogleAiMode(query);
-  if (!scraped?.text) return null;
+  if (!scraped?.text) return _fail("Google AI-Mode scrape yielded no text");
 
   const reshapePrompt = `${buildPrompt(home, away, league, kickoff)}
 
@@ -176,7 +219,10 @@ ${scraped.text}
 
       const text = (result.text ?? "").trim();
       const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) continue;
+      if (!jsonMatch) {
+        _fail(`Gemini reshape produced no JSON object (model=${modelId})`);
+        continue;
+      }
 
       const obj = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
       const confidence = Math.max(0, Math.min(1, Number(obj.confidence ?? 0)));
@@ -193,11 +239,15 @@ ${scraped.text}
         model: `google-ai-mode-${modelId}`,
         observedAt: scraped.observedAt,
       };
-    } catch {
+    } catch (err) {
+      _fail(
+        `Gemini reshape cascade (model=${modelId}): ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+      );
       // cascade to next model
     }
   }
 
+  _fail("Gemini reshape cascade exhausted (GEMINI_FLASH, GEMINI_FLASH_LITE)");
   return null;
 }
 
@@ -218,7 +268,7 @@ export async function fetchNewsViaClaudeReshape(
   const query = `${home} vs ${away} ${league} ${date} confirmed team news injuries suspensions lineup`;
 
   const scraped = await scrapeGoogleAiMode(query);
-  if (!scraped?.text) return null;
+  if (!scraped?.text) return _fail("Google AI-Mode scrape yielded no text");
 
   const reshapePrompt = `${GEMINI_RESHAPE_SYSTEM}
 
@@ -234,10 +284,10 @@ ${scraped.text}
       model: MODELS.CLAUDE_HAIKU,
       timeoutMs: 20_000,
     });
-    if (!text) return null;
+    if (!text) return _fail("Claude local-CLI reshape produced no text");
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
+    if (!jsonMatch) return _fail("Claude local-CLI reshape produced no JSON object");
 
     const obj = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
     const confidence = Math.max(0, Math.min(1, Number(obj.confidence ?? 0)));
@@ -254,7 +304,10 @@ ${scraped.text}
       model: "claude-local-reshape",
       observedAt: scraped.observedAt,
     };
-  } catch {
+  } catch (err) {
+    _fail(
+      `Claude local-CLI reshape: ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+    );
     return null;
   }
 }
@@ -320,12 +373,23 @@ export async function fetchNewsEnsemble(
   if (!tasks.length) return null;
 
   const settled = await Promise.allSettled(tasks);
+  for (const s of settled) {
+    // Every provider in this ensemble documents itself as "never throws —
+    // returns null on failure". A rejection here means that contract was
+    // violated, which is exactly the kind of silent, unreconstructable
+    // failure this instrumentation exists to catch.
+    if (s.status === "rejected") {
+      _fail(
+        `provider promise rejected (never-throws contract violated): ${_sanitizeForLog(s.reason instanceof Error ? s.reason.message : String(s.reason))}`
+      );
+    }
+  }
   const results = settled
     .filter((s): s is PromiseFulfilledResult<NewsIntelResult | null> => s.status === "fulfilled")
     .map((s) => s.value)
     .filter((r): r is NewsIntelResult => r !== null);
 
-  if (!results.length) return null;
+  if (!results.length) return _fail("all configured providers returned no result");
   if (results.length === 1) return results[0] ?? null;
 
   return results.reduce((acc, r) => mergeResults(acc, r));

@@ -109,8 +109,31 @@ export async function runDailyBatch(
   // regression than a genuinely empty slate). Survivors carry the per-fixture
   // telemetry.v3Heightened stamp the heightened EV bars key off.
   // The index is loaded here (not at the booking block) so both uses share one read.
-  const sportyIndex = await loadSportyBetIndex(watDateString());
+  let sportyIndex = await loadSportyBetIndex(watDateString());
   logMemoryUsage("daily-batch:sportyIndex-loaded");
+  // [reliability P1] isLakeFreshForToday() can say "fresh" (heartbeat looks
+  // recent) while the sidecar index itself is still unusable — a stale/corrupt
+  // JSON sidecar despite a fresh heartbeat, or a race the heartbeat doesn't
+  // catch. Left alone, that silently fails the v3 gate open on every fixture
+  // for the whole batch with no attempt to recover. One-shot re-scrape +
+  // re-load (same acquireDaily gap-fill used above), only when the gate is
+  // actually going to be used — no point re-scraping if the gate is off.
+  if (
+    (!sportyIndex || sportyIndex.detailByKey.size === 0) &&
+    config.enableMarketsV3 === "on" &&
+    config.marketsV3Gate !== false
+  ) {
+    process.stdout.write(
+      "[markets-v3] sidecar index empty despite fresh lake — re-running acquisition once\n"
+    );
+    await acquireDaily();
+    sportyIndex = await loadSportyBetIndex(watDateString());
+    if (!sportyIndex || sportyIndex.detailByKey.size === 0) {
+      process.stderr.write(
+        "[markets-v3] sidecar re-load attempt still empty — proceeding to fail-open gate\n"
+      );
+    }
+  }
   let gatedJobs = jobs;
   // [Wave 2, WS2-A follow-up] "flagged" (non-contaminated) fixtures survive the
   // slate gate — this map lets batch/index.ts apply a fixture-wide stake
