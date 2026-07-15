@@ -21,7 +21,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 function _redact(s: string): string {
   return s
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
-    .replace(/sk-[A-Za-z0-9]{10,}/g, "[REDACTED]")
+    .replace(/sk-[A-Za-z0-9_-]{10,}/g, "[REDACTED]")
     .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]")
     .replace(/\bAIza[A-Za-z0-9_-]{10,}\b/g, "[REDACTED]"); // Google API-key shape
 }

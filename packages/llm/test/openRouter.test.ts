@@ -133,6 +133,22 @@ describe("callOpenRouter diagnostic logging", () => {
     expect(logged).toContain("[REDACTED]");
     writeSpy.mockRestore();
   });
+
+  it("redacts a hyphenated provider-key shape (e.g. sk-or-v1-..., sk-ant-...) from a logged error message", async () => {
+    // Regression: the redaction regex used to require [A-Za-z0-9]{10,} right
+    // after "sk-" with no hyphens allowed, so real hyphenated key shapes
+    // (OpenRouter's sk-or-v1-..., Anthropic's sk-ant-api03-...) slipped through
+    // un-redacted whenever an upstream error echoed one back.
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockRejectedValue(
+      new Error("invalid key: sk-or-v1-abcdefghijklmnopqrstuvwxyz123456")
+    );
+    await callOpenRouter(messages, OPENROUTER_MODELS.GLM_5_1, "key");
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-or-v1-abcdefghijklmnopqrstuvwxyz123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
 });
 
 describe("callOpenRouterJson", () => {

@@ -231,6 +231,23 @@ describe("callBriefing diagnostic logging", () => {
     writeSpy.mockRestore();
   });
 
+  it("redacts a hyphenated Anthropic-key-shaped substring from a logged Claude Opus error", async () => {
+    // Regression: the redaction regex used to require [A-Za-z0-9]{10,} right
+    // after "sk-" with no hyphens allowed, so a real Anthropic key shape
+    // (sk-ant-api03-...) would slip through un-redacted if an SDK error ever
+    // echoed one back.
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockRejectedValue(
+      new Error("invalid x-api-key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456")
+    );
+    fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck", openrouterApiKey: "ok" }));
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+
   it("logs each rejected temperature-ensemble call plus the Gemini-tier catch when every call fails", async () => {
     const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     generateContentMock.mockRejectedValue(new Error("gemini down"));
