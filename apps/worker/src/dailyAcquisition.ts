@@ -230,12 +230,26 @@ export async function sendDailyFixtureReport(): Promise<void> {
       // No-fixtures is a real, reportable state — surface it loudly (was a silent
       // return that made "the report never fired" indistinguishable from a crash).
       process.stderr.write("[fixture-report] WARN no SportyBet fixtures available for today\n");
-      if (hasCreds) {
+      // Same placeholder/heartbeat suppression as the marketsEmpty branch below —
+      // was firing the Telegram send unconditionally on every cron run (the
+      // 3+/day spam bug), with no way for the hourly heartbeat retry to know it
+      // had already flagged today as blocked. Keyed by (date, reason) rather
+      // than date alone: a same-day transition from "no fixtures" to
+      // "fixtures but markets not enriched" is a materially different blocked
+      // state and must still get its own one-time notice.
+      const noFixturesState = readFixtureReportState();
+      const noFixturesFlagged =
+        noFixturesState.placeholderDate === today &&
+        noFixturesState.placeholderReason === "no-fixtures";
+      if (hasCreds && !noFixturesFlagged) {
         await sendTelegramText(
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
           `ORACLE — no SportyBet fixtures found for ${today}.${dataHealthLine ? `\n${dataHealthLine}` : ""}`
         );
+      }
+      if (!noFixturesFlagged) {
+        writeHeartbeat("fixtureReportPlaceholder", { date: today, reason: "no-fixtures" });
       }
       return;
     }
@@ -248,15 +262,20 @@ export async function sendDailyFixtureReport(): Promise<void> {
       process.stderr.write(
         `[fixture-report] WARN allMarkets not yet enriched for ${today} (${result.fixtureCount} fixtures) — skipping push; hourly retry will deliver the full report\n`
       );
-      const alreadyFlagged = readFixtureReportState().placeholderDate === today;
-      if (hasCreds && !alreadyFlagged) {
+      const marketsEmptyState = readFixtureReportState();
+      const marketsEmptyFlagged =
+        marketsEmptyState.placeholderDate === today &&
+        marketsEmptyState.placeholderReason === "markets-empty";
+      if (hasCreds && !marketsEmptyFlagged) {
         await sendTelegramText(
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
           `ORACLE — ${today} full-lake report BLOCKED: market depth not yet enriched (NO accumulated enriched data). Will auto-send the full spreadsheet once ready.${dataHealthLine ? `\n${dataHealthLine}` : ""}`
         );
       }
-      if (!alreadyFlagged) writeHeartbeat("fixtureReportPlaceholder", { date: today });
+      if (!marketsEmptyFlagged) {
+        writeHeartbeat("fixtureReportPlaceholder", { date: today, reason: "markets-empty" });
+      }
       return;
     }
     // HTML one-pager first (human-friendly: fixtures + collapsible markets), then

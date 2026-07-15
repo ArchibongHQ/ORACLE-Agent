@@ -553,7 +553,12 @@ export async function loadSportyBetIndex(
   try {
     const { loadDailyFixtures } = await import("./dailyStore.js");
     const fromLake = await loadDailyFixtures(today);
-    if (fromLake) return await overlayAllMarketsFromSidecar(fromLake, today, path);
+    // A truthy-but-empty index (existing partition, 0 rows — e.g. the morning
+    // scrape hasn't landed yet) must NOT shadow a good JSON sidecar; only an
+    // actual populated lake read short-circuits the fallback below.
+    if (fromLake && fromLake.events.length > 0) {
+      return await overlayAllMarketsFromSidecar(fromLake, today, path);
+    }
   } catch {
     // dailyStore unavailable (native DuckDB load failure, etc.) — fall through to JSON.
   }

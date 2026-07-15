@@ -114,6 +114,65 @@ describe("loadDailyFixtures", () => {
     await loadDailyFixtures(DT);
     expect(vi.mocked(queryParquetRows)).toHaveBeenCalledTimes(3); // fixtures+odds+stats once, not six times
   });
+
+  it("does not memoize a zero-fixture read — retries on the next call instead of poisoning the day", async () => {
+    mockThreeQueries([]);
+    const first = await loadDailyFixtures(DT);
+    expect(first!.events).toHaveLength(0);
+
+    mockThreeQueries(FIXTURE_ROWS, ODDS_ROWS, STATS_ROWS);
+    const second = await loadDailyFixtures(DT);
+    expect(second!.events).toHaveLength(1);
+    // 3 (empty fixtures still queries odds+stats too — only a null fixtureRows
+    // short-circuits) + 3 (fixtures+odds+stats on the retried call) = 6.
+    expect(vi.mocked(queryParquetRows)).toHaveBeenCalledTimes(6);
+  });
+
+  it("does not clobber a different date's cache entry when an in-flight empty read for another date resolves late (e.g. resolve-yesterday racing daily-batch)", async () => {
+    const D1 = "2026-06-20";
+    const D2 = "2026-06-21";
+    const mocked = vi.mocked(queryParquetRows);
+
+    let resolveD1Fixtures!: (rows: unknown[]) => void;
+    const d1FixturesPromise = new Promise<unknown[]>((resolve) => {
+      resolveD1Fixtures = resolve;
+    });
+    // Declaration order mirrors actual invocation order: D1's fixtures query
+    // is called first but stays pending, so D2's full fixtures+odds+stats
+    // sequence runs to completion before D1's odds+stats are ever reached.
+    mocked.mockImplementationOnce(() => d1FixturesPromise); // D1 fixtures — held pending
+    mocked.mockResolvedValueOnce(FIXTURE_ROWS); // D2 fixtures
+    mocked.mockResolvedValueOnce(ODDS_ROWS); // D2 odds
+    mocked.mockResolvedValueOnce(STATS_ROWS); // D2 stats
+    mocked.mockResolvedValueOnce([]); // D1 odds (reached once D1 unblocks)
+    mocked.mockResolvedValueOnce([]); // D1 stats
+
+    const d1Call = loadDailyFixtures(D1); // sets _cache = {dt: D1, promise: pending}
+
+    const d2Result = await loadDailyFixtures(D2); // overwrites _cache = {dt: D2, promise: resolved}
+    expect(d2Result!.events).toHaveLength(1);
+
+    resolveD1Fixtures([]); // D1 resolves empty AFTER D2 already owns the cache slot
+    const d1Result = await d1Call;
+    expect(d1Result!.events).toHaveLength(0);
+
+    // D2's cache entry must survive D1's late empty resolution — a second
+    // call for D2 should hit the memo, not re-query.
+    const callsBefore = mocked.mock.calls.length;
+    const d2Second = await loadDailyFixtures(D2);
+    expect(d2Second!.events).toHaveLength(1);
+    expect(mocked.mock.calls.length).toBe(callsBefore);
+  });
+
+  it("does not memoize a null (missing-partition) read — retries on the next call", async () => {
+    mockThreeQueries(null);
+    expect(await loadDailyFixtures(DT)).toBeNull();
+
+    mockThreeQueries(FIXTURE_ROWS, ODDS_ROWS, STATS_ROWS);
+    const second = await loadDailyFixtures(DT);
+    expect(second!.events).toHaveLength(1);
+    expect(vi.mocked(queryParquetRows)).toHaveBeenCalledTimes(4); // 1 (null) + 3 (fixtures+odds+stats)
+  });
 });
 
 describe("loadDailyOdds", () => {
