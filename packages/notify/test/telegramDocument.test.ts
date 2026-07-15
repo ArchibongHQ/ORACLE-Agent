@@ -24,7 +24,8 @@ afterEach(async () => {
 
 describe("sendTelegramDocument", () => {
   it("posts the file to the Telegram sendDocument endpoint", async () => {
-    await sendTelegramDocument("TOKEN", "CHAT", filePath, "caption text");
+    const sent = await sendTelegramDocument("TOKEN", "CHAT", filePath, "caption text");
+    expect(sent).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchMock.mock.calls[0] as [string, { method: string; body: FormData }];
     expect(url).toContain("/botTOKEN/sendDocument");
@@ -50,16 +51,25 @@ describe("sendTelegramDocument", () => {
 
   it("never throws when fetch rejects", async () => {
     fetchMock.mockRejectedValue(new Error("network down"));
-    await expect(
-      sendTelegramDocument("TOKEN", "CHAT", filePath, "caption")
-    ).resolves.toBeUndefined();
+    await expect(sendTelegramDocument("TOKEN", "CHAT", filePath, "caption")).resolves.toBe(false);
   });
 
   it("never throws when fetch resolves with a non-2xx status", async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 403, text: async () => "Forbidden" });
-    await expect(
-      sendTelegramDocument("TOKEN", "CHAT", filePath, "caption")
-    ).resolves.toBeUndefined();
+    await expect(sendTelegramDocument("TOKEN", "CHAT", filePath, "caption")).resolves.toBe(false);
+  });
+
+  it("scales the fetch timeout with file size for large attachments", async () => {
+    const bigPath = join(dir, "big.html");
+    const twoMb = 2 * 1024 * 1024;
+    await writeFile(bigPath, Buffer.alloc(twoMb, "a"));
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const sent = await sendTelegramDocument("TOKEN", "CHAT", bigPath, "caption");
+    expect(sent).toBe(true);
+    // 30s base + ~10s/MB — a flat 30s floor would have timed out this upload.
+    expect(timeoutSpy).toHaveBeenCalledWith(30_000 + Math.round((twoMb / (1024 * 1024)) * 10_000));
+    expect(timeoutSpy.mock.calls[0]?.[0]).toBeGreaterThan(30_000);
+    timeoutSpy.mockRestore();
   });
 });
 

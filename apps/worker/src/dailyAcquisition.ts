@@ -270,30 +270,60 @@ export async function sendDailyFixtureReport(): Promise<void> {
     if (hasCreds) {
       const total = allPaths.length;
       const partCount = result.marketsPaths.length;
-      await sendTelegramDocument(
-        env.TELEGRAM_BOT_TOKEN as string,
-        env.TELEGRAM_CHAT_ID as string,
-        result.htmlPagePath,
-        `ORACLE fixtures & markets (open in browser — tap a fixture to expand its markets) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}${dataHealthLine ? `\n${dataHealthLine}` : ""}`
-      );
-      await sendTelegramDocument(
-        env.TELEGRAM_BOT_TOKEN as string,
-        env.TELEGRAM_CHAT_ID as string,
-        result.fixturesPath,
-        `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 2/${total}]`
-      );
-      for (let i = 0; i < result.marketsPaths.length; i++) {
+      // Track actual delivery outcome per file — sendTelegramDocument now reports
+      // success/failure instead of silently swallowing it, so the "delivered"
+      // log and heartbeat below can be made honest instead of unconditional.
+      let succeeded = 0;
+      if (
         await sendTelegramDocument(
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
-          result.marketsPaths[i] as string,
-          `ORACLE daily markets — ${today} [file ${i + 3}/${total}${partCount > 1 ? `, part ${i + 1} of ${partCount}` : ""}]`
-        );
+          result.htmlPagePath,
+          `ORACLE fixtures & markets (open in browser — tap a fixture to expand its markets) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}${dataHealthLine ? `\n${dataHealthLine}` : ""}`
+        )
+      ) {
+        succeeded++;
       }
-      process.stdout.write(
-        `[fixture-report] delivered ${total} file(s) to Telegram in ${Date.now() - startedAt.getTime()}ms\n`
-      );
-      writeHeartbeat("fixtureReportDelivered", { date: today });
+      if (
+        await sendTelegramDocument(
+          env.TELEGRAM_BOT_TOKEN as string,
+          env.TELEGRAM_CHAT_ID as string,
+          result.fixturesPath,
+          `ORACLE daily fixtures (spreadsheet) — ${today} (${result.fixtureCount} fixtures) [file 2/${total}]`
+        )
+      ) {
+        succeeded++;
+      }
+      for (let i = 0; i < result.marketsPaths.length; i++) {
+        if (
+          await sendTelegramDocument(
+            env.TELEGRAM_BOT_TOKEN as string,
+            env.TELEGRAM_CHAT_ID as string,
+            result.marketsPaths[i] as string,
+            `ORACLE daily markets — ${today} [file ${i + 3}/${total}${partCount > 1 ? `, part ${i + 1} of ${partCount}` : ""}]`
+          )
+        ) {
+          succeeded++;
+        }
+      }
+      if (succeeded === total) {
+        process.stdout.write(
+          `[fixture-report] delivered ${total} file(s) to Telegram in ${Date.now() - startedAt.getTime()}ms\n`
+        );
+        writeHeartbeat("fixtureReportDelivered", { date: today });
+      } else {
+        // Don't stamp fixtureReportDelivered. index.ts's hourly follow-up
+        // (checkHeartbeatFreshness) only re-triggers sendDailyFixtureReport
+        // when placeholderDate === today && deliveredDate !== today — it does
+        // not read `reason`, so reusing the placeholder stamp here (same as
+        // the blocked branches above) is what actually wires a delivery
+        // failure into that existing hourly retry, instead of leaving the
+        // report undelivered for the rest of the day.
+        process.stderr.write(
+          `[fixture-report] WARN ${total - succeeded}/${total} file(s) failed to deliver to Telegram for ${today}\n`
+        );
+        writeHeartbeat("fixtureReportPlaceholder", { date: today, reason: "delivery-failed" });
+      }
     } else {
       // Was a silent skip — now explicit so an unconfigured box is obvious in logs.
       process.stderr.write(
