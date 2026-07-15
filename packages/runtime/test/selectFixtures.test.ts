@@ -636,4 +636,38 @@ describe("loadSportyBetIndex", () => {
     expect(idx?.events).toHaveLength(1);
     expect(idx?.byKey.get(sidecarKey("Arsenal FC", "Chelsea FC"))).toBe(27);
   });
+
+  it("returns the lake-derived index directly when the lake has real fixtures, without falling through to the JSON sidecar", async () => {
+    vi.mocked(queryParquetRows)
+      .mockResolvedValueOnce([
+        {
+          event_id: "sr:match:1",
+          home: "Arsenal FC",
+          away: "Chelsea FC",
+          league: null,
+          league_id: null,
+          kickoff_utc: null,
+          market_count: 42,
+        },
+      ])
+      .mockResolvedValueOnce([]) // odds
+      .mockResolvedValueOnce([]); // stats
+
+    // A JSON sidecar with a DIFFERENT market count for the same fixture is on
+    // disk too — if the lake branch's events.length > 0 check regresses to
+    // always falling through, this test would see 999 instead of 42.
+    const p = join(dir, "sidecar.json");
+    await writeFile(
+      p,
+      JSON.stringify({
+        date: TODAY,
+        events: [{ home: "Arsenal FC", away: "Chelsea FC", marketCount: 999 }],
+      }),
+      "utf8"
+    );
+
+    const idx = await loadSportyBetIndex(TODAY, p);
+    expect(idx).not.toBeNull();
+    expect(idx?.byKey.get(sidecarKey("Arsenal FC", "Chelsea FC"))).toBe(42);
+  });
 });

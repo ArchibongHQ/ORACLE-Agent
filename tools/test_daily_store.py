@@ -102,6 +102,22 @@ def test_write_at_or_above_collapse_threshold_succeeds():
     assert len(ds.read_table("fixtures", FIXTURES_DT)) == 60
 
 
+def test_guard_engages_exactly_at_min_healthy_rows_floor():
+    # Existing count sitting exactly at _FIXTURES_MIN_HEALTHY_ROWS (10) must
+    # still engage the guard (comparison is >=, not >).
+    ds.write_table("fixtures", FIXTURES_DT, _fixture_rows(10))
+    ds.write_table("fixtures", FIXTURES_DT, _fixture_rows(4))
+    assert len(ds.read_table("fixtures", FIXTURES_DT)) == 10
+
+
+def test_write_at_exact_fraction_boundary_is_not_refused():
+    # new_count exactly at 50% of existing must write through (comparison is
+    # strict <, not <=).
+    ds.write_table("fixtures", FIXTURES_DT, _fixture_rows(10))
+    ds.write_table("fixtures", FIXTURES_DT, _fixture_rows(5))
+    assert len(ds.read_table("fixtures", FIXTURES_DT)) == 5
+
+
 def test_small_existing_partition_is_never_guarded():
     # A genuinely slow league day: the existing partition itself never
     # crossed the "healthy" floor, so the guard must not engage even

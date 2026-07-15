@@ -145,7 +145,9 @@ def write_table(table: str, date_str: str, rows: list[dict[str, Any]]) -> Path:
     """Atomically write `rows` to the table's partition for `date_str`.
 
     Writing an empty list still produces a valid empty partition (readers fail
-    open on a missing partition, but an explicit empty file records "we ran").
+    open on a missing partition, but an explicit empty file records "we ran") —
+    except for a "fixtures" write that would collapse an existing healthy
+    partition, which is refused instead (see the guard below).
 
     Fixtures-only guard: refuses to replace an existing healthy "fixtures"
     partition with a near-empty one (see _FIXTURES_MIN_HEALTHY_ROWS /

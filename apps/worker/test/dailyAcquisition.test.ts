@@ -1,0 +1,153 @@
+/** [regression test] sendDailyFixtureReport's blocked-state Telegram alert used
+ *  to fire unconditionally on every cron invocation whenever fixtures were
+ *  unavailable — 3+ Telegram spam sends/day in production. The fix suppresses
+ *  the alert to once per (date, blocked-reason) via a heartbeat file, read
+ *  through workerUtils.js's readFixtureReportState/writeHeartbeat. This test
+ *  proves the suppression actually holds: calling sendDailyFixtureReport()
+ *  twice for the same blocked reason on the same day must only send once.
+ *
+ *  ./workerContext.js is mocked wholesale — importing the real module runs
+ *  loadEnv()/buildConfig()/resolvePythonBin() at import time (real .env +
+ *  filesystem reads), which this unit test must not depend on. ./workerUtils.js
+ *  is mocked with an in-memory fake heartbeat store standing in for the real
+ *  .tmp/worker_heartbeat.json file, so the suppression behavior is observed
+ *  through the same (date, reason) keying the real code uses, without ever
+ *  touching disk. watDateString is pinned to a fixed date so "today" cannot
+ *  drift between the two calls in a single test. */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const sendTelegramTextMock = vi.fn().mockResolvedValue(undefined);
+const sendTelegramDocumentMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@oracle/notify", () => ({
+  sendTelegramText: (...args: unknown[]) => sendTelegramTextMock(...args),
+  sendTelegramDocument: (...args: unknown[]) => sendTelegramDocumentMock(...args),
+}));
+
+// generateAndWriteFixtureWorkbook is the true source of `result` in
+// sendDailyFixtureReport (packages/runtime/src/fixtureWorkbook.ts) — it
+// resolves null when SportyBet listed no fixtures for the date, which is
+// exactly the "no-fixtures" blocked branch under test. The other
+// @oracle/runtime exports dailyAcquisition.ts imports are not reached on this
+// code path but must still exist on the mock or the ESM import itself fails.
+const generateAndWriteFixtureWorkbookMock = vi.fn();
+vi.mock("@oracle/runtime", () => ({
+  fetchSharpFairPrice: vi.fn(),
+  findSportyBetEventId: vi.fn(),
+  generateAndWriteFixtureWorkbook: (...args: unknown[]) =>
+    generateAndWriteFixtureWorkbookMock(...args),
+  LEAGUE_TO_SPORT: {},
+  loadSportyBetIndex: vi.fn(),
+  SHARP_ODDS_STORAGE_KEY: "sharpOdds",
+  sharpOddsRecordId: vi.fn(),
+}));
+
+vi.mock("@oracle/storage", () => ({
+  MemoryAdapter: class {},
+  STORAGE_KEYS: {},
+}));
+
+// Fully inert replacement — the real module has import-time side effects
+// (loadEnv/buildConfig/resolvePythonBin touching the real .env/filesystem)
+// that a unit test must not trigger. Plain literals only.
+//
+// NOTE: the path here is written relative to THIS test file
+// (apps/worker/test/), not to src/dailyAcquisition.ts's own "./workerContext.js"
+// specifier — Vitest resolves a relative vi.mock() path against the file that
+// calls vi.mock, so "../src/workerContext.js" is required for this to resolve
+// to the same absolute module dailyAcquisition.ts imports. Both this and the
+// SUT's own specifier resolve to the same file on disk, which is what makes
+// the mock registry (keyed by resolved absolute path) intercept it correctly.
+vi.mock("../src/workerContext.js", () => ({
+  config: {},
+  env: { TELEGRAM_BOT_TOKEN: "test-token", TELEGRAM_CHAT_ID: "test-chat" },
+  MARKET_CATALOG_OVERLAY_PATH: ".tmp/market_catalog_overlay.json",
+  PYTHON_BIN: "python",
+  ROOT: ".",
+  STORE_PATH: ".tmp/oracle-store",
+}));
+
+// In-memory stand-in for the real heartbeat file (.tmp/worker_heartbeat.json)
+// — mirrors the shape readFixtureReportState/writeHeartbeat share in
+// workerUtils.ts, so the (date, reason) suppression logic under test runs
+// unmodified against this fake store instead of the real filesystem.
+let heartbeat: { fixtureReportPlaceholder?: { date: string; reason: string } } = {};
+
+const runPythonScriptMock = vi.fn().mockResolvedValue({ err: null, stdout: "", stderr: "" });
+
+// Same test-file-relative resolution note as workerContext.js above.
+vi.mock("../src/workerUtils.js", () => ({
+  readFixtureReportState: () => ({
+    placeholderDate: heartbeat.fixtureReportPlaceholder?.date,
+    placeholderReason: heartbeat.fixtureReportPlaceholder?.reason,
+  }),
+  writeHeartbeat: (event: string, detail: Record<string, unknown>) => {
+    if (event === "fixtureReportPlaceholder") {
+      heartbeat.fixtureReportPlaceholder = detail as { date: string; reason: string };
+    }
+  },
+  runPythonScript: (...args: unknown[]) => runPythonScriptMock(...args),
+  // Pinned so "today" cannot drift between the two sendDailyFixtureReport()
+  // calls each test makes.
+  watDateString: () => "2026-07-15",
+  watYesterdayString: () => "2026-07-14",
+}));
+
+const { sendDailyFixtureReport } = await import("../src/dailyAcquisition.js");
+
+describe("sendDailyFixtureReport — blocked-state Telegram alert suppression", () => {
+  beforeEach(() => {
+    heartbeat = {};
+    sendTelegramTextMock.mockClear();
+    sendTelegramDocumentMock.mockClear();
+    runPythonScriptMock.mockClear();
+    generateAndWriteFixtureWorkbookMock.mockReset();
+  });
+
+  it("sends the no-fixtures alert only once across two calls on the same day (regression: was 3+/day spam)", async () => {
+    // null => the "no SportyBet fixtures available" branch (!result).
+    generateAndWriteFixtureWorkbookMock.mockResolvedValue(null);
+
+    await sendDailyFixtureReport();
+    await sendDailyFixtureReport();
+
+    expect(sendTelegramTextMock).toHaveBeenCalledTimes(1);
+    expect(sendTelegramTextMock).toHaveBeenCalledWith(
+      "test-token",
+      "test-chat",
+      expect.stringContaining("no SportyBet fixtures found for 2026-07-15")
+    );
+  });
+
+  it("gives each distinct blocked reason its own one-time send (no-fixtures, then markets-empty)", async () => {
+    generateAndWriteFixtureWorkbookMock.mockResolvedValueOnce(null);
+    await sendDailyFixtureReport(); // 1st send: no-fixtures
+
+    generateAndWriteFixtureWorkbookMock.mockResolvedValueOnce(null);
+    await sendDailyFixtureReport(); // suppressed repeat of no-fixtures
+
+    generateAndWriteFixtureWorkbookMock.mockResolvedValue({
+      fixturesPath: "fixtures.xlsx",
+      marketsPaths: [],
+      htmlPagePath: "page.html",
+      fixtureCount: 3,
+      marketsEmpty: true,
+      xgCoverage: { covered: 0, total: 3, bySrc: {} },
+    });
+    await sendDailyFixtureReport(); // 2nd send: markets-empty (new reason, same day)
+    await sendDailyFixtureReport(); // suppressed repeat of markets-empty
+
+    expect(sendTelegramTextMock).toHaveBeenCalledTimes(2);
+    expect(sendTelegramTextMock).toHaveBeenNthCalledWith(
+      1,
+      "test-token",
+      "test-chat",
+      expect.stringContaining("no SportyBet fixtures found for 2026-07-15")
+    );
+    expect(sendTelegramTextMock).toHaveBeenNthCalledWith(
+      2,
+      "test-token",
+      "test-chat",
+      expect.stringContaining("market depth not yet enriched")
+    );
+  });
+});

@@ -185,8 +185,11 @@ function loadDailyIndex(dt: string): Promise<SportyBetIndex | null> {
     // Don't poison the whole day with a null/empty read that raced the morning
     // scrape (e.g. batch start at 08:35 vs. partition write at 10:07) — clear
     // the memo so the next caller re-queries instead of reusing this result
-    // for the rest of the process lifetime.
-    if (!idx || idx.events.length === 0) _cache = null;
+    // for the rest of the process lifetime. Guard on _cache.dt still matching
+    // `dt`: a resolve-yesterday (dt=D-1) and daily-batch (dt=D) read can be
+    // in flight together, and an unconditional null here would clobber a
+    // different, still-valid in-flight/cached entry for the other date.
+    if ((!idx || idx.events.length === 0) && _cache?.dt === dt) _cache = null;
     return idx;
   });
   _cache = { dt, promise };

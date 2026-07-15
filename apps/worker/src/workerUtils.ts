@@ -94,19 +94,26 @@ function readLastAcquire(): { at?: string; date?: string } | undefined {
   }
 }
 
-// Fixture-report follow-up state: when sendDailyFixtureReport() blocks on
-// marketsEmpty it stamps fixtureReportPlaceholder so the hourly heartbeat tick
-// (checkHeartbeatFreshness, index.ts) knows to retry until the enriched
+// Fixture-report follow-up state: when sendDailyFixtureReport() blocks — either
+// on no fixtures at all, or on marketsEmpty — it stamps fixtureReportPlaceholder
+// (with a `reason` so the two distinct blocked states don't suppress each
+// other's one-time Telegram notice on the same day) so the hourly heartbeat
+// tick (checkHeartbeatFreshness, index.ts) knows to retry until the enriched
 // spreadsheet ships (stamped as fixtureReportDelivered) — see
-// dailyAcquisition.ts's sendDailyFixtureReport for the send side.
-export function readFixtureReportState(): { placeholderDate?: string; deliveredDate?: string } {
+// dailyAcquisition.ts's sendDailyFixtureReport for both send sites.
+export function readFixtureReportState(): {
+  placeholderDate?: string;
+  placeholderReason?: string;
+  deliveredDate?: string;
+} {
   try {
     const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
       string,
-      { date?: string } | undefined
+      { date?: string; reason?: string } | undefined
     >;
     return {
       placeholderDate: current.fixtureReportPlaceholder?.date,
+      placeholderReason: current.fixtureReportPlaceholder?.reason,
       deliveredDate: current.fixtureReportDelivered?.date,
     };
   } catch {
