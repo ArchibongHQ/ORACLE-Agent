@@ -94,6 +94,33 @@ describe("fetchNewsViaGoogleAiMode", () => {
   });
 });
 
+describe("fetchNewsViaGoogleAiMode diagnostic logging", () => {
+  it("logs when the scrape yields no text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    scrapeMock.mockResolvedValue(null);
+    await fetchNewsViaGoogleAiMode("H", "A", "L", KO, "gk");
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callNewsIntel] Google AI-Mode scrape yielded no text")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error reason and the exhausted-cascade summary when every reshape call rejects", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    scrapeMock.mockResolvedValue({ text: "x", sources: [], observedAt: OBSERVED });
+    generateContentMock.mockRejectedValue(new Error("genai down"));
+    await fetchNewsViaGoogleAiMode("H", "A", "L", KO, "gk");
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callNewsIntel] Gemini reshape cascade")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("genai down"));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callNewsIntel] Gemini reshape cascade exhausted")
+    );
+    writeSpy.mockRestore();
+  });
+});
+
 describe("fetchNewsEnsemble", () => {
   it("returns null when no provider key is supplied", async () => {
     expect(await fetchNewsEnsemble("H", "A", "L", KO, {})).toBeNull();
@@ -153,5 +180,16 @@ describe("fetchNewsEnsemble", () => {
     await expect(
       fetchNewsEnsemble("H", "A", "L", KO, { perplexityKey: "pk", geminiKey: "gk" })
     ).resolves.toBeNull();
+  });
+
+  it("logs the 'all providers returned no result' summary when every provider yields nothing", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockRejectedValue(new Error("network"));
+    scrapeMock.mockResolvedValue(null);
+    await fetchNewsEnsemble("H", "A", "L", KO, { perplexityKey: "pk", geminiKey: "gk" });
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callNewsIntel] all configured providers returned no result")
+    );
+    writeSpy.mockRestore();
   });
 });

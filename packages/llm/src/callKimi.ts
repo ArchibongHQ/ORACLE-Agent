@@ -28,9 +28,38 @@ export interface KimiVote {
   model: string;
 }
 
+/** Redact substrings shaped like secrets (bearer tokens, API keys, JWTs) before
+ *  logging — a swarm-worker response/exception is not under this codebase's
+ *  control and could echo back an Authorization header or key fragment.
+ *  Mirrors callClaudeCode.ts's _redact (kept file-local — that helper is
+ *  private to its own module). */
+function _redact(s: string): string {
+  return s
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9_-]{10,}/g, "[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]");
+}
+
+/** Prepare a diagnostic string for a log line: redact secret-shaped substrings,
+ *  strip control/line-break characters, then truncate. Mirrors
+ *  callClaudeCode.ts's _sanitizeForLog. */
+function _sanitizeForLog(s: string, max = 300): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0 control chars from untrusted upstream output before logging
+  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f\u2028\u2029\u0085]+/g, " ");
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** Log one diagnostic line for a callKimi failure branch, then return null —
+ *  every failure path funnels through here, same convention as
+ *  callClaudeCode.ts's _fail. */
+function _fail(reason: string): null {
+  process.stderr.write(`[callKimi] ${reason}\n`);
+  return null;
+}
+
 /** Parse a swarm-worker JSON vote into a KimiVote. Returns null on any failure. */
 function parseVote(text: string | null, model: string): KimiVote | null {
-  if (!text) return null;
+  if (!text) return _fail(`no text to parse (model=${model})`);
   try {
     const cleaned = text
       .replace(/```(?:json)?\s*/gi, "")
@@ -38,11 +67,13 @@ function parseVote(text: string | null, model: string): KimiVote | null {
       .trim();
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
-    if (start === -1 || end === -1) return null;
+    if (start === -1 || end === -1) {
+      return _fail(`no JSON object found in vote (model=${model})`);
+    }
 
     const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
     const pick = String(obj.pick ?? "").trim();
-    if (!pick) return null;
+    if (!pick) return _fail(`empty pick field (model=${model})`);
 
     return {
       pick,
@@ -50,8 +81,10 @@ function parseVote(text: string | null, model: string): KimiVote | null {
       rationale: String(obj.rationale ?? ""),
       model,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return _fail(
+      `JSON.parse threw (model=${model}): ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+    );
   }
 }
 
@@ -82,14 +115,16 @@ export async function callKimiVote(
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) return _fail(`HTTP ${resp.status} (model=${MODELS.KIMI_SWARM})`);
 
     const data = (await resp.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
     return parseVote(data.choices?.[0]?.message?.content ?? null, MODELS.KIMI_SWARM);
-  } catch {
-    return null;
+  } catch (err) {
+    return _fail(
+      `request failed (model=${MODELS.KIMI_SWARM}): ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+    );
   }
 }
 

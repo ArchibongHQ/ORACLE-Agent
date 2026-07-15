@@ -193,6 +193,89 @@ describe("callBriefing — Tier 0 local Claude Code", () => {
   });
 });
 
+describe("callBriefing diagnostic logging", () => {
+  it("logs when the tier-0 local CLI produces no text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.env.ORACLE_RUNTIME = "local";
+    spawn.mockImplementation(() => {
+      throw new Error("spawn ENOENT");
+    });
+    messagesCreateMock.mockResolvedValueOnce(claudeText('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] tier 0 local CLI produced no text")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs an empty-response-text diagnostic when Claude Opus returns no text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockResolvedValueOnce(claudeText(""));
+    fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck", openrouterApiKey: "ok" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] Claude Opus tier: empty response text")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error reason when the Claude Opus tier throws", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockRejectedValue(new Error("rate limit"));
+    fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck", openrouterApiKey: "ok" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] Claude Opus tier")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("rate limit"));
+    writeSpy.mockRestore();
+  });
+
+  it("redacts a hyphenated Anthropic-key-shaped substring from a logged Claude Opus error", async () => {
+    // Regression: the redaction regex used to require [A-Za-z0-9]{10,} right
+    // after "sk-" with no hyphens allowed, so a real Anthropic key shape
+    // (sk-ant-api03-...) would slip through un-redacted if an SDK error ever
+    // echoed one back.
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock.mockRejectedValue(
+      new Error("invalid x-api-key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456")
+    );
+    fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck", openrouterApiKey: "ok" }));
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+
+  it("logs each rejected temperature-ensemble call plus the Gemini-tier catch when every call fails", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    generateContentMock.mockRejectedValue(new Error("gemini down"));
+    fetchMock.mockResolvedValue(chatResponse('{"primaryPick":"Over 2.5"}'));
+    await callBriefing("p", makeCtx({ geminiApiKey: "gk", openrouterApiKey: "ok" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] temperature ensemble T=0.4")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] Gemini ensemble tier")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error reason when the framing-bias check throws", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    messagesCreateMock
+      .mockResolvedValueOnce(claudeText('{"primaryPick":"Over 2.5","stake":0.05}'))
+      .mockRejectedValueOnce(new Error("rate limit"));
+    await callBriefing("p", makeCtx({ claudeApiKey: "ck" }));
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callBriefing] framing-bias check")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("rate limit"));
+    writeSpy.mockRestore();
+  });
+});
+
 describe("callBriefing — exhaustion", () => {
   it("throws when no keys are configured at all", async () => {
     await expect(callBriefing("p", makeCtx())).rejects.toThrow(/callBriefing: no LLM available/);

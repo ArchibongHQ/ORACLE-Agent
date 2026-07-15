@@ -31,6 +31,36 @@ VETO: clear flaw (wrong market side, odds discrepancy, negative EV).
 OVERRIDE: pick is sound but a clearly superior alternative exists (state it in override field).
 APPROVED: pick is sound with no better alternative.`;
 
+/** Redact substrings shaped like secrets (bearer tokens, API keys, JWTs) before
+ *  logging — CVL tier responses come from Claude/OpenRouter and could echo
+ *  back an Authorization header or key fragment on an auth failure, and raw
+ *  model text is untrusted input that shouldn't reach a log line unscrubbed.
+ *  Mirrors callClaudeCode.ts's _redact (kept file-local — that helper is
+ *  private to its own module). */
+function _redact(s: string): string {
+  return s
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9_-]{10,}/g, "[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]");
+}
+
+/** Prepare a diagnostic string for a log line: redact secret-shaped substrings,
+ *  strip control/line-break characters, then truncate. Mirrors
+ *  callClaudeCode.ts's _sanitizeForLog. */
+function _sanitizeForLog(s: string, max = 300): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0 control chars from untrusted upstream output before logging
+  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f\u2028\u2029\u0085]+/g, " ");
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** Log one diagnostic line for a callVerification failure branch, then return
+ *  null — every failure path funnels through here, same convention as
+ *  callClaudeCode.ts's _fail. */
+function _fail(reason: string): null {
+  process.stderr.write(`[callVerification] ${reason}\n`);
+  return null;
+}
+
 /** Returns null on any parse failure — callers must treat null as "could not
  *  verify this response" and fall through to the next tier, NOT default to a
  *  confident APPROVED. A confident-looking default here would let malformed
@@ -48,16 +78,20 @@ function parseCvlResponse(text: string): {
       .trim();
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
-    if (start === -1 || end === -1) return null;
+    if (start === -1 || end === -1) return _fail("no JSON object found in response");
     const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
-    if (!["APPROVED", "OVERRIDE", "VETO"].includes(String(obj.status))) return null;
+    if (!["APPROVED", "OVERRIDE", "VETO"].includes(String(obj.status))) {
+      return _fail(`invalid status field: "${_sanitizeForLog(String(obj.status))}"`);
+    }
     return {
       status: obj.status as CvlStatus,
       rationale: String(obj.rationale ?? ""),
       override: obj.override ? String(obj.override) : undefined,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return _fail(
+      `JSON.parse threw: ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+    );
   }
 }
 
@@ -83,6 +117,7 @@ export async function callVerification(prompt: string, ctx: LLMCallContext): Pro
   // output) falls through unchanged to Tier 1, never defaults to APPROVED.
   if (isLocalRuntime()) {
     const raw = await callClaudeCode(`${CVL_SYSTEM}\n\n${prompt}`);
+    if (!raw) _fail("tier 0 local CLI produced no text");
     const parsed = raw ? parseCvlResponse(raw) : null;
     if (parsed) {
       return { ...parsed, stamp: new Date().toISOString(), model: "claude-code-local" };
@@ -109,8 +144,12 @@ export async function callVerification(prompt: string, ctx: LLMCallContext): Pro
         return { ...parsed, stamp: new Date().toISOString(), model: MODELS.CLAUDE_OPUS };
       }
       // Unparseable Opus output — fall through to OpenRouter tiers rather
-      // than returning a spread of null.
-    } catch {
+      // than returning a spread of null. (parseCvlResponse already logged
+      // the specific parse-failure reason.)
+    } catch (err) {
+      _fail(
+        `Claude Opus tier: ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+      );
       // Fall through to OpenRouter tiers
     }
   }

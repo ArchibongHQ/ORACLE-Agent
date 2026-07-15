@@ -717,6 +717,21 @@ function _killTree(pid: number): void {
   }
 }
 
+/** Exported alias for _killTree so other files in this package (e.g.
+ *  resolveFixtures.ts's web-search sweep timeout) can tree-kill a spawned
+ *  process without reaching past the underscore-prefixed "private" name.
+ *  Verified this file's own convention before adding this: every other
+ *  `_`-prefixed helper here (_spawnAsync, _parsePlaywrightOddsText) is never
+ *  imported elsewhere, while every un-prefixed export (resolvePythonBin,
+ *  toEngineWeather, fetchFixtureByName, geminiOddsGapFill, …) is — and
+ *  packages/llm/src/callClaudeCode.ts even duplicates this exact tree-kill
+ *  logic locally rather than importing _killTree, citing only the
+ *  cross-package dependency as the reason. So the underscore convention is
+ *  real; this wrapper is the properly-named door through it, not a bypass. */
+export function killProcessTree(pid: number): void {
+  _killTree(pid);
+}
+
 /** Run a child process asynchronously, collecting stdout. Unlike spawnSync, this
  *  does not block the event loop — required so runPool can run multiple Playwright
  *  scrapes concurrently instead of serializing on a blocked main thread. */

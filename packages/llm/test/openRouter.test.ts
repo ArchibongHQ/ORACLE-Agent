@@ -92,6 +92,65 @@ describe("callOpenRouter", () => {
   });
 });
 
+describe("callOpenRouter diagnostic logging", () => {
+  const messages = [{ role: "user" as const, content: "hi" }];
+
+  it("logs the HTTP status on non-ok status", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockResolvedValue({ ok: false, status: 429 });
+    await callOpenRouter(messages, OPENROUTER_MODELS.GLM_5_1, "key");
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callOpenRouter] HTTP 429"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs empty response text when choices/message/content is missing", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await callOpenRouter(messages, OPENROUTER_MODELS.GLM_5_1, "key");
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callOpenRouter] empty response text")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error message when fetch rejects", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockRejectedValue(new Error("ECONNRESET"));
+    await callOpenRouter(messages, OPENROUTER_MODELS.GLM_5_1, "key");
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callOpenRouter] request failed")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("ECONNRESET"));
+    writeSpy.mockRestore();
+  });
+
+  it("redacts a bearer-token-shaped substring from a logged error message", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockRejectedValue(new Error("auth failed: Bearer sk-abcdefghijklmnop123456"));
+    await callOpenRouter(messages, OPENROUTER_MODELS.GLM_5_1, "key");
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-abcdefghijklmnop123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+
+  it("redacts a hyphenated provider-key shape (e.g. sk-or-v1-..., sk-ant-...) from a logged error message", async () => {
+    // Regression: the redaction regex used to require [A-Za-z0-9]{10,} right
+    // after "sk-" with no hyphens allowed, so real hyphenated key shapes
+    // (OpenRouter's sk-or-v1-..., Anthropic's sk-ant-api03-...) slipped through
+    // un-redacted whenever an upstream error echoed one back.
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockRejectedValue(
+      new Error("invalid key: sk-or-v1-abcdefghijklmnopqrstuvwxyz123456")
+    );
+    await callOpenRouter(messages, OPENROUTER_MODELS.GLM_5_1, "key");
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-or-v1-abcdefghijklmnopqrstuvwxyz123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+});
+
 describe("callOpenRouterJson", () => {
   it("builds system+user messages and forces jsonMode", async () => {
     fetchMock.mockResolvedValue(chatResponse('{"ok":true}'));

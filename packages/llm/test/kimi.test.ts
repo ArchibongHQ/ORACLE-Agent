@@ -66,6 +66,43 @@ describe("callKimiVote", () => {
   });
 });
 
+describe("callKimi diagnostic logging", () => {
+  it("logs the HTTP status on non-ok status", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockResolvedValue({ ok: false, status: 500 });
+    await callKimiVote("p", "mk");
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callKimi] HTTP 500"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs 'no JSON object found' on malformed vote JSON", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockResolvedValue(chatResponse("certainly! here is my vote"));
+    await callKimiVote("p", "mk");
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callKimi] no JSON object found in vote")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the empty-pick-field diagnostic", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockResolvedValue(chatResponse('{"pick":"","confidence":0.5}'));
+    await callKimiVote("p", "mk");
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callKimi] empty pick field"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error message when fetch rejects", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockRejectedValue(new Error("timeout"));
+    await callKimiVote("p", "mk");
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callKimi] request failed"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("timeout"));
+    writeSpy.mockRestore();
+  });
+});
+
 describe("callOpenRouterVote", () => {
   it("routes through OpenRouter with the given model and parses the vote", async () => {
     fetchMock.mockResolvedValue(

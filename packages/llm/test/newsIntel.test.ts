@@ -78,3 +78,55 @@ describe("fetchNewsIntelligence", () => {
     await expect(fetchNewsIntelligence("H", "A", "L", KO, "pk")).resolves.toBeNull();
   });
 });
+
+describe("fetchNewsIntelligence diagnostic logging", () => {
+  it("logs the sonar HTTP status on HTTP failure", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValueOnce(sonarResponse(GOOD_CONTENT, ["https://c"]));
+    await fetchNewsIntelligence("H", "A", "L", KO, "pk");
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callNewsIntel] sonar HTTP 500")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs 'no JSON object found' plus the exhausted-cascade summary on malformed content", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockResolvedValue(sonarResponse("no json in this reply"));
+    await fetchNewsIntelligence("H", "A", "L", KO, "pk");
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callNewsIntel] no JSON object found in sonar content")
+    );
+    expect(writeSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[callNewsIntel] perplexity sonar cascade exhausted")
+    );
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error reason when a model throws", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockRejectedValue(new Error("network"));
+    await fetchNewsIntelligence("H", "A", "L", KO, "pk");
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callNewsIntel] sonar cascade"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("network"));
+    writeSpy.mockRestore();
+  });
+
+  it("redacts a hyphenated provider-key shape from a logged sonar-cascade error", async () => {
+    // Regression: the redaction regex used to require [A-Za-z0-9]{10,} right
+    // after "sk-" with no hyphens allowed, so a real Perplexity/Anthropic key
+    // shape (hyphenated) would slip through un-redacted if an upstream error
+    // ever echoed one back — this file logs raw upstream error text verbatim.
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    fetchMock.mockRejectedValue(
+      new Error("invalid key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456")
+    );
+    await fetchNewsIntelligence("H", "A", "L", KO, "pk");
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+});

@@ -277,6 +277,41 @@ const DAILY_BATCH_SLOT_MINUTES = 9 * 60 + 35; // 09:35 WAT
 // day's pipeline.
 const ACQUIRE_CHAIN_TIMEOUT_MS = 20 * 60 * 1000; // 20 min
 
+// [reliability fix] Hard ceiling on resolveYesterdayFixtures — confirmed live:
+// a 2026-07-11 internet outage wedged this job 2+ hours with no ceiling at
+// all (no job-level timeout existed anywhere in its call chain). Applied at
+// every call site below (10:00 WAT cron, --run-now, --run-resolve), not just
+// the cron slot, via resolveYesterdayWithTimeout.
+const RESOLVE_YESTERDAY_TIMEOUT_MS = 15 * 60 * 1000; // 15 min
+
+/** Races resolveYesterdayFixtures() against RESOLVE_YESTERDAY_TIMEOUT_MS — same
+ *  Promise.race idiom as acquireChain.ts's awaitAcquireOrTimeout, adapted here
+ *  as a self-contained wrapper (no shared "in-flight" tracking needed since,
+ *  unlike the acquire chain, nothing else waits on this particular job from a
+ *  second call site). On timeout this logs and returns so the caller (logJob,
+ *  or a one-shot --run-* invocation) isn't blocked — the underlying job is NOT
+ *  cancelled, it keeps running in the background and its eventual result is
+ *  discarded (see resolveFixtures.ts's own web-search-sweep cap and
+ *  fixtures.ts's killProcessTree for the pieces of that background work that
+ *  DO get torn down). The timer is cleared on whichever branch wins so a fast
+ *  run doesn't hold the process open for the full 15 minutes in one-shot CLI
+ *  mode — see runOnce's comment above on why the event loop must drain
+ *  naturally here, not via process.exit(). */
+function resolveYesterdayWithTimeout(): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      process.stderr.write(
+        `[worker] resolve-yesterday timed out after ${RESOLVE_YESTERDAY_TIMEOUT_MS / 60_000}min — abandoning this run\n`
+      );
+      resolve();
+    }, RESOLVE_YESTERDAY_TIMEOUT_MS);
+  });
+  return Promise.race([resolveYesterdayFixtures(), timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
   if (!lastBatchAt) return false;
   if (watDateString(new Date(lastBatchAt)) !== watDateString()) return false;
@@ -667,7 +702,7 @@ if (!IS_ONE_SHOT) {
   // 4. Resolve yesterday's results — 10:00 WAT.
   cron.schedule(
     "0 10 * * *",
-    () => logJob("resolve-yesterday@10:00-WAT", resolveYesterdayFixtures),
+    () => logJob("resolve-yesterday@10:00-WAT", resolveYesterdayWithTimeout),
     { timezone: WAT_TZ }
   );
 
@@ -742,7 +777,7 @@ if (process.argv.includes("--run-acquire-now")) {
 if (process.argv.includes("--run-now")) {
   void runOnce("--run-now", async () => {
     await runDailyBatch("manual");
-    await resolveYesterdayFixtures();
+    await resolveYesterdayWithTimeout();
   });
 }
 
@@ -755,7 +790,7 @@ if (process.argv.includes("--refresh-kaggle")) {
 }
 
 if (process.argv.includes("--run-resolve")) {
-  void runOnce("--run-resolve", () => resolveYesterdayFixtures());
+  void runOnce("--run-resolve", () => resolveYesterdayWithTimeout());
 }
 
 if (process.argv.includes("--run-report-now")) {

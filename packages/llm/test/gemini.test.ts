@@ -100,6 +100,52 @@ describe("fetchGeminiWithCascade", () => {
   });
 });
 
+describe("callGemini diagnostic logging", () => {
+  it("logs the sanitized error reason when a Gemini acquisition-cascade model throws", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    generateContentMock
+      .mockRejectedValueOnce(new Error("503 model overloaded"))
+      .mockResolvedValueOnce({ text: "tier2" });
+    await fetchGeminiWithCascade("p", ctx);
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callGemini]"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("503 model overloaded"));
+    writeSpy.mockRestore();
+  });
+
+  it("logs an empty-response-text diagnostic when a Gemini model returns no text", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    generateContentMock
+      .mockResolvedValueOnce({ text: "" })
+      .mockResolvedValueOnce({ text: "tier2" });
+    await fetchGeminiWithCascade("p", ctx);
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("empty response text"));
+    writeSpy.mockRestore();
+  });
+
+  it("redacts a Google API-key-shaped substring from a logged error message", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    generateContentMock.mockRejectedValue(
+      new Error("API key not valid: AIzaSyD-abcdefghijklmnopqrstuvwxyz1234")
+    );
+    await expect(fetchGeminiWithCascade("p", ctx)).rejects.toThrow();
+    const logged = writeSpy.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(logged).not.toContain("AIzaSyD-abcdefghijklmnopqrstuvwxyz1234");
+    expect(logged).toContain("[REDACTED]");
+    writeSpy.mockRestore();
+  });
+
+  it("logs the sanitized error reason when a decision-cascade model throws", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    generateContentMock
+      .mockRejectedValueOnce(new Error("500 internal"))
+      .mockResolvedValueOnce({ text: "fallback" });
+    await callGeminiDecision("p", ctx);
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("[callGemini]"));
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("500 internal"));
+    writeSpy.mockRestore();
+  });
+});
+
 describe("callGeminiDecision", () => {
   it("returns tier-1 text on success", async () => {
     generateContentMock.mockResolvedValueOnce({ text: "decision" });

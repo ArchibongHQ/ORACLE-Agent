@@ -20,7 +20,7 @@ import type {
   ResolutionRecord,
 } from "@oracle/engine";
 import { isPopularTeam, lstmMarketDecoderProxy, RESOLUTION_SCHEMA_VERSION } from "@oracle/engine";
-import { resolvePythonBin } from "./fixtures.js";
+import { killProcessTree, resolvePythonBin } from "./fixtures.js";
 import type { SharpOddsRecord } from "./sharpFeed.js";
 import { namesMatch } from "./teamNames.js";
 
@@ -584,6 +584,15 @@ export async function resolveUnmatchedViaWebSearch(
   await writeFile(UNMATCHED_FIXTURES_FILE, fixtureLines.join("\n"), "utf8");
 
   const scriptPath = join(REPO_ROOT, "tools", "scrape_match_results.py");
+  // Hard cap on the whole sweep regardless of how many fixtures are unmatched —
+  // the ~35s/fixture budget below scales unboundedly on a big slate (e.g. 55
+  // unmatched fixtures ≈ 32min), which is exactly the kind of unbounded wait
+  // that wedged resolve-yesterday for 2+ hours during the 2026-07-11 internet
+  // outage. 10 minutes is generous for a single results sweep while still
+  // guaranteeing the sweep itself can never be the long pole under
+  // apps/worker/src/index.ts's own RESOLVE_YESTERDAY_TIMEOUT_MS (15min) ceiling
+  // on the job as a whole.
+  const timeoutMs = Math.min(35_000 * targets.length, 10 * 60 * 1000); // ~35s budget per fixture, capped at 10min total
   await new Promise<void>((resolvePromise) => {
     void import("node:child_process").then(({ spawn }) => {
       const child = spawn(
@@ -599,9 +608,13 @@ export async function resolveUnmatchedViaWebSearch(
         { env: { ...process.env, PYTHONIOENCODING: "utf-8" } }
       );
       const timer = setTimeout(() => {
-        child.kill();
+        // child.kill() on Windows only signals the immediate python.exe, not
+        // the Playwright chrome-headless-shell.exe subprocess it spawns — see
+        // fixtures.ts's killProcessTree (_killTree) doc comment for why the
+        // whole process tree needs killing, not just the direct child.
+        if (child.pid != null) killProcessTree(child.pid);
         resolvePromise();
-      }, 35_000 * targets.length); // ~35s budget per fixture (5 sources in parallel, Playwright tier dominates)
+      }, timeoutMs);
       child.on("close", () => {
         clearTimeout(timer);
         resolvePromise();

@@ -41,6 +41,35 @@ function extractMarket(text: string): string {
   return m?.[1] ?? text.slice(0, 60);
 }
 
+/** Redact substrings shaped like secrets (bearer tokens, API keys, JWTs) before
+ *  logging — Claude/Gemini SDK error text is not under this codebase's
+ *  control and could echo back an Authorization header or key fragment.
+ *  Mirrors callClaudeCode.ts's _redact (kept file-local — that helper is
+ *  private to its own module). */
+function _redact(s: string): string {
+  return s
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/sk-[A-Za-z0-9_-]{10,}/g, "[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]");
+}
+
+/** Prepare a diagnostic string for a log line: redact secret-shaped substrings,
+ *  strip control/line-break characters, then truncate. Mirrors
+ *  callClaudeCode.ts's _sanitizeForLog. */
+function _sanitizeForLog(s: string, max = 300): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally stripping C0 control chars from untrusted upstream output before logging
+  const stripped = _redact(s.trim()).replace(/[\x00-\x1f\x7f\u2028\u2029\u0085]+/g, " ");
+  return stripped.length > max ? `${stripped.slice(0, max)}…` : stripped;
+}
+
+/** Log one diagnostic line for a callBriefing failure branch, then return
+ *  null — same convention as callClaudeCode.ts's _fail. Call sites that are
+ *  mid-catch (not returning) use this as a side-effecting statement instead. */
+function _fail(reason: string): null {
+  process.stderr.write(`[callBriefing] ${reason}\n`);
+  return null;
+}
+
 /** Call Gemini briefing ensemble at three temperatures.
  *  Returns text of majority pick; sets DIVERGENT_TEMPERATURE_ENSEMBLE flag if no majority. */
 async function geminiEnsembleBriefing(
@@ -62,6 +91,14 @@ async function geminiEnsembleBriefing(
       })
     )
   );
+
+  results.forEach((r, i) => {
+    if (r.status === "rejected") {
+      _fail(
+        `temperature ensemble T=${TEMPERATURES[i]}: ${_sanitizeForLog(r.reason instanceof Error ? r.reason.message : String(r.reason))}`
+      );
+    }
+  });
 
   const texts: string[] = results
     .filter((r) => r.status === "fulfilled")
@@ -106,7 +143,10 @@ async function checkFramingBias(
       const diff = Math.abs(parseFloat(kellyMatch[1]!) - parseFloat(neutralMatch[1]!));
       if (diff > 0.15) flags.push("FRAMING_BIAS_DETECTED");
     }
-  } catch {
+  } catch (err) {
+    _fail(
+      `framing-bias check: ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+    );
     // Non-fatal — framing bias check is advisory
   }
 }
@@ -125,6 +165,7 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
     if (localText) {
       return { text: localText, model: "claude-code-local", flags };
     }
+    _fail("tier 0 local CLI produced no text");
   }
 
   // Primary: Claude Opus via HTTP API (only when a key is configured — local CLI is preferred)
@@ -145,7 +186,11 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
         await checkFramingBias(text, prompt, ctx, flags);
         return { text, model: MODELS.CLAUDE_OPUS, flags };
       }
-    } catch {
+      _fail("Claude Opus tier: empty response text");
+    } catch (err) {
+      _fail(
+        `Claude Opus tier: ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+      );
       // Fall through to Gemini ensemble
     }
   }
@@ -155,7 +200,10 @@ export async function callBriefing(prompt: string, ctx: LLMCallContext): Promise
     try {
       const text = await geminiEnsembleBriefing(prompt, ctx, flags);
       return { text, model: MODELS.GEMINI_FLASH, flags };
-    } catch {
+    } catch (err) {
+      _fail(
+        `Gemini ensemble tier: ${_sanitizeForLog(err instanceof Error ? err.message : String(err))}`
+      );
       // Fall through to OpenRouter tiers
     }
   }
