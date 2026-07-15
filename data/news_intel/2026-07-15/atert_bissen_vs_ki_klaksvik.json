@@ -1,0 +1,19 @@
+{
+  "home": "Atert Bissen", "away": "KI Klaksvik", "league": "UEFA Champions League Qualifying", "kickoff": "2026-07-15T19:15:00+01:00",
+  "injuries": ["Adriel Santos Guimaraes (Atert Bissen) — sidelined, missed the first leg too; was the side's main creator last season with 10 assists and 8 goals"],
+  "suspensions": [],
+  "lineupHints": [
+    "Roman Ferber expected to lead the line for Atert Bissen, with a start also expected for Rodrigues",
+    "KI Klaksvik: Pall Klettskard (12 goals in 25 appearances this season) expected to start in the final third"
+  ],
+  "motivationFlags": ["KI Klaksvik lead the tie after a 2-1 first-leg win; Atert Bissen need to overturn the deficit at home"],
+  "travelFlags": [],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/atert-bissen/champions-league/preview/atert-bissen-vs-ki-prediction-team-news-lineups_601170.html",
+    "https://footballwhispers.com/blog/atert-bissen-vs-klaksvik-prediction-15-07-2026/",
+    "https://www.skysports.com/football-scores-fixtures/2026-07-15"
+  ],
+  "confidence": 0.55,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-15T16:46:02Z"
+}

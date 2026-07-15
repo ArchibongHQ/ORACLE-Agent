@@ -1,0 +1,16 @@
+{
+  "home": "Sutjeska Niksic", "away": "Kairat Almaty", "league": "UEFA Champions League Qualifying", "kickoff": "2026-07-15T20:00:00+01:00",
+  "injuries": ["Martynovich (Kairat Almaty) — possible absence, not expected to critically affect the team's balance"],
+  "suspensions": [],
+  "lineupHints": ["Kairat Almaty core: Andrija Raznatovic, Vasilije Cavor, Vladan Giljen; summer signing Aleksandar Boljevic made his debut in the first leg"],
+  "motivationFlags": ["Kairat Almaty lead the tie 2-1 from the first leg; Sutjeska must win by two-plus goals at home to advance, raising the likelihood of an open, attacking approach from the hosts"],
+  "travelFlags": ["Kairat Almaty (Kazakhstan) traveling to Montenegro for the second leg — long-haul away trip"],
+  "sources": [
+    "https://www.soccernews.com/prediction-sutjeska-niksic-vs-kairat-almaty/401842/",
+    "https://dailysports.net/predictions/form-and-experience-will-decide-it-all-prediction-for-sutjeska-vs-kairat/",
+    "https://www.skysports.com/football-scores-fixtures/2026-07-15"
+  ],
+  "confidence": 0.5,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-15T16:46:02Z"
+}

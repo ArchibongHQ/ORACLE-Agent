@@ -1,0 +1,19 @@
+{
+  "home": "Egnatia", "away": "Petrocub-Hincesti", "league": "UEFA Champions League Qualifying", "kickoff": "2026-07-15T20:00:00+01:00",
+  "injuries": [],
+  "suspensions": ["Aleksi (Egnatia) — suspended after a red card in the first leg"],
+  "lineupHints": [
+    "Egnatia: Alessandro Albanese and Soumaila Bakayoko expected to lead the attack",
+    "Petrocub: Petru Popescu, leading scorer, expected to start; squad reported injury-free after the weekend league game"
+  ],
+  "motivationFlags": ["Tie level after a 1-1 first-leg draw — knockout decider"],
+  "travelFlags": [],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/egnatia-rrogozhine/champions-league/preview/egnatia-rrogozhine-vs-petrocub-prediction-team-news-lineups_601169.html",
+    "https://ratingbet.com/predictions/egnatia-vs-petrocub-prediction-team-news-lineups-expert-analysis/",
+    "https://www.skysports.com/football-scores-fixtures/2026-07-15"
+  ],
+  "confidence": 0.55,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-15T16:46:02Z"
+}

@@ -1,0 +1,22 @@
+{
+  "home": "CS Universitatea Craiova", "away": "ML Vitebsk", "league": "UEFA Champions League Qualifying", "kickoff": "2026-07-15T18:30:00+01:00",
+  "injuries": [
+    "Pavlo Isenko (Universitatea Craiova) — remains sidelined, will miss the second leg",
+    "Aleksey Nosko (ML Vitebsk) — out through injury"
+  ],
+  "suspensions": [],
+  "lineupHints": [
+    "Universitatea Craiova predicted (3-4-3): Popescu; Rus, Stevanovic, Romanchuk; Bancu, Mekvabishvili, Cicaldau, Telesh; Bayaram, Al-Hamlawi, Etim",
+    "ML Vitebsk predicted (4-3-3): Pavlyuchenko; Moskalenchik, Gomanov, Volkov, Skibsky; Mesarovich, Bocherov, Gromyko; Bosic, Kontsevoy, Diabate"
+  ],
+  "motivationFlags": ["Universitatea Craiova hold a commanding 4-1 first-leg lead, likely to manage the tie rather than push at full intensity"],
+  "travelFlags": [],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/vitebsk/champions-league/preview/universitatea-craiova-vs-vitebsk-prediction-team-news-lineups_601167.html",
+    "https://ratingbet.com/predictions/universitatea-craiova-vs-ml-vitebsk-prediction-expert-analysis-possible-lineups-july-15-2026/",
+    "https://www.skysports.com/football-scores-fixtures/2026-07-15"
+  ],
+  "confidence": 0.6,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-15T16:46:02Z"
+}

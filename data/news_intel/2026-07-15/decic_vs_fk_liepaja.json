@@ -1,0 +1,16 @@
+{
+  "home": "Decic", "away": "FK Liepaja", "league": "UEFA Conference League Qualifying", "kickoff": "2026-07-15T19:30:00+01:00",
+  "injuries": [],
+  "suspensions": ["Marvin Martins (FK Liepaja) — suspended after a red card in the first leg"],
+  "lineupHints": ["Decic manager Brnovic has his strongest available XI to choose from, no injury concerns reported"],
+  "motivationFlags": ["FK Liepaja lead the tie 1-0 despite playing almost 70 minutes with ten men in the first leg — Decic need to overturn the deficit at home"],
+  "travelFlags": [],
+  "sources": [
+    "https://ratingbet.com/predictions/deic-vs-liepja-prediction-team-news-lineups-expert-analysis/",
+    "https://www.freetips.com/football/uefa-europa-conference-league/decic-vs-fk-liepaja-preview-20260713-0035/",
+    "https://www.skysports.com/football-scores-fixtures/2026-07-15"
+  ],
+  "confidence": 0.55,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-15T16:46:02Z"
+}

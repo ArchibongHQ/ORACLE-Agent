@@ -1,0 +1,24 @@
+{
+  "home": "England", "away": "Argentina", "league": "FIFA World Cup", "kickoff": "2026-07-15T20:00:00+01:00",
+  "injuries": [
+    "Jordan Henderson (England) — ruled out for the remainder of the tournament with a broken wrist",
+    "Declan Rice (England) — carrying a hamstring/lower-back issue and was ill, substituted at half-time in the quarter-final; expected available",
+    "Ezri Konsa (England) — hamstring cramp late vs Norway, expected to retain his place",
+    "Lionel Messi (Argentina) — cut above right eye from a Granit Xhaka challenge, swelling risk but expected to play",
+    "Cristian Romero (Argentina) — recovered from a knee injury in time for the tournament, expected available"
+  ],
+  "suspensions": ["Jarell Quansah (England) — serving the second match of a two-game ban for a red card vs Mexico"],
+  "lineupHints": ["England predicted XI: Pickford; James, Konsa, Guehi, O'Reilly; Anderson, Rice; Saka, Bellingham, Gordon; Kane"],
+  "motivationFlags": ["World Cup semi-final — winner reaches the final"],
+  "travelFlags": [],
+  "sources": [
+    "https://sports.yahoo.com/articles/england-xi-vs-argentina-confirmed-064857130.html",
+    "https://www.sportsmole.co.uk/football/england/injury-news/injuries-and-suspensions/rice-konsa-henderson-latest-england-injury-suspension-list-vs-argentina_601109.html",
+    "https://www.sportsmole.co.uk/football/england/world-cup-2026/team-news/england-vs-argentina-injury-suspension-list-predicted-xis--world-cup-2026_601148.html",
+    "https://www.sportsmole.co.uk/football/argentina/injury-news/injuries-and-suspensions/messi-romero-latest-argentina-injury-suspension-list-vs-england_601110.html",
+    "https://www.skysports.com/football-scores-fixtures/2026-07-15"
+  ],
+  "confidence": 0.85,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-15T16:46:02Z"
+}
