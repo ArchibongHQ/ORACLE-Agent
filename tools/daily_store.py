@@ -103,6 +103,29 @@ def partition_file(table: str, date_str: str, root: Path = LAKE_ROOT) -> Path:
     return partition_dir(table, date_str, root) / "part.parquet"
 
 
+# Guard against the SportyBet near-midnight "today"-page collapse: the evening
+# "back-online" re-acquire can scrape a near-empty fixtures list when the day is
+# ending, and write_table()'s unconditional replace would clobber the morning's
+# healthy partition with it. Only fires when the existing partition is non-trivial
+# (>= _FIXTURES_MIN_HEALTHY_ROWS) and the incoming write would shrink it below
+# _FIXTURES_COLLAPSE_FRACTION of its current size — a genuinely smaller-but-real
+# slate (e.g. new >= 50% of the old count) still writes through.
+_FIXTURES_MIN_HEALTHY_ROWS = 10
+_FIXTURES_COLLAPSE_FRACTION = 0.5
+
+
+def _existing_row_count(table: str, date_str: str) -> int:
+    """Row count of an already-written partition, via Parquet metadata (no full
+    read). Returns 0 when the partition doesn't exist yet or can't be read."""
+    f = partition_file(table, date_str)
+    if not f.exists():
+        return 0
+    try:
+        return pq.ParquetFile(f).metadata.num_rows
+    except Exception:
+        return 0
+
+
 def _coerce_rows(table: str, rows: list[dict[str, Any]]) -> pa.Table:
     """Build a pyarrow Table from row dicts against the table's explicit schema.
 
@@ -123,9 +146,27 @@ def write_table(table: str, date_str: str, rows: list[dict[str, Any]]) -> Path:
 
     Writing an empty list still produces a valid empty partition (readers fail
     open on a missing partition, but an explicit empty file records "we ran").
+
+    Fixtures-only guard: refuses to replace an existing healthy "fixtures"
+    partition with a near-empty one (see _FIXTURES_MIN_HEALTHY_ROWS /
+    _FIXTURES_COLLAPSE_FRACTION above) — logs a warning and keeps the old
+    partition instead of writing. Every other table (odds/stats/news) and
+    every non-collapsing fixtures write still goes through unconditionally.
     """
     if table not in SCHEMAS:
         raise ValueError(f"unknown table: {table}")
+    if table == "fixtures":
+        existing_count = _existing_row_count(table, date_str)
+        new_count = len(rows)
+        if (existing_count >= _FIXTURES_MIN_HEALTHY_ROWS
+                and new_count < existing_count * _FIXTURES_COLLAPSE_FRACTION):
+            print(
+                f"[daily_store] refusing fixtures write for dt={date_str}: "
+                f"new={new_count} rows would replace existing={existing_count} rows "
+                f"(< {_FIXTURES_COLLAPSE_FRACTION:.0%} threshold) — keeping old partition",
+                file=sys.stderr,
+            )
+            return partition_file(table, date_str)
     pa_table = _coerce_rows(table, rows)
     out_dir = partition_dir(table, date_str)
     out_dir.mkdir(parents=True, exist_ok=True)

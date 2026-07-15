@@ -230,13 +230,19 @@ export async function sendDailyFixtureReport(): Promise<void> {
       // No-fixtures is a real, reportable state — surface it loudly (was a silent
       // return that made "the report never fired" indistinguishable from a crash).
       process.stderr.write("[fixture-report] WARN no SportyBet fixtures available for today\n");
-      if (hasCreds) {
+      // Same placeholder/heartbeat suppression as the marketsEmpty branch below —
+      // was firing the Telegram send unconditionally on every cron run (the
+      // 3+/day spam bug), with no way for the hourly heartbeat retry to know it
+      // had already flagged today as blocked.
+      const alreadyFlagged = readFixtureReportState().placeholderDate === today;
+      if (hasCreds && !alreadyFlagged) {
         await sendTelegramText(
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
           `ORACLE — no SportyBet fixtures found for ${today}.${dataHealthLine ? `\n${dataHealthLine}` : ""}`
         );
       }
+      if (!alreadyFlagged) writeHeartbeat("fixtureReportPlaceholder", { date: today });
       return;
     }
     if (result.marketsEmpty) {

@@ -181,7 +181,14 @@ export function _resetDailyStoreCache(): void {
 
 function loadDailyIndex(dt: string): Promise<SportyBetIndex | null> {
   if (_cache && _cache.dt === dt) return _cache.promise;
-  const promise = buildDailyIndex(dt);
+  const promise = buildDailyIndex(dt).then((idx) => {
+    // Don't poison the whole day with a null/empty read that raced the morning
+    // scrape (e.g. batch start at 08:35 vs. partition write at 10:07) — clear
+    // the memo so the next caller re-queries instead of reusing this result
+    // for the rest of the process lifetime.
+    if (!idx || idx.events.length === 0) _cache = null;
+    return idx;
+  });
   _cache = { dt, promise };
   return promise;
 }

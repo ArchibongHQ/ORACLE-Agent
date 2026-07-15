@@ -114,6 +114,29 @@ describe("loadDailyFixtures", () => {
     await loadDailyFixtures(DT);
     expect(vi.mocked(queryParquetRows)).toHaveBeenCalledTimes(3); // fixtures+odds+stats once, not six times
   });
+
+  it("does not memoize a zero-fixture read — retries on the next call instead of poisoning the day", async () => {
+    mockThreeQueries([]);
+    const first = await loadDailyFixtures(DT);
+    expect(first!.events).toHaveLength(0);
+
+    mockThreeQueries(FIXTURE_ROWS, ODDS_ROWS, STATS_ROWS);
+    const second = await loadDailyFixtures(DT);
+    expect(second!.events).toHaveLength(1);
+    // 3 (empty fixtures still queries odds+stats too — only a null fixtureRows
+    // short-circuits) + 3 (fixtures+odds+stats on the retried call) = 6.
+    expect(vi.mocked(queryParquetRows)).toHaveBeenCalledTimes(6);
+  });
+
+  it("does not memoize a null (missing-partition) read — retries on the next call", async () => {
+    mockThreeQueries(null);
+    expect(await loadDailyFixtures(DT)).toBeNull();
+
+    mockThreeQueries(FIXTURE_ROWS, ODDS_ROWS, STATS_ROWS);
+    const second = await loadDailyFixtures(DT);
+    expect(second!.events).toHaveLength(1);
+    expect(vi.mocked(queryParquetRows)).toHaveBeenCalledTimes(4); // 1 (null) + 3 (fixtures+odds+stats)
+  });
 });
 
 describe("loadDailyOdds", () => {

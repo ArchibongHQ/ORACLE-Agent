@@ -2,7 +2,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FixtureJob } from "@oracle/engine";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { queryParquetRows } from "@oracle/storage";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { _resetDailyStoreCache } from "../src/dailyStore.js";
 import {
   loadSportyBetIndex,
   predictabilityScore,
@@ -13,6 +15,15 @@ import {
   selectFixtures,
   sidecarKey,
 } from "../src/selectFixtures.js";
+
+// loadSportyBetIndex tries the Parquet daily lake (dailyStore.ts) before the
+// JSON sidecar; dailyStore.ts's own queries are mocked here (mirrors
+// dailyStore.test.ts) so the loadSportyBetIndex tests below don't depend on
+// whatever real .tmp/oracle-daily lake state happens to exist on disk.
+vi.mock("@oracle/storage", () => ({
+  queryParquetRows: vi.fn(),
+  escapeSqlLiteral: (s: string) => s.replace(/'/g, "''"),
+}));
 
 // Fixed clock: 2026-06-11 10:00 UTC
 const NOW = new Date("2026-06-11T10:00:00Z");
@@ -442,10 +453,16 @@ describe("loadSportyBetIndex", () => {
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "oracle-select-"));
+    // Default: lake unavailable (mirrors a missing Parquet partition), so
+    // every pre-existing test below keeps exercising the JSON-sidecar path
+    // exactly as before — only the regression test overrides this per-call.
+    vi.mocked(queryParquetRows).mockReset();
+    vi.mocked(queryParquetRows).mockResolvedValue(null);
   });
 
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+    _resetDailyStoreCache();
   });
 
   it("returns null for a missing file", async () => {
@@ -593,5 +610,30 @@ describe("loadSportyBetIndex", () => {
     const idx = await loadSportyBetIndex(TODAY, p);
     const detail = idx?.detailByKey.get(sidecarKey("Arsenal FC", "Chelsea FC"));
     expect(detail?.stats?.weather).toBeUndefined();
+  });
+
+  it("falls through to the JSON sidecar when the lake read is truthy-but-empty (regression: a 0-row partition must not shadow a good sidecar)", async () => {
+    // Fixtures partition exists but has zero rows yet (e.g. the morning
+    // SportyBet scrape hasn't landed) — queryParquetRows resolves [] (not
+    // null) for the fixtures query, same as dailyStore.test.ts's "valid empty
+    // index" case, so loadDailyFixtures returns a truthy SportyBetIndex with
+    // events: []. Before the fix this empty index was returned directly,
+    // shadowing a perfectly good JSON sidecar.
+    vi.mocked(queryParquetRows).mockResolvedValueOnce([]);
+
+    const p = join(dir, "sidecar.json");
+    await writeFile(
+      p,
+      JSON.stringify({
+        date: TODAY,
+        events: [{ home: "Arsenal FC", away: "Chelsea FC", marketCount: 27 }],
+      }),
+      "utf8"
+    );
+
+    const idx = await loadSportyBetIndex(TODAY, p);
+    expect(idx).not.toBeNull();
+    expect(idx?.events).toHaveLength(1);
+    expect(idx?.byKey.get(sidecarKey("Arsenal FC", "Chelsea FC"))).toBe(27);
   });
 });
