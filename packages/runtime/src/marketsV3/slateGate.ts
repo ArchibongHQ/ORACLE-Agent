@@ -62,6 +62,10 @@ export interface SlateGateSummary {
   discardCounts: Record<string, number>;
   /** Fixtures with no sidecar mapping — always kept, never evaluated. */
   unmapped: number;
+  /** [patterns-engine Wave 1 — Phase 5] Non-gating data-quality flags tallied
+   *  across passing (kept) fixtures. These fixtures ARE analysed — the counts
+   *  are observability only, shown separately from `discardCounts` in the log. */
+  annotationCounts: Record<string, number>;
 }
 
 export interface SlateGateOutcome {
@@ -196,6 +200,7 @@ export function prefilterMarketsV3Jobs(
     // Pass 2: the existing eligibility + completeness gate, now integrity-aware.
     const kept: FixtureJob[] = [];
     const discardCounts: Record<string, number> = {};
+    const annotationCounts: Record<string, number> = {};
     let unmapped = 0;
     let mapped = 0;
     let passed = 0;
@@ -253,6 +258,8 @@ export function prefilterMarketsV3Jobs(
         continue;
       }
       passed += 1;
+      for (const a of result.annotations ?? [])
+        annotationCounts[a] = (annotationCounts[a] ?? 0) + 1;
       let survivor = stampHeightened(job, result.eligibility.status === "heightened");
       if (result.eligibility.marketRestriction === "goals_over_only") {
         survivor = applyMarketRestriction(survivor);
@@ -261,7 +268,7 @@ export function prefilterMarketsV3Jobs(
     }
     return {
       jobs: kept,
-      summary: { total: mapped, passed, discardCounts, unmapped },
+      summary: { total: mapped, passed, discardCounts, unmapped, annotationCounts },
       integrityReport,
     };
   } catch {
@@ -281,9 +288,13 @@ export function formatSlateGateLog(
   const reasons = Object.entries(summary.discardCounts)
     .map(([reason, n]) => `${reason}: ${n}`)
     .join(", ");
+  const annotations = Object.entries(summary.annotationCounts ?? {})
+    .map(([reason, n]) => `${reason}: ${n}`)
+    .join(", ");
   const base =
     `gate: ${summary.total} mapped → ${summary.passed} survive ` +
-    `(${summary.unmapped} unmapped pass through${reasons ? `; ${reasons}` : ""})`;
+    `(${summary.unmapped} unmapped pass through${reasons ? `; ${reasons}` : ""})` +
+    `${annotations ? ` | annotations: ${annotations}` : ""}`;
   if (!integrityReport) return base;
   return (
     `${base} | feed-integrity: ${integrityReport.contaminatedCount} contaminated, ` +

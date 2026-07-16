@@ -87,6 +87,13 @@ export interface MarketsV3GateResult {
     | "below_completeness_floor"
     | "heightened_trends_not_aligned"
     | "already_kicked_off";
+  /** [patterns-engine Wave 1 — Phase 5 "see every fixture"] Non-gating
+   *  data-quality flags carried on a PASSING result. `mandatory_data_missing`,
+   *  `below_completeness_floor`, and `heightened_trends_not_aligned` no longer
+   *  discard a fixture — the pricers degrade gracefully on thin data — so the
+   *  shortfall is recorded here instead for observability + downstream
+   *  confidence weighting. Empty/absent ⇒ full-data fixture. */
+  annotations?: string[];
 }
 
 /** Run the full Phase 0/1 gate for one fixture. `enrich` carries the
@@ -103,50 +110,52 @@ export function gateMarketsV3Fixture(
   const completeness = scoreCompleteness(detail, enrich);
   const completenessScore01 = completeness.score / 100;
 
+  // Real hard discards: only eligibility-level rejects (srl_virtual /
+  // missing_mandatory_odds) truly cannot be analysed — a virtual/SRL fixture or
+  // one with no priceable odds at all. Everything else falls through to
+  // analysis (see the Phase 5 annotation block below).
   if (eligibility.status === "discard") {
     const reason = eligibility.reasons[0] as MarketsV3GateResult["discardReason"];
     return { eligibility, completeness, completenessScore01, passes: false, discardReason: reason };
   }
 
+  // [patterns-engine Wave 1 — Phase 5 "see every fixture"] Data-completeness
+  // shortfalls no longer DISCARD the fixture. The pricers degrade gracefully on
+  // thin data (v3's own penalty table + empirical→model fallbacks), and the
+  // owner requirement is that every scraped fixture with priceable odds reaches
+  // analysis — over-filtering on data richness was starving the slate. Each
+  // shortfall is recorded as a non-gating annotation instead.
+  const annotations: string[] = [];
   if (completeness.mandatoryMissing.length > 0) {
-    return {
-      eligibility,
-      completeness,
-      completenessScore01,
-      passes: false,
-      discardReason: "mandatory_data_missing",
-    };
+    annotations.push("mandatory_data_missing");
   }
-
   const minScore =
     eligibility.status === "heightened" ? config.heightenedMin : config.completenessMin;
   if (completeness.score < minScore) {
-    return {
-      eligibility,
-      completeness,
-      completenessScore01,
-      passes: false,
-      discardReason: "below_completeness_floor",
-    };
+    annotations.push("below_completeness_floor");
   }
-
   if (eligibility.status === "heightened" && !heightenedTrendsAligned(detail)) {
-    return {
-      eligibility,
-      completeness,
-      completenessScore01,
-      passes: false,
-      discardReason: "heightened_trends_not_aligned",
-    };
+    annotations.push("heightened_trends_not_aligned");
   }
 
-  return { eligibility, completeness, completenessScore01, passes: true };
+  return {
+    eligibility,
+    completeness,
+    completenessScore01,
+    passes: true,
+    ...(annotations.length ? { annotations } : {}),
+  };
 }
 
 export interface MarketsV3SlateSummary {
   total: number;
   passed: number;
   discardCounts: Record<string, number>;
+  /** [patterns-engine Wave 1 — Phase 5] Non-gating data-quality flags tallied
+   *  across passing fixtures (mandatory_data_missing / below_completeness_floor
+   *  / heightened_trends_not_aligned). Observability only — these fixtures are
+   *  counted in `passed`, not dropped. */
+  annotationCounts: Record<string, number>;
 }
 
 /** Slate-level convenience: gate every event, tally discard reasons for a
@@ -158,13 +167,16 @@ export function gateMarketsV3Slate(
 ): { results: MarketsV3GateResult[]; summary: MarketsV3SlateSummary } {
   const results = events.map((event) => gateMarketsV3Fixture(event, config, enrichByEvent(event)));
   const discardCounts: Record<string, number> = {};
+  const annotationCounts: Record<string, number> = {};
   let passed = 0;
   for (const r of results) {
-    if (r.passes) passed += 1;
-    else if (r.discardReason)
+    if (r.passes) {
+      passed += 1;
+      for (const a of r.annotations ?? []) annotationCounts[a] = (annotationCounts[a] ?? 0) + 1;
+    } else if (r.discardReason)
       discardCounts[r.discardReason] = (discardCounts[r.discardReason] ?? 0) + 1;
   }
-  return { results, summary: { total: events.length, passed, discardCounts } };
+  return { results, summary: { total: events.length, passed, discardCounts, annotationCounts } };
 }
 
 type OverUnder = { over?: number | null; under?: number | null } | null | undefined;
