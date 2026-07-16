@@ -53,6 +53,7 @@ import {
 import { buildV3Grid, buildV3HalfGrid } from "./grid.js";
 import { detectPatterns, type PatternInput, type PatternReport } from "./patterns.js";
 import { type RefereeCardsShadowResult, shadowRefereeCards } from "./refereeCardsShadow.js";
+import { TOTALS_FAMILIES } from "./sanity.js";
 import { type DualSplit, deriveDualSplit } from "./split.js";
 
 export interface V3EmpiricalInputs {
@@ -675,6 +676,35 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         varianceMod: 1,
       });
     });
+  }
+
+  // [patterns-engine Wave 2, Phase 3] Under -> Asian Handicap pivot (owner
+  // rule: NEVER recommend an Under market). Unconditional — not gated on the
+  // legacy LOW_SCORING regime classifier, per this wave's "kill ALL Unders"
+  // brief: every goals_ou/team_total Under is stripped from evMarkets here,
+  // full stop, for every fixture, regardless of regime.
+  //
+  // Deliberately does NOT call math/index.ts's detectLowScoringRegime/
+  // asianHandicapPivot to synthesize a replacement line: those functions
+  // recommend a THEORETICAL line (0/±0.25/±0.5 around the dominant side) with
+  // no real offered odds unless the fixture's catalogue happens to carry that
+  // exact line — pricing an EV against odds nobody actually offers would be
+  // dishonest real-money math, and no downstream consumer of EVMarket can
+  // stake a line the book doesn't sell. The genuine "pivot" is structural,
+  // not computational: every real asian_handicap outcome in this fixture's
+  // catalogue was ALREADY priced (priceAsian, via priceResultOutcome above)
+  // and gated (gateAllMarkets above) in the SAME per-outcome loop as every
+  // other market, so a real AH pick is already sitting in evMarkets on its
+  // own honest merit whenever one clears the gate — stripping the Under
+  // simply lets it (or whatever else genuinely qualifies) surface as `best`.
+  // "Never drop": when nothing else cleared the gate for this fixture, `best`
+  // is null, same as any other gate-dry fixture — never a fabricated pick.
+  // `assessments`/`capped` are untouched — Unders stay visible there for
+  // transparency, exactly like capped picks already do.
+  const isKilledUnder = (m: EVMarket): boolean =>
+    !!m.family && TOTALS_FAMILIES.has(m.family) && dirOfDesc(m.side ?? "") === "under";
+  for (let i = evMarkets.length - 1; i >= 0; i--) {
+    if (isKilledUnder(evMarkets[i]!)) evMarkets.splice(i, 1);
   }
 
   evMarkets.sort((a, b) => b.rankingScore - a.rankingScore);
