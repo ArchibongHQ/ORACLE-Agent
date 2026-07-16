@@ -78,6 +78,8 @@ export function buildV3Input(
     v3TotalsEmpirical?: "on" | "off";
     /** [X-carveout] See OracleConfig.v3XCarveout. */
     v3XCarveout?: "off" | "shadow" | "on";
+    /** [Wave 2] See OracleConfig.v3Patterns. */
+    v3Patterns?: "off" | "shadow" | "on";
   },
   /** [Wave 3, WS3-A] Diagnostic-only pi-ratings signal (see ratings/index.ts's
    *  buildRatingsLambdaInput header) — attached to lambdaInput but never
@@ -221,6 +223,9 @@ export function buildV3Input(
     // [X-carveout] default-off — undefined config behaves as "off"
     // (gateAllMarkets' own default).
     xCarveout: config?.v3XCarveout,
+    // [Wave 2] pattern/trend detector shadow flag — undefined config behaves
+    // as "off" (analyzeFixtureMarkets.ts's own default), byte-identical.
+    v3Patterns: config?.v3Patterns,
   };
 }
 
@@ -273,7 +278,7 @@ function applyGoalsCrossCheck(
   if (!topGoalsFamily) return;
 
   const outcome = hook(topGoalsFamily, topGoalsFamily.desc, topGoalsFamily.odds, fixture);
-  if (!outcome || outcome.verdict !== "disagree") return;
+  if (outcome?.verdict !== "disagree") return;
 
   const idx = v3Result.assessments.findIndex(
     (a) => a.marketId === topGoalsFamily.marketId && a.outcomeId === topGoalsFamily.outcomeId
@@ -385,6 +390,15 @@ export interface FixtureJobSuccess {
    *  (packages/runtime/src/marketsV3/slateOutputs.ts) without requiring the
    *  batch to retain every raw per-market assessment for the whole day. */
   v3Best?: V3OutputCandidate;
+  /** [patterns-engine Wave 2] Fill-to-39 fallback — this fixture's best +EV
+   *  (raw true EV `ev = mp·odds − 1 > 0`, the owner's value floor) candidate
+   *  that did NOT clear the gate, so the slate Output-A pool can fill toward 39
+   *  even on class-gate-dry fixtures instead of the tiny gate-survivor set
+   *  (the 2026-07-15 0/4394 dryness). Derived + carried ONLY when v3Patterns is
+   *  "shadow"/"on" (byte-identical projection when off). buildMarketsV3SlateOutputs
+   *  uses `v3Best ?? v3BestFallback` as the fixture's pool representative when
+   *  the fill flag is on; never used when v3Patterns is off. */
+  v3BestFallback?: V3OutputCandidate;
   /** PR-5b: compact projection (family/desc/outcome/rawEdge only) of EVERY v3
    *  assessment for this fixture (done/capped/discarded alike) — slate sanity
    *  check input (packages/marketsV3/sanity.ts's slateSanityChecks). */
@@ -843,6 +857,7 @@ export async function runBatch(
 
           let usedV3 = false;
           let v3Best: V3OutputCandidate | undefined;
+          let v3BestFallback: V3OutputCandidate | undefined;
           let v3AssessmentStats: V3AssessmentStat[] | undefined;
           let v3Coverage: RouteCoverage | undefined;
           let safetyShadowDiff: SafetyShadowDiff | undefined;
@@ -916,6 +931,49 @@ export async function runBatch(
                   adjEvPct: bestAssessment.adjEvPct,
                   confidence: bestAssessment.confidence,
                 };
+              }
+              // [patterns-engine Wave 2] Fill-to-39 fallback projection — only
+              // derived when v3Patterns is shadow/on (byte-identical otherwise,
+              // v3BestFallback stays undefined). Value floor uses the RAW model
+              // EV, not the blend-overwritten `ev` field: when blendPricing is
+              // on, V3MarketOutcomeAssessment.ev is overwritten with blendEV and
+              // the true model EV is stashed in evModel (see that type's doc
+              // comment) — `rawEv` recovers it so the floor is always mp·odds−1.
+              // HARD INVARIANT (adversarial review finding, 2026-07-16): only
+              // `outcome === "below_gate"` with `gateReason === "class_edge"`
+              // qualifies — NOT `outcome !== "done"`, which would also admit
+              // "capped"/"noise" outcomes. Those exist specifically to kill
+              // fake-edge longshots (the 2026-07-09 HSH incident); a capped
+              // candidate's inflated adjustedEdge would otherwise sort to the
+              // TOP of the fallback pool and re-admit exactly what evGate.ts's
+              // raw-edge caps/noise gate exists to block. Also restricting to
+              // gateReason "class_edge" (not every below_gate reason) matches
+              // this feature's own scope — it relaxes ONLY the class-edge bar,
+              // so the fallback pool should surface ONLY candidates that bar
+              // alone is blocking, not e.g. a max-odds or ev-floor reject.
+              if (config.v3Patterns && config.v3Patterns !== "off") {
+                const rawEv = (a: V3MarketOutcomeAssessment) => a.evModel ?? a.ev;
+                const bestFallbackAssessment = v3Result.assessments
+                  .filter(
+                    (a) =>
+                      rawEv(a) > 0 && a.outcome === "below_gate" && a.gateReason === "class_edge"
+                  )
+                  .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
+                if (bestFallbackAssessment) {
+                  v3BestFallback = {
+                    marketName: bestFallbackAssessment.marketName,
+                    desc: bestFallbackAssessment.desc,
+                    cls: bestFallbackAssessment.cls,
+                    mp: bestFallbackAssessment.mp,
+                    odds: bestFallbackAssessment.odds,
+                    q: bestFallbackAssessment.q,
+                    rawEdge: bestFallbackAssessment.rawEdge,
+                    penaltyPts: bestFallbackAssessment.penaltyPts,
+                    adjustedEdge: bestFallbackAssessment.adjustedEdge,
+                    adjEvPct: bestFallbackAssessment.adjEvPct,
+                    confidence: bestFallbackAssessment.confidence,
+                  };
+                }
               }
               v3AssessmentStats = v3Result.assessments.map((a) => ({
                 family: a.family,
@@ -1216,6 +1274,7 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             swarmDivergence: swarmDivergenceVal,
             agentVerification: filteredResult.agentVerification,
             v3Best,
+            v3BestFallback,
             v3AssessmentStats,
             v3Coverage,
             safetyKillCounts: mlResult?.killCounts as Record<string, number> | undefined,

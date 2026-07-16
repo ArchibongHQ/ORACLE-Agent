@@ -186,6 +186,29 @@ describe("buildMarketsV3SlateOutputs", () => {
     expect(out.outputD).toHaveLength(0);
     expect(out.sanityLine).toMatch(/clean|Sanity/);
   });
+
+  it("[patterns-engine Wave 2] fillToTarget:true fills the pool with fallback-only fixtures AFTER every tier-1 (v3Best) survivor; default/false leaves the pool byte-identical to today", () => {
+    const jobs: FixtureJobSuccess[] = [
+      // Tier 1: genuine gate survivor.
+      job(1, { best: candidate({ adjustedEdge: 0.02, odds: 1.9 }) }),
+      // Fallback-only: no v3Best, but a v3BestFallback with a HIGHER adjustedEdge
+      // than the tier-1 survivor above — must still sort AFTER it.
+      job(2, { v3BestFallback: candidate({ adjustedEdge: 0.9, odds: 3.0 }) }),
+    ];
+
+    const filled = buildMarketsV3SlateOutputs(jobs, { fillToTarget: true });
+    expect(filled.pool).toHaveLength(2);
+    expect(filled.pool.map((r) => r.fixtureId)).toEqual(["f1", "f2"]); // survivor first, fallback second — despite lower edge
+    expect(filled.outputA.map((r) => r.fixtureId)).toEqual(["f1", "f2"]);
+
+    const defaultOut = buildMarketsV3SlateOutputs(jobs);
+    const explicitOff = buildMarketsV3SlateOutputs(jobs, { fillToTarget: false });
+    for (const out of [defaultOut, explicitOff]) {
+      expect(out.pool).toHaveLength(1); // fallback-only fixture contributes nothing
+      expect(out.pool.map((r) => r.fixtureId)).toEqual(["f1"]);
+      expect(out.outputA).toHaveLength(1);
+    }
+  });
 });
 
 describe("curateActionableByV3Outputs", () => {
