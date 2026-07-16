@@ -1,0 +1,11 @@
+{
+  "date": "2026-07-16",
+  "slateSize": 0,
+  "attempted": 0,
+  "written": 0,
+  "withNews": 0,
+  "sourcesUsed": {"rss": 0, "transfermarkt": 0, "perplexity": 0, "agentic": 0},
+  "startedAt": "2026-07-16T09:49:00Z",
+  "finishedAt": "2026-07-16T09:51:10Z",
+  "note": "0 fixtures acquired: acquire_daily.py (46-league ESPN/Sky HTTP set) and enrich_news.py both returned empty for 2026-07-16, corroborated by WebSearch — World Cup 2026 semifinals concluded 2026-07-15, third-place playoff is 2026-07-18 and the final is 2026-07-19, so today is a scheduled rest day and domestic leagues worldwide remain in their World Cup hiatus/off-season window. No fixture JSONs written; absence is signal per SOP edge-case table."
+}
