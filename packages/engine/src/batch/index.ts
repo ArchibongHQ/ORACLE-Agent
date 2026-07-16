@@ -166,6 +166,12 @@ export function buildV3Input(
     ...(config?.v3ShotsOu !== false ? { sotForH: t.sotForH, sotForA: t.sotForA } : {}),
     // PR-25 item 2, shadow-only — feeds refereeShadow, never ctx.cards/pricing.
     refereeCardsRate: t.refereeCardsRate,
+    // [patterns-engine Wave 2, Phase 0] Feeds buildFixturePatternInput's
+    // PatternInput.streakH/A + last5PtsH/A below (marketsV3/patterns.ts).
+    streakH: t.streakH,
+    streakA: t.streakA,
+    last5PtsH: t.last5PtsH,
+    last5PtsA: t.last5PtsA,
     penaltyFlags: {
       // Desktop-audit concept #3: graduated xG-missing penalty. Mutually
       // exclusive with xgMissingLargeSample — full -2pt only when the

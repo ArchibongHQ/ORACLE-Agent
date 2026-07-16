@@ -124,6 +124,28 @@ function formToRecentMatches(
   return matches.length >= 3 ? matches : null;
 }
 
+/** [patterns-engine Wave 2, Phase 0] Sum a sidecar form string (e.g. "WWDLW")
+ *  into last-5 points (W=3, D=1, L=0), 0-15 range. Same parsing convention as
+ *  formToRecentMatches above, but sums points instead of synthesizing goal
+ *  counts, and — unlike that helper's >=3-valid-characters floor — accepts
+ *  any 1+ valid W/D/L characters, since a points-sum degrades gracefully with
+ *  a shorter run. Returns null when the string is absent or has zero valid
+ *  characters. */
+function last5Points(last5: string | null | undefined): number | null {
+  if (!last5) return null;
+  const POINTS: Record<string, number> = { W: 3, D: 1, L: 0 };
+  let sum = 0;
+  let count = 0;
+  for (const ch of last5.toUpperCase().split("")) {
+    const pts = POINTS[ch];
+    if (pts !== undefined) {
+      sum += pts;
+      count++;
+    }
+  }
+  return count > 0 ? sum : null;
+}
+
 /** Recency-blend a season-average scored rate: prefer the real recentGoals
  *  last-5 signal (60/40 recent/season blend), fall back to a form-string-
  *  synthesized RecentMatch[] run through applyTemporalDecay, or return the
@@ -243,6 +265,23 @@ export interface StatsOverride {
   refereeCardsRate?: number;
   refereeName?: string;
   refereeCardsRateSrc?: "empirical" | "league_mean_fallback";
+  /** [patterns-engine Wave 2, Phase 0] Signed leading-run streak from the
+   *  sidecar's own form.streak field (+N = N-match win streak, -N = N-match
+   *  loss streak, 0 on a draw-terminated run) — see selectFixtures.ts's own
+   *  `streak?: number` doc comment for the exact sign convention this
+   *  passes through unchanged. Feeds marketsV3/patterns.ts's Anomaly
+   *  detector (streakH/A >= 3 win-streak check) and its hierarchy-weighted
+   *  priority context — optional, detector degrades gracefully when absent. */
+  streakH?: number;
+  streakA?: number;
+  /** [patterns-engine Wave 2, Phase 0] Last-5-matches points (3/win + 1/draw
+   *  + 0/loss) derived from the sidecar's `form.last5` W/D/L string (e.g.
+   *  "WWDLW" -> 3+3+1+0+3=10), 0-15 range. Feeds marketsV3/patterns.ts's
+   *  PatternInput.last5PtsH/A — currently accepted by PatternInput but not
+   *  yet scored by any pattern heuristic, wired now so it's available once
+   *  one does. */
+  last5PtsH?: number;
+  last5PtsA?: number;
 }
 
 /** Resolve the credibility-shrinkage prior for a league.
@@ -554,6 +593,20 @@ export function buildStatsOverride(
       override.refereeCardsRateSrc = referee.cardsRateSrc;
     }
   }
+
+  // [patterns-engine Wave 2, Phase 0] Signed win/loss streak — direct
+  // passthrough, no transformation (the sidecar's own value is already
+  // signed correctly per selectFixtures.ts's streak doc comment).
+  const streakH = stats.form?.home?.streak;
+  const streakA = stats.form?.away?.streak;
+  if (finiteOrZero(streakH)) override.streakH = streakH;
+  if (finiteOrZero(streakA)) override.streakA = streakA;
+  // Last-5 points (3/win + 1/draw + 0/loss) summed from the same form.last5
+  // string blendRecencyScored/formToRecentMatches already read above.
+  const last5PtsH = last5Points(stats.form?.home?.last5);
+  const last5PtsA = last5Points(stats.form?.away?.last5);
+  if (last5PtsH !== null) override.last5PtsH = last5PtsH;
+  if (last5PtsA !== null) override.last5PtsA = last5PtsA;
 
   // ── all-markets v3 typed market-specific stats (§0.3 market-specific tier).
   // Each family gates on its own sample: scoringConceding rates on the

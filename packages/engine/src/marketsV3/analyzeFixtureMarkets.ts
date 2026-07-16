@@ -134,6 +134,14 @@ export interface V3AllMarketsInput {
    *  (StatsOverride.refereeCardsRate). Never affects cardsAvgH/cardsAvgA,
    *  ctx.cards, or any priced cards outcome above — diagnostic-only input. */
   refereeCardsRate?: number;
+  /** [patterns-engine Wave 2, Phase 0] Signed win/loss streak + last-5 points
+   *  (see RunState.telemetry.streakH/A doc comment for provenance) — feeds
+   *  PatternInput.streakH/A + last5PtsH/A (marketsV3/patterns.ts) via
+   *  buildFixturePatternInput below. */
+  streakH?: number;
+  streakA?: number;
+  last5PtsH?: number;
+  last5PtsA?: number;
   /** [refactor P0-2] Market-anchored blend (v5 §5.8) — see OracleConfig.v3Blend
    *  for the three-state contract. "off"/undefined ⇒ every gateAllMarkets call
    *  below runs with its own blendMode default ("off"), byte-identical to
@@ -421,9 +429,15 @@ function buildFixturePatternInput(input: V3AllMarketsInput): PatternInput | null
     homeOdds: odds.homeOdds,
     drawOdds: odds.drawOdds,
     awayOdds: odds.awayOdds,
-    // streak/last5/h2h/restDaysMin/mappedFamiliesWithStats intentionally
-    // absent — not yet threaded from V3AllMarketsInput (a later wave per this
-    // wave's own task brief); detectPatterns degrades gracefully without them.
+    streakH: input.streakH,
+    streakA: input.streakA,
+    last5PtsH: input.last5PtsH,
+    last5PtsA: input.last5PtsA,
+    // h2hOversRate/restDaysMin/mappedFamiliesWithStats intentionally absent —
+    // h2hOversRate requires modifying the separate, rate-limited h2h.ts
+    // external-API module (its own follow-up scope); restDaysMin/
+    // mappedFamiliesWithStats not yet threaded from V3AllMarketsInput;
+    // detectPatterns degrades gracefully without them.
   };
 }
 
