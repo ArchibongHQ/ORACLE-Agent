@@ -6,8 +6,8 @@
  *  bare child.kill()) — so the timeout-cap and tree-kill behavior can be
  *  exercised without shelling out to the real tools/scrape_match_results.py. */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnalysisRecord } from "@oracle/engine";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { spawn, execFile } = vi.hoisted(() => ({
   spawn: vi.fn(),
@@ -38,7 +38,8 @@ class FakeChild {
   pid = 4321;
   kill = vi.fn();
   on(event: string, cb: (...args: unknown[]) => void): this {
-    (this.handlers[event] ??= []).push(cb);
+    this.handlers[event] ??= [];
+    this.handlers[event].push(cb);
     return this;
   }
 }

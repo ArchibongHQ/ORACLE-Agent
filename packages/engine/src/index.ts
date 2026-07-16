@@ -266,6 +266,13 @@ export {
   OUTPUT_D_MIN_ODDS,
   RESPONSIBLE_GAMBLING_NOTE,
 } from "./marketsV3/outputs.js";
+export type {
+  PatternHit,
+  PatternInput,
+  PatternKind,
+  PatternReport,
+} from "./marketsV3/patterns.js";
+export { detectPatterns, PATTERN_THRESHOLDS } from "./marketsV3/patterns.js";
 export type { V3PriorityInput } from "./marketsV3/prioritise.js";
 export {
   CONGESTION_MAX_DAYS,

@@ -235,10 +235,15 @@ describe("formatPuntResult", () => {
   });
 
   it("flags provenance when the pick came from the all-markets scan", () => {
+    // [patterns-engine Wave 1 — Phase 4] Provenance now rides on the
+    // sourcedFromScan flag, not the market string (which carries the real
+    // FAMILY_LABEL so the pick is bookable + readable).
     const html = formatPuntResult(
-      baseResult([baseLeg({ pick: { ...baseLeg().pick, market: "AllMarkets Scan" } })])
+      baseResult([
+        baseLeg({ pick: { ...baseLeg().pick, market: "Goals O/U", sourcedFromScan: true } }),
+      ])
     );
-    expect(html).toContain("sourced from the full markets scan (AllMarkets Scan)");
+    expect(html).toContain("sourced from the full markets scan (Goals O/U)");
   });
 
   it("flags provenance when the pick came from the LLM market executor", () => {

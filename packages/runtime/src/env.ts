@@ -441,6 +441,10 @@ export function buildConfig(
     // every other flag): flip to "shadow" first for ledger evidence of
     // would-pass X candidates, then "on" only on evidence.
     v3XCarveout: parseTriState(env.ORACLE_V3_X_CARVEOUT, "off"),
+    // [patterns-engine Wave 1] Pattern/trend-detection gate — "shadow"
+    // (default) computes and logs pattern signals without gating picks;
+    // "on" makes them gating (later wave); "off" disables entirely.
+    v3Patterns: parseTriState(env.ORACLE_V3_PATTERNS, "shadow"),
   };
 }
 

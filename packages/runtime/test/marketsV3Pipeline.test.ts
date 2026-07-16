@@ -76,7 +76,7 @@ describe("gateMarketsV3Fixture", () => {
     expect(result.eligibility.reasons).toContain("off_whitelist");
   });
 
-  it("[Wave-4 WS-A3] unknown league passes eligibility, discarded downstream by completeness when data is thin", () => {
+  it("[patterns-engine Wave 1] unknown league with thin data now PASSES with a mandatory_data_missing annotation (no longer discarded)", () => {
     const result = gateMarketsV3Fixture(
       event({
         league: "Some Obscure Regional League",
@@ -92,9 +92,11 @@ describe("gateMarketsV3Fixture", () => {
     // Eligibility itself is unaffected by the league being off-list.
     expect(result.eligibility.status).toBe("eligible");
     expect(result.eligibility.reasons).toContain("off_whitelist");
-    // The completeness gate is what actually discards it.
-    expect(result.passes).toBe(false);
-    expect(result.discardReason).toBe("mandatory_data_missing");
+    // [patterns-engine Wave 1 — Phase 5 "see every fixture"] Thin data no longer
+    // discards — the fixture is analysed and the shortfall recorded as a
+    // non-gating annotation.
+    expect(result.passes).toBe(true);
+    expect(result.annotations).toContain("mandatory_data_missing");
   });
 
   it("discards on missing mandatory odds even for a whitelisted league", () => {
@@ -107,7 +109,7 @@ describe("gateMarketsV3Fixture", () => {
     expect(result.discardReason).toBe("missing_mandatory_odds");
   });
 
-  it("discards when the mandatory completeness block is incomplete despite eligible odds", () => {
+  it("[patterns-engine Wave 1] incomplete mandatory block now PASSES with a mandatory_data_missing annotation (was a discard)", () => {
     const result = gateMarketsV3Fixture(
       event({
         detail: {
@@ -119,18 +121,19 @@ describe("gateMarketsV3Fixture", () => {
       }),
       cfg
     );
-    expect(result.passes).toBe(false);
-    expect(result.discardReason).toBe("mandatory_data_missing");
+    expect(result.passes).toBe(true);
+    expect(result.annotations).toContain("mandatory_data_missing");
   });
 
-  it("applies the heightened bar (85) for youth/women/friendly/cup-final fixtures", () => {
+  it("[patterns-engine Wave 1] heightened fixture below the 85 floor now PASSES with a below_completeness_floor annotation (was a discard)", () => {
     const heightenedEvent = event({ home: "Home FC U19", away: "Away FC U19" });
     // Mandatory block alone scores 70 (odds+form+scored+conceded+hitRate),
-    // clears the normal 70 floor but not the heightened 85 floor.
+    // clears the normal 70 floor but not the heightened 85 floor — a shortfall
+    // that now annotates rather than discards.
     const result = gateMarketsV3Fixture(heightenedEvent, cfg);
     expect(result.eligibility.status).toBe("heightened");
-    expect(result.passes).toBe(false);
-    expect(result.discardReason).toBe("below_completeness_floor");
+    expect(result.passes).toBe(true);
+    expect(result.annotations).toContain("below_completeness_floor");
   });
 
   it("respects a custom (looser) completenessMin from config", () => {
@@ -141,7 +144,7 @@ describe("gateMarketsV3Fixture", () => {
 });
 
 describe("gateMarketsV3Slate", () => {
-  it("[Wave-4 WS-A3] tallies pass/discard counts across a mixed slate — off-list fixture now survives", () => {
+  it("[patterns-engine Wave 1] tallies pass/discard/annotation counts across a mixed slate — only srl_virtual still discards", () => {
     const events = [
       event(),
       event({ home: "Simulated Reality League FC" }),
@@ -150,14 +153,15 @@ describe("gateMarketsV3Slate", () => {
     ];
     const { summary } = gateMarketsV3Slate(events, buildMarketsV3GateConfig({}));
     expect(summary.total).toBe(4);
-    // The off-list fixture carries the same mandatory-complete detail() as
-    // the whitelisted one, so it now passes too (off_whitelist is a
-    // non-gating annotation) — only srl_virtual and the heightened youth
-    // fixture's below_completeness_floor still discard.
-    expect(summary.passed).toBe(2);
+    // Only srl_virtual is still a hard discard. The off-list fixture passes
+    // (off_whitelist is a non-gating eligibility annotation), and the
+    // heightened youth fixture below the 85 floor now passes too — its
+    // shortfall recorded as a below_completeness_floor annotation, not a drop.
+    expect(summary.passed).toBe(3);
     expect(summary.discardCounts.srl_virtual).toBe(1);
     expect(summary.discardCounts.not_whitelisted).toBeUndefined();
-    expect(summary.discardCounts.below_completeness_floor).toBe(1);
+    expect(summary.discardCounts.below_completeness_floor).toBeUndefined();
+    expect(summary.annotationCounts.below_completeness_floor).toBe(1);
   });
 
   it("threads per-event enrichment (H2H/lineups) through to the completeness score", () => {

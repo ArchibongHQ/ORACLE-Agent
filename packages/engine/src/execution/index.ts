@@ -60,6 +60,7 @@ import type {
   MarketCoverage,
   Matrix,
   OracleConfig,
+  PickRefMarket,
   RunResult,
   RunState,
   SoftContextItem,
@@ -1220,12 +1221,18 @@ export class ExecutionEngine {
           0,
           0.25
         );
+        // Real family label when the market maps to a known ORACLE family
+        // (bookable + readable in Telegram); "AllMarkets Scan" remains the
+        // fallback only for uncatalogued market ids with no family. Scan
+        // provenance is preserved separately via sourcedFromScan below.
+        const familyLabel: PickRefMarket = family ? FAMILY_LABEL[family] : "AllMarkets Scan";
         out.push({
-          cat: "AllMarkets Scan",
+          cat: familyLabel,
           label: `${marketLabel} — ${outcome.desc ?? ""}`.trim(),
-          market: "AllMarkets Scan",
+          market: familyLabel,
           side: outcome.desc ?? undefined,
           family,
+          sourcedFromScan: true,
           mp,
           modelProb: mp,
           ip,

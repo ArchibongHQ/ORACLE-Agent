@@ -96,7 +96,13 @@ describe("prefilterMarketsV3Jobs", () => {
     const out = prefilterMarketsV3Jobs([unmapped], index([[other, detail()]]), cfg);
     expect(out.jobs).toEqual([unmapped]);
     expect(out.jobs[0]!.state?.telemetry?.v3Heightened).toBeUndefined();
-    expect(out.summary).toEqual({ total: 0, passed: 0, discardCounts: {}, unmapped: 1 });
+    expect(out.summary).toEqual({
+      total: 0,
+      passed: 0,
+      discardCounts: {},
+      unmapped: 1,
+      annotationCounts: {},
+    });
   });
 
   it("[Wave-4 WS-A3] an off-whitelist league with mandatory-complete data now survives (no longer a discard gate)", () => {
@@ -111,10 +117,16 @@ describe("prefilterMarketsV3Jobs", () => {
       cfg
     );
     expect(jobs.map((j) => j.home).sort()).toEqual(["Home FC", "Nowhere FC"]);
-    expect(summary).toEqual({ total: 2, passed: 2, discardCounts: {}, unmapped: 0 });
+    expect(summary).toEqual({
+      total: 2,
+      passed: 2,
+      discardCounts: {},
+      unmapped: 0,
+      annotationCounts: {},
+    });
   });
 
-  it("drops mapped fixtures the gate discards, tallying per-reason counts", () => {
+  it("[patterns-engine Wave 1] keeps thin-data fixtures, tallying per-reason annotation counts (no longer a discard)", () => {
     const whitelisted = job("Home FC", "Away FC");
     const thin = job("Nowhere FC", "Elsewhere FC", "Some Obscure Regional League");
     const { jobs, summary } = prefilterMarketsV3Jobs(
@@ -125,12 +137,16 @@ describe("prefilterMarketsV3Jobs", () => {
       ]),
       cfg
     );
-    expect(jobs.map((j) => j.home)).toEqual(["Home FC"]);
+    expect(jobs.map((j) => j.home).sort()).toEqual(["Home FC", "Nowhere FC"]);
+    // The thin fixture trips both shortfalls now that neither short-circuits a
+    // discard: its mandatory block is incomplete AND its completeness score is
+    // below the floor — both recorded as non-gating annotations.
     expect(summary).toEqual({
       total: 2,
-      passed: 1,
-      discardCounts: { mandatory_data_missing: 1 },
+      passed: 2,
+      discardCounts: {},
       unmapped: 0,
+      annotationCounts: { mandatory_data_missing: 1, below_completeness_floor: 1 },
     });
   });
 
@@ -164,11 +180,16 @@ describe("prefilterMarketsV3Jobs", () => {
     expect(jobs[0]!.state?.telemetry?.v3Heightened).toBe(true);
   });
 
-  it("drops a heightened fixture below the 85 bar (mandatory-only scores 70)", () => {
+  it("[patterns-engine Wave 1] keeps a heightened fixture below the 85 bar, annotating below_completeness_floor (was a drop)", () => {
     const youth = job("Home FC U19", "Away FC U19");
     const { jobs, summary } = prefilterMarketsV3Jobs([youth], index([[youth, detail()]]), cfg);
-    expect(jobs).toHaveLength(0);
-    expect(summary?.discardCounts).toEqual({ below_completeness_floor: 1 });
+    expect(jobs).toHaveLength(1);
+    expect(summary?.passed).toBe(1);
+    expect(summary?.discardCounts).toEqual({});
+    // below_completeness_floor is now a non-gating annotation (the trends-not-
+    // aligned annotation may also fire on the default detail; assert the one
+    // this test is about rather than the exact set).
+    expect(summary?.annotationCounts.below_completeness_floor).toBe(1);
   });
 
   it("[P1-3 review fix] discards a contaminated fixture outright — no headline-only rescue path exists downstream", () => {
@@ -221,10 +242,11 @@ describe("prefilterMarketsV3Jobs", () => {
     expect(jobs.map((j) => j.home)).toContain("Home FC");
   });
 
-  it("completenessV4=false restores hit-rate to the mandatory (discard) set", () => {
+  it("[patterns-engine Wave 1] completenessV4=false restores hit-rate to the mandatory set (now annotated, not dropped)", () => {
     const j = job("Home FC", "Away FC");
     // No overunder block: v4 default scores 60+xg10+h2h10=80 ≥ 70 and passes;
-    // legacy (v4 off) treats the missing hit-rate as a mandatory discard.
+    // legacy (v4 off) treats the missing hit-rate as a mandatory shortfall —
+    // which now annotates the passing fixture rather than discarding it.
     const noHitRate = detail({
       stats: {
         form: { home: { last5: "WWDLW" }, away: { last5: "LDWWL" } },
@@ -241,8 +263,10 @@ describe("prefilterMarketsV3Jobs", () => {
     const legacy = prefilterMarketsV3Jobs([j], index([[j, noHitRate]]), cfg, {
       completenessV4: false,
     });
-    expect(legacy.jobs).toHaveLength(0);
-    expect(legacy.summary?.discardCounts).toEqual({ mandatory_data_missing: 1 });
+    expect(legacy.jobs).toHaveLength(1);
+    expect(legacy.summary?.passed).toBe(1);
+    expect(legacy.summary?.discardCounts).toEqual({});
+    expect(legacy.summary?.annotationCounts).toEqual({ mandatory_data_missing: 1 });
   });
 
   it("[Wave-4 WS-A3] discards a fixture whose kickoff has already passed", () => {
@@ -329,6 +353,7 @@ describe("formatSlateGateLog", () => {
         passed: 3,
         discardCounts: { not_whitelisted: 1, below_completeness_floor: 1 },
         unmapped: 2,
+        annotationCounts: {},
       })
     ).toBe(
       "gate: 5 mapped → 3 survive (2 unmapped pass through; not_whitelisted: 1, below_completeness_floor: 1)"
@@ -336,8 +361,28 @@ describe("formatSlateGateLog", () => {
   });
 
   it("omits the reason list when nothing was discarded", () => {
-    expect(formatSlateGateLog({ total: 2, passed: 2, discardCounts: {}, unmapped: 0 })).toBe(
-      "gate: 2 mapped → 2 survive (0 unmapped pass through)"
+    expect(
+      formatSlateGateLog({
+        total: 2,
+        passed: 2,
+        discardCounts: {},
+        unmapped: 0,
+        annotationCounts: {},
+      })
+    ).toBe("gate: 2 mapped → 2 survive (0 unmapped pass through)");
+  });
+
+  it("[patterns-engine Wave 1] appends a separate annotations tally for passing fixtures", () => {
+    expect(
+      formatSlateGateLog({
+        total: 5,
+        passed: 5,
+        discardCounts: {},
+        unmapped: 0,
+        annotationCounts: { mandatory_data_missing: 2, below_completeness_floor: 1 },
+      })
+    ).toBe(
+      "gate: 5 mapped → 5 survive (0 unmapped pass through) | annotations: mandatory_data_missing: 2, below_completeness_floor: 1"
     );
   });
 });

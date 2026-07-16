@@ -132,6 +132,12 @@ export interface PickRef {
   side?: string;
   odds: number;
   stake?: number; // Kelly fraction, 0–1
+  /** Threaded from the source EVMarket (see EVMarket.sourcedFromScan) when
+   *  validateSelection/deterministicDecide resolve this pick against the
+   *  eligible-bets list — provenance for the full allMarkets catalogue scan,
+   *  now that `market` carries the real FAMILY_LABEL rather than a literal
+   *  "AllMarkets Scan" marker. */
+  sourcedFromScan?: boolean;
 }
 
 /** One outcome of a raw SportyBet allMarkets entry (tools/scrape_fixtures.py's
@@ -177,6 +183,11 @@ export interface EVMarket {
   rankingScore: number;
   varianceMod: number;
   veto?: string | boolean;
+  /** Set by scanAllMarketsFallback: this candidate came from the full raw
+   *  allMarkets catalogue scan rather than the family-gated scanMarkets
+   *  BLOCKs. Preserves scan provenance now that cat/market carry the real
+   *  FAMILY_LABEL instead of the literal "AllMarkets Scan". */
+  sourcedFromScan?: boolean;
 }
 
 /** The config injected at the system boundary — never read from window/process.env inside @oracle/engine. */
@@ -475,6 +486,8 @@ export interface OracleConfig {
   // required data-quality conviction (real xG AND completeness ≥ 0.8). See
   // evGate.ts X_CARVEOUT_PENALTY_RESCALE.
   v3XCarveout?: "off" | "shadow" | "on";
+  // [patterns-engine Wave 1] Pattern/trend-detection gate mode (off | shadow | on), default shadow.
+  v3Patterns?: "off" | "shadow" | "on";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */

@@ -18,6 +18,12 @@ export interface ActionablePick {
    *  agent navigate directly to the fixture detail page rather than scanning the
    *  paginated listing DOM, which only renders currently-visible fixtures. */
   eventId?: string;
+  /** [patterns-engine Wave 1 — Phase 4] True when this pick came from the full
+   *  raw allMarkets catalogue scan (scanAllMarketsFallback) rather than a
+   *  family-gated BLOCK. Now that `market` carries the real FAMILY_LABEL instead
+   *  of the literal "AllMarkets Scan", this flag preserves that provenance for
+   *  the punt-report "sourced from the full markets scan" note. */
+  sourcedFromScan?: boolean;
 }
 
 export interface BatchSummary {
