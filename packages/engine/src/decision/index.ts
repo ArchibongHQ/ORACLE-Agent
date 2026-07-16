@@ -84,7 +84,13 @@ function deterministicDecide(
       replay: null,
     };
   }
-  const pick: PickRef = { market: top.market, side: top.side, odds: top.odds, stake: top.stake };
+  const pick: PickRef = {
+    market: top.market,
+    side: top.side,
+    odds: top.odds,
+    stake: top.stake,
+    sourcedFromScan: top.sourcedFromScan,
+  };
   return {
     decision: {
       primaryPick: pick,
@@ -849,7 +855,12 @@ export function validateSelection(
   if (found) {
     pick = {
       ...pick,
-      primaryPick: { ...ref, odds: found.odds, stake: found.stake },
+      primaryPick: {
+        ...ref,
+        odds: found.odds,
+        stake: found.stake,
+        sourcedFromScan: found.sourcedFromScan,
+      },
     };
   }
 

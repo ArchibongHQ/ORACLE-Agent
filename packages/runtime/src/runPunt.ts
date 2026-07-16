@@ -272,7 +272,7 @@ export function formatPuntResult(r: PuntResult): string {
     if (l.note) lines.push(`    ↳ ${l.note}`);
     // Q4: the pick came from scanning beyond the ~9 typed market families —
     // surface that provenance so it's clear this isn't a standard goals/1X2/AH pick.
-    if (l.pick.market === "AllMarkets Scan" || l.pick.market === "LLM Market Executor") {
+    if (l.pick.sourcedFromScan === true || l.pick.market === "LLM Market Executor") {
       lines.push(`    ↳ 🔎 sourced from the full markets scan (${l.pick.market})`);
     }
     if (l.ahPivotNote) lines.push(`    ↳ ⚠️ ${l.ahPivotNote}`);
