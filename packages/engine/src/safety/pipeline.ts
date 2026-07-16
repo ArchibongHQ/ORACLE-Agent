@@ -36,6 +36,8 @@
 import type { StoragePort } from "@oracle/storage";
 import { FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import type { V3MarketOutcomeAssessment } from "../marketsV3/analyzeFixtureMarkets.js";
+import { dirOfDesc } from "../marketsV3/descParse.js";
+import { TOTALS_FAMILIES } from "../marketsV3/sanity.js";
 import { CorrelationMatrix, isSteamChaser, optimizedKelly } from "../math/index.js";
 import { RAGSystem } from "../rag/index.js";
 import type { EVMarket, Matrix } from "../types.js";
@@ -265,7 +267,18 @@ export function v3AssessmentsToEvMarkets(
   opts: V3ToEvMarketsOptions
 ): EVMarket[] {
   return assessments
-    .filter((a) => a.outcome === "done")
+    .filter(
+      (a) =>
+        a.outcome === "done" &&
+        // [Phase 3, Under->AH pivot — adversarial review finding,
+        // 2026-07-16] This is the canonical Kelly staker feeding `eligible`/
+        // the live arbiter candidate pool and ultimately `primaryPick`.
+        // analyzeFixtureMarketsV3 strips Unders from its OWN `evMarkets`
+        // return value only, deliberately leaving `assessments` untouched
+        // for transparency — so this filter is the one place that must
+        // exclude them before a gate-passing Under can reach real staking.
+        !(TOTALS_FAMILIES.has(a.family) && dirOfDesc(a.desc) === "under")
+    )
     .map((a) => {
       const calibFactor = opts.calibFactorFor(a.family);
       const stake = optimizedKelly(
