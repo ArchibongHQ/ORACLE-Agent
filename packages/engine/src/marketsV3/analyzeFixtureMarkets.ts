@@ -16,9 +16,10 @@ import {
   type V3Lambdas,
 } from "../goalsV3/lambda.js";
 import type { Devigged1x2 } from "../goalsV3/matchShape.js";
-import { FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
+import { FAMILY_LABEL, familyOf, type MarketFamily } from "../markets/index.js";
 import type { AllMarketEntry, EVMarket, Matrix } from "../types.js";
 import { classifyMarket } from "./classes.js";
+import { dirOfDesc, lineOfDesc, sideOfDesc } from "./descParse.js";
 import { cardsMeans, priceCardsVariant } from "./engines/cards.js";
 import { cornersMeans, priceCornersVariant } from "./engines/corners.js";
 import { priceExoticsOutcome } from "./engines/exotics.js";
@@ -32,6 +33,8 @@ import type { V3EngineCtx, V3Price } from "./engines/types.js";
 import {
   gateAllMarkets,
   impliedQ,
+  PATTERN_MIN_STRENGTH,
+  PATTERN_RANK_BONUS,
   V3_EV_FLOOR_DEFAULT,
   type V3AllMarketsAssessment,
   type V3AllMarketsPenaltyFlags,
@@ -48,6 +51,7 @@ import {
   shadowFinishingRegression,
 } from "./finishingRegression.js";
 import { buildV3Grid, buildV3HalfGrid } from "./grid.js";
+import { detectPatterns, type PatternInput, type PatternReport } from "./patterns.js";
 import { type RefereeCardsShadowResult, shadowRefereeCards } from "./refereeCardsShadow.js";
 import { type DualSplit, deriveDualSplit } from "./split.js";
 
@@ -158,6 +162,14 @@ export interface V3AllMarketsInput {
    *  to the blendPricing gate. See evGate.ts's X_CARVEOUT_PENALTY_RESCALE
    *  header for conditions. Absent/"off" ⇒ byte-identical gating. */
   xCarveout?: "off" | "shadow" | "on";
+  /** [patterns-engine Wave 2] OracleConfig.v3Patterns — pattern-backed
+   *  class-edge relaxation mode (marketsV3/patterns.ts detector → evGate.ts
+   *  gateAllMarkets patternMode). "off"/undefined ⇒ byte-identical gating (the
+   *  detector still runs for reporting but never relaxes a bar). "shadow" tags
+   *  would-pass candidates; "on" admits pattern-backed picks over the
+   *  strength-scaled relaxed class_edge bar. See analyzeFixtureMarketsV3 below
+   *  for where the fixture PatternInput is built and detectPatterns is called. */
+  v3Patterns?: "off" | "shadow" | "on";
 }
 
 export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
@@ -311,6 +323,165 @@ function impliedQFor(
   return impliedQ(odds);
 }
 
+function isFiniteNum(v: number | null | undefined): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+/** [patterns-engine Wave 2] Best-effort clean 1X2 raw odds straight off the
+ *  fixture's raw allMarkets catalogue. The plain-1X2 entry is routed to an
+ *  explicit skip further down this same pipeline (feedDictionary.ts's
+ *  "plain-1x2" reason, §3.4 insurance mandate) so it never reaches the
+ *  per-outcome loop below — this reads it directly off the raw entry instead.
+ *  `input.devigged1x2` (goalsV3/matchShape.ts) only exposes de-vigged
+ *  PROBABILITIES (pHome/pDraw/pAway), never raw odds, so it cannot serve as a
+ *  fallback odds source here — there is nothing to fall back to. Returns {}
+ *  (every field undefined) unless all three sides parse as clean odds — a
+ *  partial read is worse than none for the detector's anomaly signal, which
+ *  keys directly off the favourite's raw price. */
+function extract1x2Odds(allMarkets: AllMarketEntry[]): {
+  homeOdds?: number;
+  drawOdds?: number;
+  awayOdds?: number;
+} {
+  for (const entry of allMarkets) {
+    if (familyOf(entry.id) !== "match_result") continue;
+    let homeOdds: number | undefined;
+    let drawOdds: number | undefined;
+    let awayOdds: number | undefined;
+    for (const outcome of entry.outcomes) {
+      const desc = (outcome.desc ?? "").toLowerCase().trim();
+      const odds = parseOdds(outcome.odds);
+      if (odds == null) continue;
+      if (desc === "home" || desc === "1") homeOdds = odds;
+      else if (desc === "draw" || desc === "x") drawOdds = odds;
+      else if (desc === "away" || desc === "2") awayOdds = odds;
+    }
+    if (homeOdds != null && drawOdds != null && awayOdds != null) {
+      return { homeOdds, drawOdds, awayOdds };
+    }
+  }
+  return {};
+}
+
+/** [patterns-engine Wave 2] Build the fixture-level PatternInput once (see the
+ *  detectPatterns call site in analyzeFixtureMarketsV3 below) from the same
+ *  V3AllMarketsInput fields the rest of this pipeline already reads. Returns
+ *  null (no pattern signal computed) when the four REQUIRED venue-split goal
+ *  rates aren't present as real numbers — patterns.ts documents everything
+ *  else as optional/degrading, but not these four; a 0-fallback here would
+ *  fabricate a false superiority/mismatch signal rather than skip cleanly.
+ *
+ *  NOTE — V3LambdaInput has no dedicated "true venue split" vs "pooled
+ *  team-overall" pair of fields; homeScoredPer90/homeConcededPer90/
+ *  awayScoredPer90/awayConcededPer90 (§3.1's own λ formula input) are the
+ *  closest genuine fields and serve double duty as either, distinguished only
+ *  by the separate input.venueSplitUsed boolean (not carried per-field). Used
+ *  as-is regardless of that flag: when it's pooled data rather than a true
+ *  venue split, the resulting pattern is proportionally less precise, which
+ *  is exactly what the detector's own sample-size shrink already discounts
+ *  for (patterns.ts's sampleShrink). */
+function buildFixturePatternInput(input: V3AllMarketsInput): PatternInput | null {
+  const li = input.lambdaInput;
+  if (
+    !isFiniteNum(li.homeScoredPer90) ||
+    !isFiniteNum(li.homeConcededPer90) ||
+    !isFiniteNum(li.awayScoredPer90) ||
+    !isFiniteNum(li.awayConcededPer90)
+  ) {
+    return null;
+  }
+  const odds = extract1x2Odds(input.allMarkets);
+  return {
+    homeScoredHome: li.homeScoredPer90,
+    homeConcededHome: li.homeConcededPer90,
+    awayScoredAway: li.awayScoredPer90,
+    awayConcededAway: li.awayConcededPer90,
+    homeXg: li.homeXg?.xgf ?? undefined,
+    awayXg: li.awayXg?.xgf ?? undefined,
+    homeXga: li.homeXg?.xga ?? undefined,
+    awayXga: li.awayXg?.xga ?? undefined,
+    ou25PctH: input.empirical?.ou25PctH,
+    ou25PctA: input.empirical?.ou25PctA,
+    bttsPctH: input.empirical?.bttsPctH,
+    bttsPctA: input.empirical?.bttsPctA,
+    csPctH: input.empirical?.csPctH,
+    csPctA: input.empirical?.csPctA,
+    ftsPctH: input.empirical?.ftsPctH,
+    ftsPctA: input.empirical?.ftsPctA,
+    cornersForH: input.cornersForH,
+    cornersForA: input.cornersForA,
+    cornersAgainstH: input.cornersAgainstH,
+    cornersAgainstA: input.cornersAgainstA,
+    cardsAvgH: input.cardsAvgH,
+    cardsAvgA: input.cardsAvgA,
+    leagueAvgGoals: input.lakeBaselines?.[input.league],
+    nHome: input.empirical?.nH,
+    nAway: input.empirical?.nA,
+    homeOdds: odds.homeOdds,
+    drawOdds: odds.drawOdds,
+    awayOdds: odds.awayOdds,
+    // streak/last5/h2h/restDaysMin/mappedFamiliesWithStats intentionally
+    // absent — not yet threaded from V3AllMarketsInput (a later wave per this
+    // wave's own task brief); detectPatterns degrades gracefully without them.
+  };
+}
+
+/** [patterns-engine Wave 2] Conservative family-aware match between a priced
+ *  outcome's desc and the detector's recommendedSide string. A false positive
+ *  here relaxes the class-edge gate for the WRONG pick (real-money gate
+ *  math), so every branch prefers returning false over guessing:
+ *   - exact (case-insensitive) match always wins first.
+ *   - btts: exact "yes"/"no" only (dirOfDesc/sideOfDesc don't parse this
+ *     shape) — the exact check above already covers it.
+ *   - asian_handicap/dnb/handicap: side-only, via descParse.ts's sideOfDesc
+ *     (the same classifier sanity.ts's own result-skew check uses).
+ *     KNOWN, ACCEPTED LIMITATION (adversarial review, 2026-07-16): patterns.ts
+ *     never recommends a specific handicap LINE (detectHeavySuperior only
+ *     names a side — "Home"/"Away" — deliberately, since line selection is the
+ *     wave-3 AH-pivot's job, not this detector's), so this matches EVERY line
+ *     on the recommended side (Home -3.5 and Home +0.5 both qualify). Bounded
+ *     by the unrelaxed EV%/max-odds/value-floor bars on every line regardless
+ *     — a wrong-line match still can't pass without genuine EV — but it does
+ *     mean one green-flag broadens the relaxation across the whole side's AH
+ *     book. Revisit once wave-3 lands a real recommended line to match against.
+ *   - goals_ou/team_total: direction-only, via dirOfDesc. The detector only
+ *     ever emits a fixed "Over 2.5" for goals_ou today (patterns.ts's
+ *     detectGoalMachine), so this only widens beyond the exact line if a
+ *     future pattern kind varies it — direction is still the correct axis to
+ *     match on for a goal-trend recommendation.
+ *   - corners: same side (when the recommendation names one) AND the
+ *     recommended numeric line must match in desc EXACTLY (descParse.ts's
+ *     anchored lineOfDesc, not a substring check).
+ *   - anything else: exact match only (already checked above) — no guessing
+ *     for a family none of the four current pattern kinds ever recommend. */
+function sideMatches(desc: string, recommendedSide: string, family: MarketFamily): boolean {
+  const rs = recommendedSide.trim();
+  const rsLower = rs.toLowerCase();
+  const descLower = desc.trim().toLowerCase();
+  if (descLower === rsLower) return true;
+
+  if (family === "asian_handicap" || family === "dnb" || family === "handicap") {
+    const rsSide = sideOfDesc(rs);
+    return rsSide !== null && sideOfDesc(desc) === rsSide;
+  }
+  if (family === "goals_ou" || family === "team_total") {
+    const rsDir = dirOfDesc(rs);
+    return rsDir !== null && dirOfDesc(desc) === rsDir;
+  }
+  if (family === "corners") {
+    const rsSide = sideOfDesc(rs); // null for a total-corners recommendation
+    if (rsSide !== null && sideOfDesc(desc) !== rsSide) return false;
+    // Anchored line match (descParse.ts's lineOfDesc) — NOT a substring check:
+    // `desc.includes(lineMatch[1])` would spuriously match "Over 8.5" against
+    // "Over 18.5"/"Over 28.5" (adversarial review finding, 2026-07-16).
+    const rsLine = lineOfDesc(rs);
+    const descLine = lineOfDesc(desc);
+    if (rsLine === null || descLine === null) return false;
+    return descLine === rsLine && dirOfDesc(desc) === dirOfDesc(rs);
+  }
+  return false;
+}
+
 export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsResult | null {
   const lambdas = computeV3Lambdas(input.lambdaInput, {
     xgBlend: input.xgBlend,
@@ -354,6 +525,17 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
     totalsEmpirical: input.totalsEmpirical !== false,
   };
 
+  // [patterns-engine Wave 2] Compute the fixture's pattern report ONCE, before
+  // the per-outcome loop — only when the flag is active. "off"/undefined
+  // skips the detector entirely (patternReport stays null), so every
+  // downstream read below (patternBacked/patternMode/rankingScore) is
+  // byte-identical to pre-Wave-2 output on the flag-off path.
+  let patternReport: PatternReport | null = null;
+  if (input.v3Patterns && input.v3Patterns !== "off") {
+    const patternInput = buildFixturePatternInput(input);
+    if (patternInput) patternReport = detectPatterns(patternInput);
+  }
+
   const coverage = routeCoverage(input.allMarkets);
   const assessments: V3MarketOutcomeAssessment[] = [];
   const capped: V3MarketOutcomeAssessment[] = [];
@@ -382,6 +564,19 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         shapeDisagreement: price.resultClass === true && split.shapeDisagreement,
       };
 
+      // [patterns-engine Wave 2] This outcome is pattern-backed when the
+      // fixture detector fired a strong-enough pattern (>= PATTERN_MIN_STRENGTH)
+      // whose recommended family+side matches THIS outcome (sideMatches is
+      // conservative by design — see its own header). patternReport is always
+      // null on the flag-off path, so patternBacked is always false there.
+      const patternBacked =
+        patternReport != null &&
+        patternReport.topPattern != null &&
+        patternReport.strength >= PATTERN_MIN_STRENGTH &&
+        patternReport.recommendedFamily === route.family &&
+        patternReport.recommendedSide != null &&
+        sideMatches(desc, patternReport.recommendedSide, route.family);
+
       const gate = gateAllMarkets(price.p, q, odds, marketClass, flags, {
         edgeCap: input.edgeCap,
         noiseGate: input.noiseGate,
@@ -397,6 +592,9 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         hasRealXg: input.hasRealXg,
         blendPricing: input.blendPricing,
         xCarveout: input.xCarveout,
+        patternMode: input.v3Patterns,
+        patternBacked,
+        patternStrength: patternReport?.strength ?? 0,
       });
 
       // [Wave 4-accuracy] When blendPricing is on, gate.pBlend/rawEdgeBlend/
@@ -449,6 +647,16 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
       if (gate.outcome !== "done" || !gate.confidence) return;
 
       const label = FAMILY_LABEL[route.family];
+      // [patterns-engine Wave 2] Ranking boost — "on" mode only, and only for
+      // an admitted (outcome "done", already guaranteed by the guard above)
+      // pattern-backed pick. Scaled by detector strength so a marginal
+      // pattern nudges the rank less than a strong one. Off/shadow modes (or
+      // a non-pattern-backed pick) leave rankingScore exactly adjustedEdgeValue
+      // — byte-identical to pre-Wave-2 output.
+      const rankingScore =
+        patternBacked && input.v3Patterns === "on"
+          ? adjustedEdgeValue + PATTERN_RANK_BONUS * (patternReport?.strength ?? 0)
+          : adjustedEdgeValue;
       evMarkets.push({
         cat: label,
         label: desc,
@@ -463,7 +671,7 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         odds,
         stake: 0,
         stakeAmt: 0,
-        rankingScore: adjustedEdgeValue,
+        rankingScore,
         varianceMod: 1,
       });
     });

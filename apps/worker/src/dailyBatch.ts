@@ -267,7 +267,13 @@ export async function runDailyBatch(
   // ── PR-5b: v3 slate outputs A–D + sanity (fail-open to the legacy trim) ──
   if (config.enableMarketsV3 === "on" && config.marketsV3Outputs !== false) {
     const successJobs = batch.jobs.filter((j): j is FixtureJobSuccess => j.status === "ok");
-    const v3Outputs = buildMarketsV3SlateOutputs(successJobs);
+    // [patterns-engine Wave 2] Only v3Patterns "on" fills the live pool from
+    // fallback (non-gate-surviving +EV) candidates — "shadow"/"off" leave the
+    // pool exactly as today; shadow's fallback still rides in v3BestFallback
+    // for ledger review, it just never reaches this live Output-A pool.
+    const v3Outputs = buildMarketsV3SlateOutputs(successJobs, {
+      fillToTarget: config.v3Patterns === "on",
+    });
     process.stdout.write(
       `[markets-v3] ALL-MARKETS OUTPUT A:${v3Outputs.outputA.length} ` +
         `B:${v3Outputs.outputB.miniAcca.length}legs C:${v3Outputs.outputC.length} ` +

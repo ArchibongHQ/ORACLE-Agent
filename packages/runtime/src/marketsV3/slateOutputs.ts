@@ -123,12 +123,28 @@ export function formatMiniAccaAppendix(appendix: MiniAccaAppendix | null): strin
   );
 }
 
+export interface MarketsV3SlateOutputsOptions {
+  /** [patterns-engine Wave 2] Fixes the 2026-07-15 0/4394-gate-passed dryness:
+   *  when true, fixtures with no v3Best but a v3BestFallback (raw +EV
+   *  candidate that didn't clear the gate) are appended AFTER every tier-1
+   *  gate survivor so the live Output-A pool can fill toward OUTPUT_A_MAX
+   *  instead of staying empty on a gate-dry slate. A fallback can never
+   *  outrank a genuine survivor — tier 2 is only ever sorted among itself,
+   *  then concatenated behind tier 1. Defaults to false: byte-identical to
+   *  the pre-Wave-2 pool (v3BestFallback is never even read). */
+  fillToTarget?: boolean;
+}
+
 /** Build the day's slate-level v3 outputs from every successfully-analyzed
  *  fixture. Fixtures with no v3Best (v3 didn't run for them, or nothing
  *  survived) contribute best: null — buildGateSurvivingPool drops them, a
- *  valid, common outcome (never an error). */
-export function buildMarketsV3SlateOutputs(jobs: FixtureJobSuccess[]): MarketsV3SlateOutputs {
-  const fixtures: V3SlateFixture[] = jobs.map((j) => ({
+ *  valid, common outcome (never an error) — unless `opts.fillToTarget` pulls
+ *  them back in via their v3BestFallback (see MarketsV3SlateOutputsOptions). */
+export function buildMarketsV3SlateOutputs(
+  jobs: FixtureJobSuccess[],
+  opts?: MarketsV3SlateOutputsOptions
+): MarketsV3SlateOutputs {
+  const survivorFixtures: V3SlateFixture[] = jobs.map((j) => ({
     fixtureId: j.fixtureId,
     home: j.home,
     away: j.away,
@@ -136,7 +152,27 @@ export function buildMarketsV3SlateOutputs(jobs: FixtureJobSuccess[]): MarketsV3
     kickoff: j.kickoff,
     best: j.v3Best ?? null,
   }));
-  const pool = buildGateSurvivingPool(fixtures);
+  const tier1 = buildGateSurvivingPool(survivorFixtures);
+
+  let pool = tier1;
+  if (opts?.fillToTarget) {
+    const fallbackFixtures: V3SlateFixture[] = jobs
+      .filter((j) => j.v3Best == null && j.v3BestFallback != null)
+      .map((j) => ({
+        fixtureId: j.fixtureId,
+        home: j.home,
+        away: j.away,
+        league: j.league,
+        kickoff: j.kickoff,
+        best: j.v3BestFallback ?? null,
+      }));
+    // Sorted among themselves via the same builder, then appended AFTER tier
+    // 1 — string concat order, never re-sorted together, so a fallback row
+    // can never rank above a genuine gate survivor.
+    const tier2 = buildGateSurvivingPool(fallbackFixtures);
+    pool = [...tier1, ...tier2];
+  }
+
   const outputA = buildOutputA(pool);
   const outputB = buildOutputB(outputA);
   const outputC = buildOutputC(pool);

@@ -182,6 +182,49 @@ export const CLASS_GATE_BLEND_HEIGHTENED: Record<
 export const X_CARVEOUT_PENALTY_RESCALE = 1 / 3;
 export const X_CARVEOUT_MIN_COMPLETENESS = 0.8;
 
+/** [patterns-engine Wave 2, owner decision 2026-07-16] Pattern-backed
+ *  class-edge relaxation — the SECOND deliberate gate RELAXATION in this file
+ *  (after the X-carveout). When a fixture's deterministic green-flag detector
+ *  (marketsV3/patterns.ts) fires a strong pattern whose recommended
+ *  family+side matches this outcome, the CLASS_GATE_BLEND class_edge bar
+ *  (minAdjEdgeBlend) is lowered by up to PATTERN_EDGE_RELAX_MAX, scaled by the
+ *  detector's 0-1 strength. This is the owner-locked "pattern-primary + value
+ *  floor" fix for the 0/4394 class_edge dryness (2026-07-15 evidence).
+ *
+ *  HARD INVARIANTS — the relaxation touches ONLY minAdjEdgeBlend. Every other
+ *  bar stays at full strength: the absolute/relative caps + the noise gate
+ *  (raw-edge, evaluated FIRST above the blend branch — a pattern can never
+ *  rescue a capped/noise candidate), minBlendEvPct, maxOdds, and
+ *  blendEV >= evFloor. On TOP of those, the pattern path adds an explicit
+ *  VALUE FLOOR the standard blend gate does not itself require: the raw true EV
+ *  `ev = modelP·odds − 1` must be strictly positive. Patterns relax the class
+ *  bar; they NEVER admit a −EV pick. */
+export const PATTERN_EDGE_RELAX_MAX = 0.5;
+/** Minimum detector strength (0-1) that may relax the bar — mirrors
+ *  patterns.ts's confMedium (below it the detector reports no usable
+ *  confidence, so there is nothing to relax on). */
+export const PATTERN_MIN_STRENGTH = 0.3;
+/** Additive rankingScore bonus for an admitted pattern-backed pick, scaled by
+ *  strength (applied at the analyzeFixtureMarkets call site, not here — it sets
+ *  rankingScore). Sized to lift a pattern pick above an equivalent non-pattern
+ *  pick without swamping genuinely large-edge picks (comparable to one class
+ *  bar). */
+export const PATTERN_RANK_BONUS = 0.02;
+
+const clampPattern01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+/** Confidence for an admitted pattern-backed pick: a monotonic boost off the
+ *  detector strength that never lowers the standard blend band and never falls
+ *  below "medium" (a relaxed-only pass sits right at the relaxed floor, so its
+ *  standard band would be null — floor it to medium, honest but not banded up). */
+function patternConfidence(strength: number, standard: V3Confidence | null): V3Confidence {
+  const fromStrength: V3Confidence =
+    strength >= 0.7 ? "very_high" : strength >= 0.5 ? "high" : "medium";
+  const rank = (c: V3Confidence | null): number =>
+    c === "very_high" ? 3 : c === "high" ? 2 : c === "medium" ? 1 : 0;
+  return rank(fromStrength) >= rank(standard) ? fromStrength : (standard as V3Confidence);
+}
+
 export type V3Confidence = "very_high" | "high" | "medium";
 export type V3AllGateOutcome = "done" | "capped" | "noise" | "below_gate";
 
@@ -261,6 +304,25 @@ export interface V3AllMarketsAssessment {
    *  in as the primary adjustedEdge); for "shadow_pass" it's the
    *  counterfactual for ledger analysis. */
   adjustedEdgeCarveout?: number;
+  /** [patterns-engine Wave 2] True when this outcome's family+side matches the
+   *  fixture detector's top green-flag pattern (set by the analyzeFixtureMarkets
+   *  caller). Echoed onto every assessment once patternMode !== "off" for
+   *  reporting/ledger, independent of whether the relaxation fired. */
+  patternBacked?: boolean;
+  /** [patterns-engine Wave 2] The detector's 0-1 fixture pattern strength —
+   *  present whenever patternBacked is set. */
+  patternStrength?: number;
+  /** [patterns-engine Wave 2] Set ONLY when the pattern class-edge relaxation
+   *  was the deciding factor (candidate failed the standard CLASS_GATE_BLEND
+   *  class_edge bar but clears the strength-scaled relaxed bar with every other
+   *  bar + the ev>0 value floor intact). "passed" = flag "on", admitted
+   *  (outcome "done"); "shadow_pass" = flag "shadow", would-admit but outcome
+   *  stays "below_gate" (pool/ledger evidence only). Undefined otherwise. */
+  patternRelaxed?: "passed" | "shadow_pass";
+  /** [patterns-engine Wave 2] The strength-scaled relaxed class_edge bar the
+   *  relaxation evaluated (≤ blendGate.minAdjEdgeBlend) — present exactly when
+   *  patternRelaxed is set. */
+  patternRelaxedBar?: number;
 }
 
 /** [refactor P0-2] Pure blend math, factored out so it's independently
@@ -376,6 +438,21 @@ export function gateAllMarkets(
      *  standard CLASS_GATE_BLEND.X bar. "off" (default) ⇒ byte-identical to
      *  pre-carveout gating. */
     xCarveout?: "off" | "shadow" | "on";
+    /** [patterns-engine Wave 2] OracleConfig.v3Patterns — pattern-backed
+     *  class-edge relaxation mode. "off" (default) ⇒ byte-identical to
+     *  pre-Wave-2 gating. "shadow" tags a would-pass candidate
+     *  (patternRelaxed:"shadow_pass") without changing its outcome. "on"
+     *  admits a pattern-backed candidate that clears the strength-scaled
+     *  relaxed class_edge bar (+ every other bar + the ev>0 value floor). Only
+     *  consulted in the blendPricing branch for patternBacked candidates. */
+    patternMode?: "off" | "shadow" | "on";
+    /** [patterns-engine Wave 2] True when this outcome's family+side matches
+     *  the fixture detector's top-pattern recommendation (marketsV3/patterns.ts).
+     *  The caller decides the match; this gate only trusts the flag. */
+    patternBacked?: boolean;
+    /** [patterns-engine Wave 2] The detector's 0-1 fixture pattern strength.
+     *  Below PATTERN_MIN_STRENGTH the relaxation never fires. */
+    patternStrength?: number;
   } = {}
 ): V3AllMarketsAssessment {
   const edgeCap = opts.edgeCap ?? V3_EDGE_CAP_DEFAULT;
@@ -385,6 +462,9 @@ export function gateAllMarkets(
   const blendMode = opts.blendMode ?? "off";
   const blendPricing = opts.blendPricing ?? false;
   const xCarveout = opts.xCarveout ?? "off";
+  const patternMode = opts.patternMode ?? "off";
+  const patternBacked = opts.patternBacked ?? false;
+  const patternStrength = opts.patternStrength ?? 0;
 
   const rawEdge = modelP - q.q;
   const penaltyPts = allMarketsPenaltyPts(flags);
@@ -429,6 +509,10 @@ export function gateAllMarkets(
           blendEV,
         }
       : {}),
+    // [patterns-engine Wave 2] Echo the pattern signal onto every assessment
+    // once the flag is active (shadow or on) so slate reports/the ledger can
+    // see pattern coverage even on candidates the relaxation didn't decide.
+    ...(patternMode !== "off" && patternBacked ? { patternBacked: true, patternStrength } : {}),
   };
 
   // v4 heightened: X excluded entirely — covers both the legacy raw path AND
@@ -501,6 +585,39 @@ export function gateAllMarkets(
     const passes = classOk && blendGateOk;
 
     if (!passes) {
+      // [patterns-engine Wave 2] Pattern-backed class-edge relaxation (ALL
+      // classes) — see PATTERN_EDGE_RELAX_MAX's header. Reached only AFTER the
+      // raw caps + noise gate above (untouched) and the standard blend gate,
+      // so it can never rescue a capped/noise candidate. Relaxes ONLY
+      // minAdjEdgeBlend, scaled by strength; every OTHER bar stays at full
+      // strength AND the raw true EV (ev = modelP·odds − 1) must be strictly
+      // positive — the owner's explicit value floor.
+      const patternEligible =
+        patternMode !== "off" && patternBacked && patternStrength >= PATTERN_MIN_STRENGTH;
+      const patternRelaxedBar = patternEligible
+        ? blendGate.minAdjEdgeBlend * (1 - PATTERN_EDGE_RELAX_MAX * clampPattern01(patternStrength))
+        : blendGate.minAdjEdgeBlend;
+      const patternClassOk =
+        patternEligible &&
+        adjustedEdgeBlend! >= patternRelaxedBar &&
+        (blendGate.minBlendEvPct === null || blendEV! >= blendGate.minBlendEvPct) &&
+        (blendGate.maxOdds === null || odds <= blendGate.maxOdds) &&
+        blendEV! >= evFloor &&
+        ev > 0 && // HARD value floor: raw true EV at the offered price
+        blendGateOk;
+      if (patternClassOk && patternMode === "on") {
+        return {
+          ...base,
+          outcome: "done",
+          confidence: patternConfidence(
+            patternStrength,
+            v3ConfidenceBlend(cls, adjustedEdgeBlend!, blendEV!, blendGate)
+          ),
+          patternRelaxed: "passed",
+          patternRelaxedBar,
+        };
+      }
+
       // [X-carveout] High-conviction Class X exception — see
       // X_CARVEOUT_PENALTY_RESCALE's header for the derivation. Reached only
       // when !heightened (the heightened X-exclusion returned above), AFTER
@@ -551,13 +668,24 @@ export function gateAllMarkets(
         // shadow_pass also carries the counterfactual edge so ledger analysis
         // can see what an admitted pick WOULD have staked/ranked on.
         ...(carveoutQualifies ? { xCarveout: "shadow_pass" as const, adjustedEdgeCarveout } : {}),
+        // [patterns-engine Wave 2] shadow mode: would-admit under the relaxed
+        // bar but the flag isn't "on", so the outcome stays below_gate; the
+        // tag + bar are pool/ledger evidence only.
+        ...(patternClassOk ? { patternRelaxed: "shadow_pass" as const, patternRelaxedBar } : {}),
       };
     }
 
+    // [patterns-engine Wave 2] A standard blend pass that is ALSO pattern-backed
+    // gets the same monotonic confidence boost (never lowers the standard band).
+    // "on" only — shadow/off leave the standard band untouched.
+    const stdBlendConf = v3ConfidenceBlend(cls, adjustedEdgeBlend!, blendEV!, blendGate);
     return {
       ...base,
       outcome: "done",
-      confidence: v3ConfidenceBlend(cls, adjustedEdgeBlend!, blendEV!, blendGate),
+      confidence:
+        patternBacked && patternMode === "on"
+          ? patternConfidence(patternStrength, stdBlendConf)
+          : stdBlendConf,
     };
   }
 

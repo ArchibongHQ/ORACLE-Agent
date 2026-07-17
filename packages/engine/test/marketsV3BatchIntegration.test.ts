@@ -789,6 +789,218 @@ describe("batch/index.ts — v3Best/v3AssessmentStats projection (PR-5b)", () =>
   });
 });
 
+describe("batch/index.ts — v3BestFallback fill-to-39 projection (patterns-engine Wave 2)", () => {
+  // Gate-failed on the class-edge bar specifically (outcome "below_gate",
+  // gateReason "class_edge") but +EV at the true model price — the exact
+  // shape v3BestFallback is meant to surface for the slate pool. The fallback
+  // filter (batch/index.ts) requires BOTH outcome==="below_gate" AND
+  // gateReason==="class_edge" — see the HARD INVARIANT comment there
+  // (adversarial review, 2026-07-16): outcome/gateReason are overridable here
+  // specifically so the tests below can exercise "capped"/"noise"/other
+  // below_gate reasons and confirm they're excluded.
+  function makeGateFailedAssessment(overrides: {
+    marketName: string;
+    desc: string;
+    family: string;
+    ev: number;
+    adjustedEdge: number;
+    outcome?: string;
+    gateReason?: string;
+  }) {
+    return {
+      family: overrides.family,
+      marketId: "m1",
+      marketName: overrides.marketName,
+      outcomeId: "o1",
+      desc: overrides.desc,
+      odds: 2.0,
+      mp: 0.6,
+      q: 0.5,
+      devigged: true,
+      rawEdge: 0.06,
+      penaltyPts: 0.01,
+      adjustedEdge: overrides.adjustedEdge,
+      adjEvPct: 0.1,
+      ev: overrides.ev,
+      cls: "M",
+      outcome: overrides.outcome ?? "below_gate",
+      gateReason: overrides.gateReason ?? "class_edge",
+      confidence: null,
+    };
+  }
+
+  it("derives v3BestFallback from the best +EV gate-failed assessment when v3Patterns is 'on'", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const failedButPositive = makeGateFailedAssessment({
+      marketName: "Asian Handicap",
+      desc: "Home -1",
+      family: "asian_handicap",
+      ev: 0.05,
+      adjustedEdge: 0.02,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [failedButPositive],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Best).toBeUndefined(); // nothing cleared the gate — fails open as before
+    expect(success.v3BestFallback?.desc).toBe("Home -1");
+    expect(success.v3BestFallback?.marketName).toBe("Asian Handicap");
+    expect(success.v3BestFallback?.adjustedEdge).toBeCloseTo(0.02);
+  });
+
+  it("leaves v3BestFallback undefined when v3Patterns is off/absent, even with a +EV gate-failed candidate present", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const failedButPositive = makeGateFailedAssessment({
+      marketName: "Asian Handicap",
+      desc: "Home -1",
+      family: "asian_handicap",
+      ev: 0.05,
+      adjustedEdge: 0.02,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [failedButPositive],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    // v3Patterns absent from config — byte-identical to pre-Wave-2 behavior.
+    const resultAbsent = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+    expect((resultAbsent.jobs[0] as FixtureJobSuccess).v3BestFallback).toBeUndefined();
+
+    const resultOff = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "off" },
+    });
+    expect((resultOff.jobs[0] as FixtureJobSuccess).v3BestFallback).toBeUndefined();
+  });
+
+  it("HARD INVARIANT: never derives v3BestFallback from a 'capped' or 'noise' outcome, even when +EV and higher-edge than a genuine class_edge candidate (adversarial review finding, 2026-07-16 — a capped/noise candidate's inflated edge must never re-enter the actionable pool via the fallback)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    // Mirrors the counter-example from the review: a capped "model too hot"
+    // longshot has the LARGEST adjustedEdge of the three, so a naive
+    // "outcome !== done" / "highest edge wins" filter would pick this one.
+    const cappedFakeLongshot = makeGateFailedAssessment({
+      marketName: "Match Result",
+      desc: "Away",
+      family: "match_result",
+      ev: 0.86,
+      adjustedEdge: 0.2,
+      outcome: "capped",
+      gateReason: "capped_absolute",
+    });
+    const noiseCandidate = makeGateFailedAssessment({
+      marketName: "Over/Under",
+      desc: "Over 2.5",
+      family: "goals_ou",
+      ev: 0.03,
+      adjustedEdge: 0.005,
+      outcome: "noise",
+      gateReason: "noise",
+    });
+    const genuineClassEdge = makeGateFailedAssessment({
+      marketName: "Asian Handicap",
+      desc: "Home -1",
+      family: "asian_handicap",
+      ev: 0.05,
+      adjustedEdge: 0.02,
+      outcome: "below_gate",
+      gateReason: "class_edge",
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 3, routed: 3, byEngine: {}, skipped: {} },
+      assessments: [cappedFakeLongshot, noiseCandidate, genuineClassEdge],
+      capped: [cappedFakeLongshot],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    // The genuine class_edge candidate wins, DESPITE having the smallest edge
+    // of the three — capped/noise are excluded outright, not merely outranked.
+    expect(success.v3BestFallback?.desc).toBe("Home -1");
+    expect(success.v3BestFallback?.marketName).toBe("Asian Handicap");
+  });
+
+  it("excludes a below_gate candidate whose gateReason is NOT class_edge (e.g. max_odds/ev_floor) — the fallback only surfaces what the class-edge relaxation itself would rescue", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const wrongReason = makeGateFailedAssessment({
+      marketName: "Exotics",
+      desc: "Correct Score 3-1",
+      family: "exotics",
+      ev: 0.3,
+      adjustedEdge: 0.1,
+      outcome: "below_gate",
+      gateReason: "max_odds",
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [wrongReason],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "on" },
+    });
+
+    expect((result.jobs[0] as FixtureJobSuccess).v3BestFallback).toBeUndefined();
+  });
+});
+
 describe("batch/index.ts — R10 goals cross-check (PR-6)", () => {
   // biome-ignore lint/suspicious/noExplicitAny: test-only synthetic assessment
   function goalsAssessment(over: Record<string, any> = {}): any {
