@@ -70,36 +70,6 @@ Before making ANY plan or decision, carry out proper real-time research via web 
 
 ---
 
-## Verification Loop (Mandatory)
-
-After every code change:
-
-1. Run `pnpm turbo run typecheck test`
-2. If anything fails, fix it before claiming success.
-3. If output doesn't match expectations, explain the discrepancy — do not paper over it.
-4. For any diff >50 lines, run `/gstack-review` before claiming success.
-5. Use `@.claude/agents/verifier.md` for an independent review pass on non-trivial changes.
-
----
-
-## gstack Workflow Integration
-
-The full gstack skill suite (garrytan/gstack, MIT) is installed globally at `~/.claude/skills/gstack/`. Available in every Claude Code session across all projects.
-
-| Stage | Command |
-|---|---|
-| New feature scoping | `/gstack-office-hours` |
-| Architecture decisions | `/gstack-plan-eng-review` |
-| Debugging failures | `/gstack-investigate` |
-| Pre-PR review (>50 lines) | `/gstack-review` |
-| Pre-release security | `/gstack-cso` |
-| Shipping a PR | `/gstack-ship` |
-| Weekly sprint review | `/gstack-retro` |
-| Docs sync post-ship | `/gstack-document-release` |
-| Update gstack | `bash ~/.claude/skills/gstack/register-skills.sh` (after git pull in gstack dir) |
-
----
-
 ## File Structure
 
 ```
@@ -115,6 +85,8 @@ archive/           # Pre-refactor monolith (ORACLE_v2026_8_0.jsx etc.) — prove
 credentials.json   # Google OAuth (gitignored)
 token.json         # Google OAuth (gitignored)
 ```
+
+Each `apps/*` and `packages/*` directory also has its own `CLAUDE.md` with that module's purpose, entry points, key exports, and gotchas — loaded automatically when Claude edits files there.
 
 **Optional `.env` keys for push integrations (`@oracle/notify`):**
 Telegram: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Slack: `SLACK_WEBHOOK_URL` | Email: `MAIL_API_KEY` + `MAIL_FROM` + `MAIL_TO` | OpenClaw: `OPENCLAW_GATEWAY_URL` + `OPENCLAW_TOKEN` (local OpenClaw agent gateway — see workflows/integrations.md). Missing/partial env = silently skipped. Web server: `PORT` (default 8787).
@@ -149,74 +121,13 @@ Telegram: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | Slack: `SLACK_WEBHOOK_URL`
 
 ---
 
-## Code Development Workflow
+## See also (modular rules in `.claude/rules/`)
 
-### 1. Branching & Git Style
-
-- **Branch Naming:** `feature/short-description`, `bugfix/issue-id`, or `chore/task-name`.
-- **Commit Messages:** Follow Conventional Commits (e.g., `feat(cli): add export command`, `fix(worker): handle timeout error`).
-
-### 2. Code Style & Guidelines
-
-TypeScript conventions load automatically when working with `.ts` files — see `.claude/rules/typescript.md`.
-
----
-
-## Code Review (PR) Guidelines
-
-When preparing a Pull Request or reviewing code, ensure the following criteria are met:
-
-- **Self-Review Checklist:**
-  1. Does the code pass the complete local pipeline (`pnpm turbo run typecheck test build`)?
-  2. Are there any console logs left behind? (Remove or convert to system logs).
-  3. Are new feature additions covered by unit or integration tests?
-  4. If this PR touches `packages/engine/src/{math,goalsV3,marketsV3,safety,calibration,ratings,rag,swarm,gbm}/**`, update `.claude/skills/oracle-engine/SKILL.md`'s module-index table and/or add a changelog row there.
-- **PR Description Template:** Always provide a brief summary of *What* changed, *Why* it changed, and a *How to Test* section.
-
----
-
-## Deployment Stages
-
-### 1. Staging / Verification
-
-- Merges into the `main` branch automatically trigger the CI/CD pipeline.
-- Ensure all automated integration tests pass in the staging environment before pushing to production.
-
-### 2. Production Release
-
-- Production deployments are triggered via Git Tags (e.g., `v1.2.3`).
-- **Post-Deployment Verification:** Check the `@oracle/worker` logs immediately after deployment to ensure cron loops initialize without runtime exceptions.
-
-## Skill routing
-
-When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
-
-Key routing rules:
-- Product ideas/brainstorming → invoke /office-hours
-- Strategy/scope → invoke /plan-ceo-review
-- Architecture → invoke /plan-eng-review
-- Design system/plan review → invoke /design-consultation or /plan-design-review
-- Full review pipeline → invoke /autoplan
-- Bugs/errors → invoke /investigate
-- QA/testing site behavior → invoke /qa or /qa-only
-- Code review/diff check → invoke /review
-- Visual polish → invoke /design-review
-- Ship/deploy/PR → invoke /ship or /land-and-deploy
-- Save progress → invoke /context-save
-- Resume context → invoke /context-restore
-- Author a backlog-ready spec/issue → invoke /spec
-- Prediction math / engine internals (`packages/engine/src/{math,goalsV3,marketsV3,safety,calibration,ratings,rag,swarm,gbm}/**`) → invoke `oracle-engine` skill first
-
-## GBrain Configuration (configured by /setup-gbrain)
-
-- Mode: local-stdio
-- Engine: pglite
-- Config file: ~/.gbrain/config.json (mode 0600)
-- Setup date: 2026-06-14
-- MCP registered: yes (user scope, gbrain serve)
-- Artifacts sync: full → github.com/ArchibongHQ/gstack-artifacts-HP-PC
-- Current repo policy: read-write
-- Transcript ingest: incremental
+- [`git-workflow.md`](.claude/rules/git-workflow.md) — branching, commit style, code style, PR review checklist, deployment stages
+- [`verification.md`](.claude/rules/verification.md) — mandatory post-change verification loop
+- [`gstack-integration.md`](.claude/rules/gstack-integration.md) — gstack stage-to-command table + skill routing rules
+- [`gbrain.md`](.claude/rules/gbrain.md) — GBrain static configuration (search guidance stays below, auto-synced)
+- Machine-specific notes (Windows paths, local services, known local quirks) live in `CLAUDE.local.md` (gitignored, not checked in)
 
 ## GBrain Search Guidance (configured by /sync-gbrain)
 
