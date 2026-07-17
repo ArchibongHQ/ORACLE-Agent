@@ -1,0 +1,22 @@
+{
+  "home": "Feyenoord",
+  "away": "Charleroi",
+  "league": "Club Friendly",
+  "kickoff": "2026-07-17T12:30:00+02:00",
+  "injuries": [
+    "Jordan Bos (Feyenoord) — injury sustained on 2026 World Cup duty, unavailable"
+  ],
+  "suspensions": [],
+  "lineupHints": [
+    "Feyenoord expected to rotate heavily given squad depth; hosts favored per pre-match previews"
+  ],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://dailysports.net/predictions/club-friendly-match-feyenoord-vs-charleroi-july-17/",
+    "https://en.wikipedia.org/wiki/2026%E2%80%9327_Feyenoord_season"
+  ],
+  "confidence": 0.45,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-17T06:52:06Z"
+}

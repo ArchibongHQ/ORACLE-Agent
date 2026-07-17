@@ -1,0 +1,25 @@
+{
+  "home": "IFK Goteborg",
+  "away": "Brommapojkarna",
+  "league": "Allsvenskan",
+  "kickoff": "2026-07-17T19:00:00+02:00",
+  "injuries": [
+    "Jallow (IFK Goteborg) — unavailable",
+    "Mucolli (IFK Goteborg) — unavailable",
+    "Alioum (IFK Goteborg) — unavailable"
+  ],
+  "suspensions": [],
+  "lineupHints": [
+    "Brommapojkarna reported to have near-full-strength squad available, no major injury concerns"
+  ],
+  "motivationFlags": [
+    "IFK Goteborg 14th, just above the relegation zone with only 2 league wins all season — relegation-battle context"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/ifk-goteborg/preview/goteborg-vs-brommapojkarna-prediction-team-news-lineups_601252.html"
+  ],
+  "confidence": 0.5,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-17T06:52:06Z"
+}

@@ -1,0 +1,16 @@
+{
+  "date": "2026-07-17",
+  "slateSize": 9,
+  "attempted": 9,
+  "written": 9,
+  "withNews": 4,
+  "sourcesUsed": {
+    "rss": 0,
+    "transfermarkt": 0,
+    "perplexity": 0,
+    "agentic": 8
+  },
+  "startedAt": "2026-07-17T06:46:00Z",
+  "finishedAt": "2026-07-17T06:52:06Z",
+  "note": "acquire_daily.py (46-league ESPN/Sky HTTP set) returned 0 fixtures for 2026-07-17 — every ESPN league query returned HTTP 400 and the LiveScore fallback was proxy-blocked (403). This looks like a real acquisition-tier fault, not an off-day: WebSearch corroboration found a genuine slate (Chinese Super League, Eliteserien, Allsvenskan, and pre-season club friendlies including Galatasaray and Feyenoord), none of which the ESPN/Sky scraper set surfaced. Per SOP edge case, proceeded straight to the agentic WebSearch/WebFetch tier for the whole slate; the 9 fixtures below were discovered and researched that way (sourcesUsed.agentic counts citation URLs across those fixtures). enrich_news.py RSS/Transfermarkt/Perplexity tier also matched 0 teams since it depends on the same empty fixture list — its 0s are downstream of the same fault, not an independent finding. Two days out from the 2026-07-19 World Cup final, major European leagues remain in preseason (no Premier League/Bundesliga action until July 18+), so this is a genuinely thin slate even setting the tooling issue aside."
+}

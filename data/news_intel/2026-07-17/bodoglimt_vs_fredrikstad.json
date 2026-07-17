@@ -1,0 +1,29 @@
+{
+  "home": "Bodo/Glimt",
+  "away": "Fredrikstad",
+  "league": "Eliteserien",
+  "kickoff": "2026-07-17T17:15:00+02:00",
+  "injuries": [
+    "Sigurd Kvile (Fredrikstad) — injury, unavailable",
+    "Sondre Sorlokk (Fredrikstad) — injury, unavailable"
+  ],
+  "suspensions": [],
+  "lineupHints": [
+    "Patrick Berg (Bodo/Glimt) — unavailable, on 2026 World Cup duty with Norway",
+    "Fredrik Bjorkan (Bodo/Glimt) — unavailable, on 2026 World Cup duty with Norway",
+    "Jens Petter Hauge (Bodo/Glimt) — unavailable, on 2026 World Cup duty with Norway"
+  ],
+  "motivationFlags": [
+    "Bodo/Glimt 3rd, 2pts off leaders Tromso — top-of-table implications; Fredrikstad mid-table (10th) with weak away form (4pts from 6 away games)"
+  ],
+  "travelFlags": [
+    "Fredrikstad traveling to Aspmyra Stadium (Bodo), long domestic away trip"
+  ],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/bodo-glimt/preview/bodoglimt-vs-fredrikstad-prediction-team-news-lineups_601253.html",
+    "https://ratingbet.com/predictions/bodoglimt-vs-fredrikstad-prediction-team-news-lineups-expert-analysis/"
+  ],
+  "confidence": 0.6,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-17T06:52:06Z"
+}

@@ -1,0 +1,15 @@
+{
+  "home": "Qingdao West Coast",
+  "away": "Chengdu Rongcheng",
+  "league": "Chinese Super League",
+  "kickoff": "2026-07-17T19:00:00+08:00",
+  "injuries": [],
+  "suspensions": [],
+  "lineupHints": [],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [],
+  "confidence": 0.0,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-17T06:52:06Z"
+}
