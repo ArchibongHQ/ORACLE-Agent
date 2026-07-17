@@ -415,10 +415,17 @@ export async function runWeeklyKaggleRefresh(): Promise<void> {
     process.platform === "win32"
       ? join(process.env.USERPROFILE ?? "", ".kaggle", "kaggle.json")
       : join(process.env.HOME ?? "", ".kaggle", "kaggle.json");
-  const hasEnvAuth = Boolean(process.env.KAGGLE_USERNAME) && Boolean(process.env.KAGGLE_KEY);
+  // [2026-07-17] KAGGLE_API_TOKEN is the modern kaggle-package (2.2.1+,
+  // kagglesdk) auth path — verified working via a live `kaggle datasets
+  // list` call — checked alongside the legacy KAGGLE_USERNAME/KAGGLE_KEY
+  // pair so this warning doesn't falsely claim "no credentials" once the
+  // token is configured (it previously only recognized the legacy pair).
+  const hasEnvAuth =
+    (Boolean(process.env.KAGGLE_USERNAME) && Boolean(process.env.KAGGLE_KEY)) ||
+    Boolean(process.env.KAGGLE_API_TOKEN);
   if (!existsSync(credPath) && !hasEnvAuth) {
     process.stderr.write(
-      `[kaggle-refresh] WARNING: no Kaggle credentials found (checked ${credPath} and KAGGLE_USERNAME/KAGGLE_KEY) — downloads will fail\n`
+      `[kaggle-refresh] WARNING: no Kaggle credentials found (checked ${credPath}, KAGGLE_USERNAME/KAGGLE_KEY, and KAGGLE_API_TOKEN) — downloads will fail\n`
     );
   }
 

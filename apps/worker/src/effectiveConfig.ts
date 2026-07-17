@@ -49,6 +49,11 @@ export function printEffectiveConfig(
     v3TotalsEmpirical: cfg.v3TotalsEmpirical,
     // [X-carveout] default-off Class X carve-out lever.
     v3XCarveout: cfg.v3XCarveout,
+    // [patterns-engine Wave 1/2, 2026-07-17] Was missing from this dump since
+    // introduction — a misconfigured/unexpectedly-live deploy of this flag
+    // (it gates real pick-selection behavior once "on") had no first-line
+    // visibility, the exact failure mode this file exists to prevent.
+    v3Patterns: cfg.v3Patterns,
     enableGoalsOnlyMode: cfg.enableGoalsOnlyMode,
     enableNewsIntel: cfg.enableNewsIntel,
     enableLlmMarketExecutor: cfg.enableLlmMarketExecutor,

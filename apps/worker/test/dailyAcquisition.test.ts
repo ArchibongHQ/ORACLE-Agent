@@ -14,7 +14,7 @@
  *  through the same (date, reason) keying the real code uses, without ever
  *  touching disk. watDateString is pinned to a fixed date so "today" cannot
  *  drift between the two calls in a single test. */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sendTelegramTextMock = vi.fn().mockResolvedValue(undefined);
 const sendTelegramDocumentMock = vi.fn().mockResolvedValue(undefined);
@@ -228,6 +228,59 @@ describe("runWeeklyKaggleRefresh — per-step tally (2026-07-16 silent-failure-l
     expect(summaryLine).not.toContain("FAILED");
 
     writeSpy.mockRestore();
+  });
+});
+
+/** [regression test, 2026-07-17] runWeeklyKaggleRefresh's credential
+ *  pre-flight check previously only recognized the legacy KAGGLE_USERNAME/
+ *  KAGGLE_KEY pair — it printed a false "no credentials found" warning even
+ *  when the modern KAGGLE_API_TOKEN env var (verified working against a real
+ *  `kaggle datasets list` call) was correctly configured. */
+describe("runWeeklyKaggleRefresh — KAGGLE_API_TOKEN credential recognition (2026-07-17)", () => {
+  const originalUsername = process.env.KAGGLE_USERNAME;
+  const originalKey = process.env.KAGGLE_KEY;
+  const originalToken = process.env.KAGGLE_API_TOKEN;
+
+  beforeEach(() => {
+    runPythonScriptMock.mockClear();
+    runPythonScriptMock.mockResolvedValue({ err: null, stdout: "", stderr: "" });
+    delete process.env.KAGGLE_USERNAME;
+    delete process.env.KAGGLE_KEY;
+    delete process.env.KAGGLE_API_TOKEN;
+  });
+
+  afterEach(() => {
+    if (originalUsername === undefined) delete process.env.KAGGLE_USERNAME;
+    else process.env.KAGGLE_USERNAME = originalUsername;
+    if (originalKey === undefined) delete process.env.KAGGLE_KEY;
+    else process.env.KAGGLE_KEY = originalKey;
+    if (originalToken === undefined) delete process.env.KAGGLE_API_TOKEN;
+    else process.env.KAGGLE_API_TOKEN = originalToken;
+  });
+
+  it("does not warn when only KAGGLE_API_TOKEN is set (no legacy pair)", async () => {
+    process.env.KAGGLE_API_TOKEN = "KGAT_test-token";
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await runWeeklyKaggleRefresh();
+
+    const warned = errSpy.mock.calls.some((call) =>
+      String(call[0]).includes("no Kaggle credentials found")
+    );
+    expect(warned).toBe(false);
+    errSpy.mockRestore();
+  });
+
+  it("still warns when neither the legacy pair nor the token is set", async () => {
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await runWeeklyKaggleRefresh();
+
+    const warned = errSpy.mock.calls.some((call) =>
+      String(call[0]).includes("no Kaggle credentials found")
+    );
+    expect(warned).toBe(true);
+    errSpy.mockRestore();
   });
 });
 

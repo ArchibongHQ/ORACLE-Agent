@@ -42,6 +42,17 @@ describe("printEffectiveConfig", () => {
     expect(json.v3Hfa).toBe(1.1);
   });
 
+  // [regression test, 2026-07-17] v3Patterns (real pick-selection gate
+  // relaxation once "on") was missing from this dump since the flag was
+  // introduced — a misconfigured/unexpectedly-live deploy had no first-line
+  // visibility, exactly the failure mode this file exists to prevent.
+  it("includes v3Patterns in the dump", () => {
+    printEffectiveConfig(fakeConfig({ v3Patterns: "on" }), fakeGoalsConfig);
+    const line = stdoutSpy.mock.calls[0]?.[0] as string;
+    const json = JSON.parse(line.replace("[worker] effective config: ", ""));
+    expect(json.v3Patterns).toBe("on");
+  });
+
   it("does not warn when v3VenueSplitUsed is false/undefined", () => {
     printEffectiveConfig(fakeConfig({ v3VenueSplitUsed: false }), fakeGoalsConfig);
     expect(stderrSpy).not.toHaveBeenCalled();
