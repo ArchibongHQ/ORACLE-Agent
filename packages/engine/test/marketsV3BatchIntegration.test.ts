@@ -684,6 +684,94 @@ describe("batch/index.ts — v3Best/v3AssessmentStats projection (PR-5b)", () =>
     ]);
   });
 
+  it("HARD INVARIANT: never derives v3Best from a 'done' goals_ou/team_total Under assessment, even when it has the highest adjustedEdge (adversarial review finding, 2026-07-16 — v3Best sources from raw assessments, not the Under-stripped evMarkets analyzeFixtureMarketsV3 returns, so this exclusion must be applied here too or a gate-passing Under reaches the delivered slate output)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const doneUnder = makeAssessment({
+      marketName: "Goals O/U",
+      desc: "Under 2.5",
+      family: "goals_ou",
+      outcome: "done",
+      rawEdge: 0.2,
+      adjustedEdge: 0.18, // highest edge — would win v3Best if not excluded
+    });
+    const doneOver = makeAssessment({
+      marketName: "Goals O/U",
+      desc: "Over 1.5",
+      family: "goals_ou",
+      outcome: "done",
+      rawEdge: 0.06,
+      adjustedEdge: 0.05,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [doneUnder, doneOver],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Best?.desc).toBe("Over 1.5");
+    expect(success.v3Best?.desc).not.toBe("Under 2.5");
+  });
+
+  it("HARD INVARIANT: never derives `eligible`/eligibleBets from a 'done' goals_ou/team_total Under assessment (adversarial review finding, 2026-07-16 — v3AssessmentsToEvMarkets is the canonical Kelly staker feeding the live arbiter pool and primaryPick; analyzeFixtureMarketsV3 only strips Unders from its own evMarkets return value, leaving assessments untouched)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const doneUnder = makeAssessment({
+      marketName: "Goals O/U",
+      desc: "Under 2.5",
+      family: "goals_ou",
+      outcome: "done",
+      rawEdge: 0.2,
+      adjustedEdge: 0.18,
+    });
+    const doneOver = makeAssessment({
+      marketName: "Goals O/U",
+      desc: "Over 1.5",
+      family: "goals_ou",
+      outcome: "done",
+      rawEdge: 0.06,
+      adjustedEdge: 0.05,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [doneUnder, doneOver],
+      capped: [],
+      evMarkets: [v3EvMarket],
+      best: v3EvMarket,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.eligibleBets?.some((m) => m.label === "Under 2.5")).toBe(false);
+    expect(success.eligibleBets?.some((m) => m.label === "Over 1.5")).toBe(true);
+  });
+
   it("populates v3Best/v3AssessmentStats in 'shadow' mode too (not gated on usedV3, which stays false there)", async () => {
     vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
     const done = makeAssessment({

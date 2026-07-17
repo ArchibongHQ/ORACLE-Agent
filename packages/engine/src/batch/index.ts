@@ -166,6 +166,12 @@ export function buildV3Input(
     ...(config?.v3ShotsOu !== false ? { sotForH: t.sotForH, sotForA: t.sotForA } : {}),
     // PR-25 item 2, shadow-only — feeds refereeShadow, never ctx.cards/pricing.
     refereeCardsRate: t.refereeCardsRate,
+    // [patterns-engine Wave 2, Phase 0] Feeds buildFixturePatternInput's
+    // PatternInput.streakH/A + last5PtsH/A below (marketsV3/patterns.ts).
+    streakH: t.streakH,
+    streakA: t.streakA,
+    last5PtsH: t.last5PtsH,
+    last5PtsA: t.last5PtsA,
     penaltyFlags: {
       // Desktop-audit concept #3: graduated xG-missing penalty. Mutually
       // exclusive with xgMissingLargeSample — full -2pt only when the
@@ -916,8 +922,19 @@ export async function runBatch(
             // v3Best/v3AssessmentStats (gated there on enableMarketsV3 === "on").
             if (v3Result) {
               v3Coverage = v3Result.coverage;
+              // [Phase 3, Under->AH pivot — adversarial review finding,
+              // 2026-07-16] v3Best sources from raw `assessments`, not the
+              // Under-stripped `evMarkets`/`best` analyzeFixtureMarketsV3
+              // returns — this exclusion is the same one v3BestFallback
+              // already applies below, applied here too so a gate-passing
+              // Under can't win v3Best and flow into slateOutputs.ts's
+              // tier-1 pool (the actual delivered picks).
               const bestAssessment = v3Result.assessments
-                .filter((a) => a.outcome === "done")
+                .filter(
+                  (a) =>
+                    a.outcome === "done" &&
+                    !(TOTALS_FAMILIES.has(a.family) && dirOfDesc(a.desc) === "under")
+                )
                 .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
               if (bestAssessment) {
                 v3Best = {

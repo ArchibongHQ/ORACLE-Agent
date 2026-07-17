@@ -234,10 +234,69 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-16** — patterns-engine Wave 2, three phases stacked on Wave 1 (PR #69, merged): Phase 2
+  (`feature/patterns-engine-wave2-gate`, `7810b38`), Phase 3 (`feature/patterns-engine-wave2-ah-pivot`,
+  `41e98a8`, stacked on Phase 2), Phase 0 (`feature/patterns-engine-wave2-telemetry`, `fad1afc`, stacked
+  on Phase 3) — not yet pushed/PR'd as of this entry, see handoff.md for exact commands.
+  **Phase 2 — pattern-backed class-edge relaxation** (`evGate.ts`): `gateAllMarkets` gains
+  `patternMode`/`patternBacked`/`patternStrength` opts. **The repo's SECOND deliberate gate
+  relaxation** (after the X-carveout below) — relaxes ONLY `CLASS_GATE_BLEND`'s `minAdjEdgeBlend`,
+  scaled by the Wave-1 detector's strength (`PATTERN_MIN_STRENGTH=0.3` floor, up to 50% relaxation at
+  strength 1.0 via `PATTERN_EDGE_RELAX_MAX=0.5`). Every other bar (EV%, max odds, the raw absolute/
+  relative caps, the noise gate) stays at full strength; adds an explicit `ev > 0` value floor ON TOP
+  of the standard `blendEV >= evFloor` check (defensive-in-depth — provably redundant today since
+  `evFloor` is always 0 and `blendEV < ev` whenever `rawEdge > 0`, but holds the line if `evFloor` is
+  ever loosened below zero at a future call site). Three modes (`ORACLE_V3_PATTERNS`, default
+  `shadow`): off (byte-identical), shadow (tags `patternRelaxed:"shadow_pass"`, never admits), on
+  (admits, confidence floored at "medium", boosted by strength via `patternConfidence`).
+  `analyzeFixtureMarkets.ts`'s `buildFixturePatternInput`/`sideMatches` build the per-fixture
+  `PatternInput` and conservatively match each priced outcome's family+side against the detector's
+  top pattern (anchored `descParse.ts` parsers — `sideOfDesc`/`dirOfDesc`/`lineOfDesc`, never a
+  substring match; AH/DNB matching is side-only/line-insensitive, a documented limitation deferred to
+  Phase 3's line-selection scope). **Fill-to-39**: `batch/index.ts` derives `v3BestFallback` (a
+  fixture's best +EV candidate that failed ONLY the class_edge bar — `outcome==="below_gate" &&
+  gateReason==="class_edge"`, NOT merely `outcome!=="done"`) for the slate pool
+  (`slateOutputs.ts`'s tiered `buildMarketsV3SlateOutputs`, gate survivors always outrank fallbacks).
+  **Independent Opus adversarial review caught a critical pre-merge bug**: the first fallback-filter
+  draft used `outcome !== "done"`, which also admitted `"capped"`/`"noise"` outcomes — re-opening the
+  exact fake-longshot-edge door (2026-07-09 HSH incident) the raw-edge caps exist to close. Fixed
+  before commit; regression tests added (`marketsV3BatchIntegration.test.ts`). The review also found
+  and fixed a corners line-match substring bug (`analyzeFixtureMarkets.ts`'s `sideMatches` now uses
+  anchored `lineOfDesc`, not `.includes()`).
+  **Phase 3 — Under→Asian Handicap pivot** (owner rule: NEVER recommend an Under market):
+  `analyzeFixtureMarketsV3` unconditionally strips every `goals_ou`/`team_total` Under `EVMarket`
+  entry before the final rank sort — not gated behind any flag or the legacy `LOW_SCORING` regime
+  classifier. Deliberately does NOT synthesize a replacement price via `math/index.ts`'s
+  `detectLowScoringRegime`/`asianHandicapPivot` (a documented, deliberate deviation from that
+  function's literal mention in the original brief) — those recommend a theoretical AH line with no
+  guaranteed real offered odds, and pricing an EV against odds nobody offers would be dishonest
+  real-money math. The genuine "pivot" is structural: real `asian_handicap` outcomes are already
+  priced+gated in the same per-outcome loop as every other market, so one already competes honestly
+  in `evMarkets` on its own merit whenever it clears the gate — stripping the Under just lets it (or
+  any other genuine survivor) surface as `best`. "Never drop": no fabrication — `best` is `null` when
+  nothing else cleared the gate, same as any gate-dry fixture. `assessments`/`capped` stay untouched
+  (Unders remain visible there for transparency). Also closed a cross-phase gap: Phase 2's
+  `v3BestFallback` filter (sources from `assessments` directly, entirely outside this evMarkets-level
+  strip) needed the identical `TOTALS_FAMILIES`+`dirOfDesc==="under"` exclusion added, or a near-miss
+  Under could re-enter the actionable pool through the fill-to-39 back door.
+  **Phase 0 — streak/last5Pts telemetry**: wires the sidecar's `form.streak` (signed win/loss run,
+  direct passthrough) and `form.last5` (new `last5Points()` sum: 3/win+1/draw+0/loss) into
+  `PatternInput.streakH/A`/`last5PtsH/A`, mirroring the existing `refereeCardsRate` 4-hop wiring
+  precedent (`sportyBetStats.ts`'s `StatsOverride` → `RunState.telemetry` → `buildV3Input` →
+  `V3AllMarketsInput` → `buildFixturePatternInput`). `h2hOversRate` (also named in the original brief)
+  is explicitly deferred — it requires modifying the separate, rate-limited `h2h.ts` external-API
+  module (its own 6h-cache/20-job-cap/football-data.org quota concerns), scoped out as its own
+  follow-up rather than folded into this already-large wave.
+  New tests: `patternGate.test.ts` (8, isolated gate-math invariants with hand-derived numeric
+  scenarios), `patternsIntegration.test.ts` (3, full-pipeline integration),
+  `underAhPivot.test.ts` (5, Under-strip/AH-survival/never-drop/never-fabricate/transparency,
+  odds independently verified against a standalone Poisson/devig/gate replica before being committed).
+  Engine 939/939, runtime 679/679, worker 65/65 at every commit; typecheck + biome clean throughout.
 - **2026-07-11** — X-carveout (branch `feature/x-carveout`), same day, later than the Wave-4-accuracy
   entry below. New tri-state flag `ORACLE_V3_X_CARVEOUT` (config `v3XCarveout`; `off`/`shadow`/`on`,
-  **default off**) — **the repo's only deliberate gate relaxation**; every other flag in this codebase
-  only raises bars. Background: Wave-4's `ORACLE_V3_BLEND_PRICING` made Class X exotics unreachable by
+  **default off**) — **the repo's FIRST deliberate gate relaxation** (patterns-engine Wave 2 above adds
+  a second); every other flag in this codebase only raises bars. Background: Wave-4's
+  `ORACLE_V3_BLEND_PRICING` made Class X exotics unreachable by
   construction (raw-space −5pt exotic penalty vs blend-space edges: max rawEdgeBlend=0.40×0.12=0.048,
   minus 0.05 ⇒ can never reach X's 0.02 blend floor). This carve-out re-evaluates ONLY the blend-edge
   floor, with the raw-space penalty rescaled into blend units (`X_CARVEOUT_PENALTY_RESCALE=1/3`, the

@@ -549,6 +549,14 @@ export interface RunState {
      *  feeds cardsAvgH/cardsAvgA above or the live cards Poisson mean. */
     refereeCardsRate?: number;
     refereeName?: string;
+    /** [patterns-engine Wave 2, Phase 0] Signed win/loss streak + last-5
+     *  points, direct passthrough from sportyBetStats.ts's StatsOverride of
+     *  the same name — see that file's doc comment for the sign convention
+     *  and marketsV3/patterns.ts's PatternInput consumers. */
+    streakH?: number;
+    streakA?: number;
+    last5PtsH?: number;
+    last5PtsA?: number;
     /** PR-22 shots-on-target module (Negative Binomial) inputs, per game. */
     sotForH?: number;
     sotForA?: number;
