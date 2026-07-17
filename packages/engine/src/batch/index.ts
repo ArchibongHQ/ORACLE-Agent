@@ -20,9 +20,11 @@ import {
   type V3AllMarketsInput,
   type V3MarketOutcomeAssessment,
 } from "../marketsV3/analyzeFixtureMarkets.js";
+import { dirOfDesc } from "../marketsV3/descParse.js";
 import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
 import { computeTailMarkets, type RouteCoverage } from "../marketsV3/feedDictionary.js";
 import type { V3OutputCandidate } from "../marketsV3/outputs.js";
+import { TOTALS_FAMILIES } from "../marketsV3/sanity.js";
 import { buildRatingsLambdaInput, TeamRatingsEngine } from "../ratings/index.js";
 import {
   buildSafetyShadowDiff,
@@ -951,12 +953,24 @@ export async function runBatch(
               // this feature's own scope — it relaxes ONLY the class-edge bar,
               // so the fallback pool should surface ONLY candidates that bar
               // alone is blocking, not e.g. a max-odds or ev-floor reject.
+              // [Phase 3, Under->AH pivot] ALSO excludes goals_ou/team_total
+              // Under candidates — same owner rule analyzeFixtureMarketsV3
+              // enforces on evMarkets itself (never recommend an Under). This
+              // fallback pool sources from batch/index.ts, entirely outside
+              // that evMarkets-level filter, so it needs the identical
+              // exclusion here or a near-miss Under could re-enter the
+              // actionable pool through the fill-to-39 back door.
               if (config.v3Patterns && config.v3Patterns !== "off") {
                 const rawEv = (a: V3MarketOutcomeAssessment) => a.evModel ?? a.ev;
+                const isUnder = (a: V3MarketOutcomeAssessment) =>
+                  TOTALS_FAMILIES.has(a.family) && dirOfDesc(a.desc) === "under";
                 const bestFallbackAssessment = v3Result.assessments
                   .filter(
                     (a) =>
-                      rawEv(a) > 0 && a.outcome === "below_gate" && a.gateReason === "class_edge"
+                      rawEv(a) > 0 &&
+                      a.outcome === "below_gate" &&
+                      a.gateReason === "class_edge" &&
+                      !isUnder(a)
                   )
                   .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
                 if (bestFallbackAssessment) {
