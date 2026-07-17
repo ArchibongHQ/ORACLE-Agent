@@ -20,12 +20,12 @@
  *     opt-in DNS-aware retry for the two real scrape entry points.
  */
 
-import { type ExecFileException, execFile } from "node:child_process";
+import { type ChildProcess, type ExecFileException, execFile } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BatchResult } from "@oracle/engine";
 import { isRetriableNetworkError, withRetry } from "@oracle/engine";
-import { fixturesPartitionExists } from "@oracle/runtime";
+import { fixturesPartitionExists, killProcessTree } from "@oracle/runtime";
 import { ROOT } from "./workerContext.js";
 
 // ── WAT calendar date ────────────────────────────────────────────────────────
@@ -212,6 +212,18 @@ function isRetriableScrapeFailure(err: ExecFileException | null, stderr: string)
   );
 }
 
+// [2026-07-16, silent-failure-logging fix] execFile has no timeout by
+// default (0 = unbounded). Confirmed via production logs: a weekly
+// kaggle-refresh step (squad-availability) logged its own internal ERROR and
+// then never produced a completion line — the sequential await chain in
+// runWeeklyKaggleRefresh just stalled silently on that one hung subprocess,
+// stranding every step after it with zero visible failure signal for weeks.
+// 15 minutes is comfortably above every observed real workload (today's full
+// acquireDaily scrape+enrichment was ~6min) while still bounding a hang far
+// below the outer ACQUIRE_CHAIN_TIMEOUT_MS (20min, index.ts) umbrella that
+// already tolerates a slow-but-alive inner job.
+const DEFAULT_PYTHON_TIMEOUT_MS = 15 * 60 * 1000;
+
 /** Runs `python script args...` via execFile, resolving with `{ err, stdout,
  *  stderr }` — never rejects, matching every existing call site's own
  *  best-effort logging/degrade behavior (a failed tool run must never abort
@@ -220,16 +232,49 @@ function isRetriableScrapeFailure(err: ExecFileException | null, stderr: string)
  *  transient DNS/connection failure (with backoff) before giving up — not
  *  worth it for the lower-stakes best-effort tools (kaggle refresh, lineups,
  *  closing-odds, fotmob-xg), which already degrade gracefully on any single
- *  failure. */
+ *  failure. Every call is bounded by timeoutMs (default
+ *  DEFAULT_PYTHON_TIMEOUT_MS) — on expiry the whole process tree is killed
+ *  (killProcessTree, not a bare child.kill(), for the same Windows
+ *  orphaned-subprocess reason documented on that helper) and a synthesized
+ *  timeout error is resolved, so a hung script always surfaces as a logged
+ *  failure instead of stalling its caller forever. */
 export function runPythonScript(
   python: string,
   script: string,
   args: string[],
-  opts: { cwd: string; retryOnNetworkError?: boolean }
+  opts: { cwd: string; retryOnNetworkError?: boolean; timeoutMs?: number }
 ): Promise<PythonRunResult> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_PYTHON_TIMEOUT_MS;
   const attempt = (): Promise<PythonRunResult> =>
     new Promise((resolve) => {
-      execFile(python, [script, ...args], { cwd: opts.cwd }, (err, stdout, stderr) => {
+      // `timer` is created BEFORE execFile is called (not after, as a naive
+      // reading might suggest) so `clearTimeout(timer)` in the callback below
+      // always operates on a real, already-scheduled timer — never on a
+      // not-yet-assigned variable. Real execFile always invokes its callback
+      // asynchronously (never synchronously), but relying on that guarantee
+      // isn't necessary here and a same-tick callback (as this project's own
+      // execFile mocks use in tests) would otherwise leave the timer orphaned
+      // to fire later against a `child` that may not exist. `child` uses
+      // optional chaining below for the same reason.
+      let child: ChildProcess | undefined;
+      const timer = setTimeout(() => {
+        if (child?.pid != null) killProcessTree(child.pid);
+        // Deliberately does NOT match isRetriableScrapeFailure's DNS-shaped
+        // patterns or isRetriableNetworkError below — a hang that just ate
+        // timeoutMs is expensive to retry and likely to hang again for the
+        // same reason, unlike a fast-failing DNS blip. retryOnNetworkError
+        // callers get exactly one attempt on a timeout, not withRetry's
+        // backoff-and-retry treatment.
+        resolve({
+          err: Object.assign(new Error(`${script} timed out after ${timeoutMs}ms`), {
+            killed: true,
+          }) as ExecFileException,
+          stdout: "",
+          stderr: "",
+        });
+      }, timeoutMs);
+      child = execFile(python, [script, ...args], { cwd: opts.cwd }, (err, stdout, stderr) => {
+        clearTimeout(timer);
         resolve({ err, stdout, stderr });
       });
     });

@@ -92,7 +92,9 @@ vi.mock("../src/workerUtils.js", () => ({
   watYesterdayString: () => "2026-07-14",
 }));
 
-const { sendDailyFixtureReport } = await import("../src/dailyAcquisition.js");
+const { sendDailyFixtureReport, runWeeklyKaggleRefresh, acquireDaily } = await import(
+  "../src/dailyAcquisition.js"
+);
 
 describe("sendDailyFixtureReport — blocked-state Telegram alert suppression", () => {
   beforeEach(() => {
@@ -148,6 +150,110 @@ describe("sendDailyFixtureReport — blocked-state Telegram alert suppression", 
       "test-token",
       "test-chat",
       expect.stringContaining("market depth not yet enriched")
+    );
+  });
+});
+
+/** [regression test, 2026-07-16 silent-failure-logging fix] Production logs
+ *  showed a weekly kaggle-refresh step (squad-availability) start, log its
+ *  own internal error, then never produce a completion line — the
+ *  sequential await chain just stalled on that one hung/failed step with no
+ *  chain-level signal, and availability_features.csv sat 36 days stale
+ *  before this was ever noticed. This proves (a) a failed/timed-out step no
+ *  longer blocks the steps after it, and (b) the final summary line always
+ *  reports an accurate pass/fail tally instead of requiring a multi-log
+ *  forensic search to find a silent partial failure. */
+describe("runWeeklyKaggleRefresh — per-step tally (2026-07-16 silent-failure-logging fix)", () => {
+  beforeEach(() => {
+    runPythonScriptMock.mockClear();
+  });
+
+  it("runs every step even after failures mid-chain, and tallies pass/fail in the final summary line", async () => {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const errWriteSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    // 9 steps, strictly sequential, in call order: odds_timeseries, spi,
+    // fbref, transfermarkt, squad-availability, xg, xg-table, travel,
+    // catalog-diff — mockResolvedValueOnce queue order lines up 1:1 with the
+    // real await order since there is no concurrency in this chain.
+    runPythonScriptMock
+      .mockResolvedValueOnce({ err: null, stdout: "", stderr: "" }) // odds_timeseries
+      .mockResolvedValueOnce({ err: null, stdout: "", stderr: "" }) // spi
+      .mockResolvedValueOnce({ err: null, stdout: "", stderr: "" }) // fbref
+      .mockResolvedValueOnce({
+        err: new Error("no squad value data found"),
+        stdout: "",
+        stderr: "",
+      }) // transfermarkt: FAILED (real production failure mode)
+      .mockResolvedValueOnce({
+        // Simulates the timeout error runPythonScript now synthesizes on a
+        // hang, rather than the pre-fix behavior of never resolving at all.
+        err: Object.assign(new Error("fetch_squad_availability.py timed out after 900000ms"), {
+          killed: true,
+        }),
+        stdout: "",
+        stderr: "",
+      }) // squad-availability: simulated hang/timeout
+      .mockResolvedValueOnce({ err: null, stdout: "", stderr: "" }) // xg
+      .mockResolvedValueOnce({ err: null, stdout: "", stderr: "" }) // xg-table
+      .mockResolvedValueOnce({ err: null, stdout: "", stderr: "" }) // travel
+      .mockResolvedValueOnce({ err: null, stdout: "", stderr: "" }); // catalog-diff
+
+    await runWeeklyKaggleRefresh();
+
+    // All 9 steps must still have been invoked despite 2 failures mid-chain —
+    // proves a hang/failure can no longer silently strand the rest.
+    expect(runPythonScriptMock).toHaveBeenCalledTimes(9);
+
+    const summaryLine = writeSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes("weekly refresh complete"));
+    expect(summaryLine).toContain("7/9 ok");
+    expect(summaryLine).toContain("FAILED: transfermarkt, squad-availability");
+
+    writeSpy.mockRestore();
+    errWriteSpy.mockRestore();
+  });
+
+  it("reports a clean tally with no FAILED clause when every step succeeds", async () => {
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    runPythonScriptMock.mockResolvedValue({ err: null, stdout: "", stderr: "" });
+
+    await runWeeklyKaggleRefresh();
+
+    const summaryLine = writeSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes("weekly refresh complete"));
+    expect(summaryLine).toContain("9/9 ok");
+    expect(summaryLine).not.toContain("FAILED");
+
+    writeSpy.mockRestore();
+  });
+});
+
+/** [regression test, 2026-07-16 silent-failure-logging fix, review finding]
+ *  acquireDaily() is one of the two "real network-scrape entry points" that
+ *  must NOT inherit runPythonScript's shorter 15-minute default timeout (that
+ *  default was calibrated against the weekly kaggle-refresh tools, which
+ *  normally complete in well under a second) — a legitimately slow-but-alive
+ *  scrape on a bad day should still get to finish. Proves the explicit 25-min
+ *  override is actually passed through. */
+describe("acquireDaily — explicit timeoutMs override (2026-07-16 silent-failure-logging fix)", () => {
+  beforeEach(() => {
+    runPythonScriptMock.mockClear();
+  });
+
+  it("passes a 25-minute timeoutMs, not the runPythonScript default", async () => {
+    runPythonScriptMock.mockResolvedValue({ err: null, stdout: "acquired:12", stderr: "" });
+
+    const count = await acquireDaily();
+
+    expect(count).toBe(12);
+    expect(runPythonScriptMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      [],
+      expect.objectContaining({ timeoutMs: 25 * 60 * 1000 })
     );
   });
 });

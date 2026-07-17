@@ -189,7 +189,14 @@ def merge_rows(existing: list[dict[str, Any]], cloud: list[dict[str, Any]]) -> l
 
 def _log(msg: str, quiet: bool) -> None:
     if not quiet:
-        print(msg, file=sys.stderr)
+        # flush=True: this diagnostic is the only record of WHY a sync
+        # returned 0 (empty dir / fetch failure / etc). Without an explicit
+        # flush, a fully-buffered stderr pipe (the common case when a parent
+        # process captures output via subprocess, as apps/worker/src/
+        # dailyAcquisition.ts's runCloudNewsSync does) can lose these lines —
+        # observed 2026-07-16: a "news:0 xg:0" summary line with zero
+        # matching "_log" reason lines anywhere in the retained worker logs.
+        print(msg, file=sys.stderr, flush=True)
 
 
 def _run_git(args: list[str], timeout: int = GIT_TIMEOUT_S) -> Optional[subprocess.CompletedProcess]:
@@ -235,66 +242,89 @@ def git_show(remote: str, branch: str, path: str) -> Optional[str]:
     return proc.stdout
 
 
-def sync_news(remote: str, branch: str, date_str: str, quiet: bool) -> int:
+def sync_news(remote: str, branch: str, date_str: str, quiet: bool) -> tuple[int, Optional[str]]:
     """Fetch cloud news-intel JSONs for date_str, validate + merge them into
-    the local "news" lake partition. Returns the count of cloud rows merged
-    (0 on any absence — missing dir, no files, all-invalid, etc)."""
+    the local "news" lake partition. Returns (rows merged, reason) — reason is
+    None on success, otherwise a short human-readable explanation for why the
+    count is 0 (missing dir, no files, all-invalid, etc), threaded back to
+    main() so it can fold into the one summary line callers reliably see."""
     paths, reason = git_ls_tree(remote, branch, f"data/news_intel/{date_str}/")
     if paths is None:
         _log(f"[sync_cloud_news] no cloud data ({reason}) — skipping news sync", quiet)
-        return 0
+        return 0, reason
     json_paths = [p for p in paths if p.endswith(".json") and Path(p).name != "_summary.json"]
     if not json_paths:
-        _log(f"[sync_cloud_news] no cloud data (no news_intel files for {date_str}) — skipping news sync", quiet)
-        return 0
+        reason = f"no news_intel files for {date_str}"
+        _log(f"[sync_cloud_news] no cloud data ({reason}) — skipping news sync", quiet)
+        return 0, reason
 
     cloud_rows: list[dict[str, Any]] = []
+    skipped = 0
     for path in json_paths:
         raw = git_show(remote, branch, path)
         if raw is None:
             _log(f"[sync_cloud_news] git show failed for {path} — skipping file", quiet)
+            skipped += 1
             continue
         try:
             payload = json.loads(raw)
         except ValueError as exc:
             _log(f"[sync_cloud_news] bad JSON in {path} ({exc}) — skipping file", quiet)
+            skipped += 1
             continue
         row = parse_and_validate(payload, date_str)
         if row is not None:
             cloud_rows.append(row)
+        else:
+            skipped += 1
 
     if not cloud_rows:
-        return 0
+        return 0, f"{len(json_paths)} file(s) found for {date_str} but none validated"
 
     existing = ds.read_table("news", date_str)
     merged = merge_rows(existing, cloud_rows)
     ds.write_table("news", date_str, merged)
-    return len(cloud_rows)
+    # A partial failure (some files skipped, others merged) must still surface
+    # a reason — returning None here would silently read as full success, the
+    # exact class of gap this fix exists to close (caught in review: mixing
+    # "0 rows" and "some rows, some silently dropped" into the same signal).
+    if skipped > 0:
+        return len(cloud_rows), f"{skipped}/{len(json_paths)} file(s) skipped (git show/JSON/validation failures)"
+    return len(cloud_rows), None
 
 
-def sync_xg(remote: str, branch: str, quiet: bool) -> int:
+def sync_xg(remote: str, branch: str, quiet: bool) -> tuple[int, Optional[str]]:
     """Mirror every data/xg/*.json blob on <remote>/<branch> into .tmp/xg/,
-    overwriting by basename. Absent dir -> 0, not an error (the GitHub
-    Actions xG job may simply not have run yet today)."""
+    overwriting by basename. Returns (files copied, reason) — reason is None
+    on success. Absent dir -> 0, not an error (the GitHub Actions xG job may
+    simply not have run yet today)."""
     paths, reason = git_ls_tree(remote, branch, "data/xg/")
     if paths is None:
         _log(f"[sync_cloud_news] no cloud data ({reason}) — skipping xg sync", quiet)
-        return 0
+        return 0, reason
     json_paths = [p for p in paths if p.endswith(".json")]
     if not json_paths:
-        return 0
+        return 0, "no data/xg/*.json files on branch"
 
     XG_OUT_DIR.mkdir(parents=True, exist_ok=True)
     count = 0
+    skipped = 0
     for path in json_paths:
         raw = git_show(remote, branch, path)
         if raw is None:
             _log(f"[sync_cloud_news] git show failed for {path} — skipping file", quiet)
+            skipped += 1
             continue
         out_path = XG_OUT_DIR / Path(path).name
         out_path.write_text(raw, encoding="utf-8")
         count += 1
-    return count
+    if count == 0:
+        return 0, f"{len(json_paths)} file(s) listed but none copied (git show failures)"
+    # Same partial-failure rule as sync_news above — some files copying while
+    # others silently fail must not read as a clean (count, None) success.
+    if skipped > 0:
+        return count, f"{skipped}/{len(json_paths)} file(s) failed to copy (git show failures)"
+    return count, None
 
 
 def main() -> None:
@@ -309,16 +339,22 @@ def main() -> None:
 
     date_str = args.date or ds.utc_today()
 
-    ok, reason = git_fetch(args.remote, args.branch)
+    ok, fetch_reason = git_fetch(args.remote, args.branch)
     if not ok:
-        _log(f"[sync_cloud_news] no cloud data ({reason}) — skipping", args.quiet)
-        print("[sync_cloud_news] news:0 xg:0", flush=True)
+        _log(f"[sync_cloud_news] no cloud data ({fetch_reason}) — skipping", args.quiet)
+        print(f"[sync_cloud_news] news:0 xg:0 — git fetch failed: {fetch_reason}", flush=True)
         return
 
-    news_count = sync_news(args.remote, args.branch, date_str, args.quiet)
-    xg_count = sync_xg(args.remote, args.branch, args.quiet)
+    news_count, news_reason = sync_news(args.remote, args.branch, date_str, args.quiet)
+    xg_count, xg_reason = sync_xg(args.remote, args.branch, args.quiet)
 
-    print(f"[sync_cloud_news] news:{news_count} xg:{xg_count}", flush=True)
+    # Fold any skip/failure reason directly into the one line every caller
+    # reliably captures (dailyAcquisition.ts's runCloudNewsSync pipes stdout
+    # straight through) — see _log's flush=True comment above for why relying
+    # on a separate stderr diagnostic line alone was insufficient in practice.
+    reasons = [r for r in (news_reason, xg_reason) if r]
+    suffix = f" — {'; '.join(reasons)}" if reasons else ""
+    print(f"[sync_cloud_news] news:{news_count} xg:{xg_count}{suffix}", flush=True)
 
 
 if __name__ == "__main__":

@@ -98,7 +98,20 @@ export function acquireDaily(): Promise<number> {
   if (_acquireDailyInFlight) return _acquireDailyInFlight;
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "acquire_daily.py");
-  const run = runPythonScript(python, script, [], { cwd: ROOT, retryOnNetworkError: true })
+  // [2026-07-16, silent-failure-logging fix] Explicit longer timeoutMs — this
+  // is one of the two "real network-scrape entry points" runPythonScript's
+  // own docstring calls out as different from the lower-stakes best-effort
+  // tools the new 15-minute DEFAULT_PYTHON_TIMEOUT_MS was calibrated against
+  // (today's real run: ~9min end-to-end). 25 minutes stays comfortably above
+  // the outer ACQUIRE_CHAIN_TIMEOUT_MS (20min, index.ts) that callers already
+  // use to stop *waiting* on this job without killing it — so a legitimately
+  // slow-but-alive scrape on a bad day still gets to finish rather than being
+  // killed just because it's slower than the tools this default was tuned for.
+  const run = runPythonScript(python, script, [], {
+    cwd: ROOT,
+    retryOnNetworkError: true,
+    timeoutMs: 25 * 60 * 1000,
+  })
     .then(({ err, stdout, stderr }) => {
       if (stdout) process.stdout.write(stdout);
       if (stderr) process.stderr.write(stderr);
@@ -368,7 +381,16 @@ export async function sendDailyFixtureReport(): Promise<void> {
 
 // ── Weekly Kaggle dataset refresh (Saturday 03:00 UTC) ────────────────────────
 
-function runKaggleTool(label: string, scriptName: string, args: string[] = []): Promise<void> {
+// [2026-07-16, silent-failure-logging fix] Returns the outcome (not just
+// void) so runWeeklyKaggleRefresh can tally pass/fail across the whole chain
+// instead of a failure only being visible by grepping this one step's own
+// log lines — a partial weekly failure (e.g. squad-availability) previously
+// had no chain-level signal at all.
+function runKaggleTool(
+  label: string,
+  scriptName: string,
+  args: string[] = []
+): Promise<{ label: string; ok: boolean }> {
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", scriptName);
   const start = Date.now();
@@ -381,9 +403,10 @@ function runKaggleTool(label: string, scriptName: string, args: string[] = []): 
       process.stderr.write(
         `[kaggle-refresh] ${label}: FAILED after ${elapsed}s — ${err.message}\n`
       );
-    } else {
-      process.stdout.write(`[kaggle-refresh] ${label}: done in ${elapsed}s\n`);
+      return { label, ok: false };
     }
+    process.stdout.write(`[kaggle-refresh] ${label}: done in ${elapsed}s\n`);
+    return { label, ok: true };
   });
 }
 
@@ -401,19 +424,24 @@ export async function runWeeklyKaggleRefresh(): Promise<void> {
 
   process.stdout.write("[kaggle-refresh] === weekly refresh start ===\n");
   const wall = Date.now();
+  const results: { label: string; ok: boolean }[] = [];
 
-  await runKaggleTool("odds_timeseries", "fetch_odds_timeseries.py", [
-    "--btb-dir",
-    ".tmp/kaggle/beat-the-bookie",
-    "--ah-dir",
-    ".tmp/kaggle/ah-odds",
-  ]);
-  await runKaggleTool("spi", "fetch_spi.py");
-  await runKaggleTool("fbref", "fetch_fbref.py");
-  await runKaggleTool("transfermarkt", "fetch_transfermarkt.py", [
-    "--player-scores-dir",
-    ".tmp/kaggle/player-scores",
-  ]);
+  results.push(
+    await runKaggleTool("odds_timeseries", "fetch_odds_timeseries.py", [
+      "--btb-dir",
+      ".tmp/kaggle/beat-the-bookie",
+      "--ah-dir",
+      ".tmp/kaggle/ah-odds",
+    ])
+  );
+  results.push(await runKaggleTool("spi", "fetch_spi.py"));
+  results.push(await runKaggleTool("fbref", "fetch_fbref.py"));
+  results.push(
+    await runKaggleTool("transfermarkt", "fetch_transfermarkt.py", [
+      "--player-scores-dir",
+      ".tmp/kaggle/player-scores",
+    ])
+  );
   // PR-25: match-day squad availability (availIdxHome/Away, keyPlayerHome/Away
   // → the Wave-2 availability→λ multipliers) derived from the SAME
   // player-scores snapshot fetch_transfermarkt just refreshed above — MUST run
@@ -425,35 +453,47 @@ export async function runWeeklyKaggleRefresh(): Promise<void> {
   // daily would just be redundant CPU/IO for a byte-identical result between
   // Saturdays — the weekly cadence is the correct one, not just the cheap one.
   // No env flag here, matching every other unconditional fetcher in this list.
-  await runKaggleTool("squad-availability", "fetch_squad_availability.py", [
-    "--kaggle-dir",
-    ".tmp/kaggle/player-scores",
-  ]);
-  await runKaggleTool("xg", "fetch_xg.py", ["--kaggle-ppda-dir", ".tmp/kaggle/xg-ppda"]);
+  results.push(
+    await runKaggleTool("squad-availability", "fetch_squad_availability.py", [
+      "--kaggle-dir",
+      ".tmp/kaggle/player-scores",
+    ])
+  );
+  results.push(
+    await runKaggleTool("xg", "fetch_xg.py", ["--kaggle-ppda-dir", ".tmp/kaggle/xg-ppda"])
+  );
   // build_xg_table MUST run AFTER both fetch_fbref (adds xG columns) and fetch_xg
   // (Understat per-match CSVs) — it merges both into the rolling team-xG prior,
   // Understat winning on collisions, FBref extending coverage to WC/Brazil/etc.
-  await runKaggleTool("xg-table", "build_xg_table.py");
+  results.push(await runKaggleTool("xg-table", "build_xg_table.py"));
   // Static venue table for the travel-friction + altitude engine features.
-  await runKaggleTool("travel", "fetch_travel.py");
+  results.push(await runKaggleTool("travel", "fetch_travel.py"));
   // PR-21: catalog freshness — --diff-only means the committed
   // catalog.generated.ts is read for the diff baseline but never overwritten
   // (a real catalog regeneration is still a hand-reviewed, separate step);
   // --json-out writes the newly-observed entries for the runtime overlay
   // (ORACLE_CATALOG_OVERLAY=on, apps/worker/src/catalogOverlay.ts) to pick
   // up next process start. Advisory — always runs, independent of that flag.
-  await runKaggleTool("catalog-diff", "build_market_catalog.py", [
-    "--in",
-    ".tmp/fixtures/sportybet_today.json",
-    "--out",
-    "packages/engine/src/markets/catalog.generated.ts",
-    "--diff-only",
-    "--json-out",
-    MARKET_CATALOG_OVERLAY_PATH,
-  ]);
+  results.push(
+    await runKaggleTool("catalog-diff", "build_market_catalog.py", [
+      "--in",
+      ".tmp/fixtures/sportybet_today.json",
+      "--out",
+      "packages/engine/src/markets/catalog.generated.ts",
+      "--diff-only",
+      "--json-out",
+      MARKET_CATALOG_OVERLAY_PATH,
+    ])
+  );
 
   const total = ((Date.now() - wall) / 1000).toFixed(1);
-  process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s ===\n`);
+  const failed = results.filter((r) => !r.ok).map((r) => r.label);
+  const okCount = results.length - failed.length;
+  const tally =
+    failed.length > 0
+      ? `${okCount}/${results.length} ok — FAILED: ${failed.join(", ")}`
+      : `${okCount}/${results.length} ok`;
+  process.stdout.write(`[kaggle-refresh] === weekly refresh complete in ${total}s: ${tally} ===\n`);
 }
 
 // ── FotMob live-xG refresh (02:00 WAT, PR-7) ────────────────────────────────

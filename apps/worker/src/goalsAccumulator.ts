@@ -88,16 +88,23 @@ export function buildNewsIntelNote(y: {
 function scrapeFixtures(): Promise<number> {
   const python = PYTHON_BIN;
   const script = join(ROOT, "tools", "scrape_fixtures.py");
-  return runPythonScript(python, script, [], { cwd: ROOT, retryOnNetworkError: true }).then(
-    ({ err, stdout, stderr }) => {
-      if (stdout) process.stdout.write(stdout);
-      if (stderr) process.stderr.write(stderr);
-      if (err) process.stderr.write(`scrape_fixtures error: ${err.message}\n`);
-      // Parse sportybet count from playwright summary line, e.g. "sportybet:12"
-      const m = stdout.match(/sportybet:(\d+)/);
-      return m ? parseInt(m[1], 10) : 0;
-    }
-  );
+  // [2026-07-16, silent-failure-logging fix] Same explicit longer timeoutMs
+  // as dailyAcquisition.ts's acquireDaily() — see its comment for the full
+  // rationale (this is the other of the two "real network-scrape entry
+  // points" that shouldn't inherit the shorter default tuned for best-effort
+  // tools like the weekly kaggle refresh).
+  return runPythonScript(python, script, [], {
+    cwd: ROOT,
+    retryOnNetworkError: true,
+    timeoutMs: 25 * 60 * 1000,
+  }).then(({ err, stdout, stderr }) => {
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    if (err) process.stderr.write(`scrape_fixtures error: ${err.message}\n`);
+    // Parse sportybet count from playwright summary line, e.g. "sportybet:12"
+    const m = stdout.match(/sportybet:(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
 }
 
 // ── SportyBet streak tracker ──────────────────────────────────────────────────

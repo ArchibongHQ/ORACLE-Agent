@@ -52,6 +52,7 @@ export {
   fetchFixtureByName,
   fetchTodaysFixtures,
   gameToFixtureJob,
+  killProcessTree,
   resolvePythonBin,
   SPORT_TO_LEAGUE,
   toEngineWeather,
