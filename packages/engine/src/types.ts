@@ -7,7 +7,7 @@ import type { FamilyLabel, MarketFamily } from "./markets/index.js";
 // in decision/index.ts — the original split had types.ts importing these
 // shapes back from decision/index.ts while decision/index.ts imported
 // DecisionContext from types.ts, a genuine circular reference between the
-// two files. decision/index.ts re-exports these three for backward compat.
+// two files. decision/index.ts re-exports these for backward compat.
 
 /** [WS2-D] Duck-typed mirror of @oracle/runtime's `FeedIntegrityVerdict`
  *  shape (packages/runtime/src/feedIntegrity.ts, v5 Rule 0.14) — @oracle/
@@ -20,19 +20,6 @@ export interface FeedIntegritySignal {
   verdict: "clean" | "contaminated" | "flagged";
   reason?: string;
   detail?: string;
-}
-
-/** [WS2-D] v5 Phase 0.5 / §0.4 completeness signal — lets the prompt tell the
- *  LLM what data was actually acquired/available for this fixture so its
- *  confidence calibration accounts for data quality, not just the raw model
- *  edge (v5 Rule 0 posture: thin data behind a big edge is the exact failure
- *  mode the completeness gate exists to catch, not free money). Same
- *  optional/additive/safe-default contract as FeedIntegritySignal above. */
-export interface DataCompletenessSignal {
-  /** 0–1 weighted completeness score, v5 §0.4's convention. */
-  score?: number;
-  acquired?: string[];
-  missing?: string[];
 }
 
 /** [WS2-D] Minimal, duck-typed mirror of marketsV3/sanity.ts's
@@ -782,9 +769,6 @@ export interface DecisionContext {
    *  WS2-D) when populated by the caller (batch/index.ts). Optional/additive;
    *  omission means the prompt simply skips the FEED INTEGRITY section. */
   integrity?: FeedIntegritySignal;
-  /** [Wave 2, WS2-A] v5 Phase 0.5 data-completeness signal for this fixture —
-   *  same optional/additive contract as `integrity` above. */
-  completeness?: DataCompletenessSignal;
   /** [Wave 2, WS2-A] v5 §5.6 slate-wide sanity-check result, shared across
    *  every fixture in the same batch run — same optional/additive contract. */
   slateSanity?: SlateSanitySignal;

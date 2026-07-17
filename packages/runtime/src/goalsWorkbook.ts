@@ -109,11 +109,11 @@ const README_ROWS: Array<[string, string]> = [
   ["Methodology — v3 pipeline", ""],
   [
     "  1. Eligibility",
-    'Union whitelist (v3 spec §1.1 ∪ researched goals-rich leagues) + hard discards (SRL/virtual, missing mandatory odds, low-scoring derby). Youth/women/friendly/cup-final are "heightened" (need a ≥85 completeness score + aligned O/U trends), not discarded.',
+    'Union whitelist (v3 spec §1.1 ∪ researched goals-rich leagues) + hard discards (SRL/virtual, missing mandatory odds). Youth/women/friendly/cup-final/low-scoring-derby are "heightened" — a higher completeness bar is checked (≥85), not discarded.',
   ],
   [
-    "  2. Completeness gate",
-    "Weighted 0–100 score (odds 15, form 15, scored/90 15, conceded/90 15, O/U hit-rate 10 = 70 mandatory; xG 10, H2H 10, lineups 5, rest 5 = 30 optional). <70 discards the fixture; any single mandatory field missing discards regardless of score.",
+    "  2. Completeness (sidecar contract: annotated, never gates)",
+    "Weighted 0–100 score (odds 15, form 15, scored/90 15, conceded/90 15, O/U hit-rate 10 = 70 mandatory; xG 10, H2H 10, lineups 5, rest 5 = 30 optional). A fixture below the floor (<70, or <85 when heightened) or missing a mandatory field is NOT discarded — every fixture that clears Phase 1 eligibility reaches analysis; thin data is instead recorded as an annotation and handled by the edge gate's own penalty points below (the sidecar's data-richness never decides candidacy).",
   ],
   [
     "  3. Lambda",

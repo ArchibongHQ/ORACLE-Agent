@@ -151,7 +151,7 @@ naming its data sources and limitations.
 **Fixtures sheet** — one row per match: metadata, headline odds, form/streaks, season goal rates
 (`SeasonGF/GA` per-game, else `GF/GA ÷ Played`), H2H, first-half stats (`1Hgoals`, `HTscoring%`),
 hit-rates (`O1.5/2.5/3.5%`, `BTTS%`, `CS%`, `FTS%`), rest days, cards, xG columns (often sparse),
-lineups/news (often empty), any internal eligibility/predictability scores.
+lineups/news (often empty).
 
 **Markets tab** — full odds ladder: `Market · Family · Group · Specifier · Outcome · Odds`. This
 is the candidate universe (subject to Rule 0.14).
@@ -161,10 +161,10 @@ is the candidate universe (subject to Rule 0.14).
 > data is team-overall → apply §3.1a HFA. If genuinely venue-split → skip HFA (it's already
 > encoded; applying it would double-count). State which case applied in every rationale.
 
-> **Respect the feed's own eligibility scores if present** (e.g. `v3 Eligibility`,
-> `Predictability`): a fixture the pipeline marks `discard` may still be modelled if it passes
-> this prompt's own gates, but it takes a **−1 penalty** and the flag is stated in the rationale.
-> `eligible` + predictability ≥ 50 removes that penalty.
+> **Sidecar contract:** the feed supplies fixtures, markets, and stats — nothing else. It carries
+> no eligibility/predictability/completeness self-assessment, and none should be invented or
+> inferred. Every eligibility, penalty, priority, and candidacy conclusion is this prompt's own,
+> formed from the raw data above.
 
 ### 0.2 Feed dictionary — Markets-tab names → engines
 

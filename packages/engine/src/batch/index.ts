@@ -783,15 +783,6 @@ export async function runBatch(
             state.pipeline?.fetched?.sportyBetOdds as { allMarkets?: AllMarketEntry[] } | undefined
           )?.allMarkets;
 
-          // [Wave 2, WS2-A] Same v3Completeness stamp buildV3Input already reads
-          // below (telemetry has no named field for it — see that call site's
-          // comment) — reused here for DecisionContext.completeness.score. Only
-          // the score is available at this stage; the acquired/missing string
-          // lists live inside gateMarketsV3Fixture's completeness computation
-          // (packages/runtime/src/marketsV3/pipeline.ts, a different file) and
-          // aren't surfaced through telemetry — left undefined rather than
-          // invented.
-          const v3CompletenessScore = state.telemetry?.v3Completeness;
           const decisionCtx: DecisionContext = {
             fixture: { home: job.home, away: job.away, league: job.league, kickoff: job.kickoff },
             fp: runResult.fp,
@@ -810,8 +801,6 @@ export async function runBatch(
             rawStatsBlock: state.telemetry?.rawStatsBlock as Record<string, unknown> | undefined,
             allMarkets,
             integrity: integrityVerdict,
-            completeness:
-              typeof v3CompletenessScore === "number" ? { score: v3CompletenessScore } : undefined,
             slateSanity,
           };
 

@@ -665,7 +665,6 @@ export function predictabilityScore(
 
   const stats = detail.stats;
   const odds = detail.odds;
-  const cov = detail.statscoverage;
 
   // ── Soft discard penalties ─────────────────────────────────────────────────
   let penalty = 0;
@@ -673,12 +672,12 @@ export function predictabilityScore(
   // Cup / friendly / trophy — league-name heuristic only (no hardcoded city list)
   if (_CUP_RE.test(leagueName)) penalty += 25;
 
-  // Low-data: statscoverage flags all three as false/absent
-  const hasLeagueTable = cov?.leaguetable === true;
-  const hasFormTable = cov?.formtable === true;
-  const hasH2H = cov?.headtohead === true;
-  // H2H only counts toward "has data" once it clears the same sample gate used by
-  // the H2H component below — a single past meeting is not real signal.
+  // Low-data: judged on the actual stats fields present, not on the sidecar's
+  // own self-reported statscoverage flags (removed per the sidecar contract —
+  // the feed supplies data, it doesn't get an opinion on whether that data
+  // counts). H2H only counts toward "has data" once it clears the same sample
+  // gate used by the H2H component below — a single past meeting is not real
+  // signal.
   const h2hSampleOk = (stats?.h2h?.total ?? 0) >= MIN_H2H_SAMPLE;
   const hasAnyStats = !!(
     stats?.form ||
@@ -686,7 +685,7 @@ export function predictabilityScore(
     stats?.goals ||
     (stats?.h2h && h2hSampleOk)
   );
-  if (!hasAnyStats && !hasLeagueTable && !hasFormTable && !(hasH2H && h2hSampleOk)) penalty += 20;
+  if (!hasAnyStats) penalty += 20;
 
   // ── Component 1: Favourite strength (0–30) ────────────────────────────────
   // Prefer xG prior; fall back to goals avg; skip when neither is available.
@@ -778,23 +777,6 @@ export function predictabilityScore(
 
   const raw = favouriteScore + scoringScore + formScore + oneX2Score + h2hScore + standingsScore;
   return Math.max(0, Math.min(100, Math.round(raw - penalty)));
-}
-
-// ── Data completeness ─────────────────────────────────────────────────────────
-
-/** Returns 0–5: count of key signal fields present on the sidecar detail.
- *  Used as a secondary sort key within each priority tier so data-rich fixtures
- *  are analyzed before data-sparse ones of the same tier. */
-function dataCompletenessScore(c: SelectionCandidate): number {
-  const d = c.sportyBetDetail;
-  if (!d) return 0;
-  let n = 0;
-  if (d.stats?.form?.home && d.stats.form.away) n++;
-  if (d.stats?.goals?.home && d.stats.goals.away) n++;
-  if (d.odds?.["1x2"]?.home != null) n++;
-  if (d.stats?.xg?.home && d.stats.xg.away) n++;
-  if (d.stats?.standings?.home && d.stats.standings.away) n++;
-  return n;
 }
 
 // ── Composite scoring ─────────────────────────────────────────────────────────
@@ -927,8 +909,11 @@ export function selectFixtures(
   // Sort order:
   //   1. Hard tier — ORACLE_PRIORITY_LEAGUES first (tier 0) so chunk loops always
   //      analyze top-flight fixtures before lower-priority ones regardless of score.
-  //   2. Data completeness within tier — more signal fields → analyzed sooner.
-  //   3. Composite predictability score (desc) as tiebreaker within tier+completeness.
+  //   2. Composite predictability score (desc) as tiebreaker within tier.
+  // [Sidecar-contract change] Previously broke ties by dataCompletenessScore
+  // (count of sidecar signal fields present) before the composite score —
+  // removed: priority must not be driven by how much data the sidecar
+  // happened to supply for a fixture.
   const scoredAll = gated
     .map((c) => ({ c, score: scoreFixture(c, marketCounts.get(c) ?? 0, now) }))
     .sort((a, b) => {
@@ -936,8 +921,6 @@ export function selectFixtures(
         (ORACLE_PRIORITY_LEAGUES.has(a.c.job.league) ? 0 : 1) -
         (ORACLE_PRIORITY_LEAGUES.has(b.c.job.league) ? 0 : 1);
       if (tierDiff !== 0) return tierDiff;
-      const dcDiff = dataCompletenessScore(b.c) - dataCompletenessScore(a.c);
-      if (dcDiff !== 0) return dcDiff;
       return (
         b.score - a.score ||
         a.c.job.kickoff.localeCompare(b.c.job.kickoff) ||

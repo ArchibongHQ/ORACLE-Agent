@@ -261,21 +261,12 @@ describe("renderDailyFixtureReport", () => {
     expect(html).not.toContain("low-stakes");
   });
 
-  it("renders 100% data completeness for a fully-stocked fixture", () => {
+  it("never renders a Data completeness row (sidecar contract — no data-quality self-assessment in reports)", () => {
     const html = renderDailyFixtureReport([event("A", "B")], "2026-06-25", {
       lineups: [],
       newsByTeam: new Map(),
     });
-    expect(html).toContain("Data completeness");
-    expect(html).toContain("100.0%");
-  });
-
-  it("renders the floored 50% data completeness for a fixture with no stats", () => {
-    const html = renderDailyFixtureReport([event("C", "D", false)], "2026-06-25", {
-      lineups: [],
-      newsByTeam: new Map(),
-    });
-    expect(html).toContain("50.0%");
+    expect(html).not.toContain("Data completeness");
   });
 });
 
