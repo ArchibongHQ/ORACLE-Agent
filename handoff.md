@@ -1,4 +1,63 @@
-# ⭐ CURRENT — 2026-07-16 (later session): patterns-engine Wave 2 ALL 3 PHASES SHIPPED, committed on 3 stacked branches — NOT yet pushed/PR'd/deployed
+# ⭐ CURRENT — 2026-07-16 (3rd session): patterns-engine Wave 2 PUSHED + 3 stacked PRs OPEN (#70/71/72) — pre-PR review caught + fixed a critical Under-leak; owner review/merge + deploy still owed
+
+> **Cold-read this first.** This supersedes the section immediately below (still accurate history for
+> what Wave 2 phases 2/3/0 actually implement — read it for that). This session pushed the 3 branches
+> that section left unpushed and opened the 3 stacked PRs it specified, but **did not just push as-is**:
+> per CLAUDE.md's mandatory `/gstack-review` gate for diffs >50 lines, ran two independent adversarial
+> review agents (Claude, parallel) against the full stacked diff before opening PRs. **Both independently
+> found the same critical bug**: the Phase 3 Under→AH pivot's headline guarantee ("never recommend an
+> Under") didn't actually reach the fixture's real, staked, delivered pick — `batch/index.ts`'s
+> `bestAssessment`/`v3Best` (feeds the delivered slate/Telegram output) and `safety/pipeline.ts`'s
+> `v3AssessmentsToEvMarkets` (the canonical Kelly staker feeding `eligible`/`decision.primaryPick`) both
+> read raw `v3Result.assessments`, which `analyzeFixtureMarketsV3`'s Under-strip deliberately leaves
+> untouched (only strips its own `evMarkets` return value, for transparency). A gate-passing Under could
+> still win either path and become the real, real-money recommendation. **Fixed same session** (commit
+> `d26ccf9`, on `feature/patterns-engine-wave2-telemetry`'s tip): both sites now apply the same
+> `TOTALS_FAMILIES`/`dirOfDesc==="under"` exclusion already correctly used at `v3BestFallback`; 2 new
+> regression tests added proving a high-edge "done" Under can no longer win `v3Best` or `eligibleBets`.
+> Grepped every other production reader of `v3Result.assessments` afterward to confirm no third leak site
+> exists (the only other reads are the pre-existing R10 goals cross-check, which runs upstream and only
+> selects what to *interrogate*, not what gets delivered — and the structurally separate goals-only
+> pipeline, a different type entirely, out of scope). Full verification: `pnpm turbo run typecheck test
+> --concurrency=1` — 30/30 tasks green; engine 941/941 (was 939, +2); biome clean.
+
+## What happened this session
+
+- **Pushed** `feature/patterns-engine-wave2-gate` (7810b38), `feature/patterns-engine-wave2-ah-pivot`
+  (41e98a8), `feature/patterns-engine-wave2-telemetry` (79a8f52, then +`d26ccf9` the fix commit).
+- **Opened 3 stacked PRs**: [#70](https://github.com/ArchibongHQ/ORACLE-Agent/pull/70) (Phase 2, base
+  `main`), [#71](https://github.com/ArchibongHQ/ORACLE-Agent/pull/71) (Phase 3, base `#70`'s branch),
+  [#72](https://github.com/ArchibongHQ/ORACLE-Agent/pull/72) (Phase 0 + the post-review fix, base `#71`'s
+  branch). PR bodies use the full commit messages plus explicit cross-references to the fix.
+- **Set `.env`**: added `ORACLE_V3_PATTERNS=shadow` explicitly (was previously unset, relying on the code
+  default) — matches `.env.example`'s documented default and this repo's established shadow-promotion
+  discipline. Zero live effect either way until PR #70-72 merge and deploy (`.env` is gitignored, this
+  edit is local-only, not part of any PR).
+- **Did NOT**: merge any PR, rebuild, or restart services — per standing instruction, those stay owner
+  actions.
+
+## NEXT — owner action: review + merge 3 PRs (in stack order), then deploy
+
+1. Review [#70](https://github.com/ArchibongHQ/ORACLE-Agent/pull/70) →
+   [#71](https://github.com/ArchibongHQ/ORACLE-Agent/pull/71) →
+   [#72](https://github.com/ArchibongHQ/ORACLE-Agent/pull/72) in that order (each is stacked on the
+   previous — merging #70 first lets GitHub re-target #71 automatically, same for #71→#72).
+2. After all 3 merge to `main`, deploy (same as every prior wave — elevated shell, owner-only):
+   ```
+   pnpm turbo run build --concurrency=1
+   # then in an ELEVATED PowerShell:
+   Restart-Service OracleWorker
+   Restart-Service OracleBot
+   ```
+3. `ORACLE_V3_PATTERNS=shadow` is already set in `.env` (this session) — after deploy, run at least one
+   real slate, review the `patternRelaxed:"shadow_pass"` tally + fill-to-39 pool composition in the slate
+   report, confirm zero Unders anywhere in a real Telegram/report output, THEN flip to `on`. Never a
+   hand-flip straight to `on` without shadow evidence (same discipline as X-carveout/sharp-feed/
+   calibration-ledger).
+
+═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+# ⭐ PRIOR — 2026-07-16 (2nd session): patterns-engine Wave 2 ALL 3 PHASES SHIPPED, committed on 3 stacked branches — NOT yet pushed/PR'd/deployed
 
 > **Cold-read this first.** This supersedes the "Wave 2 is the next task" framing directly below (still
 > accurate history — read it for full context on Wave 1 + the owner's locked decisions). This session
