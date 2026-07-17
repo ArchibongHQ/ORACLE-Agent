@@ -244,28 +244,18 @@ describe("pickSafestGoalsLeg", () => {
   it("drops Over 2.5 when strict data gate fails but keeps a passing Over 1.5", () => {
     const thin = detailMap([["A", "B", thinDetail()]]);
     const job = okJob("A", "B", [
-      evm("Over 2.5", 0.95, 0.9), // would win on mp, but strict gate fails
-      // thinDetail has only a single-team goals signal → completeness floors at
-      // 0.5 → required edge = MIN_GOALS_EDGE / 0.5 = 0.10. Give Over 1.5 a 0.12
-      // edge so it clears the thin-data haircut and remains the kept leg.
-      evm("Over 1.5", 0.84, 0.72), // edge=0.12 — above the 0.10 thin-data bar
+      evm("Over 2.5", 0.95, 0.9), // would win on mp, but strict data gate fails (single-team signal only)
+      evm("Over 1.5", 0.84, 0.72), // edge=0.12 clears the plain MIN_GOALS_EDGE bar
     ]);
     const leg = pickSafestGoalsLeg(job, { detailByKey: thin });
     expect(leg?.side).toBe("Over 1.5");
   });
 
-  it("applies the data-completeness haircut: a thin-data leg needs a bigger edge", () => {
-    const thin = detailMap([["A", "B", thinDetail()]]); // completeness 0.5 → bar 0.10
-    // 0.08 edge clears the plain 5% bar but NOT the thin-data 10% bar → dropped.
-    const justUnder = okJob("A", "B", [evm("Over 1.5", 0.8, 0.72)]);
-    expect(pickSafestGoalsLeg(justUnder, { detailByKey: thin })).toBeNull();
-    // The same leg on a full-data (rich) fixture qualifies — completeness 1.0.
-    const rich = detailMap([["A", "B", richDetail()]]);
-    expect(
-      pickSafestGoalsLeg(okJob("A", "B", [evm("Over 1.5", 0.8, 0.72)]), {
-        detailByKey: rich,
-      })?.side
-    ).toBe("Over 1.5");
+  it("no longer applies a data-completeness edge haircut: a thin-data leg is judged by the same plain edge bar as a full-data one (sidecar contract — no penalty from the feed's own data-richness)", () => {
+    const thin = detailMap([["A", "B", thinDetail()]]);
+    // 0.08 edge clears the plain 5% bar — no thin-data penalty applies anymore.
+    const justClears = okJob("A", "B", [evm("Over 1.5", 0.8, 0.72)]);
+    expect(pickSafestGoalsLeg(justClears, { detailByKey: thin })?.side).toBe("Over 1.5");
   });
 
   it("respects veto", () => {
@@ -319,8 +309,8 @@ describe("selectGoalsAccumulator", () => {
     // Staggered kickoffs (>3h apart) — different leagues already imply rho=0,
     // but staggering here too keeps this test about ranking/counting, not
     // correlation rejection (covered separately below).
-    // C-D uses thinDetail (completeness 0.5 → required edge 0.10), so give its
-    // Over 1.5 a 0.12 edge to clear the haircut; A-B is richDetail (full bar).
+    // C-D uses thinDetail, A-B uses richDetail — both judged by the same
+    // plain MIN_GOALS_EDGE bar (no data-completeness haircut).
     const jobs = [
       okJob("A", "B", [evm("Over 2.5", 0.82, 0.77)], "Premier League", "2026-06-15T12:00:00Z"),
       okJob("C", "D", [evm("Over 1.5", 0.9, 0.78)], "La Liga", "2026-06-15T19:00:00Z"),

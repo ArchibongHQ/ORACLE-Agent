@@ -15,7 +15,6 @@ import { type DailyNewsRow, loadDailyNews, teamSlug } from "./dailyStore.js";
 import { findLineupSummary, type LineupSummary, loadLineupSummaries } from "./lineups.js";
 import { CSS, esc, pct } from "./report.js";
 import { loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
-import { dataCompleteness } from "./selectGoals.js";
 import { buildMotivation } from "./sportyBetStats.js";
 import { namesMatch } from "./teamNames.js";
 import { buildTravel } from "./travel.js";
@@ -151,7 +150,6 @@ export function renderFixtureRawData(
     neutralVenue: event.league === "FIFA World Cup",
   });
   const motivation = buildMotivation(event.detail);
-  const completeness = dataCompleteness(event.detail);
 
   const sections = [
     renderOdds(event),
@@ -280,7 +278,6 @@ export function renderFixtureRawData(
       : "",
     travel.soft ? line("Travel", travel.soft.text) : "",
     motivation.soft ? line("Motivation", motivation.soft.text) : "",
-    line("Data completeness", pct(completeness)),
     lineup
       ? [
           lineup.home_formation || lineup.home_starting_xi?.length

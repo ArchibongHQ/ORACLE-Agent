@@ -37,12 +37,7 @@ export {
   segmentKey,
   significanceAcceptGate,
 } from "./calibration/index.js";
-export type {
-  DataCompletenessSignal,
-  DecisionResult,
-  FeedIntegritySignal,
-  SlateSanitySignal,
-} from "./decision/index.js";
+export type { DecisionResult, FeedIntegritySignal, SlateSanitySignal } from "./decision/index.js";
 export {
   buildEligibleBets,
   decide,

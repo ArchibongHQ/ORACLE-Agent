@@ -15,19 +15,23 @@
  *
  *  Reuses the exact data-loading + field-shaping helpers the HTML report used
  *  (loadSportyBetIndex / loadLineupSummaries / buildNewsByTeam / buildMotivation /
- *  buildTravel / dataCompleteness / lookupMarket / PRICEABLE_FAMILIES) so the two
- *  outputs can never drift in what data they consider "captured". */
+ *  buildTravel / lookupMarket / PRICEABLE_FAMILIES) so the two outputs can
+ *  never drift in what data they consider "captured".
+ *
+ *  [Sidecar-contract clarification] Deliberately does NOT surface the sidecar's
+ *  own data-quality self-assessment (v3 completeness/eligibility/predictability
+ *  scores) as report columns — those are runtime-computed opinions ABOUT the
+ *  data, not the data itself, and per the sidecar contract (fixtures/markets/
+ *  stats only, no self-assessment influencing anything downstream) they don't
+ *  belong here. The raw fields those scores were derived from are already
+ *  present as their own columns above. */
 import { access, mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { lookupMarket, PRICEABLE_FAMILIES } from "@oracle/engine";
 import ExcelJS from "exceljs";
 import { type DailyNewsRow, loadDailyNews, teamSlug } from "./dailyStore.js";
-import { scoreCompleteness } from "./goalsV3/completeness.js";
-import { classifyEligibility } from "./goalsV3/eligibility.js";
-import { scorePredictabilityV3 } from "./goalsV3/predictability.js";
 import { findLineupSummary, type LineupSummary, loadLineupSummaries } from "./lineups.js";
 import { loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
-import { dataCompleteness } from "./selectGoals.js";
 import { buildMotivation } from "./sportyBetStats.js";
 import { buildTravel } from "./travel.js";
 
@@ -378,31 +382,6 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
       buildTravel(event.home, event.away, {
         neutralVenue: event.league === "FIFA World Cup",
       }).soft?.text ?? "",
-  },
-  { header: "Data completeness", get: ({ event }) => dataCompleteness(event.detail) },
-  // ── goals-market-analysis-prompt-v3 (pre-enrichment; report-time snapshot) ──
-  {
-    header: "v3 Completeness",
-    get: ({ event }) => scoreCompleteness(event.detail).score,
-  },
-  {
-    header: "v3 Mandatory Missing",
-    width: 24,
-    get: ({ event }) => scoreCompleteness(event.detail).mandatoryMissing.join(", "),
-  },
-  {
-    header: "v3 Eligibility",
-    width: 14,
-    get: ({ event }) => classifyEligibility(event).status,
-  },
-  {
-    header: "v3 Eligibility reason",
-    width: 26,
-    get: ({ event }) => classifyEligibility(event).reasons.join("; "),
-  },
-  {
-    header: "v3 Predictability",
-    get: ({ event }) => scorePredictabilityV3(event),
   },
   // ── Lineups ───────────────────────────────────────────────────────────────
   {

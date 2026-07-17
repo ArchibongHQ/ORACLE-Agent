@@ -53,7 +53,6 @@ import {
   type SportyBetEventDetail,
   type SportyBetIndex,
   scoreCompleteness,
-  scorePredictabilityV3,
   selectGoalsAccumulator,
   sidecarKey,
   sportyEventToFixtureJob,
@@ -350,11 +349,12 @@ export async function loadTodaysCompletedLegs(
 
 /** goals-market-analysis-prompt-v3 end-to-end: eligibility (union whitelist +
  *  hard discards) -> enrichment (H2H/newsIntel cache-only/lineups, reused as-is
- *  from the legacy path) -> weighted completeness gate (<70 discard) ->
- *  predictability ordering -> deterministic per-fixture analysis (v3 lambdas +
- *  Dixon-Coles matrix + match-shape BTTS correction + §4 edge gate, NO
- *  per-fixture LLM) -> selectGoalsAccumulator(v3) -> ONE slate arbiter call ->
- *  the same five Telegram slips the legacy path sends. */
+ *  from the legacy path) -> weighted completeness (sidecar-contract: annotated,
+ *  never gates — see the Phase 0 comment below) -> kickoff-time ordering ->
+ *  deterministic per-fixture analysis (v3 lambdas + Dixon-Coles matrix +
+ *  match-shape BTTS correction + §4 edge gate, NO per-fixture LLM) ->
+ *  selectGoalsAccumulator(v3) -> ONE slate arbiter call -> the same five
+ *  Telegram slips the legacy path sends. */
 export async function runGoalsBatchV3(
   futureEvents: SportyBetEvent[],
   index: SportyBetIndex,
@@ -419,12 +419,24 @@ export async function runGoalsBatchV3(
   }
   const enrichedJobs = await enrichWithLineups(withNews);
 
-  // ── Phase 0 — weighted completeness gate ─────────────────────────────────
+  // ── Phase 0 — weighted completeness (sidecar-contract: annotate, never gate) ─
+  // [Sidecar-contract change] This used to hard-discard any fixture below the
+  // completeness floor or failing the heightened-trends bar — a real "the
+  // feed's own data-quality opinion decides candidacy" gate, and the one this
+  // pipeline's own logs showed was dropping a large share of an eligible
+  // slate. Demoted to a non-gating annotation, mirroring the same fix already
+  // shipped for the all-markets v3 pipeline (marketsV3/pipeline.ts's
+  // gateMarketsV3Fixture, patterns-engine Wave 1 Phase 5): every fixture that
+  // cleared Phase 1 (SRL/missing-odds) proceeds to analysis regardless of
+  // completeness; analyzeGoalsFixtureV3's own deterministic math already
+  // degrades gracefully on thin data via `penaltyFlags` (below) — that's the
+  // engine forming its own conclusion from the data, not a pre-filter
+  // discarding fixtures based on the sidecar's opinion of its own richness.
   const eligByKey = new Map(
     classified.map((c) => [sidecarKey(c.event.home, c.event.away), c.elig])
   );
-  let completenessDiscards = 0;
-  let heightenedDiscards = 0;
+  let completenessAnnotated = 0;
+  let heightenedAnnotated = 0;
   const gated: Array<{
     event: SportyBetEvent;
     job: (typeof preJobs)[number]["job"];
@@ -456,28 +468,28 @@ export async function runGoalsBatchV3(
       completeness.score < minScore ||
       !heightenedOk
     ) {
-      if (elig?.status === "heightened") heightenedDiscards++;
-      else completenessDiscards++;
-      continue;
+      if (elig?.status === "heightened") heightenedAnnotated++;
+      else completenessAnnotated++;
     }
     gated.push({ event, job, completeness, heightened: elig?.status === "heightened" });
   }
   process.stdout.write(
-    `[goals-v3] completeness: ${preJobs.length} → ${gated.length} survive ` +
-      `(${completenessDiscards} below floor, ${heightenedDiscards} heightened-bar failed)\n`
+    `[goals-v3] completeness: ${preJobs.length} analysed ` +
+      `(${completenessAnnotated} below floor, ${heightenedAnnotated} heightened-bar failed — ` +
+      `annotated, not dropped)\n`
   );
-  if (!gated.length) {
-    process.stdout.write("[goals-v3] no fixtures cleared the completeness gate — skipping\n");
-    return;
-  }
+  // Note: gated.length === preJobs.length always now (the loop above pushes
+  // unconditionally, annotate-not-gate) — the preJobs.length===0 guard above
+  // already covers the empty case, so no second empty-check is needed here.
 
-  // ── Phase 2 — predictability ordering (cosmetic; lean path analyzes all) ──
+  // ── Phase 2 — deterministic ordering (kickoff time, not a data-quality
+  // opinion). Was previously sorted by predictability/completeness score —
+  // removed per the sidecar contract (priority must not be driven by the
+  // feed's self-assessment of its own data). Sorting by kickoff+name keeps
+  // output deterministic without reintroducing that influence.
   gated.sort(
-    (a, b) =>
-      scorePredictabilityV3(a.event) - scorePredictabilityV3(b.event) ||
-      a.completeness.score - b.completeness.score
+    (a, b) => a.job.kickoff.localeCompare(b.job.kickoff) || a.job.home.localeCompare(b.job.home)
   );
-  gated.reverse();
 
   // ── Phases 3–4 — deterministic per-fixture analysis + edge gate ──────────
   const runId = `run_v3_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;

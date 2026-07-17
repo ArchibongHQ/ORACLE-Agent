@@ -1145,10 +1145,12 @@ describe("decide — PR-23 unmapped-tail LLM executor scope", () => {
 // ── buildPrompt / buildArbiterPrompt — v5 wiring (WS2-D) ───────────────────────
 // Direct unit tests, not routed through decide(): decide()'s own call sites
 // (decideInner's buildPrompt() call, arbitrate()'s buildArbiterPrompt() call)
-// are cascade-owned code this workstream doesn't touch, and neither threads
-// the new optional integrity/completeness/slateSanity params through yet (see
-// the cross-file wiring note on FeedIntegritySignal in decision/index.ts) — so
-// exercising the new prompt sections means calling the builders directly.
+// thread ctx.integrity/ctx.slateSanity through automatically — exercising the
+// prompt sections in isolation here still means calling the builders directly.
+// [Sidecar-contract change] completeness was removed entirely (no longer a
+// param on either builder) — data-completeness self-assessment no longer
+// feeds the LLM prompt at all. Feed integrity (contamination detection, a
+// different concern — not a data-quality opinion) stays.
 
 const DRAFT: DecisionOutput = {
   primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
@@ -1192,55 +1194,29 @@ describe("buildPrompt — v5 Rule 0.14 feed-integrity section", () => {
   });
 });
 
-describe("buildPrompt — v5 Phase 0.5 data-completeness section", () => {
-  it("omits the DATA COMPLETENESS section when completeness is not supplied", () => {
+describe("buildPrompt — sidecar contract: no data-completeness section exists", () => {
+  it("buildPrompt has no completeness parameter and never renders a DATA COMPLETENESS section", () => {
     const prompt = buildPrompt([makeMarket()], BASE_CTX);
     expect(prompt).not.toContain("=== DATA COMPLETENESS");
-  });
-
-  it("renders score/acquired/missing when completeness is supplied", () => {
-    const prompt = buildPrompt([makeMarket()], BASE_CTX, undefined, {
-      score: 0.72,
-      acquired: ["xG (web, cited)"],
-      missing: ["H2H", "venue split"],
-    });
-    expect(prompt).toContain("=== DATA COMPLETENESS (v5 Phase 0.5) ===");
-    expect(prompt).toContain("Score: 72%");
-    expect(prompt).toContain("Acquired: xG (web, cited)");
-    expect(prompt).toContain("Missing: H2H, venue split");
-  });
-
-  it("renders an unknown score plus none/none when fields are omitted from an otherwise-present signal", () => {
-    const prompt = buildPrompt([makeMarket()], BASE_CTX, undefined, {});
-    expect(prompt).toContain("Score: unknown");
-    expect(prompt).toContain("Acquired: none");
-    expect(prompt).toContain("Missing: none");
+    expect(prompt).not.toContain("Data completeness");
   });
 });
 
-describe("buildArbiterPrompt — v5 Rule 0.14 / Phase 0.5 STEP 0.5", () => {
-  it("renders '(no ... supplied)' fallbacks when integrity/completeness are omitted", () => {
+describe("buildArbiterPrompt — v5 Rule 0.14 STEP 0.5 feed-integrity", () => {
+  it("renders the '(no feed-integrity flags supplied)' fallback when integrity is omitted, and never mentions data completeness", () => {
     const prompt = buildArbiterPrompt([makeMarket()], BASE_CTX, DRAFT, "deterministic");
-    expect(prompt).toContain("STEP 0.5 — FEED INTEGRITY & DATA COMPLETENESS");
+    expect(prompt).toContain("STEP 0.5 — FEED INTEGRITY (v5 Rule 0.14)");
     expect(prompt).toContain("Feed integrity: (no feed-integrity flags supplied)");
-    expect(prompt).toContain("Data completeness: (no data-completeness signal supplied)");
+    expect(prompt).not.toContain("Data completeness");
   });
 
-  it("renders the supplied integrity verdict and completeness line", () => {
-    const prompt = buildArbiterPrompt(
-      [makeMarket()],
-      BASE_CTX,
-      DRAFT,
-      "deterministic",
-      {
-        verdict: "flagged",
-        reason: "duplicate_block",
-        detail: "shared block with Al Ahly SC v Zamalek",
-      },
-      { score: 0.55, acquired: ["lineups"], missing: ["xG"] }
-    );
+  it("renders the supplied integrity verdict", () => {
+    const prompt = buildArbiterPrompt([makeMarket()], BASE_CTX, DRAFT, "deterministic", {
+      verdict: "flagged",
+      reason: "duplicate_block",
+      detail: "shared block with Al Ahly SC v Zamalek",
+    });
     expect(prompt).toContain("Feed integrity: FLAGGED — shared block with Al Ahly SC v Zamalek");
-    expect(prompt).toContain("Data completeness: Score: 55%  |  Acquired: lineups  |  Missing: xG");
   });
 });
 
@@ -1252,43 +1228,27 @@ describe("buildArbiterPrompt — v5 §5.6 STEP 5 slate sanity", () => {
   });
 
   it("renders the 'no slate-wide sanity flags' fallback when slateSanity.flags is empty", () => {
-    const prompt = buildArbiterPrompt(
-      [makeMarket()],
-      BASE_CTX,
-      DRAFT,
-      "deterministic",
-      undefined,
-      undefined,
-      { flags: [] }
-    );
+    const prompt = buildArbiterPrompt([makeMarket()], BASE_CTX, DRAFT, "deterministic", undefined, {
+      flags: [],
+    });
     expect(prompt).toContain("no slate-wide sanity flags supplied for this run");
   });
 
   it("renders supplied slate-wide flags and cap-rate", () => {
-    const prompt = buildArbiterPrompt(
-      [makeMarket()],
-      BASE_CTX,
-      DRAFT,
-      "deterministic",
-      undefined,
-      undefined,
-      { flags: ["result_skew_home", "model_miscalibration"], capRate: 0.31 }
-    );
+    const prompt = buildArbiterPrompt([makeMarket()], BASE_CTX, DRAFT, "deterministic", undefined, {
+      flags: ["result_skew_home", "model_miscalibration"],
+      capRate: 0.31,
+    });
     expect(prompt).toContain(
       "Slate-wide flags: result_skew_home, model_miscalibration  |  cap-rate=31%"
     );
   });
 
   it("omits the cap-rate suffix when capRate is null", () => {
-    const prompt = buildArbiterPrompt(
-      [makeMarket()],
-      BASE_CTX,
-      DRAFT,
-      "deterministic",
-      undefined,
-      undefined,
-      { flags: ["totals_skew_over"], capRate: null }
-    );
+    const prompt = buildArbiterPrompt([makeMarket()], BASE_CTX, DRAFT, "deterministic", undefined, {
+      flags: ["totals_skew_over"],
+      capRate: null,
+    });
     expect(prompt).toContain("Slate-wide flags: totals_skew_over");
     expect(prompt).not.toContain("cap-rate=");
   });

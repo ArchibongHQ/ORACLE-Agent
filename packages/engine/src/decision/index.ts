@@ -6,7 +6,6 @@ import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS, withKeyLock } from "@oracle/storage";
 import type {
   ConfidenceGrade,
-  DataCompletenessSignal,
   DecisionContext,
   DecisionOutput,
   DecisionReplay,
@@ -105,13 +104,13 @@ function deterministicDecide(
 
 // ── Prompt builder ────────────────────────────────────────────────────────────
 // [review fix — circular-dependency cleanup] FeedIntegritySignal/
-// DataCompletenessSignal/SlateSanitySignal moved to types.ts (they're
-// re-exported from there below) — types.ts is this package's foundational
-// leaf module and DecisionContext already lives there; defining these three
-// shapes here made types.ts import back from decision/index.ts, inverting
-// the normal dependency direction. Re-exported here for backward compat with
-// any existing `import { FeedIntegritySignal } from "./decision/index.js"`.
-export type { DataCompletenessSignal, FeedIntegritySignal, SlateSanitySignal } from "../types.js";
+// SlateSanitySignal moved to types.ts (re-exported from there below) —
+// types.ts is this package's foundational leaf module and DecisionContext
+// already lives there; defining these shapes here made types.ts import back
+// from decision/index.ts, inverting the normal dependency direction.
+// Re-exported here for backward compat with any existing `import {
+// FeedIntegritySignal } from "./decision/index.js"`.
+export type { FeedIntegritySignal, SlateSanitySignal } from "../types.js";
 
 /** [review fix — prompt-injection defense] FeedIntegritySignal.detail/reason
  *  embed raw team-name substrings sourced from the unauthenticated scraped
@@ -147,22 +146,10 @@ function integrityGuidance(verdict: FeedIntegritySignal["verdict"]): string {
     : "Treat this fixture's detailed market data with reduced trust; if your pick or rationale relies on the disputed data, name the flag and lower confidence accordingly.";
 }
 
-function formatCompletenessLine(
-  completeness: DataCompletenessSignal | undefined
-): string | undefined {
-  if (!completeness) return undefined;
-  const scoreLine =
-    completeness.score !== undefined ? `${(completeness.score * 100).toFixed(0)}%` : "unknown";
-  const acquired = completeness.acquired?.length ? completeness.acquired.join(", ") : "none";
-  const missing = completeness.missing?.length ? completeness.missing.join(", ") : "none";
-  return `Score: ${scoreLine}  |  Acquired: ${acquired}  |  Missing: ${missing}`;
-}
-
 export function buildPrompt(
   eligibleBets: EVMarket[],
   ctx: DecisionContext,
-  integrity?: FeedIntegritySignal,
-  completeness?: DataCompletenessSignal
+  integrity?: FeedIntegritySignal
 ): string {
   const {
     fixture,
@@ -195,7 +182,6 @@ export function buildPrompt(
   const integrityLine = formatIntegrityLine(integrity);
   const integrityGuidanceLine =
     integrity && integrity.verdict !== "clean" ? integrityGuidance(integrity.verdict) : "";
-  const completenessLine = formatCompletenessLine(completeness);
 
   return `You are ORACLE's gated betting decision engine. Return ONLY valid JSON — no markdown, no preamble.
 
@@ -212,7 +198,7 @@ ML Filter: ${mlAllowed ? "PASS" : "BLOCKED"}  |  Draw Risk: ${drawRisk}
 Ante-Post Debate Trigger: ${betTrigger}
 Portfolio Correlation: ${portfolioCorrelation !== null ? portfolioCorrelation.toFixed(3) : "N/A"}
 Hours to Kickoff: ${hoursToKO !== undefined ? hoursToKO.toFixed(1) : "unknown"}
-${integrityLine ? `\n=== FEED INTEGRITY (v5 Rule 0.14) ===\n${integrityLine}\n${integrityGuidanceLine}\n` : ""}${completenessLine ? `\n=== DATA COMPLETENESS (v5 Phase 0.5) ===\n${completenessLine}\n` : ""}
+${integrityLine ? `\n=== FEED INTEGRITY (v5 Rule 0.14) ===\n${integrityLine}\n${integrityGuidanceLine}\n` : ""}
 === ELIGIBLE BETS (ranked by model score) ===
 ${betLines || "NONE"}
 ${softLines ? `\n=== SOFT CONTEXT ===\n${softLines}` : ""}
@@ -222,7 +208,6 @@ Grade LEAN when: betTrigger=RED without strong independent evidence, mlAllowed=f
 Grade NO_EDGE when: ev<=0 — still return the best-ranked market in primaryPick
 MoneyLine picks forbidden when drawRisk=VERY_HIGH
 If a FEED INTEGRITY section above is present, treat it as instructed there and name the flag in your rationale — never pick a market as if the fixture were clean when it isn't.
-If a DATA COMPLETENESS section above is present, a low score is a reason to prefer LEAN over STRONG even when the raw edge looks strong — thin data behind a big edge is the exact failure mode Phase 0.5 exists to catch, not free money.
 Treat [STATS] soft-context lines (SportyBet form/standings/H2H/season goals/over-under/fixture-load) as real evidence, not background colour: when they reinforce the model-favoured side, that supports grading toward STRONG; when they contradict it (e.g. one-sided H2H or standings gap against the model's pick, heavy fixture congestion for the favourite), lower confidence accordingly or prefer altPick — you may only choose among the ELIGIBLE BETS above, never invent a market.
 
 === REQUIRED OUTPUT (JSON only, no other text) ===
@@ -296,7 +281,6 @@ export function buildArbiterPrompt(
   draft: DecisionOutput,
   draftModel: string,
   integrity?: FeedIntegritySignal,
-  completeness?: DataCompletenessSignal,
   slateSanity?: SlateSanitySignal
 ): string {
   const { fixture, fp, lambdaH, lambdaA, expectedScoreline, regime, softContext, rawStatsBlock } =
@@ -304,8 +288,6 @@ export function buildArbiterPrompt(
 
   const rawStatsLines = renderRawStatsBlock(rawStatsBlock);
   const integrityStepLine = formatIntegrityLine(integrity) ?? "(no feed-integrity flags supplied)";
-  const completenessStepLine =
-    formatCompletenessLine(completeness) ?? "(no data-completeness signal supplied)";
   const slateSanityStepLine =
     slateSanity && slateSanity.flags.length > 0
       ? `Slate-wide flags: ${slateSanity.flags.join(", ")}${
@@ -345,14 +327,11 @@ STEP 0 — RAW PER-CATEGORY DATA (form/standings/goals/H2H/xG/over-under/congest
 shots-corners-possession, straight from the source — not summarized into prose)
 ${rawStatsLines || "(none supplied)"}
 
-STEP 0.5 — FEED INTEGRITY & DATA COMPLETENESS (v5 Rule 0.14 / Phase 0.5)
+STEP 0.5 — FEED INTEGRITY (v5 Rule 0.14)
 Feed integrity: ${integrityStepLine}
-Data completeness: ${completenessStepLine}
 If feed integrity is FLAGGED or CONTAMINATED, treat this fixture's disputed data as
 unreliable and name it in your rationale — a CONTAMINATED fixture's non-headline
-markets should not be ratified on the strength of that data. A low data-completeness
-score is a reason to prefer LEAN/NO_EDGE over STRONG even when the draft's raw edge
-looks strong.
+markets should not be ratified on the strength of that data.
 
 STEP 1 — STATS (does the hard data support a side?)
 ${statsLines || "(none supplied)"}
@@ -440,7 +419,6 @@ async function arbitrate(
     draft.decision,
     draftModel,
     ctx.integrity,
-    ctx.completeness,
     ctx.slateSanity
   );
   const raw = await callClaudeCode(prompt, { timeoutMs: ARBITER_TIMEOUT_MS });
@@ -656,7 +634,7 @@ async function decideInner(
   // Skip paid LLM tiers when context is missing
   if (!ctx) return deterministicDecide(eligibleBets);
 
-  const prompt = buildPrompt(eligibleBets, ctx, ctx.integrity, ctx.completeness);
+  const prompt = buildPrompt(eligibleBets, ctx, ctx.integrity);
   const geminiKey = config?.geminiApiKey ?? "";
   const openrouterKey = config?.openrouterApiKey ?? "";
 
