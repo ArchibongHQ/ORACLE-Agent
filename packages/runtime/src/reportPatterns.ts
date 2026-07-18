@@ -4,10 +4,34 @@
  *
  *  Purpose (owner instruction 2026-07-18): make the patterns/trends the engine
  *  sees VISIBLE per fixture in the delivered report, so a human can verify the
- *  day's picks were driven by those patterns. The detector call here is the
- *  SAME `detectPatterns` the pick engine runs — one source of truth; this
- *  module only maps sidecar fields and renders, it never re-implements
- *  pattern logic.
+ *  day's picks were driven by those patterns.
+ *
+ *  What's genuinely shared vs. independently built (adversarial review finding,
+ *  2026-07-18 — do not re-claim full parity without re-verifying this list):
+ *  the pure `detectPatterns()` function IS the exact same code the pick
+ *  engine calls — one source of truth for the pattern MATH. Its INPUT here is
+ *  a second, best-effort builder (`buildReportPatternInput`), independent
+ *  from the live pipeline's `buildFixturePatternInput`
+ *  (packages/engine/src/marketsV3/analyzeFixtureMarkets.ts:392-441), because
+ *  this module runs at report-generation time from the raw sidecar event,
+ *  not from the live per-fixture `V3AllMarketsInput` the pick run actually
+ *  used. Known, deliberate differences:
+ *   - Core goal rates: the scored side is recency-blended via the SAME
+ *     `blendRecencyScored` helper the live builder's caller uses
+ *     (`sportyBetStats.ts`'s `buildStatsOverride`), so the two agree on the
+ *     dominant numeric inputs; the conceded side stays flat-season on both,
+ *     matching that same convention.
+ *   - `leagueAvgGoals` here comes from the static `V3_LEAGUE_BASELINES`
+ *     table — NOT lake-override-aware (the live run's `lakeBaselines` can
+ *     override per league from runtime data this module doesn't have).
+ *   - `h2hOversRate` / `restDaysMin` ARE computed here even though the live
+ *     picker does not yet consume them (explicitly deferred at
+ *     analyzeFixtureMarkets.ts:436-440) — meaning the report can show pattern
+ *     context slightly AHEAD of what currently drives selection on these two
+ *     fields, not behind. Flagged so a strength/trap-warning difference on
+ *     these specifically is understood, not mistaken for a bug.
+ *  Sample-size (`nHome`/`nAway`) also uses a different count (match-count
+ *  fields available at report time) than the live run's empirical-block `n`.
  *
  *  Basis honesty: venue-split rates (scoringConceding) are preferred; when
  *  only overall season rates (goals.avg_*) exist the detector still runs but
@@ -15,9 +39,14 @@
  *  v6.2 §2.5.4 convention. Completeness is computed from actual field
  *  presence, never from the feed's own statscoverage self-assessment
  *  (sidecar data contract, PR #74). */
-import { detectPatterns, type PatternInput, type PatternReport } from "@oracle/engine";
+import {
+  detectPatterns,
+  type PatternInput,
+  type PatternReport,
+  V3_LEAGUE_BASELINES,
+} from "@oracle/engine";
 import type { SportyBetEvent, SportyBetStats } from "./selectFixtures.js";
-import { last5Points } from "./sportyBetStats.js";
+import { blendRecencyScored, last5Points } from "./sportyBetStats.js";
 
 export type GreenFlagBasis = "venue" | "overall";
 
@@ -113,23 +142,45 @@ export function buildReportPatternInput(
   const restA = stats.congestion?.away?.rest_days;
   const h2hRate = h2hOversRate(stats);
 
+  // Recency-blend the scored side only (60/40 recent/season), conceded stays
+  // flat-season — mirrors buildStatsOverride's scoredPer90H/A exactly
+  // (sportyBetStats.ts:417-430) so this module's dominant numeric inputs
+  // agree with what actually fed the live pick run.
+  const rawScoredH = venueOk ? sc?.home?.scored_avg : stats.goals?.home?.avg_scored;
+  const rawScoredA = venueOk ? sc?.away?.scored_avg : stats.goals?.away?.avg_scored;
+  const blendedScoredH = blendRecencyScored(
+    rawScoredH,
+    stats.recentGoals?.home?.scored_avg,
+    stats.form?.home?.last5
+  );
+  const blendedScoredA = blendRecencyScored(
+    rawScoredA,
+    stats.recentGoals?.away?.scored_avg,
+    stats.form?.away?.last5
+  );
+
   const input: PatternInput = venueOk
     ? {
-        homeScoredHome: sc?.home?.scored_avg as number,
+        homeScoredHome: (blendedScoredH ?? sc?.home?.scored_avg) as number,
         homeConcededHome: sc?.home?.conceded_avg as number,
-        awayScoredAway: sc?.away?.scored_avg as number,
+        awayScoredAway: (blendedScoredA ?? sc?.away?.scored_avg) as number,
         awayConcededAway: sc?.away?.conceded_avg as number,
         nHome: fin(sc?.home?.matches) ? sc?.home?.matches : undefined,
         nAway: fin(sc?.away?.matches) ? sc?.away?.matches : undefined,
       }
     : {
-        homeScoredHome: stats.goals?.home?.avg_scored as number,
+        homeScoredHome: (blendedScoredH ?? stats.goals?.home?.avg_scored) as number,
         homeConcededHome: stats.goals?.home?.avg_conceded as number,
-        awayScoredAway: stats.goals?.away?.avg_scored as number,
+        awayScoredAway: (blendedScoredA ?? stats.goals?.away?.avg_scored) as number,
         awayConcededAway: stats.goals?.away?.avg_conceded as number,
         nHome: fin(stats.standings?.home?.played) ? stats.standings?.home?.played : undefined,
         nAway: fin(stats.standings?.away?.played) ? stats.standings?.away?.played : undefined,
       };
+  // leagueAvgGoals: static baseline table only — NOT lake-override-aware
+  // (see header comment). Absent when the league isn't in the static table.
+  if (event.league && fin(V3_LEAGUE_BASELINES[event.league])) {
+    input.leagueAvgGoals = V3_LEAGUE_BASELINES[event.league];
+  }
 
   input.homeXg = pickXg(homeXgEntry, "xgf");
   input.homeXga = pickXg(homeXgEntry, "xga");

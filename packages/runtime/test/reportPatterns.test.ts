@@ -16,7 +16,7 @@ function arsenalChelseaEvent(overrides: Partial<SportyBetEvent> = {}): SportyBet
   return {
     home: "Arsenal",
     away: "Chelsea",
-    league: "English Premier League",
+    league: "Premier League",
     kickoff_utc: "2026-07-18T17:30:00Z",
     marketCount: 10,
     detail: {
@@ -61,16 +61,55 @@ function arsenalChelseaEvent(overrides: Partial<SportyBetEvent> = {}): SportyBet
 }
 
 describe("buildReportPatternInput", () => {
-  it("maps venue-split scoringConceding into the detector input (basis=venue)", () => {
+  it("maps venue-split scoringConceding into the detector input (basis=venue); conceded stays flat-season", () => {
     const built = buildReportPatternInput(arsenalChelseaEvent());
     expect(built).not.toBeNull();
     expect(built?.basis).toBe("venue");
-    expect(built?.input.homeScoredHome).toBe(2.4);
+    // homeScoredHome/awayScoredAway are recency-blended (see the dedicated blend
+    // test below) — conceded is never blended, matching buildStatsOverride.
     expect(built?.input.homeConcededHome).toBe(0.6);
-    expect(built?.input.awayScoredAway).toBe(0.8);
     expect(built?.input.awayConcededAway).toBe(2.2);
     expect(built?.input.cornersForH).toBe(6.8);
     expect(built?.input.streakH).toBe(4);
+  });
+
+  it("recency-blends the scored side via the SAME blendRecencyScored helper the live pick engine uses", () => {
+    const event = arsenalChelseaEvent();
+    const built = buildReportPatternInput(event);
+    // No stats.recentGoals in the fixture, so blendRecencyScored falls through to
+    // its form-string-decay branch (formToRecentMatches + applyTemporalDecay) —
+    // this asserts the module actually calls the shared helper (a different,
+    // non-flat number results) rather than silently using the raw season average.
+    expect(built?.input.homeScoredHome).not.toBe(2.4);
+    expect(built?.input.homeScoredHome).toBeGreaterThan(0);
+    expect(built?.input.awayScoredAway).not.toBe(0.8);
+
+    // With an explicit stats.recentGoals present, the blend is the exact documented
+    // 60/40 recent/season formula (blendRecencyScored, sportyBetStats.ts:161-171).
+    const withRecent = arsenalChelseaEvent({
+      detail: {
+        eventId: "evt-recent",
+        odds: event.detail?.odds,
+        stats: {
+          ...event.detail?.stats,
+          recentGoals: { home: { scored_avg: 3.0 }, away: { scored_avg: 0.4 } },
+        },
+        statscoverage: {},
+      },
+    });
+    const builtRecent = buildReportPatternInput(withRecent);
+    expect(builtRecent?.input.homeScoredHome).toBeCloseTo(3.0 * 0.6 + 2.4 * 0.4, 5);
+    expect(builtRecent?.input.awayScoredAway).toBeCloseTo(0.4 * 0.6 + 0.8 * 0.4, 5);
+  });
+
+  it("sets leagueAvgGoals from the static V3_LEAGUE_BASELINES table when the league is recognised", () => {
+    const built = buildReportPatternInput(arsenalChelseaEvent());
+    expect(built?.input.leagueAvgGoals).toBeGreaterThan(0);
+
+    const unknownLeague = buildReportPatternInput(
+      arsenalChelseaEvent({ league: "Not A Real League" })
+    );
+    expect(unknownLeague?.input.leagueAvgGoals).toBeUndefined();
   });
 
   it("falls back to overall season goals.avg_* when scoringConceding is absent (basis=overall)", () => {
