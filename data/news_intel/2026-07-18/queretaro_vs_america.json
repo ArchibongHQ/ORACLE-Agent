@@ -1,0 +1,27 @@
+{
+  "home": "Queretaro",
+  "away": "America",
+  "league": "Liga MX",
+  "kickoff": "2026-07-19T03:10:00Z",
+  "injuries": [
+    "Angel Malagon (America) - Achilles tendon injury, out",
+    "Alejandro Zendejas (America) - knee surgery, out several matchdays",
+    "Victor Davila (America) - injury, out",
+    "Luis Malagon (America) - injury, out"
+  ],
+  "suspensions": [],
+  "lineupHints": [
+    "America - Israel Reyes, Sebastian Caceres, Brian Rodriguez unavailable, joined camp late after World Cup duty"
+  ],
+  "motivationFlags": [
+    "Queretaro - full squad available, Apertura 2026 opener"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.si.com/es-us/futbol/lesionados-y-suspendidos-america-queretaro-18-7-2026",
+    "https://www.telemundo.com/deportes/liga-mx/america-pierde-a-zendejas-para-el-inicio-del-apertura-2026-de-la-liga-rcna587567"
+  ],
+  "confidence": 0.55,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

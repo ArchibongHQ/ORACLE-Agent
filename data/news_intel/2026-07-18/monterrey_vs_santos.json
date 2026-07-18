@@ -1,0 +1,26 @@
+{
+  "home": "Monterrey",
+  "away": "Santos",
+  "league": "Liga MX",
+  "kickoff": "2026-07-19T01:05:00Z",
+  "injuries": [
+    "Sergio Canales (Monterrey) - physical problem, doubtful",
+    "Stefan Medina (Monterrey) - ankle injury, out since Matchday 14",
+    "Cesar Bustos (Monterrey) - muscle complaint, not considered"
+  ],
+  "suspensions": [],
+  "lineupHints": [
+    "Carlos Salcedo (Monterrey) - one yellow card away from a suspension"
+  ],
+  "motivationFlags": [
+    "Apertura 2026 season opener (Matchday 1)"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.si.com/es-us/futbol/lesionados-y-suspendidos-de-monterrey-para-enfrentarse-a-santos-laguna",
+    "https://www.si.com/es-us/futbol/monterrey-vs-santos-previa-predicciones-y-alineaciones-18-7-2026"
+  ],
+  "confidence": 0.45,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

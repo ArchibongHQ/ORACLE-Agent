@@ -1,0 +1,27 @@
+{
+  "home": "Molde",
+  "away": "SK Brann",
+  "league": "Eliteserien",
+  "kickoff": "2026-07-18T16:00:00Z",
+  "injuries": [
+    "Mads Kikkenborg (Molde) - injury, out",
+    "Fredrik Kristensen Dahl (Molde) - injury, out",
+    "Nana Boakye (SK Brann) - injury, out",
+    "Eggert Gudmundsson (SK Brann) - injury, out",
+    "Sakarias Opsahl (SK Brann) - injury, out"
+  ],
+  "suspensions": [],
+  "lineupHints": [],
+  "motivationFlags": [
+    "Molde - chasing 4th place, won last four competitive outings at home",
+    "SK Brann - slow start to campaign under new coach Eirik Horneland"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/molde/preview/molde-vs-brann-prediction-team-news-lineups_601353.html",
+    "https://www.mightytips.com/football-predictions/molde-vs-brann-prediction-18-07-2026/"
+  ],
+  "confidence": 0.65,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

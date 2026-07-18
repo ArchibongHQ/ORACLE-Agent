@@ -1,0 +1,25 @@
+{
+  "home": "Kristiansund BK",
+  "away": "Sarpsborg FK",
+  "league": "Eliteserien",
+  "kickoff": "2026-07-18T14:00:00Z",
+  "injuries": [
+    "D. Tufekcic (Kristiansund BK) - thigh injury, out",
+    "M. Opoku (Sarpsborg 08) - long-term injury, out",
+    "Jo Inge Berget (Sarpsborg 08) - long-term injury, out",
+    "Frederik Carstensen (Sarpsborg 08) - long-term injury, out"
+  ],
+  "suspensions": [],
+  "lineupHints": [],
+  "motivationFlags": [
+    "Kristiansund BK - fighting relegation/survival battle"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://ratingbet.com/predictions/kristiansund-vs-sarpsborg-08-prediction-team-news-lineups-expert-analysis/",
+    "https://www.sportsmole.co.uk/football/kristiansund/preview/kristiansund-vs-sarpsborg-prediction-team-news-lineups_601329.html"
+  ],
+  "confidence": 0.65,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

@@ -1,0 +1,22 @@
+{
+  "home": "Pumas UNAM",
+  "away": "Pachuca",
+  "league": "Liga MX",
+  "kickoff": "2026-07-18T23:00:00Z",
+  "injuries": [
+    "Uriel Antuna (Pumas UNAM) - muscular discomfort in training, doubtful, no official diagnosis"
+  ],
+  "suspensions": [],
+  "lineupHints": [],
+  "motivationFlags": [
+    "Pumas UNAM - Apertura 2026 season opener (Matchday 1), new coach Esteban Solari facing former club Pachuca"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.infobae.com/mexico/deportes/2026/07/17/uriel-antuna-sale-lesionado-de-los-entrenamientos-y-es-duda-para-el-debut-de-pumas/",
+    "https://www.mediotiempo.com/futbol/liga-mx/pumas-altas-bajas-rumores-y-fichajes-rumbo-al-apertura-2026"
+  ],
+  "confidence": 0.45,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

@@ -1,0 +1,26 @@
+{
+  "home": "Sport",
+  "away": "Operario PR",
+  "league": "Brazilian Serie B",
+  "kickoff": "2026-07-18T19:00:00Z",
+  "injuries": [
+    "Kayky Almeida (Sport) - knee injury, out",
+    "Brenno Pereira (Operario PR) - knee injury, out"
+  ],
+  "suspensions": [
+    "Clayson (Sport) - suspended, red card",
+    "Pablo (Operario PR) - suspended, third yellow card"
+  ],
+  "lineupHints": [
+    "Operario PR - Cuenu returns from suspension, reinforces defense"
+  ],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://www.cnnbrasil.com.br/esportes/futebol/confira-os-desfalques-do-sport-para-jogo-contra-o-guarani-pela-serie-b/",
+    "https://www.gazetaesportiva.com/campeonatos/brasileiro-serie-b/sport-x-operario-onde-assistir-serie-b/"
+  ],
+  "confidence": 0.5,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

@@ -1,0 +1,21 @@
+{
+  "home": "Lillestrom",
+  "away": "KFUM Oslo",
+  "league": "Eliteserien",
+  "kickoff": "2026-07-18T14:00:00Z",
+  "injuries": [
+    "Eric Kitolano (Lillestrom) - broken ankle, out until August",
+    "Moussa Njie (KFUM Oslo) - injury, out until end of July"
+  ],
+  "suspensions": [],
+  "lineupHints": [],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/lillestrom/preview/lillestrom-vs-kfum-prediction-team-news-lineups_601263.html",
+    "https://ratingbet.com/predictions/lillestrom-vs-kfum-prediction-expert-analysis-possible-lineups-july-18-2026/"
+  ],
+  "confidence": 0.6,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

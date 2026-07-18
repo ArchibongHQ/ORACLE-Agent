@@ -1,0 +1,25 @@
+{
+  "home": "Hamarkameratene",
+  "away": "Tromso",
+  "league": "Eliteserien",
+  "kickoff": "2026-07-18T12:00:00Z",
+  "injuries": [
+    "Casper Oyvann (Tromso) - injury, out",
+    "Viktor Ekblom (Tromso) - injury, out"
+  ],
+  "suspensions": [
+    "Alexander Thongla-Iad Warneryd (Tromso) - suspended"
+  ],
+  "lineupHints": [
+    "Hamarkameratene - no unavailable players reported"
+  ],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://www.fotmob.com/matches/hamarkameratene-vs-tromso/2elxww",
+    "https://www.sportsmole.co.uk/football/eliteserien/hamkam-vs-tromso-il_game_250861.html"
+  ],
+  "confidence": 0.6,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

@@ -1,0 +1,33 @@
+{
+  "home": "France",
+  "away": "England",
+  "league": "FIFA World Cup",
+  "kickoff": "2026-07-18T21:00:00Z",
+  "injuries": [
+    "William Saliba (France) - back injury from semi-final loss, requires surgery, ruled out ~5 months",
+    "Aurelien Tchouameni (France) - muscle issue, missed last two matches, doubtful",
+    "Jordan Henderson (England) - freak arm injury, underwent surgery, out for rest of tournament",
+    "Reece James (England) - managing hamstring complaint, played through it vs Norway"
+  ],
+  "suspensions": [
+    "Jarell Quansah (England) - serving second match of a two-game ban (red card vs Mexico)"
+  ],
+  "lineupHints": [
+    "France - Maxence Lacroix expected to deputize for Saliba at centre-back over Ibrahima Konate",
+    "England - Thomas Tuchel expected to make significant changes to starting lineup"
+  ],
+  "motivationFlags": [
+    "World Cup third-place/bronze-medal playoff - reduced stakes after semi-final exits (France lost to Spain; England lost 2-1 to Argentina)"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/england/world-cup-2026/team-news/france-vs-england-injury-suspension-list-predicted-xis_601298.html",
+    "https://sports.yahoo.com/articles/france-xi-vs-england-confirmed-144123367.html",
+    "https://sports.yahoo.com/articles/england-xi-vs-france-confirmed-135631926.html",
+    "https://www.espn.com/soccer/story/_/id/49373987/france-vs-england-fifa-world-cup-2026-tv-channel-how-watch-kickoff-live-stream-injury-predicted-lineups",
+    "https://sports.yahoo.com/articles/world-cup-injury-tracker-neymar-093810239.html"
+  ],
+  "confidence": 0.85,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

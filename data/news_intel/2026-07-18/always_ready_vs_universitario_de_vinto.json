@@ -1,0 +1,20 @@
+{
+  "home": "Always Ready",
+  "away": "Universitario de Vinto",
+  "league": "Bolivia Primera Division",
+  "kickoff": "2026-07-18T19:00:00Z",
+  "injuries": [],
+  "suspensions": [],
+  "lineupHints": [],
+  "motivationFlags": [
+    "Always Ready - co-leaders of Primera Division table (20 pts, 6W-2D-1L), title-race motivation"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://blog.masterbets365.com/pronostico-deportivo-always-ready-vs-universitario-de-vinto-primera-division-de-bolivia-resumen-futbol-boliviano-jornada-9-marcador-en-vivo/",
+    "https://www.fotmob.com/matches/always-ready-vs-universitario-de-vinto/i447gw3i"
+  ],
+  "confidence": 0.2,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

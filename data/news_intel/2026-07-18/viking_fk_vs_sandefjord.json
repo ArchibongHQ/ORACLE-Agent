@@ -1,0 +1,24 @@
+{
+  "home": "Viking FK",
+  "away": "Sandefjord",
+  "league": "Eliteserien",
+  "kickoff": "2026-07-18T16:00:00Z",
+  "injuries": [
+    "Veton Berisha (Viking FK) - doubtful, injury",
+    "Martin Roseth (Viking FK) - knee injury, out",
+    "Filip Loftesnes-Bjune (Sandefjord) - thigh injury, out since Apr 7, not featured since"
+  ],
+  "suspensions": [
+    "Vester (Sandefjord) - suspended"
+  ],
+  "lineupHints": [],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://www.sportsmole.co.uk/football/viking-fk/preview/viking-fk-vs-sandefjord-prediction-team-news-lineups_601345.html",
+    "https://www.freetips.com/football/viking-vs-sandefjord-predictions-tips-20260717-0014/"
+  ],
+  "confidence": 0.65,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

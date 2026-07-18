@@ -1,0 +1,27 @@
+{
+  "home": "Atletico Goianiense",
+  "away": "Athletic",
+  "league": "Brazilian Serie B",
+  "kickoff": "2026-07-18T21:00:00Z",
+  "injuries": [
+    "Igor Henrique (Atletico Goianiense) - muscle pain, doubtful",
+    "Geovane (Atletico Goianiense) - injury, recovering, out"
+  ],
+  "suspensions": [
+    "Gustavo Coutinho (Atletico Goianiense) - suspended, red card vs Fortaleza",
+    "Ian Luccas (Athletic-MG) - suspended"
+  ],
+  "lineupHints": [
+    "Athletic-MG - goalkeeper Jhonatan Siqueira departed to Portuguese football, unavailable",
+    "Note: some outlets' predicted XIs still list Coutinho/Luccas as starting despite the suspension reports - treat the suspension as the more reliable signal"
+  ],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://www.futebolinterior.com.br/atletico-go-x-athletic-onde-assistir-horario-e-escalacoes/",
+    "https://www.itatiaia.com.br/esportes/ao-vivo/brasileiro-serie-b-2026/18-07-2026/atletico-go-x-athletic-club-mg/"
+  ],
+  "confidence": 0.5,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

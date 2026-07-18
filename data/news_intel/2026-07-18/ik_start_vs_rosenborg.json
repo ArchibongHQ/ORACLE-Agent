@@ -1,0 +1,23 @@
+{
+  "home": "IK Start",
+  "away": "Rosenborg",
+  "league": "Eliteserien",
+  "kickoff": "2026-07-18T14:00:00Z",
+  "injuries": [],
+  "suspensions": [],
+  "lineupHints": [
+    "Rosenborg - Dino Islamovic expected to lead the line",
+    "Rosenborg - Amin Chiakha and Emil Konradsen Ceide competing for attacking spots"
+  ],
+  "motivationFlags": [
+    "IK Start - bottom of Eliteserien table with 7 points from 13 matches, lost 4 of last 5, relegation battle"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.mightytips.com/football-predictions/ik-start-vs-rosenborg-bk-prediction-18-07-2026/",
+    "https://www.foxsports.com/soccer/norwegian-eliteserien-ik-start-vs-rosenborg-jul-18-2026-game-boxscore-648964?tab=boxscore"
+  ],
+  "confidence": 0.35,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}

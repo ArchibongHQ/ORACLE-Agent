@@ -1,0 +1,24 @@
+{
+  "home": "Ponte Preta",
+  "away": "Goias",
+  "league": "Brazilian Serie B",
+  "kickoff": "2026-07-18T19:00:00Z",
+  "injuries": [],
+  "suspensions": [
+    "Marcio Silva (Ponte Preta) - suspended, third yellow card"
+  ],
+  "lineupHints": [
+    "Goias - Filipe Machado returns from suspension, Gege and Pedrinho return from injury"
+  ],
+  "motivationFlags": [
+    "Ponte Preta - 19th place, 11 games without a win, relegation battle"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://esportegoiano.com.br/retorno-filipe-machado-goias-definido-encarar-ponte-veja-escalacao",
+    "https://www.terra.com.br/esportes/futebol/goias-x-ponte-preta-pela-serie-b-onde-assistir-escalacoes-e-arbitragem,421795ba600f1bb2fe92486aa08670a7kczcwoln.html"
+  ],
+  "confidence": 0.55,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-18T06:50:47Z"
+}
