@@ -177,6 +177,82 @@ describe("buildReportPatternInput", () => {
     });
     expect(buildReportPatternInput(thin)?.input.h2hOversRate).toBeUndefined();
   });
+
+  it("builds h2hMeetings with correct orientation and atCurrentVenue flag from team-name-matched meetings", () => {
+    const event = arsenalChelseaEvent({
+      detail: {
+        eventId: "evt-h2h",
+        odds: {},
+        stats: {
+          ...arsenalChelseaEvent().detail?.stats,
+          h2h: {
+            matches: [
+              // Same orientation as the current fixture (Arsenal home) → atCurrentVenue.
+              { home_team: "Arsenal", away_team: "Chelsea", home_goals: 3, away_goals: 1 },
+              // Reversed orientation (Chelsea was home) → NOT atCurrentVenue; result flips.
+              { home_team: "Chelsea", away_team: "Arsenal", home_goals: 2, away_goals: 0 },
+            ],
+          },
+        },
+        statscoverage: {},
+      },
+    });
+    const meetings = buildReportPatternInput(event)?.input.h2hMeetings;
+    expect(meetings).toHaveLength(2);
+    expect(meetings?.[0]).toMatchObject({
+      result: "home_win",
+      atCurrentVenue: true,
+      totalGoals: 4,
+    });
+    // Chelsea 2-0 Arsenal, from Arsenal's (current home's) perspective, is an away_win.
+    expect(meetings?.[1]).toMatchObject({
+      result: "away_win",
+      atCurrentVenue: false,
+      totalGoals: 2,
+    });
+  });
+
+  it("skips reserve-team H2H meetings entirely — namesMatch's substring tolerance ('Barcelona' vs 'Barcelona B') is ambiguous in BOTH orientations, so this fails safe rather than guessing", () => {
+    // A first-team-vs-reserve fixture is a real, common case in the
+    // whitelisted lower-tier leagues. Because "barcelona" is a substring of
+    // "barcelona b" regardless of which side it's assigned to, BOTH the
+    // straight and reversed pairing test true — genuinely unresolvable via
+    // name matching alone. The ambiguity guard must skip it (fail safe: no
+    // H2H pattern data for this fixture) rather than silently pick a side.
+    const event = arsenalChelseaEvent({
+      home: "Barcelona",
+      away: "Barcelona B",
+      detail: {
+        eventId: "evt-reserve",
+        odds: {},
+        stats: {
+          ...arsenalChelseaEvent().detail?.stats,
+          h2h: {
+            matches: [
+              { home_team: "Barcelona", away_team: "Barcelona B", home_goals: 2, away_goals: 1 },
+            ],
+          },
+        },
+        statscoverage: {},
+      },
+    });
+    expect(buildReportPatternInput(event)?.input.h2hMeetings).toBeUndefined();
+  });
+
+  it("skips an H2H meeting missing a team name entirely (cannot confirm orientation)", () => {
+    const event = arsenalChelseaEvent({
+      detail: {
+        eventId: "evt-no-names",
+        odds: {},
+        stats: {
+          ...arsenalChelseaEvent().detail?.stats,
+          h2h: { matches: [{ home_goals: 3, away_goals: 1 }] },
+        },
+        statscoverage: {},
+      },
+    });
+    expect(buildReportPatternInput(event)?.input.h2hMeetings).toBeUndefined();
+  });
 });
 
 describe("summarizeGreenFlags", () => {

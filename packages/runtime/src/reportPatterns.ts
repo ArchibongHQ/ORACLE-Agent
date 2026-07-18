@@ -118,18 +118,30 @@ function h2hOversRate(stats: SportyBetStats): number | null {
 
 /** Maps the sidecar's raw H2H match-by-match detail into the engine's
  *  current-fixture-relative H2hMeeting[] (G7 + T3) — does the team-name
- *  matching here so patterns.ts never needs to know about team names.
- *  Skips a historical meeting when neither side can be matched to the
- *  current fixture (never guesses). */
+ *  matching here so patterns.ts never needs to know about team names. The
+ *  scraper documents `matches[]` as already most-recent-first
+ *  (tools/scrape_fixtures.py's gismo notes), so no re-sort is needed here.
+ *
+ *  Requires BOTH historical sides to unambiguously cross-match the current
+ *  fixture's two sides (in either orientation) before accepting a meeting.
+ *  A single-sided check is not safe: `namesMatch`'s substring tolerance
+ *  matches a parent club's name against its own reserve side (e.g. a
+ *  historical "Barcelona" meeting would namesMatch BOTH "Barcelona" and
+ *  "Barcelona B" in a first-team-vs-reserve fixture, a real, common case in
+ *  the whitelisted lower-tier leagues) — an ambiguous or inconsistent
+ *  pairing is skipped, never guessed. */
 function buildH2hMeetings(event: SportyBetEvent, stats: SportyBetStats): H2hMeeting[] {
   const matches = stats.h2h?.matches;
   if (!matches?.length) return [];
   const out: H2hMeeting[] = [];
   for (const m of matches) {
-    if (!fin(m.home_goals) || !fin(m.away_goals)) continue;
-    const homeIsCurrentHome = m.home_team ? namesMatch(m.home_team, event.home) : false;
-    const homeIsCurrentAway = m.home_team ? namesMatch(m.home_team, event.away) : false;
-    if (!homeIsCurrentHome && !homeIsCurrentAway) continue;
+    if (!fin(m.home_goals) || !fin(m.away_goals) || !m.home_team || !m.away_team) continue;
+    const straightPairing =
+      namesMatch(m.home_team, event.home) && namesMatch(m.away_team, event.away);
+    const reversedPairing =
+      namesMatch(m.home_team, event.away) && namesMatch(m.away_team, event.home);
+    if (straightPairing === reversedPairing) continue; // ambiguous (both) or no match (neither)
+    const homeIsCurrentHome = straightPairing;
     const currentHomeGoals = homeIsCurrentHome ? m.home_goals : m.away_goals;
     const currentAwayGoals = homeIsCurrentHome ? m.away_goals : m.home_goals;
     const result: H2hMeeting["result"] =
