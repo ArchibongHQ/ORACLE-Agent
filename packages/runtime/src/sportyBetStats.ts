@@ -131,7 +131,7 @@ function formToRecentMatches(
  *  any 1+ valid W/D/L characters, since a points-sum degrades gracefully with
  *  a shorter run. Returns null when the string is absent or has zero valid
  *  characters. */
-function last5Points(last5: string | null | undefined): number | null {
+export function last5Points(last5: string | null | undefined): number | null {
   if (!last5) return null;
   const POINTS: Record<string, number> = { W: 3, D: 1, L: 0 };
   let sum = 0;

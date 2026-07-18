@@ -311,7 +311,7 @@ export async function sendDailyFixtureReport(): Promise<void> {
           env.TELEGRAM_BOT_TOKEN as string,
           env.TELEGRAM_CHAT_ID as string,
           result.htmlPagePath,
-          `ORACLE fixtures & markets (open in browser — tap a fixture to expand its markets) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}${dataHealthLine ? `\n${dataHealthLine}` : ""}`
+          `ORACLE fixtures & markets (open in browser — tap a fixture to expand its markets) — ${today} (${result.fixtureCount} fixtures) [file 1/${total}]\n${formatXgCoverageNote(result.xgCoverage)}${dataHealthLine ? `\n${dataHealthLine}` : ""}${result.slateGreenFlagProfile ? `\n${result.slateGreenFlagProfile}` : ""}`
         )
       ) {
         succeeded++;
