@@ -41,18 +41,22 @@
  *  (sidecar data contract, PR #74). */
 import {
   detectPatterns,
+  type H2hMeeting,
   type PatternInput,
+  type PatternKind,
   type PatternReport,
+  type TrapFlag,
   V3_LEAGUE_BASELINES,
 } from "@oracle/engine";
-import type { SportyBetEvent, SportyBetStats } from "./selectFixtures.js";
+import type { ScoringConcedingProfile, SportyBetEvent, SportyBetStats } from "./selectFixtures.js";
 import { blendRecencyScored, last5Points } from "./sportyBetStats.js";
+import { namesMatch } from "./teamNames.js";
 
 export type GreenFlagBasis = "venue" | "overall";
 
 export interface GreenFlagChip {
-  /** Pattern kind from the engine detector. */
-  kind: "heavy_superior" | "goal_machine" | "corner_kings" | "anomaly";
+  /** Pattern kind from the engine detector — the full v6.2 catalog. */
+  kind: PatternKind;
   /** Short chip label, e.g. "Heavy Superior (home)". */
   label: string;
   basis: GreenFlagBasis;
@@ -74,15 +78,23 @@ export interface GreenFlagSummary {
   basis: GreenFlagBasis | null;
   /** One-sentence dominant-trend summary; null when no pattern fired. */
   sentence: string | null;
+  /** Single most-likely trap reason (backward-compatible — see trapFlags). */
   trapWarning: string | null;
+  /** Every T1-T5 trap flag that fired (v6.2 §2.5.2) — rendered as individual
+   *  red chips. Empty when nothing fired (not an error — most fixtures have
+   *  no contradicting signal). */
+  trapFlags: TrapFlag[];
   recommended: string | null;
 }
 
-const KIND_LABEL: Record<GreenFlagChip["kind"], string> = {
+const KIND_LABEL: Record<PatternKind, string> = {
   heavy_superior: "Heavy Superior",
   goal_machine: "Goal Machine",
+  btts_banker: "BTTS Banker",
   corner_kings: "Corner Kings",
   anomaly: "Hidden Value",
+  h2h_dominance: "H2H Dominance",
+  half_share: "Fast/Slow Starter",
 };
 
 const fin = (v: number | null | undefined): v is number =>
@@ -102,6 +114,38 @@ function h2hOversRate(stats: SportyBetStats): number | null {
     }
   }
   return n >= 3 ? overs / n : null;
+}
+
+/** Maps the sidecar's raw H2H match-by-match detail into the engine's
+ *  current-fixture-relative H2hMeeting[] (G7 + T3) — does the team-name
+ *  matching here so patterns.ts never needs to know about team names.
+ *  Skips a historical meeting when neither side can be matched to the
+ *  current fixture (never guesses). */
+function buildH2hMeetings(event: SportyBetEvent, stats: SportyBetStats): H2hMeeting[] {
+  const matches = stats.h2h?.matches;
+  if (!matches?.length) return [];
+  const out: H2hMeeting[] = [];
+  for (const m of matches) {
+    if (!fin(m.home_goals) || !fin(m.away_goals)) continue;
+    const homeIsCurrentHome = m.home_team ? namesMatch(m.home_team, event.home) : false;
+    const homeIsCurrentAway = m.home_team ? namesMatch(m.home_team, event.away) : false;
+    if (!homeIsCurrentHome && !homeIsCurrentAway) continue;
+    const currentHomeGoals = homeIsCurrentHome ? m.home_goals : m.away_goals;
+    const currentAwayGoals = homeIsCurrentHome ? m.away_goals : m.home_goals;
+    const result: H2hMeeting["result"] =
+      currentHomeGoals > currentAwayGoals
+        ? "home_win"
+        : currentAwayGoals > currentHomeGoals
+          ? "away_win"
+          : "draw";
+    out.push({
+      result,
+      totalGoals: m.home_goals + m.away_goals,
+      btts: m.home_goals > 0 && m.away_goals > 0,
+      atCurrentVenue: homeIsCurrentHome,
+    });
+  }
+  return out;
 }
 
 /** Build the detector input from a scraped sidecar event. Returns null when
@@ -226,6 +270,35 @@ export function buildReportPatternInput(
   if (fin(restH) || fin(restA)) {
     input.restDaysMin = Math.min(fin(restH) ? restH : Infinity, fin(restA) ? restA : Infinity);
   }
+  if (fin(restH)) input.restDaysH = restH;
+  if (fin(restA)) input.restDaysA = restA;
+
+  // First-half goal share (fast/slow-starter pattern + half_share detector) —
+  // same fh/total ratio + clamp as buildStatsOverride's fhShare helper.
+  const fhShareOf = (p: ScoringConcedingProfile | null | undefined) => {
+    const fh = p?.goals_1h_avg;
+    const total = p?.scored_avg;
+    if (!fin(fh) || !fin(total) || total === 0) return undefined;
+    return Math.min(0.8, Math.max(0.2, fh / total));
+  };
+  input.fhShareH = fhShareOf(sc?.home);
+  input.fhShareA = fhShareOf(sc?.away);
+
+  // Recent (last-5, proxying the doc's last-3) scored rate for T4.
+  if (fin(stats.recentGoals?.home?.scored_avg)) {
+    input.recentScoredH = stats.recentGoals?.home?.scored_avg;
+  }
+  if (fin(stats.recentGoals?.away?.scored_avg)) {
+    input.recentScoredA = stats.recentGoals?.away?.scored_avg;
+  }
+
+  // Key-player availability (T1) — matchday-availability proxy, 0 = absent.
+  if (stats.availability?.home?.keyPlayerPresent === 0) input.homeKeyPlayerOut = true;
+  if (stats.availability?.away?.keyPlayerPresent === 0) input.awayKeyPlayerOut = true;
+
+  // Per-meeting H2H (G7 + T3) — current-fixture-relative, team-name matched.
+  const h2hMeetings = buildH2hMeetings(event, stats);
+  if (h2hMeetings.length > 0) input.h2hMeetings = h2hMeetings;
 
   // Field-presence completeness over the detector-relevant input groups —
   // computed from what actually arrived, never the feed's self-assessment.
@@ -271,6 +344,7 @@ export function summarizeGreenFlags(event: SportyBetEvent): GreenFlagSummary {
     basis: null,
     sentence: null,
     trapWarning: null,
+    trapFlags: [],
     recommended: null,
   };
   try {
@@ -292,6 +366,7 @@ export function summarizeGreenFlags(event: SportyBetEvent): GreenFlagSummary {
       basis: built.basis,
       sentence: sentence(report, built.basis),
       trapWarning: report.trapWarning,
+      trapFlags: report.trapFlags,
       recommended:
         report.recommendedFamily && report.recommendedSide
           ? `${report.recommendedFamily} ${report.recommendedSide}`

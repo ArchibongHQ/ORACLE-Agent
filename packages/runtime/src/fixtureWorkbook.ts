@@ -615,9 +615,16 @@ function renderGreenFlagsBlock(gf: GreenFlagSummary): string {
         `<span class="gf-chip ${f.basis}" title="${escHtml(f.rationale)}">${escHtml(f.label)}${f.basis === "overall" ? "°" : ""}</span>`
     )
     .join("");
-  const trap = gf.trapWarning
-    ? `<span class="gf-chip trap">⚠ ${escHtml(gf.trapWarning)}</span>`
-    : "";
+  // One chip per T1-T5 flag that fired; falls back to the single legacy
+  // trapWarning line when no T-series flag fired but a narrower,
+  // pattern-specific check still applies (e.g. thin sample size).
+  const trap = gf.trapFlags.length
+    ? gf.trapFlags
+        .map((t) => `<span class="gf-chip trap">⚠ ${escHtml(t.kind)}: ${escHtml(t.text)}</span>`)
+        .join("")
+    : gf.trapWarning
+      ? `<span class="gf-chip trap">⚠ ${escHtml(gf.trapWarning)}</span>`
+      : "";
   const sentence = gf.sentence ? `<div class="gf-sentence">🚩 ${escHtml(gf.sentence)}</div>` : "";
   return `<div class="h">Green Flags — trends &amp; patterns (${gf.basis === "overall" ? "overall-basis °" : "venue-split"})</div><div class="gf-chips">${chips}${trap}</div>${sentence}`;
 }

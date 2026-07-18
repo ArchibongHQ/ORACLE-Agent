@@ -1,16 +1,38 @@
 /** all-markets pattern/trend detector — the deterministic "green-flag" engine.
  *
  *  Implements the owner's reference-doc analysis hierarchy (Recency/Momentum
- *  50%, Venue-Specific Splits 30%, Head-to-Head 15%, League Context 5%) and the
- *  four green-flag profiles: Heavy Superior, Goal Machines, Corner Kings, and
- *  Anomaly / Hidden-value. Pure math, no I/O — the wave-2 caller builds a
- *  PatternInput from V3AllMarketsInput and feeds the resulting PatternReport
- *  into the EV gate to relax the class-edge bar and re-rank pattern-backed
- *  picks (pattern-primary + a +EV value floor).
+ *  50%, Venue-Specific Splits 30%, Head-to-Head 15%, League Context 5%) and
+ *  the reference doc's full green-flag catalog (v6.2 §2.5.1): Heavy Superior
+ *  (G1), Goal Machine (G2/G3), BTTS Banker (G4), Corner Kings (G5), Hidden
+ *  Value / Fortress-vs-Nomad (G6), H2H Venue Dominance (G7), plus a
+ *  first-half-share pattern for the "fast starter / slow starter" profile
+ *  the owner asked to cover alongside HT/FT-adjacent markets (recommends a
+ *  priceable 1H/2H total, not the unpriceable HT/FT combo market — v6.2
+ *  §9.13 excludes HT/FT combos as unpriceable by the 90-minute grid). Also
+ *  implements the doc's trap-flag catalog (§2.5.2) T1-T5 — T6/T7 are
+ *  deliberately NOT implemented: no data source exists yet for last-3
+ *  match-by-match results (T6) or cup-tie first-leg context (T7); per the
+ *  doc's own Rule 0.16, a flag with no defining field is NOT-EVALUABLE, not
+ *  faked. Pure math, no I/O — callers build a PatternInput from their own
+ *  fixture data and feed the resulting PatternReport into ranking/confidence.
  *
  *  NEVER recommends an "Under" market (owner rule): a low-scoring / dominant
  *  read maps to the favoured side's Asian Handicap (line chosen by the wave-3
  *  pivot), and goal trends map to Over / BTTS-Yes.
+ *
+ *  Research grounding (2026-07-18, see project handoff plan for full
+ *  citations): this pattern catalog is a human-interpretable heuristic
+ *  overlay, NOT an independently backtested statistical model — sports
+ *  betting literature is explicit that unvalidated rule-based systems carry
+ *  real overfitting/data-snooping risk. Accordingly this module (and every
+ *  caller) treats its output as a RANKING/CONFIDENCE signal only — it never
+ *  overrides a candidate's +EV floor. That floor is absolute, with no
+ *  exception for pattern strength (an intermediate design allowing a small,
+ *  capped near-miss exception was proposed and explicitly rejected by the
+ *  owner after reviewing this risk). Recency-weighting and xG-blending
+ *  (already used elsewhere in this engine) ARE supported by 2024/2025
+ *  research; the specific named pattern profiles and their exact thresholds
+ *  are not — treat this catalog as informative context, not proof.
  *
  *  Reuses `scoreV3Priority` (marketsV3/prioritise.ts) as the hierarchy-weighted
  *  context score rather than duplicating its streak / H2H-overs / mismatch /
@@ -19,10 +41,23 @@
 import type { MarketFamily } from "../markets/index.js";
 import { scoreV3Priority, type V3PriorityInput } from "./prioritise.js";
 
-/** Standalone, testable input — the wave-2 caller builds this from
- *  V3AllMarketsInput (venue-split lambda inputs + empirical block + corners/
- *  cards + devigged odds). Every field beyond the four venue-split goal rates
- *  is optional so the detector degrades gracefully on thin data. */
+/** One historical H2H meeting, normalised to the CURRENT fixture's
+ *  home/away perspective by the caller (callers do the team-name matching
+ *  against their own H2H source; patterns.ts never sees raw team names). */
+export interface H2hMeeting {
+  /** Result from the CURRENT fixture's home team's perspective. */
+  result: "home_win" | "away_win" | "draw";
+  totalGoals: number;
+  btts: boolean;
+  /** True when this meeting was played at the CURRENT fixture's venue (the
+   *  historical match's home side is also the current fixture's home side). */
+  atCurrentVenue: boolean;
+}
+
+/** Standalone, testable input — callers build this from their own fixture
+ *  data (V3AllMarketsInput for the live pick engine, the scraped sidecar
+ *  event for the report). Every field beyond the four venue-split goal
+ *  rates is optional so the detector degrades gracefully on thin data. */
 export interface PatternInput {
   // Venue-split goals per game (home team AT HOME, away team AWAY).
   homeScoredHome: number;
@@ -43,6 +78,9 @@ export interface PatternInput {
   csPctA?: number;
   ftsPctH?: number;
   ftsPctA?: number;
+  // First-half goal share, 0-1 (optional) — fast-starter/slow-starter signal.
+  fhShareH?: number;
+  fhShareA?: number;
   // Corners for / against per game (optional).
   cornersForH?: number;
   cornersForA?: number;
@@ -60,19 +98,40 @@ export interface PatternInput {
   homeOdds?: number;
   drawOdds?: number;
   awayOdds?: number;
-  // Momentum / H2H (optional — wired by a later wave; degrade gracefully).
+  // Momentum / H2H (optional — degrade gracefully when absent).
   streakH?: number;
   streakA?: number;
   last5PtsH?: number;
   last5PtsA?: number;
   h2hOversRate?: number;
+  /** Per-meeting H2H detail (most-recent-first), for G7 + T3. Optional —
+   *  callers without per-meeting data leave this unset; those checks
+   *  become NOT-EVALUABLE rather than guessing from the aggregate rate. */
+  h2hMeetings?: H2hMeeting[];
   // Congestion (optional).
   restDaysMin?: number;
+  restDaysH?: number;
+  restDaysA?: number;
+  // Availability (optional) — T1 key-absence trap.
+  homeKeyPlayerOut?: boolean;
+  awayKeyPlayerOut?: boolean;
+  /** Last-5 (proxying the doc's "last-3") scored rate — separate from
+   *  homeScoredHome/awayScoredAway so T4 can compare recent-vs-baseline even
+   *  when a caller's core fields are already recency-blended. Optional. */
+  recentScoredH?: number;
+  recentScoredA?: number;
   // Market depth (optional) — # mapped families with usable stats.
   mappedFamiliesWithStats?: number;
 }
 
-export type PatternKind = "heavy_superior" | "goal_machine" | "corner_kings" | "anomaly";
+export type PatternKind =
+  | "heavy_superior"
+  | "goal_machine"
+  | "btts_banker"
+  | "corner_kings"
+  | "anomaly"
+  | "h2h_dominance"
+  | "half_share";
 
 export interface PatternHit {
   kind: PatternKind;
@@ -84,6 +143,13 @@ export interface PatternHit {
   rationale: string;
 }
 
+export type TrapKind = "T1" | "T2" | "T3" | "T4" | "T5";
+
+export interface TrapFlag {
+  kind: TrapKind;
+  text: string;
+}
+
 export interface PatternReport {
   patterns: PatternHit[];
   topPattern: PatternHit | null;
@@ -93,7 +159,11 @@ export interface PatternReport {
   recommendedFamily: MarketFamily | null;
   recommendedSide: string | null;
   confidence: "very_high" | "high" | "medium" | null;
+  /** Single most-likely trap reason (backward-compatible field — the first
+   *  entry of trapFlags when any fired, else the legacy single-check text). */
   trapWarning: string | null;
+  /** Every trap flag that fired (T1-T5; T6/T7 not implemented — see header). */
+  trapFlags: TrapFlag[];
 }
 
 export const PATTERN_THRESHOLDS = {
@@ -109,6 +179,11 @@ export const PATTERN_THRESHOLDS = {
   gmExpTotalMin: 2.7,
   gmExpTotalStrong: 3.1,
   gmExpTotalFull: 3.6,
+  // BTTS Banker (v6.2 G4) — both sides' venue BTTS% high AND neither keeps
+  // clean sheets often; distinct from goal_machine's total-goals framing.
+  bbBttsMin: 0.7,
+  bbCsMax: 0.4,
+  bbFull: 0.9, // BTTS% at which score saturates
   // Corner Kings.
   ckCombinedMin: 10.5,
   ckCombinedFull: 13.0,
@@ -117,6 +192,19 @@ export const PATTERN_THRESHOLDS = {
   anomalyNetGapMin: 1.0,
   anomalyUnderpricedOdds: 2.2,
   anomalyStreakMin: 3,
+  // H2H Venue Dominance (v6.2 G7).
+  h2hDomWinsOf4: 3,
+  h2hDomMeetingsMin: 4,
+  h2hDomOverLine: 2.5,
+  // First-half share (fast-starter/slow-starter).
+  halfShareGapMin: 0.15, // |fhShareH - fhShareA| beyond league-neutral (~0)
+  halfShareNeutral: 0.44, // league-typical 1H share of full-match goals
+  // Trap thresholds.
+  t2RestMax: 3,
+  t2RestRestedMin: 5,
+  t4DipRatio: 0.4,
+  t5FavOdds: 1.6,
+  t5PpgMax: 1.2,
   // Sample-size shrink: min venue-n at which strength is fully trusted.
   fullTrustN: 8,
   noSampleShrink: 0.75, // multiplier applied when no sample-size info at all
@@ -198,6 +286,30 @@ function detectGoalMachine(input: PatternInput): PatternHit | null {
   };
 }
 
+/** v6.2 G4 — BTTS Banker: both sides' venue BTTS% high AND neither keeps
+ *  clean sheets often. Distinct from goal_machine (which is total-goals-led
+ *  and can fire on a high-scoring one-sided game where BTTS is actually
+ *  unlikely) — this is specifically a both-teams-score signal. */
+function detectBttsBanker(input: PatternInput): PatternHit | null {
+  const bttsH = input.bttsPctH;
+  const bttsA = input.bttsPctA;
+  if (bttsH == null || bttsA == null) return null;
+  const bttsOk = bttsH >= T.bbBttsMin && bttsA >= T.bbBttsMin;
+  if (!bttsOk) return null;
+  const csOk = num(input.csPctH) < T.bbCsMax && num(input.csPctA) < T.bbCsMax;
+  if (!csOk) return null;
+
+  const minBtts = Math.min(bttsH, bttsA);
+  const score = clamp01((minBtts - T.bbBttsMin) / (T.bbFull - T.bbBttsMin));
+  return {
+    kind: "btts_banker",
+    score,
+    recommendedFamily: "btts",
+    recommendedSide: "Yes",
+    rationale: `BTTS trend: venue BTTS H ${bttsH.toFixed(2)} / A ${bttsA.toFixed(2)}, clean-sheet rates both below ${(T.bbCsMax * 100).toFixed(0)}% → BTTS Yes.`,
+  };
+}
+
 function detectCornerKings(input: PatternInput): PatternHit | null {
   if (
     input.cornersForH == null ||
@@ -253,7 +365,12 @@ function detectAnomaly(input: PatternInput): PatternHit | null {
   const netGap = homeNet - awayNet;
 
   // Venue-split favourite the market prices as an underdog (hidden value), or a
-  // meaningful home streak against a weaker away side.
+  // meaningful home streak against a weaker away side. This covers both the
+  // original doc's "Anomalies & Hidden Value" (odds-mismatch framing) and
+  // v6.2's G6 "Fortress-vs-Nomad" (streak framing) in one detector — the
+  // sidecar only carries a signed win/loss streak, not a literal "unbeaten"
+  // run length, so the streak condition is a data-realistic approximation of
+  // G6's ">=5-game unbeaten home / >=4-game winless away" wording.
   const homeUnderpriced =
     netGap >= T.anomalyNetGapMin && num(input.homeOdds) >= T.anomalyUnderpricedOdds;
   const awayUnderpriced =
@@ -275,6 +392,73 @@ function detectAnomaly(input: PatternInput): PatternHit | null {
     recommendedFamily: "dnb",
     recommendedSide: side === "home" ? "Home" : "Away",
     rationale: `Hidden value: ${side} is the venue-split favourite (net gap ${Math.abs(netGap).toFixed(2)}) but priced at ${odds ? odds.toFixed(2) : "n/a"} → Draw-No-Bet the ${side}.`,
+  };
+}
+
+/** v6.2 G7 — H2H Venue Dominance: same side won >=3 of the last 4 meetings
+ *  AT THIS VENUE, or an unbroken H2H over/BTTS pattern across >=4 meetings
+ *  (any venue). NOT-EVALUABLE (returns null) without per-meeting H2H data —
+ *  never inferred from the aggregate h2hOversRate alone. */
+function detectH2hDominance(input: PatternInput): PatternHit | null {
+  const meetings = input.h2hMeetings;
+  if (!meetings || meetings.length === 0) return null;
+
+  const atVenue = meetings.filter((m) => m.atCurrentVenue).slice(0, 4);
+  if (atVenue.length >= T.h2hDomMeetingsMin) {
+    const homeWins = atVenue.filter((m) => m.result === "home_win").length;
+    const awayWins = atVenue.filter((m) => m.result === "away_win").length;
+    if (homeWins >= T.h2hDomWinsOf4 || awayWins >= T.h2hDomWinsOf4) {
+      const side: "home" | "away" = homeWins >= T.h2hDomWinsOf4 ? "home" : "away";
+      const wins = side === "home" ? homeWins : awayWins;
+      return {
+        kind: "h2h_dominance",
+        score: clamp01(0.5 + 0.15 * (wins - T.h2hDomWinsOf4)),
+        side,
+        recommendedFamily: "dnb",
+        recommendedSide: side === "home" ? "Home" : "Away",
+        rationale: `H2H venue dominance: ${side} won ${wins}/${atVenue.length} meetings at this venue → Draw-No-Bet the ${side}.`,
+      };
+    }
+  }
+
+  const last4 = meetings.slice(0, 4);
+  if (last4.length >= T.h2hDomMeetingsMin) {
+    const allOver = last4.every((m) => m.totalGoals > T.h2hDomOverLine);
+    const allBtts = last4.every((m) => m.btts);
+    if (allOver || allBtts) {
+      return {
+        kind: "h2h_dominance",
+        score: 0.55,
+        recommendedFamily: allBtts && !allOver ? "btts" : "goals_ou",
+        recommendedSide: allBtts && !allOver ? "Yes" : "Over 2.5",
+        rationale: `H2H trend: unbroken ${allOver ? "Over 2.5" : "BTTS"} pattern across the last ${last4.length} meetings → ${allBtts && !allOver ? "BTTS Yes" : "Over 2.5"}.`,
+      };
+    }
+  }
+  return null;
+}
+
+/** First-half-share pattern (the owner's "HT/FT"-adjacent category) — a
+ *  genuine fast-starter/slow-starter asymmetry from each side's share of
+ *  goals scored in the first half. Recommends a priceable 1H/2H total, NOT
+ *  the HT/FT combo market itself (v6.2 §9.13: HT/FT is unpriceable by the
+ *  90-minute grid — the pattern informs a priceable half-market lean). */
+function detectHalfShare(input: PatternInput): PatternHit | null {
+  if (input.fhShareH == null && input.fhShareA == null) return null;
+  const fhH = input.fhShareH ?? T.halfShareNeutral;
+  const fhA = input.fhShareA ?? T.halfShareNeutral;
+  const avgShare = (fhH + fhA) / 2;
+  const gap = avgShare - T.halfShareNeutral;
+  if (Math.abs(gap) < T.halfShareGapMin) return null;
+
+  const score = clamp01(Math.abs(gap) / (T.halfShareNeutral * 0.5));
+  const fastStart = gap > 0;
+  return {
+    kind: "half_share",
+    score,
+    recommendedFamily: "goals_ou",
+    recommendedSide: fastStart ? "1H Over" : "2H Over",
+    rationale: `First-half share: combined 1H goal share ${avgShare.toFixed(2)} vs league-neutral ${T.halfShareNeutral.toFixed(2)} → ${fastStart ? "fast-starting" : "slow-starting"} fixture, lean ${fastStart ? "1H Over" : "2H Over"}.`,
   };
 }
 
@@ -305,8 +489,11 @@ export function detectPatterns(input: PatternInput): PatternReport {
   const hits = [
     detectHeavySuperior(input),
     detectGoalMachine(input),
+    detectBttsBanker(input),
     detectCornerKings(input),
     detectAnomaly(input),
+    detectH2hDominance(input),
+    detectHalfShare(input),
   ].filter((h): h is PatternHit => h !== null && h.score > 0);
 
   hits.sort((a, b) => b.score - a.score);
@@ -321,6 +508,7 @@ export function detectPatterns(input: PatternInput): PatternReport {
       recommendedSide: null,
       confidence: null,
       trapWarning: null,
+      trapFlags: [],
     };
   }
 
@@ -340,6 +528,8 @@ export function detectPatterns(input: PatternInput): PatternReport {
           ? "medium"
           : null;
 
+  const trapFlags = detectTrapFlags(input, topPattern);
+
   return {
     patterns: hits,
     topPattern,
@@ -347,13 +537,113 @@ export function detectPatterns(input: PatternInput): PatternReport {
     recommendedFamily: topPattern.recommendedFamily,
     recommendedSide: topPattern.recommendedSide,
     confidence,
-    trapWarning: trapWarning(input, topPattern),
+    trapWarning: trapFlags[0]?.text ?? legacyTrapWarning(input, topPattern),
+    trapFlags,
   };
 }
 
-/** The single most likely reason this pattern is a trap (reference-doc §"The
- *  Trap Warning"). Null when nothing obvious contradicts it. */
-function trapWarning(input: PatternInput, top: PatternHit): string | null {
+/** Whichever side the top pattern (or, failing that, the market) favours —
+ *  "the model-favoured side" the doc's T3/T4 reference. Null when neither
+ *  the pattern nor the odds give a clear favourite. */
+function favouredSide(input: PatternInput, top: PatternHit): "home" | "away" | null {
+  if (top.side) return top.side;
+  const h = input.homeOdds;
+  const a = input.awayOdds;
+  if (h != null && a != null && h !== a) return h < a ? "home" : "away";
+  return null;
+}
+
+/** v6.2 §2.5.2 trap flags T1-T5. Every check is NOT-EVALUABLE (contributes
+ *  nothing) when its defining field is absent — never inferred. T6 (last-3
+ *  match-by-match style-clash) and T7 (second-leg tie state) are not
+ *  implemented: no data source exists for either in this engine yet. */
+function detectTrapFlags(input: PatternInput, top: PatternHit): TrapFlag[] {
+  const flags: TrapFlag[] = [];
+  const fav = favouredSide(input, top);
+
+  // T1 — Key Absence.
+  if (input.homeKeyPlayerOut || input.awayKeyPlayerOut) {
+    const side = input.homeKeyPlayerOut ? "home" : "away";
+    flags.push({
+      kind: "T1",
+      text: `Key player reported out (${side}) — confirm before trusting this pattern.`,
+    });
+  }
+
+  // T2 — Distraction/Congestion.
+  if (input.restDaysH != null && input.restDaysA != null) {
+    if (input.restDaysH <= T.t2RestMax && input.restDaysA >= T.t2RestRestedMin) {
+      flags.push({
+        kind: "T2",
+        text: `Home side short on rest (${input.restDaysH}d) vs away well-rested (${input.restDaysA}d) — congestion risk.`,
+      });
+    } else if (input.restDaysA <= T.t2RestMax && input.restDaysH >= T.t2RestRestedMin) {
+      flags.push({
+        kind: "T2",
+        text: `Away side short on rest (${input.restDaysA}d) vs home well-rested (${input.restDaysH}d) — congestion risk.`,
+      });
+    }
+  } else if (input.restDaysMin != null && input.restDaysMin < T.t2RestMax) {
+    flags.push({
+      kind: "T2",
+      text: `Short rest (${input.restDaysMin}d) for at least one side — congestion/rotation risk.`,
+    });
+  }
+
+  // T3 — H2H Anomaly: the favoured side has failed to beat this opponent in
+  // >=3 consecutive meetings.
+  if (fav && input.h2hMeetings && input.h2hMeetings.length >= 3) {
+    const last3 = input.h2hMeetings.slice(0, 3);
+    const favWinResult = fav === "home" ? "home_win" : "away_win";
+    const favNeverWon = last3.every((m) => m.result !== favWinResult);
+    if (favNeverWon) {
+      flags.push({
+        kind: "T3",
+        text: `${fav === "home" ? "Home" : "Away"} has failed to beat this opponent in the last ${last3.length} meetings despite being favoured.`,
+      });
+    }
+  }
+
+  // T4 — Scoring Dip: favoured side's recent (proxy: last-5) scored rate is
+  // well below its season/blended baseline.
+  if (fav) {
+    const recent = fav === "home" ? input.recentScoredH : input.recentScoredA;
+    const baseline = fav === "home" ? input.homeScoredHome : input.awayScoredAway;
+    if (recent != null && baseline > 0 && recent <= baseline * T.t4DipRatio) {
+      flags.push({
+        kind: "T4",
+        text: `${fav === "home" ? "Home" : "Away"} recent scoring (${recent.toFixed(2)}) is well below its baseline (${baseline.toFixed(2)}) — scoring dip.`,
+      });
+    }
+  }
+
+  // T5 — False Favourite: short-priced favourite with weak recent venue form.
+  const checkFalseFav = (
+    odds: number | undefined,
+    pts: number | undefined,
+    label: string
+  ): TrapFlag | null => {
+    if (odds == null || odds > T.t5FavOdds || pts == null) return null;
+    const ppg = pts / 5;
+    if (ppg > T.t5PpgMax) return null;
+    return {
+      kind: "T5",
+      text: `${label} priced as a strong favourite (${odds.toFixed(2)}) but recent form PPG only ${ppg.toFixed(2)} — market may be pricing reputation over form.`,
+    };
+  };
+  const t5 =
+    checkFalseFav(input.homeOdds, input.last5PtsH, "Home") ??
+    checkFalseFav(input.awayOdds, input.last5PtsA, "Away");
+  if (t5) flags.push(t5);
+
+  return flags;
+}
+
+/** The original single-check trap logic, kept as the fallback source for
+ *  `trapWarning` when no T1-T5 flag fired but this narrower, pattern-specific
+ *  check still applies (thin sample, or a goal-machine/heavy-superior-specific
+ *  contradiction not covered by the general T-series). */
+function legacyTrapWarning(input: PatternInput, top: PatternHit): string | null {
   const minN = Math.min(num(input.nHome), num(input.nAway));
   if ((input.nHome != null || input.nAway != null) && minN > 0 && minN < 3) {
     return `Thin venue sample (n=${minN}) — pattern strength discounted.`;
