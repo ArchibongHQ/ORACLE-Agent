@@ -216,3 +216,83 @@ describe("renderFixturesMarketsPage — Green Flags", () => {
     expect(html).toMatch(/gf-evidence-(found|missing)/);
   });
 });
+
+/** Data Analysis panel (owner reference-screenshot request, 2026-07-19): the
+ *  engine's own model (Result 1X2, BTTS, Goals/Corners O/U, First Half
+ *  Winner, Team To Score First, per-team Goals O/U, Score Analysis) rendered
+ *  as bars just under the Green Flags block, before the scraped fixture data. */
+describe("renderFixturesMarketsPage — Data Analysis", () => {
+  function statsEvent(overrides: Partial<SportyBetEvent> = {}): SportyBetEvent {
+    return makeEvent({
+      home: "Arsenal",
+      away: "Chelsea",
+      detail: {
+        eventId: "evt-da",
+        odds: { "1x2": { home: 1.5, draw: 4.2, away: 6.0 } },
+        stats: {
+          scoringConceding: {
+            home: { matches: 5, scored_avg: 2.4, conceded_avg: 0.6, btts_rate: 0.4 },
+            away: { matches: 5, scored_avg: 0.8, conceded_avg: 2.2, btts_rate: 0.6 },
+          },
+          overunder: {
+            home: { over25_pct: 0.8 },
+            away: { over25_pct: 0.6 },
+          },
+          recentCorners: { home: 6.8, away: 4.2 },
+          recentCornersAgainst: { home: 3.2, away: 6.5 },
+        },
+        statscoverage: {},
+      },
+      ...overrides,
+    } as Partial<SportyBetEvent>);
+  }
+
+  it("renders the Data Analysis panel for a fixture with enough stats", () => {
+    const html = renderFixturesMarketsPage([statsEvent()], "2026-07-19", DEPS);
+    expect(html).toContain("Data Analysis");
+    expect(html).toContain("Result 1X2");
+    expect(html).toContain("BTTS");
+    expect(html).toContain("Goals O/U");
+    expect(html).toContain("First Half Winner");
+    expect(html).toContain("Team To Score First");
+    expect(html).toContain("Corners O/U");
+    expect(html).toContain("Team Goals O/U");
+    expect(html).toContain("Score Analysis");
+    expect(html).toContain("da-row");
+  });
+
+  it("shows the corners fallback note when corners data is missing, not a broken/empty section", () => {
+    const noCorners = statsEvent({
+      detail: {
+        eventId: "evt-da-no-corners",
+        odds: { "1x2": { home: 1.5, draw: 4.2, away: 6.0 } },
+        stats: {
+          scoringConceding: {
+            home: { matches: 5, scored_avg: 2.4, conceded_avg: 0.6, btts_rate: 0.4 },
+            away: { matches: 5, scored_avg: 0.8, conceded_avg: 2.2, btts_rate: 0.6 },
+          },
+        },
+        statscoverage: {},
+      },
+    } as Partial<SportyBetEvent>);
+    const html = renderFixturesMarketsPage([noCorners], "2026-07-19", DEPS);
+    expect(html).toContain("No corners data scraped for this fixture");
+  });
+
+  it("renders nothing broken for a fixture with no stats at all (buildReportPatternInput returns null)", () => {
+    const bare = makeEvent({
+      detail: { eventId: "e", odds: { allMarkets: [] } },
+    } as Partial<SportyBetEvent>);
+    expect(() => renderFixturesMarketsPage([bare], "2026-07-19", DEPS)).not.toThrow();
+    const html = renderFixturesMarketsPage([bare], "2026-07-19", DEPS);
+    // No Data Analysis header should render for this fixture's panel (null case).
+    expect(html).not.toContain("Data Analysis — mathematical model");
+    // Page still renders fine end-to-end.
+    expect(html.startsWith("<!doctype html>")).toBe(true);
+  });
+
+  it("stays a self-contained page with the new markup (no external assets introduced)", () => {
+    const html = renderFixturesMarketsPage([statsEvent()], "2026-07-19", DEPS);
+    expect(html).not.toMatch(/<link[^>]+href|src=["']https?:|@import|<img|<script/i);
+  });
+});
