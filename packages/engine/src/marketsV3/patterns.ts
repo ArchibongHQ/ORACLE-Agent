@@ -98,6 +98,13 @@ export interface PatternInput {
   homeOdds?: number;
   drawOdds?: number;
   awayOdds?: number;
+  // BTTS market prices (optional) — for the Data Analysis panel's model-vs-
+  // market delta only; no pattern/trap check reads these.
+  bttsYesOdds?: number;
+  bttsNoOdds?: number;
+  // League name (optional) — for Dixon-Coles rho resolution (resolveRho) in
+  // the Data Analysis panel; unused by any pattern/trap detector.
+  league?: string;
   // Momentum / H2H (optional — degrade gracefully when absent).
   streakH?: number;
   streakA?: number;

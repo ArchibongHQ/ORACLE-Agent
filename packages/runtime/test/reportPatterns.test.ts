@@ -5,6 +5,7 @@
  *  against a known-good detector result. */
 import { describe, expect, it } from "vitest";
 import {
+  buildFixtureDataAnalysis,
   buildReportPatternInput,
   compareGreenFlagSummaries,
   slateGreenFlagProfile,
@@ -586,5 +587,42 @@ describe("slateGreenFlagProfile", () => {
       arsenalChelseaEvent({ detail: { eventId: "e", odds: {}, stats: null, statscoverage: null } })
     );
     expect(slateGreenFlagProfile([none], 1)).toBeNull();
+  });
+});
+
+describe("buildFixtureDataAnalysis", () => {
+  it("builds the engine's FixtureAnalysisPanel from the same PatternInput buildReportPatternInput derives", () => {
+    const panel = buildFixtureDataAnalysis(arsenalChelseaEvent());
+    expect(panel).not.toBeNull();
+    expect(panel?.result1x2).toHaveLength(3);
+    expect(panel?.btts).toHaveLength(2);
+    expect(panel?.goalsOU).toHaveLength(4);
+    // 1X2 odds are present on the fixture, so market-devig delta should be populated.
+    expect(panel?.result1x2.every((m) => m.marketPct !== null)).toBe(true);
+    // scoreAnalysis outcome shares should mirror the same rp used elsewhere.
+    expect(panel?.scoreAnalysis.outcomePct.home).toBeGreaterThan(0);
+  });
+
+  it("returns null when buildReportPatternInput returns null (no usable goal rates)", () => {
+    const event = arsenalChelseaEvent({
+      detail: { eventId: "evt-none", odds: {}, stats: {}, statscoverage: {} },
+    });
+    expect(buildFixtureDataAnalysis(event)).toBeNull();
+  });
+
+  it("returns an empty cornersOU array when corners inputs are missing", () => {
+    const event = arsenalChelseaEvent({
+      detail: {
+        eventId: "evt-no-corners",
+        odds: arsenalChelseaEvent().detail?.odds,
+        stats: {
+          scoringConceding: arsenalChelseaEvent().detail?.stats?.scoringConceding,
+        },
+        statscoverage: {},
+      },
+    });
+    const panel = buildFixtureDataAnalysis(event);
+    expect(panel).not.toBeNull();
+    expect(panel?.cornersOU).toEqual([]);
   });
 });

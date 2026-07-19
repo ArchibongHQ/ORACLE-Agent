@@ -222,6 +222,13 @@ export {
   formatFinishingRegressionShadow,
   shadowFinishingRegression,
 } from "./marketsV3/finishingRegression.js";
+export type {
+  FixtureAnalysisPanel,
+  GoalsLine,
+  ModelVsMarket,
+  ScorelineRow,
+} from "./marketsV3/fixtureAnalysisPanel.js";
+export { buildFixtureAnalysisPanel } from "./marketsV3/fixtureAnalysisPanel.js";
 export type { ResultProbs } from "./marketsV3/grid.js";
 export {
   buildV3Grid,

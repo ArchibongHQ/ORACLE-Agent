@@ -41,6 +41,8 @@
  *  (sidecar data contract, PR #74). */
 import {
   detectPatterns,
+  buildFixtureAnalysisPanel as engineBuildFixtureAnalysisPanel,
+  type FixtureAnalysisPanel,
   type H2hMeeting,
   lookupMarket,
   type MarketFamily,
@@ -397,6 +399,20 @@ export function buildReportPatternInput(
   const completeness = groups.filter(Boolean).length / groups.length;
 
   return { input, basis, completeness };
+}
+
+/** Bridge into the engine's "Data Analysis" panel (marketsV3/fixtureAnalysisPanel.ts)
+ *  for the report layer — reuses the EXACT SAME PatternInput buildReportPatternInput
+ *  already built for the Green Flags block (recency blending, league baselines, xG,
+ *  corners, odds, etc), so this panel's numbers stay internally consistent with the
+ *  green-flags read on the same fixture rather than re-deriving a second mapper.
+ *  Named distinctly from the imported engine function (aliased above) to avoid a
+ *  same-name shadow. Returns null when the fixture has no usable goal rates at all
+ *  (mirrors buildReportPatternInput's own null contract). */
+export function buildFixtureDataAnalysis(event: SportyBetEvent): FixtureAnalysisPanel | null {
+  const built = buildReportPatternInput(event);
+  if (!built) return null;
+  return engineBuildFixtureAnalysisPanel(built.input, event.league ?? undefined);
 }
 
 const MAX_EVIDENCE_MARKETS = 6;

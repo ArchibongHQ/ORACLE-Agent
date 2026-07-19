@@ -27,11 +27,17 @@
  *  present as their own columns above. */
 import { access, mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { lookupMarket, PRICEABLE_FAMILIES } from "@oracle/engine";
+import {
+  type FixtureAnalysisPanel,
+  type GoalsLine,
+  lookupMarket,
+  PRICEABLE_FAMILIES,
+} from "@oracle/engine";
 import ExcelJS from "exceljs";
 import { type DailyNewsRow, loadDailyNews, teamSlug } from "./dailyStore.js";
 import { findLineupSummary, type LineupSummary, loadLineupSummaries } from "./lineups.js";
 import {
+  buildFixtureDataAnalysis,
   compareGreenFlagSummaries,
   type GreenFlagSummary,
   slateGreenFlagProfile,
@@ -589,6 +595,22 @@ tbody tr:nth-child(even){background:var(--surface2)}
 td.odds{text-align:right;font-family:ui-monospace,Consolas,monospace;color:var(--amber)}
 .priceable{color:var(--accent)}
 .empty{color:var(--dim);font-style:italic;padding:8px 0}
+.da-row{display:flex;align-items:center;gap:10px;margin:4px 0;font-size:12px}
+.da-row .da-label{width:78px;flex:none;color:var(--dim)}
+.da-track{flex:1;height:14px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;overflow:hidden;position:relative}
+.da-bar{height:100%;background:var(--accent)}
+.da-pct{width:54px;flex:none;text-align:right;font-family:ui-monospace,Consolas,monospace}
+.da-delta{width:96px;flex:none;font-family:ui-monospace,Consolas,monospace;font-size:11px;text-align:right}
+.da-delta.up{color:var(--accent)}
+.da-delta.down{color:var(--amber)}
+.da-group{margin:10px 0 16px}
+.da-sub{font-family:ui-monospace,Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);margin:10px 0 4px}
+.da-note{color:var(--dim);font-style:italic;font-size:12px;padding:4px 0}
+.da-score-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:6px}
+.da-score-col h4{margin:0 0 4px;font-size:12px;color:var(--text)}
+.da-score-col div{display:flex;justify-content:space-between;font-size:11.5px;font-family:ui-monospace,Consolas,monospace;padding:1px 0;color:var(--dim)}
+.da-outcome-pct{display:flex;gap:14px;font-size:12.5px;margin:4px 0 2px}
+.da-outcome-pct b{color:var(--text)}
 `;
 
 const MARKET_HEAD = ["Market ID", "Market", "Family", "Group", "Specifier", "Outcome", "Odds"];
@@ -662,7 +684,92 @@ function renderGreenFlagsBlock(gf: GreenFlagSummary): string {
   return `<div class="h">Green Flags — trends &amp; patterns (${gf.basis === "overall" ? "overall-basis °" : "venue-split"})</div><div class="gf-chips">${chips}${trap}</div>${sentence}${evidence}${meanings}`;
 }
 
-function renderFixturePanel(ctx: FixtureRowCtx, gf: GreenFlagSummary): string {
+/** One horizontal bar row: label, filled track sized to `pct`, and the
+ *  percentage figure. `deltaPct`/`deltaLabel` add a small "+X.Xpp vs market"
+ *  indicator when a market-derived comparison exists (null when it doesn't —
+ *  e.g. First Half Winner / Team To Score First have no market devig source). */
+function daRow(label: string, pctVal: number, deltaPct: number | null): string {
+  const bar = `<div class="da-track"><div class="da-bar" style="width:${Math.max(0, Math.min(100, pctVal))}%"></div></div>`;
+  const delta =
+    deltaPct === null
+      ? ""
+      : `<span class="da-delta ${deltaPct >= 0 ? "up" : "down"}">${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(1)}pp vs market</span>`;
+  return `<div class="da-row"><span class="da-label">${escHtml(label)}</span>${bar}<span class="da-pct">${pctVal.toFixed(1)}%</span>${delta}</div>`;
+}
+
+/** Goals/Corners/Team-goals O/U block: one row per line, bar = Over%. */
+function daOULines(lines: GoalsLine[]): string {
+  return lines.map((l) => daRow(`O/U ${l.line}`, l.overPct, null)).join("");
+}
+
+/** Score Analysis: outcome % summary + 3-column ranked top scorelines. Each
+ *  column's rows sum to LESS than its outcome %, matching the engine's own
+ *  "top-5 within outcome, not renormalised" contract (see
+ *  fixtureAnalysisPanel.ts's ScoreAnalysis doc comment). */
+function daScoreAnalysis(sa: FixtureAnalysisPanel["scoreAnalysis"]): string {
+  const outcomeLine = `<div class="da-outcome-pct"><span>Home <b>${sa.outcomePct.home.toFixed(1)}%</b></span><span>Draw <b>${sa.outcomePct.draw.toFixed(1)}%</b></span><span>Away <b>${sa.outcomePct.away.toFixed(1)}%</b></span></div>`;
+  const col = (title: string, rows: { score: string; pct: number }[]): string =>
+    `<div class="da-score-col"><h4>${escHtml(title)}</h4>${rows
+      .map((r) => `<div><span>${escHtml(r.score)}</span><span>${r.pct.toFixed(1)}%</span></div>`)
+      .join("")}</div>`;
+  const cols = `<div class="da-score-cols">${col("Home win", sa.home)}${col("Draw", sa.draw)}${col("Away win", sa.away)}</div>`;
+  return outcomeLine + cols;
+}
+
+/** "Data Analysis" panel (owner reference-screenshot request, 2026-07-19): the
+ *  engine's own mathematical model (venue-adjusted expected goals →
+ *  Dixon-Coles score grid) rendered as chart-style bars, alongside the
+ *  market's devigged fair probability where available. Display/report-only —
+ *  same non-pick-driving contract as the Green Flags block; see
+ *  fixtureAnalysisPanel.ts's header comment. Returns "" when `panel` is null
+ *  (fixture had no usable goal rates) — never renders a broken/empty section. */
+function renderDataAnalysisBlock(panel: FixtureAnalysisPanel | null): string {
+  if (!panel) return "";
+
+  const result1x2 = panel.result1x2.map((m) => daRow(m.label, m.modelPct, m.deltaPct)).join("");
+  const btts = panel.btts.map((m) => daRow(m.label, m.modelPct, m.deltaPct)).join("");
+  const goalsOU = daOULines(panel.goalsOU);
+  const fhw = [
+    daRow("Home", panel.firstHalfWinner.home, null),
+    daRow("Draw", panel.firstHalfWinner.draw, null),
+    daRow("Away", panel.firstHalfWinner.away, null),
+  ].join("");
+  const tsf = [
+    daRow("Home", panel.teamToScoreFirst.home, null),
+    daRow("No goal", panel.teamToScoreFirst.noGoal, null),
+    daRow("Away", panel.teamToScoreFirst.away, null),
+  ].join("");
+  // Disclosed to the reader, not just in the engine's source comment: this
+  // one section rests on a different modeling assumption than every other
+  // section above (continuous-time first-arrival race between two Poisson
+  // processes) rather than the discrete final-score grid the rest of the
+  // panel reads probabilities off of — a real, standard result, but not the
+  // same math, so it's labeled rather than presented with equal footing.
+  const tsfNote = `<div class="da-note">Approximation: derived from a continuous-time goal-arrival race between the two sides' scoring rates, not read off the score grid above.</div>`;
+  const cornersOU = panel.cornersOU.length
+    ? daOULines(panel.cornersOU)
+    : `<div class="da-note">No corners data scraped for this fixture.</div>`;
+  const teamGoalsOU = `<div class="da-sub">Home team</div>${daOULines(panel.teamGoalsOU.home)}<div class="da-sub">Away team</div>${daOULines(panel.teamGoalsOU.away)}`;
+  const scoreAnalysis = daScoreAnalysis(panel.scoreAnalysis);
+
+  return (
+    `<div class="h">Data Analysis — mathematical model (venue-adjusted expected goals)</div>` +
+    `<div class="da-group"><div class="da-sub">Result 1X2</div>${result1x2}</div>` +
+    `<div class="da-group"><div class="da-sub">BTTS</div>${btts}</div>` +
+    `<div class="da-group"><div class="da-sub">Goals O/U</div>${goalsOU}</div>` +
+    `<div class="da-group"><div class="da-sub">First Half Winner</div>${fhw}</div>` +
+    `<div class="da-group"><div class="da-sub">Team To Score First</div>${tsf}${tsfNote}</div>` +
+    `<div class="da-group"><div class="da-sub">Corners O/U</div>${cornersOU}</div>` +
+    `<div class="da-group"><div class="da-sub">Team Goals O/U</div>${teamGoalsOU}</div>` +
+    `<div class="da-group"><div class="da-sub">Score Analysis</div>${scoreAnalysis}</div>`
+  );
+}
+
+function renderFixturePanel(
+  ctx: FixtureRowCtx,
+  gf: GreenFlagSummary,
+  dataAnalysis: FixtureAnalysisPanel | null
+): string {
   const { event } = ctx;
   // Full field set (identical column set to the xlsx Fixtures sheet).
   const fields = FIXTURE_COLUMNS.map((c) => {
@@ -691,7 +798,7 @@ function renderFixturePanel(ctx: FixtureRowCtx, gf: GreenFlagSummary): string {
     ? `<div class="tblwrap"><table><thead><tr>${MARKET_HEAD.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${marketRows.join("")}</tbody></table></div>`
     : `<div class="empty">No markets captured for this fixture yet.</div>`;
 
-  return `<div class="panel">${renderGreenFlagsBlock(gf)}<div class="h">Fixture data</div><div class="fields">${fields}</div><div class="h">Markets (${marketRows.length} outcomes · ★ = priceable by the engine)</div>${marketsTable}</div>`;
+  return `<div class="panel">${renderGreenFlagsBlock(gf)}${renderDataAnalysisBlock(dataAnalysis)}<div class="h">Fixture data</div><div class="fields">${fields}</div><div class="h">Markets (${marketRows.length} outcomes · ★ = priceable by the engine)</div>${marketsTable}</div>`;
 }
 
 /** Sortable (event, green-flags summary) pair — computed once per fixture so
@@ -700,6 +807,7 @@ function renderFixturePanel(ctx: FixtureRowCtx, gf: GreenFlagSummary): string {
 interface RankedFixture {
   event: SportyBetEvent;
   gf: GreenFlagSummary;
+  dataAnalysis: FixtureAnalysisPanel | null;
 }
 
 /** Render the whole slate as one self-contained HTML page. Pure — caller writes it.
@@ -715,11 +823,12 @@ export function renderFixturesMarketsPage(
   const ranked: RankedFixture[] = events.map((event) => ({
     event,
     gf: summarizeGreenFlags(event),
+    dataAnalysis: buildFixtureDataAnalysis(event),
   }));
   ranked.sort((a, b) => compareGreenFlagSummaries(a.gf, b.gf));
 
   const cards = ranked
-    .map(({ event, gf }) => {
+    .map(({ event, gf, dataAnalysis }) => {
       const lineup = findLineupSummary(deps.lineups, event.home, event.away);
       const ctx: FixtureRowCtx = {
         event,
@@ -744,7 +853,7 @@ export function renderFixturesMarketsPage(
         `<details><summary><span class="fx-title">${escHtml(event.home)} v ${escHtml(event.away)}` +
         `<span class="lg">${escHtml(event.league ?? "")}</span></span>` +
         `<span class="fx-meta">${badge}<span>${escHtml(ko)} UTC</span>${odds}<span>${mkCount} mkts</span>` +
-        `<span class="chev"></span></span></summary>${renderFixturePanel(ctx, gf)}</details>`
+        `<span class="chev"></span></span></summary>${renderFixturePanel(ctx, gf, dataAnalysis)}</details>`
       );
     })
     .join("\n");
