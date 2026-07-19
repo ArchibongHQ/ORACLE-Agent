@@ -1040,6 +1040,17 @@ def _weather_for(table: dict[tuple[str, str], dict], home_team: str, kickoff_utc
 _REFEREE_ASSIGNMENTS_PATH = Path(".tmp/oracle-store/referee_assignments.json")
 _REFEREE_CARDS_PATH = Path(".tmp/oracle-store/referee_cards.json")
 
+# tools/fetch_live_injuries.py's aggregated live per-fixture injuries/
+# suspensions (API-Football /injuries, ANY league, daily-refreshed — see
+# that file's module docstring for how this differs from the OTHER two
+# injury-adjacent signals: fetch_squad_availability.py's Kaggle squad-value
+# proxy (top-5 leagues, feeds SportyBetStats.availability/keyPlayerPresent)
+# and fetch_injuries.py's Kaggle season injury-burden CSV. This table is
+# optional/best-effort, same fail-open convention as referee/xg/availability/
+# weather — a fixture with no entry (fetcher never run, or API-Football
+# returned nothing for that fixture) simply gets no liveInjuries block.
+_INJURIES_PATH = Path(".tmp/oracle-store/injuries.json")
+
 
 def _load_referee_assignments_table() -> dict[tuple[str, str], str]:
     """Load referee_assignments.json, keyed by (normalise(home),
@@ -1107,6 +1118,47 @@ def _referee_for(
     if isinstance(mean, (int, float)):
         return {"name": ref, "cardsRate": mean, "cardsRateSrc": "league_mean_fallback"}
     return {"name": ref, "cardsRate": None, "cardsRateSrc": None}
+
+
+def _load_injuries_table() -> dict[tuple[str, str], dict]:
+    """Load injuries.json (tools/fetch_live_injuries.py), keyed by
+    (normalise(home), normalise(away)) -> {"home": [...], "away": [...],
+    "home_count": int, "away_count": int}. Missing/corrupt file or an empty
+    injuries list -> empty dict, never fatal."""
+    try:
+        data = json.loads(_INJURIES_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    table: dict[tuple[str, str], dict] = {}
+    for entry in data.get("injuries") or []:
+        home, away = entry.get("home"), entry.get("away")
+        if not home or not away:
+            continue
+        table[(normalise(home), normalise(away))] = {
+            "home": entry.get("home_injuries") or [],
+            "away": entry.get("away_injuries") or [],
+            "home_count": entry.get("home_count") or 0,
+            "away_count": entry.get("away_count") or 0,
+        }
+    return table
+
+
+def _injuries_for(
+    table: dict[tuple[str, str], dict], home: str, away: str
+) -> Optional[dict]:
+    """Look up this fixture's live per-team injuries/suspensions block.
+
+    None when no entry exists for this fixture (the common case whenever
+    tools/fetch_live_injuries.py hasn't been run today, or API-Football had
+    nothing for this fixture) — the caller degrades to no liveInjuries
+    block, never a crash."""
+    entry = table.get((normalise(home), normalise(away)))
+    if not entry:
+        return None
+    return {
+        "home": {"count": entry["home_count"], "players": entry["home"]},
+        "away": {"count": entry["away_count"], "players": entry["away"]},
+    }
 
 
 def _sb_get(url: str) -> Optional[dict]:
@@ -2275,6 +2327,7 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
     # both tables degrade to empty when absent, same as the tables above).
     referee_assignments_table = _load_referee_assignments_table()
     referee_cards_by_key, referee_league_means = _load_referee_cards_table()
+    injuries_table = _load_injuries_table()
 
     def _xg_block(ev: dict) -> dict:
         return {
@@ -2297,17 +2350,21 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
             ev.get("home", ""), ev.get("away", ""), ev.get("league", ""),
         )
 
+    def _injuries_block(ev: dict) -> Optional[dict]:
+        return _injuries_for(injuries_table, ev.get("home", ""), ev.get("away", ""))
+
     def _worker(ev: dict) -> dict:
         eid = ev.get("eventId", "")
         xg = _xg_block(ev)
         availability = _availability_block(ev)
         weather = _weather_block(ev)
         referee = _referee_block(ev)
+        live_injuries = _injuries_block(ev)
         if not eid:
             return {
                 **ev, "odds": None, "stats": None, "statscoverage": None,
                 "xg": xg, "availability": availability, "weather": weather,
-                "referee": referee,
+                "referee": referee, "liveInjuries": live_injuries,
             }
         try:
             detail = _fetch_fixture_detail(
@@ -2315,13 +2372,13 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
             )
             return {
                 **ev, **detail, "xg": xg, "availability": availability,
-                "weather": weather, "referee": referee,
+                "weather": weather, "referee": referee, "liveInjuries": live_injuries,
             }
         except Exception:
             return {
                 **ev, "odds": None, "stats": None, "statscoverage": None,
                 "xg": xg, "availability": availability, "weather": weather,
-                "referee": referee,
+                "referee": referee, "liveInjuries": live_injuries,
             }
 
     enriched: list[dict] = [{}] * len(events)
@@ -2340,6 +2397,7 @@ def enrich_sportybet_events(events: list[dict], max_workers: Optional[int] = Non
                     "availability": _availability_block(events[idx]),
                     "weather": _weather_block(events[idx]),
                     "referee": _referee_block(events[idx]),
+                    "liveInjuries": _injuries_block(events[idx]),
                 }
             done += 1
             if done % 50 == 0:

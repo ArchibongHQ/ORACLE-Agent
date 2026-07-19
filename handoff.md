@@ -1,4 +1,94 @@
-# ⭐ CURRENT — 2026-07-16 (3rd session): patterns-engine Wave 2 PUSHED + 3 stacked PRs OPEN (#70/71/72) — pre-PR review caught + fixed a critical Under-leak; owner review/merge + deploy still owed
+# ⭐ CURRENT — 2026-07-19 (2nd pass): P0-P2 DONE + verified, P3 partially done, hook + research done — Phase 2 onward still pending
+
+> **Cold-read this first.** This supersedes the section immediately below. A PRIOR session this same day
+> wrote a 5-item bug-fix plan (`C:\Users\HP PC\.claude\plans\provide-a-fix-plan-vast-riddle.md`) believing
+> `packages/runtime/src/reportPatterns.ts` + `packages/engine/src/marketsV3/fixtureAnalysisPanel.ts` were
+> LOST (only in stale `dist/`). **That premise was wrong** — a fresh check this pass found both files fully
+> built, tested (962+ tests), and sitting in 3 OPEN PRs (#76 `feat/green-flags-report`, #77
+> `feat/patterns-full-catalog`, #78 `feat/data-analysis-panel`, stacked toward `main`) from earlier work
+> in this same overall session. The prior session had simply switched to `fix/under-ban-delivery-choke`
+> (which branches off `main` directly and genuinely lacks these files) without checking sibling branches
+> or `gh pr list`. **Real root cause of "today's report has no Green Flags block"**: `apps/worker/dist/index.js`
+> was last built **July 18** — the worker service has never been rebuilt+restarted since the Green Flags
+> work was authored, so it's still running yesterday's compiled code. Confirmed via
+> `grep -c "Green Flags" .tmp/reports/oracle-fixtures-markets-2026-07-19.html` → 0, vs 72 on 07-18's report.
+
+## What's DONE this pass (P0-P2 fully verified; P3 partially)
+
+- **P0 — Merged PRs #76→#77→#78 onto `main`** (via 2 extra "landing" PRs, #80/#81, to fix a base-branch-drift
+  issue where `gh pr merge` only updated the PR's stacked base, not `main` — both landing PRs squash-merged
+  clean). `main` now has all 7 `PatternKind`s (`btts_banker`/`h2h_dominance`/`half_share` included),
+  `FixtureAnalysisPanel`/`buildFixtureAnalysisPanel`/`TrapFlag` barrel-exported, `dailyFixtureReport`/
+  `fixtureWorkbook` fully wired to `summarizeGreenFlags`/`slateGreenFlagProfile`/`buildFixtureDataAnalysis`.
+  Verified: engine 965/965 (excl. pre-existing unrelated `gbm.test.ts`), runtime 719/719, worker 74/74,
+  full monorepo typecheck clean.
+- **P1 — Fixed** the `fixture-report@enriched-followup` race
+  ([apps/worker/src/index.ts](apps/worker/src/index.ts)) — now awaits `awaitAcquireDailyJobOrTimeout`
+  before calling `sendDailyFixtureReport`, mirroring the sibling `unified-batch@back-online` block. 3 new
+  regression tests in `apps/worker/test/dailyAcquisition.test.ts` (proves the wait, the timeout-bound
+  fallback, and the no-op-when-nothing-tracked case). Worker 77/77 green. **Uncommitted — see below.**
+- **P2 — Fixed** the git dubious-ownership error via `git config --local --add safe.directory` (repo-local
+  `.git/config`, not `--global` — confirmed the `OracleWorker` Servy service runs as `LocalSystem`, a
+  different Windows account than the interactive shell, so `--global` alone would never have reached it).
+  Verified: `git -c safe.directory= fetch` still succeeds with only the local config present. No commit
+  needed (`.git/config` isn't tracked).
+- **P3 (partial) — Live injuries fetcher built**: new `tools/fetch_live_injuries.py` (API-Football
+  `/injuries?fixture={id}`, any league, daily) + `tools/test_fetch_live_injuries.py` (7 tests) + wiring
+  into `tools/scrape_fixtures.py` (`_load_injuries_table`/`_injuries_for`) + a new
+  `SportyBetStats.liveInjuries` field in `packages/runtime/src/selectFixtures.ts` (2 new tests). Named
+  `fetch_live_injuries.py`, NOT `fetch_injuries.py` — that filename was already taken by a different,
+  actively-wired production tool (Kaggle season injury-burden CSV, PR-8, `ORACLE_FETCH_INJURIES=on`) that
+  the original plan's step would have silently destroyed. Also NOT the same signal as the existing
+  `SportyBetStats.availability`/`keyPlayerPresent` field (`tools/fetch_squad_availability.py` — a
+  slow-moving Kaggle squad-VALUE historical proxy, top-5 leagues, weekly refresh); both now coexist.
+  Verified: runtime 721/721 (+2), pytest 316/316 (+7), full monorepo typecheck clean. **Uncommitted.**
+- **P3 (xG diagnosis, no fix)** — `tools/fetch_fotmob_xg.py` returns 0/N teams on 2+ consecutive days.
+  Root-caused via LIVE probes (not speculation): (1) `_resolve_team_id`'s `a[href*="/teams/"]` selector
+  finds zero matching anchors on FotMob's current search-results page — the DOM shape changed since this
+  was last verified live (2026-06-23); (2) even bypassing that via a known team ID, the team-overview API
+  payload FotMob returns contains **no xG field anywhere** (grepped 279KB of real response body). Not a
+  1-2 line fix — needs either reverse-engineering FotMob's current selectors/endpoint AND finding wherever
+  (if anywhere) xG actually lives in their API now, or replacing the source. **Recommendation for next
+  session**: live-probe API-Football's `/predictions` endpoint for an xG-equivalent field first (uses the
+  existing key, near-zero cost) before committing to the heavier `understatapi` integration.
+- **gstack-scrape skill — properly researched** (the prior session's "not applicable" call was
+  under-evidenced; this pass read both `SKILL.md`/`BROWSER.md` in full). Confirmed genuinely inapplicable
+  to ORACLE's daily unattended pipeline: the `$B` daemon auto-stops after 30 min idle with no self-healing
+  (incompatible with a Servy-managed Windows service), and is explicitly one-shot/no-multi-page-crawl by
+  contract (incompatible with 123 fixtures/day). Real, still-open use case: one-time manual reconnaissance
+  before hand-writing a new permanent Python tool for a brand-new data source — not relevant to either gap
+  actually in scope this session.
+- **Skill/Fable-mode auto-invocation hook — DONE.** Added a `UserPromptSubmit` hook
+  (`~/.claude/settings.json` → `~/.claude/hooks/skill-check-reminder.js`) that reads `~/.claude/skills/`
+  LIVE every turn (never hardcoded, can't go stale) and injects a short reminder to check for a matching
+  skill + consider Fable-mode before non-trivial work. Global, persists across all projects. **Needs the
+  owner to open `/hooks` once (or restart Claude Code) — the settings watcher only picks up hook changes
+  made after session start**, confirmed firing correctly once that happens (verified live in this session
+  after a restart-equivalent).
+
+## NEXT — owner action needed
+
+1. **Review + commit the 2 uncommitted diffs** (P1's `apps/worker/{src/index.ts,test/dailyAcquisition.test.ts}`
+   and P3's `tools/fetch_live_injuries.py` + `tools/scrape_fixtures.py` + `packages/runtime/src/selectFixtures.ts`
+   + their tests) — both fully verified (typecheck/test/pytest/biome all green) but not yet committed/branched/PR'd,
+   pending owner review since these were built by parallel subagents this pass.
+2. **Rebuild + restart `OracleWorker`** (elevated shell) once the above lands — this is the actual fix for
+   "today's report has no Green Flags block": `apps/worker/dist/` has been stale since July 18.
+   ```
+   pnpm turbo run build --concurrency=1
+   # then in an ELEVATED PowerShell:
+   Restart-Service OracleWorker
+   ```
+3. **Re-scrape + re-trigger the Telegram report dispatch** once rebuilt, to confirm the Green Flags +
+   Data Analysis panel blocks render correctly in a real, fresh report.
+4. **Open `/hooks` once** (or restart Claude Code) to activate the new skill-check hook.
+5. **Next session**: continue the standing patterns-engine plan — Phase 2 (two-tier Top-39 slate) onward
+   (see `C:\Users\HP PC\.claude\plans\stateful-rolling-elephant.md`), plus a live-probe of API-Football's
+   `/predictions` endpoint for the xG gap (see above).
+
+---
+
+# 2026-07-16 (3rd session): patterns-engine Wave 2 PUSHED + 3 stacked PRs OPEN (#70/71/72) — pre-PR review caught + fixed a critical Under-leak; owner review/merge + deploy still owed
 
 > **Cold-read this first.** This supersedes the section immediately below (still accurate history for
 > what Wave 2 phases 2/3/0 actually implement — read it for that). This session pushed the 3 branches
