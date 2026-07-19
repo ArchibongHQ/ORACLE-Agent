@@ -31,6 +31,12 @@ import { lookupMarket, PRICEABLE_FAMILIES } from "@oracle/engine";
 import ExcelJS from "exceljs";
 import { type DailyNewsRow, loadDailyNews, teamSlug } from "./dailyStore.js";
 import { findLineupSummary, type LineupSummary, loadLineupSummaries } from "./lineups.js";
+import {
+  compareGreenFlagSummaries,
+  type GreenFlagSummary,
+  slateGreenFlagProfile,
+  summarizeGreenFlags,
+} from "./reportPatterns.js";
 import { loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
 import { buildMotivation } from "./sportyBetStats.js";
 import { buildTravel } from "./travel.js";
@@ -559,6 +565,16 @@ details:not([open]) .chev::after{content:"▼"}
 .fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px 14px}
 .fields div{font-size:12px;border-bottom:1px dotted var(--border);padding:2px 0;display:flex;justify-content:space-between;gap:8px}
 .fields .k{color:var(--dim)}.fields .v{font-family:ui-monospace,Consolas,monospace;text-align:right}
+.gf-chips{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 10px}
+.gf-chip{font-family:ui-monospace,Consolas,monospace;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border)}
+.gf-chip.venue{color:#0f1512;background:var(--accent);border-color:var(--accent)}
+.gf-chip.overall{color:#151006;background:var(--amber);border-color:var(--amber)}
+.gf-chip.trap{color:#fff;background:#c2453a;border-color:#c2453a}
+.gf-sentence{font-size:12.5px;color:var(--text);margin:0 0 10px;padding:6px 10px;background:var(--surface2);border-radius:6px}
+.gf-badge{font-family:ui-monospace,Consolas,monospace;font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--border);color:var(--dim)}
+.gf-badge.has{color:#0f1512;background:var(--accent);border-color:var(--accent);font-weight:700}
+.gf-badge.overall-only{color:#151006;background:var(--amber);border-color:var(--amber);font-weight:700}
+.slate-profile{font-size:12.5px;color:var(--dim);margin:0 0 14px;font-family:ui-monospace,Consolas,monospace}
 .tblwrap{overflow-x:auto;border:1px solid var(--border);border-radius:6px}
 table{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
 thead th{position:sticky;top:0;text-align:left;background:var(--surface2);color:var(--dim);font-family:ui-monospace,Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:6px 10px;border-bottom:1px solid var(--border)}
@@ -582,7 +598,31 @@ const SUMMARY_ODDS: Array<{
   { label: "BTTS", get: (e) => e.detail?.odds?.btts?.yes },
 ];
 
-function renderFixturePanel(ctx: FixtureRowCtx): string {
+/** Green-Flags block (owner instruction 2026-07-18): renders the SAME
+ *  deterministic pattern detector the pick engine runs (@oracle/engine's
+ *  detectPatterns via reportPatterns.ts), colour-coded by basis — solid
+ *  green = venue-split-backed flag, amber = overall-basis ° (lower trust,
+ *  never grants a confidence uplift per v6.2 §2.5.4), red = Trap Warning.
+ *  Purpose: let a human check, after the fact, whether a delivered pick
+ *  actually matches the patterns visible in the scraped data. This is the
+ *  engine's OWN pattern read on the raw data — not the feed's self-
+ *  assessment (see this file's header comment on that distinction). */
+function renderGreenFlagsBlock(gf: GreenFlagSummary): string {
+  if (gf.flagCount === 0) return "";
+  const chips = gf.flags
+    .map(
+      (f) =>
+        `<span class="gf-chip ${f.basis}" title="${escHtml(f.rationale)}">${escHtml(f.label)}${f.basis === "overall" ? "°" : ""}</span>`
+    )
+    .join("");
+  const trap = gf.trapWarning
+    ? `<span class="gf-chip trap">⚠ ${escHtml(gf.trapWarning)}</span>`
+    : "";
+  const sentence = gf.sentence ? `<div class="gf-sentence">🚩 ${escHtml(gf.sentence)}</div>` : "";
+  return `<div class="h">Green Flags — trends &amp; patterns (${gf.basis === "overall" ? "overall-basis °" : "venue-split"})</div><div class="gf-chips">${chips}${trap}</div>${sentence}`;
+}
+
+function renderFixturePanel(ctx: FixtureRowCtx, gf: GreenFlagSummary): string {
   const { event } = ctx;
   // Full field set (identical column set to the xlsx Fixtures sheet).
   const fields = FIXTURE_COLUMNS.map((c) => {
@@ -611,17 +651,35 @@ function renderFixturePanel(ctx: FixtureRowCtx): string {
     ? `<div class="tblwrap"><table><thead><tr>${MARKET_HEAD.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${marketRows.join("")}</tbody></table></div>`
     : `<div class="empty">No markets captured for this fixture yet.</div>`;
 
-  return `<div class="panel"><div class="h">Fixture data</div><div class="fields">${fields}</div><div class="h">Markets (${marketRows.length} outcomes · ★ = priceable by the engine)</div>${marketsTable}</div>`;
+  return `<div class="panel">${renderGreenFlagsBlock(gf)}<div class="h">Fixture data</div><div class="fields">${fields}</div><div class="h">Markets (${marketRows.length} outcomes · ★ = priceable by the engine)</div>${marketsTable}</div>`;
 }
 
-/** Render the whole slate as one self-contained HTML page. Pure — caller writes it. */
+/** Sortable (event, green-flags summary) pair — computed once per fixture so
+ *  the same detector run both orders the listing and renders each panel;
+ *  never re-run per usage. */
+interface RankedFixture {
+  event: SportyBetEvent;
+  gf: GreenFlagSummary;
+}
+
+/** Render the whole slate as one self-contained HTML page. Pure — caller writes it.
+ *  Owner instruction 2026-07-18: fixtures are reordered most-green-flags-to-
+ *  least (data completeness as the tiebreak), and the report gains a
+ *  slate-level dominant-trends line, so the pattern read that's supposed to
+ *  drive picks is visible and independently checkable here. */
 export function renderFixturesMarketsPage(
   events: SportyBetEvent[],
   date: string,
   deps: FixtureWorkbookDeps
 ): string {
-  const cards = events
-    .map((event) => {
+  const ranked: RankedFixture[] = events.map((event) => ({
+    event,
+    gf: summarizeGreenFlags(event),
+  }));
+  ranked.sort((a, b) => compareGreenFlagSummaries(a.gf, b.gf));
+
+  const cards = ranked
+    .map(({ event, gf }) => {
       const lineup = findLineupSummary(deps.lineups, event.home, event.away);
       const ctx: FixtureRowCtx = {
         event,
@@ -635,21 +693,34 @@ export function renderFixturesMarketsPage(
         return `<span>${s.label} <b>${v == null ? "—" : escHtml(v)}</b></span>`;
       }).join("");
       const mkCount = event.detail?.odds?.allMarkets?.length ?? 0;
+      const badgeClass =
+        gf.flagCount === 0
+          ? "gf-badge"
+          : gf.basis === "overall"
+            ? "gf-badge overall-only"
+            : "gf-badge has";
+      const badge = `<span class="${badgeClass}">🚩${gf.flagCount}</span>`;
       return (
         `<details><summary><span class="fx-title">${escHtml(event.home)} v ${escHtml(event.away)}` +
         `<span class="lg">${escHtml(event.league ?? "")}</span></span>` +
-        `<span class="fx-meta"><span>${escHtml(ko)} UTC</span>${odds}<span>${mkCount} mkts</span>` +
-        `<span class="chev"></span></span></summary>${renderFixturePanel(ctx)}</details>`
+        `<span class="fx-meta">${badge}<span>${escHtml(ko)} UTC</span>${odds}<span>${mkCount} mkts</span>` +
+        `<span class="chev"></span></span></summary>${renderFixturePanel(ctx, gf)}</details>`
       );
     })
     .join("\n");
+
+  const slateProfile = slateGreenFlagProfile(
+    ranked.map((r) => r.gf),
+    events.length
+  );
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ORACLE Fixtures &amp; Markets — ${escHtml(date)}</title>
 <style>${FIXTURES_MARKETS_PAGE_CSS}</style></head><body><div class="wrap">
 <h1>ORACLE — Fixtures &amp; Markets</h1>
-<p class="sub">${escHtml(date)} · ${events.length} fixtures · tap a fixture to reveal its full data + markets ladder</p>
+<p class="sub">${escHtml(date)} · ${events.length} fixtures · sorted most-green-flags-to-least · tap a fixture to reveal its full data + markets ladder</p>
+${slateProfile ? `<p class="slate-profile">🚩 ${escHtml(slateProfile)}</p>` : ""}
 <div class="controls"><button onclick="for(const d of document.querySelectorAll('details'))d.open=true">Expand all</button><button onclick="for(const d of document.querySelectorAll('details'))d.open=false">Collapse all</button></div>
 ${cards || '<p class="empty">No fixtures in this slate.</p>'}
 </div></body></html>`;
@@ -849,6 +920,12 @@ export async function generateAndWriteFixtureWorkbook(
   fixtureCount: number;
   marketsEmpty: boolean;
   xgCoverage: XgCoverage;
+  /** Slate-level dominant-trends one-liner (owner instruction 2026-07-18) —
+   *  same detector run as the HTML page's per-fixture chips, summarized
+   *  across the slate. Null when no fixture raised any pattern flag. Callers
+   *  (the Telegram document caption) surface this so the pattern read is
+   *  visible before anyone even opens the report. */
+  slateGreenFlagProfile: string | null;
 } | null> {
   const index = await loadSportyBetIndex(date);
   if (!index?.events.length) return null;
@@ -865,12 +942,17 @@ export async function generateAndWriteFixtureWorkbook(
   const deps = { lineups, newsByTeam };
   const files = await writeFixtureReportFiles(index.events, date, deps, outDir);
   const htmlPagePath = await writeFixturesMarketsPage(index.events, date, deps, outDir);
+  const slateProfile = slateGreenFlagProfile(
+    index.events.map((e) => summarizeGreenFlags(e)),
+    index.events.length
+  );
   return {
     ...files,
     htmlPagePath,
     fixtureCount: index.events.length,
     marketsEmpty,
     xgCoverage: computeXgCoverage(index.events),
+    slateGreenFlagProfile: slateProfile,
   };
 }
 
