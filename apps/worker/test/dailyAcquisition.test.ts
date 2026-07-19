@@ -15,6 +15,7 @@
  *  touching disk. watDateString is pinned to a fixed date so "today" cannot
  *  drift between the two calls in a single test. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { _resetAcquireChain, trackAcquireJob } from "../src/acquireChain.js";
 
 const sendTelegramTextMock = vi.fn().mockResolvedValue(undefined);
 const sendTelegramDocumentMock = vi.fn().mockResolvedValue(undefined);
@@ -92,9 +93,12 @@ vi.mock("../src/workerUtils.js", () => ({
   watYesterdayString: () => "2026-07-14",
 }));
 
-const { sendDailyFixtureReport, runWeeklyKaggleRefresh, acquireDaily } = await import(
-  "../src/dailyAcquisition.js"
-);
+const {
+  sendDailyFixtureReport,
+  awaitAcquireDailyJobOrTimeout,
+  runWeeklyKaggleRefresh,
+  acquireDaily,
+} = await import("../src/dailyAcquisition.js");
 
 describe("sendDailyFixtureReport — blocked-state Telegram alert suppression", () => {
   beforeEach(() => {
@@ -308,5 +312,95 @@ describe("acquireDaily — explicit timeoutMs override (2026-07-16 silent-failur
       [],
       expect.objectContaining({ timeoutMs: 25 * 60 * 1000 })
     );
+  });
+});
+
+/** [regression test, 2026-07-19 under-ban-delivery-choke fix] index.ts's
+ *  fixture-report@enriched-followup cron job used to call sendDailyFixtureReport
+ *  directly with no gate on acquire-daily still being in flight — confirmed in
+ *  production 2026-07-19: the follow-up fired at 09:06:45 while acquire-daily
+ *  (finishing at 09:08:25) was still streaming [lineups] fetches in, so the
+ *  Telegram report shipped built from partially-updated on-disk state (report
+ *  HTML shrank 13.1MB -> 11.3MB day-over-day despite an equal-or-higher fixture
+ *  count). The fix wraps the job in the same
+ *  `await awaitAcquireDailyJobOrTimeout(...); await sendDailyFixtureReport();`
+ *  sequence the sibling unified-batch@back-online block in index.ts already
+ *  uses. index.ts itself registers real cron jobs/timers at module load and is
+ *  deliberately not imported directly by any test (see acquireChain.ts's own
+ *  header comment) — so this proves the composed closure's ordering contract
+ *  directly against the real acquireChain primitives, with sendDailyFixtureReport's
+ *  own dependencies mocked exactly as the rest of this file already does. */
+describe("fixture-report@enriched-followup ordering (2026-07-19 under-ban-delivery-choke fix)", () => {
+  beforeEach(() => {
+    heartbeat = {};
+    sendTelegramTextMock.mockClear();
+    sendTelegramDocumentMock.mockClear();
+    generateAndWriteFixtureWorkbookMock.mockReset();
+    _resetAcquireChain();
+  });
+
+  afterEach(() => {
+    _resetAcquireChain();
+  });
+
+  // Mirrors the exact closure index.ts now passes to logJob for
+  // fixture-report@enriched-followup.
+  async function runFollowUpJob(): Promise<void> {
+    await awaitAcquireDailyJobOrTimeout(20 * 60 * 1000);
+    await sendDailyFixtureReport();
+  }
+
+  it("waits for an in-flight acquire job to settle before calling sendDailyFixtureReport", async () => {
+    generateAndWriteFixtureWorkbookMock.mockResolvedValue(null);
+
+    let acquireResolved = false;
+    let reportCalledBeforeAcquireResolved = false;
+    let resolveAcquire!: () => void;
+    const acquirePromise = new Promise<void>((resolve) => {
+      resolveAcquire = () => {
+        acquireResolved = true;
+        resolve();
+      };
+    });
+    trackAcquireJob(acquirePromise);
+
+    generateAndWriteFixtureWorkbookMock.mockImplementationOnce(() => {
+      reportCalledBeforeAcquireResolved = !acquireResolved;
+      return Promise.resolve(null);
+    });
+
+    const jobPromise = runFollowUpJob();
+    // Give the job a couple of microtask turns to prove it is NOT proceeding
+    // straight to sendDailyFixtureReport while acquisition is still tracked.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(generateAndWriteFixtureWorkbookMock).not.toHaveBeenCalled();
+
+    resolveAcquire();
+    await jobPromise;
+
+    expect(generateAndWriteFixtureWorkbookMock).toHaveBeenCalledTimes(1);
+    expect(reportCalledBeforeAcquireResolved).toBe(false);
+  });
+
+  it("proceeds to sendDailyFixtureReport once the timeout bound is hit, if acquisition never settles", async () => {
+    generateAndWriteFixtureWorkbookMock.mockResolvedValue(null);
+    const neverResolves = new Promise<void>(() => {});
+    trackAcquireJob(neverResolves);
+
+    await awaitAcquireDailyJobOrTimeout(20);
+    await sendDailyFixtureReport();
+
+    expect(generateAndWriteFixtureWorkbookMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs immediately with no wait when no acquire job is tracked (normal same-day retry case)", async () => {
+    generateAndWriteFixtureWorkbookMock.mockResolvedValue(null);
+
+    const start = Date.now();
+    await runFollowUpJob();
+
+    expect(Date.now() - start).toBeLessThan(200);
+    expect(generateAndWriteFixtureWorkbookMock).toHaveBeenCalledTimes(1);
   });
 });

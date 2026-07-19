@@ -417,10 +417,30 @@ async function checkHeartbeatFreshness(): Promise<void> {
   // "blocked by data depth" placeholder but hasn't yet delivered the enriched
   // spreadsheet — retry every hour until allMarkets lands. sendDailyFixtureReport
   // is idempotent here: still-empty re-checks just re-skip without re-pinging.
+  //
+  // [2026-07-19 under-ban-delivery-choke fix] This hourly retry used to call
+  // sendDailyFixtureReport directly with no gate on acquisition still being in
+  // progress — it is a separate, independently-scheduled job with no built-in
+  // dependency on acquire-daily@back-online (or the 09:30 cron slot) actually
+  // finishing. Confirmed in production 2026-07-19: this job fired at 09:06:45
+  // while acquire-daily was still running (it didn't finish until 09:08:25,
+  // "ok in 769.5s"), delivering a report built from partially-updated on-disk
+  // state — the report HTML shrank from 13.1MB (07-18) to 11.3MB (07-19)
+  // despite an equal-or-higher fixture count, because [lineups] fetches were
+  // still streaming in after the report had already been written and sent.
+  // fixtureReportInFlight (dailyAcquisition.ts) only guards against this job
+  // re-entering itself concurrently — it does not know whether acquisition is
+  // still running. Fix: await acquisition first, same as the sibling
+  // unified-batch@back-online block above (awaitAcquireDailyJobOrTimeout is a
+  // no-op if nothing is tracked, and bails after ACQUIRE_CHAIN_TIMEOUT_MS so a
+  // hung acquire job can't permanently starve this retry).
   const reportState = readFixtureReportState();
   const todayStr = watDateString();
   if (reportState.placeholderDate === todayStr && reportState.deliveredDate !== todayStr) {
-    logJob("fixture-report@enriched-followup", sendDailyFixtureReport);
+    logJob("fixture-report@enriched-followup", async () => {
+      await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
+      await sendDailyFixtureReport();
+    });
   }
 
   if (!lastBatchAt) return;
