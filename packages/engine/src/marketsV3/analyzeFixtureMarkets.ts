@@ -17,6 +17,7 @@ import {
 } from "../goalsV3/lambda.js";
 import type { Devigged1x2 } from "../goalsV3/matchShape.js";
 import { FAMILY_LABEL, familyOf, type MarketFamily } from "../markets/index.js";
+import { isUnderDesc } from "../safety/underBan.js";
 import type { AllMarketEntry, EVMarket, Matrix } from "../types.js";
 import { classifyMarket } from "./classes.js";
 import { dirOfDesc, lineOfDesc, sideOfDesc } from "./descParse.js";
@@ -718,7 +719,14 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
   // engine's own "half" family dispatch (priceHalfOutcome) can produce an
   // Under leg (e.g. "SH Under 1.5") just as easily as goals_ou/team_total;
   // gating the strip on TOTALS_FAMILIES alone left that case unstripped.
-  const isKilledUnder = (m: EVMarket): boolean => dirOfDesc(m.side ?? "") === "under";
+  // Uses isUnderDesc (number-anchored), not dirOfDesc (bare \bunder\b) —
+  // this is now family-agnostic and runs over every EVMarket regardless of
+  // family, so it needs the same number-anchored primitive the other 3
+  // choke points use, not dirOfDesc's word-boundary-only match (which the
+  // safety/underBan.ts header documents as vulnerable to a narrative
+  // false-positive like "Team Under Review" once no family gate limits it
+  // to totals-shaped strings).
+  const isKilledUnder = (m: EVMarket): boolean => isUnderDesc(m.side ?? "");
   for (let i = evMarkets.length - 1; i >= 0; i--) {
     if (isKilledUnder(evMarkets[i]!)) evMarkets.splice(i, 1);
   }
