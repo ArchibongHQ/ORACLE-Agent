@@ -575,6 +575,12 @@ details:not([open]) .chev::after{content:"▼"}
 .gf-badge.has{color:#0f1512;background:var(--accent);border-color:var(--accent);font-weight:700}
 .gf-badge.overall-only{color:#151006;background:var(--amber);border-color:var(--amber);font-weight:700}
 .slate-profile{font-size:12.5px;color:var(--dim);margin:0 0 14px;font-family:ui-monospace,Consolas,monospace}
+.gf-meaning{font-size:11.5px;color:var(--dim);margin:0 0 12px;padding:8px 10px 8px 22px;background:var(--surface2);border-radius:6px;list-style:disc}
+.gf-meaning li{margin:3px 0}
+.gf-meaning b{color:var(--text)}
+.gf-evidence{font-size:11.5px;margin:0 0 10px;padding:5px 10px;border-radius:6px}
+.gf-evidence-found{color:#0f1512;background:var(--accent)}
+.gf-evidence-missing{color:var(--dim);background:var(--surface2);border:1px dashed var(--border)}
 .tblwrap{overflow-x:auto;border:1px solid var(--border);border-radius:6px}
 table{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
 thead th{position:sticky;top:0;text-align:left;background:var(--surface2);color:var(--dim);font-family:ui-monospace,Consolas,monospace;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:6px 10px;border-bottom:1px solid var(--border)}
@@ -615,11 +621,45 @@ function renderGreenFlagsBlock(gf: GreenFlagSummary): string {
         `<span class="gf-chip ${f.basis}" title="${escHtml(f.rationale)}">${escHtml(f.label)}${f.basis === "overall" ? "°" : ""}</span>`
     )
     .join("");
-  const trap = gf.trapWarning
-    ? `<span class="gf-chip trap">⚠ ${escHtml(gf.trapWarning)}</span>`
-    : "";
+  // One chip per T1-T5 flag that fired; falls back to the single legacy
+  // trapWarning line when no T-series flag fired but a narrower,
+  // pattern-specific check still applies (e.g. thin sample size).
+  const trap = gf.trapFlags.length
+    ? gf.trapFlags
+        .map((t) => `<span class="gf-chip trap">⚠ ${escHtml(t.kind)}: ${escHtml(t.text)}</span>`)
+        .join("")
+    : gf.trapWarning
+      ? `<span class="gf-chip trap">⚠ ${escHtml(gf.trapWarning)}</span>`
+      : "";
   const sentence = gf.sentence ? `<div class="gf-sentence">🚩 ${escHtml(gf.sentence)}</div>` : "";
-  return `<div class="h">Green Flags — trends &amp; patterns (${gf.basis === "overall" ? "overall-basis °" : "venue-split"})</div><div class="gf-chips">${chips}${trap}</div>${sentence}`;
+  // Plain-English "what this means" line per fired flag/trap — same detector
+  // output, additive display context only (owner instruction 2026-07-19: do
+  // not alter the detection logic, only make it more explainable).
+  const flagMeanings = gf.flags
+    .map((f) => `<li><b>${escHtml(f.label)}</b> — ${escHtml(f.meaning)}</li>`)
+    .join("");
+  const trapMeanings = gf.trapFlags
+    .map(
+      (t, i) => `<li><b>⚠ ${escHtml(t.kind)}</b> — ${escHtml(gf.trapMeanings[i] ?? t.text)}</li>`
+    )
+    .join("");
+  const meanings =
+    flagMeanings || trapMeanings
+      ? `<ul class="gf-meaning">${flagMeanings}${trapMeanings}</ul>`
+      : "";
+  // Cross-check the lean against this fixture's actual scraped markets
+  // (allMarkets — every SportyBet market incl. exotic/specials/combo, not
+  // just the typed odds fields), so the sentence's recommendation is backed
+  // by evidence a reader can see was really offered, not just a family name.
+  const ev = gf.marketEvidence;
+  const evidence = ev
+    ? ev.found
+      ? `<div class="gf-evidence gf-evidence-found">✓ Confirmed in scrape: ${ev.matchedOutcomes.map(escHtml).join(", ")} (market id${ev.matchedMarketIds.length > 1 ? "s" : ""} ${ev.matchedMarketIds.map(escHtml).join(", ")}; ${ev.familyMarketCount} market${ev.familyMarketCount === 1 ? "" : "s"} scraped in this family).</div>`
+      : `<div class="gf-evidence gf-evidence-missing">⚠ Not found in this fixture's ${ev.familyMarketCount} scraped market${ev.familyMarketCount === 1 ? "" : "s"} for this family — lean is model-derived, no matching scraped outcome to confirm it against.</div>`
+    : gf.recommended
+      ? `<div class="gf-evidence gf-evidence-missing">⚠ No market data scraped yet for this fixture — lean is model-derived only.</div>`
+      : "";
+  return `<div class="h">Green Flags — trends &amp; patterns (${gf.basis === "overall" ? "overall-basis °" : "venue-split"})</div><div class="gf-chips">${chips}${trap}</div>${sentence}${evidence}${meanings}`;
 }
 
 function renderFixturePanel(ctx: FixtureRowCtx, gf: GreenFlagSummary): string {

@@ -262,10 +262,13 @@ export {
   RESPONSIBLE_GAMBLING_NOTE,
 } from "./marketsV3/outputs.js";
 export type {
+  H2hMeeting,
   PatternHit,
   PatternInput,
   PatternKind,
   PatternReport,
+  TrapFlag,
+  TrapKind,
 } from "./marketsV3/patterns.js";
 export { detectPatterns, PATTERN_THRESHOLDS } from "./marketsV3/patterns.js";
 export type { V3PriorityInput } from "./marketsV3/prioritise.js";

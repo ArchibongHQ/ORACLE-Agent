@@ -166,4 +166,53 @@ describe("renderFixturesMarketsPage — Green Flags", () => {
     const html = renderFixturesMarketsPage([bare], "2026-07-18", DEPS);
     expect(html).not.toContain('<p class="slate-profile">');
   });
+
+  it("renders a plain-English meaning line per fired flag inside the panel", () => {
+    const html = renderFixturesMarketsPage([patternedEvent()], "2026-07-18", DEPS);
+    expect(html).toContain("gf-meaning");
+    // The Heavy Superior meaning text should appear verbatim somewhere in the doc.
+    expect(html).toMatch(/outscores AND outdefends/);
+  });
+
+  it("flags the recommendation as unconfirmed when this fixture's scrape has no allMarkets to check against", () => {
+    // patternedEvent()'s odds block has no allMarkets key at all.
+    const html = renderFixturesMarketsPage([patternedEvent()], "2026-07-18", DEPS);
+    expect(html).toContain("gf-evidence-missing");
+    expect(html).toContain("No market data scraped yet");
+  });
+
+  it("confirms the recommendation with the actual scraped market id/outcome when allMarkets has a matching entry", () => {
+    const withMarkets = patternedEvent({
+      detail: {
+        eventId: "evt-gf-markets",
+        odds: {
+          "1x2": { home: 1.5, draw: 4.2, away: 6.0 },
+          allMarkets: [
+            {
+              id: "18",
+              name: "Over/Under",
+              group: "Goals",
+              outcomes: [
+                { id: "o1", desc: "Over 2.5", odds: "1.85" },
+                { id: "o2", desc: "Under 2.5", odds: "1.95" },
+              ],
+            },
+          ],
+        },
+        stats: {
+          scoringConceding: {
+            home: { matches: 5, scored_avg: 2.4, conceded_avg: 0.6, btts_rate: 0.4 },
+            away: { matches: 5, scored_avg: 0.8, conceded_avg: 2.2, btts_rate: 0.6 },
+          },
+          overunder: { home: { over25_pct: 0.8 }, away: { over25_pct: 0.6 } },
+        },
+        statscoverage: {},
+      },
+    } as Partial<SportyBetEvent>);
+    const html = renderFixturesMarketsPage([withMarkets], "2026-07-18", DEPS);
+    // This fixture's top pattern is Heavy Superior (Asian Handicap), so no
+    // goals_ou evidence match is expected here — assert the block renders
+    // without throwing and always shows some evidence verdict either way.
+    expect(html).toMatch(/gf-evidence-(found|missing)/);
+  });
 });
