@@ -612,6 +612,67 @@ describe("loadSportyBetIndex", () => {
     expect(detail?.stats?.weather).toBeUndefined();
   });
 
+  it("merges the top-level liveInjuries block into stats.liveInjuries", async () => {
+    const p = join(dir, "sidecar.json");
+    await writeFile(
+      p,
+      JSON.stringify({
+        date: TODAY,
+        events: [
+          {
+            home: "Arsenal FC",
+            away: "Chelsea FC",
+            marketCount: 27,
+            eventId: "ev1",
+            stats: { goals: { home: { avg_scored: 1.5 } } },
+            liveInjuries: {
+              home: {
+                count: 1,
+                players: [
+                  { name: "Bukayo Saka", type: "Missing Fixture", reason: "Hamstring Injury" },
+                ],
+              },
+              away: { count: 0, players: [] },
+            },
+          },
+        ],
+      }),
+      "utf8"
+    );
+    const idx = await loadSportyBetIndex(TODAY, p);
+    const detail = idx?.detailByKey.get(sidecarKey("Arsenal FC", "Chelsea FC"));
+    expect(detail?.stats?.liveInjuries?.home).toEqual({
+      count: 1,
+      players: [{ name: "Bukayo Saka", type: "Missing Fixture", reason: "Hamstring Injury" }],
+    });
+    expect(detail?.stats?.liveInjuries?.away).toEqual({ count: 0, players: [] });
+    // Pre-existing stats fields survive the merge untouched.
+    expect(detail?.stats?.goals?.home?.avg_scored).toBe(1.5);
+  });
+
+  it("omits stats.liveInjuries entirely when the top-level block is absent", async () => {
+    const p = join(dir, "sidecar.json");
+    await writeFile(
+      p,
+      JSON.stringify({
+        date: TODAY,
+        events: [
+          {
+            home: "Arsenal FC",
+            away: "Chelsea FC",
+            marketCount: 27,
+            eventId: "ev1",
+            stats: { goals: { home: { avg_scored: 1.5 } } },
+          },
+        ],
+      }),
+      "utf8"
+    );
+    const idx = await loadSportyBetIndex(TODAY, p);
+    const detail = idx?.detailByKey.get(sidecarKey("Arsenal FC", "Chelsea FC"));
+    expect(detail?.stats?.liveInjuries).toBeUndefined();
+  });
+
   it("falls through to the JSON sidecar when the lake read is truthy-but-empty (regression: a 0-row partition must not shadow a good sidecar)", async () => {
     // Fixtures partition exists but has zero rows yet (e.g. the morning
     // SportyBet scrape hasn't landed) — queryParquetRows resolves [] (not

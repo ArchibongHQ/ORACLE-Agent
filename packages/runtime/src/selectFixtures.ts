@@ -362,6 +362,19 @@ export interface SportyBetStats {
    *  shadow-diagnostic only (marketsV3/refereeCardsShadow.ts), never
    *  consumed by the live cards Poisson model (engines/cards.ts). */
   referee?: SportyBetRefereeEntry | null;
+  /** [Live injuries] TODAY's actual injuries/suspensions per team
+   *  (tools/fetch_live_injuries.py, API-Football /injuries endpoint,
+   *  ANY league, refreshed daily). NOT the same signal as `availability`
+   *  above — that field is a slow-moving historical proxy derived from a
+   *  Kaggle Transfermarkt squad-value dataset (top-5 leagues only, weekly
+   *  refresh). This field is live news, for any league, refreshed same-day.
+   *  Absent whenever tools/fetch_live_injuries.py hasn't been run today, or
+   *  API-Football returned nothing for this fixture — fail-open, same
+   *  convention as referee/xg/availability/weather above. */
+  liveInjuries?: {
+    home?: SportyBetLiveInjuriesEntry | null;
+    away?: SportyBetLiveInjuriesEntry | null;
+  } | null;
 }
 
 /** [PR-25 item 2] One fixture's assigned referee — see SportyBetStats.referee. */
@@ -376,6 +389,13 @@ export interface SportyBetRefereeEntry {
    *  "league_mean_fallback" when they're unknown to the lake but the
    *  league's overall mean was used instead; null when neither exists. */
   cardsRateSrc?: "empirical" | "league_mean_fallback" | null;
+}
+
+/** One team's live injuries/suspensions for a fixture — see
+ *  SportyBetStats.liveInjuries. */
+export interface SportyBetLiveInjuriesEntry {
+  count: number;
+  players: Array<{ name: string; type: string; reason: string }>;
 }
 
 export interface SportyBetAvailabilityEntry {
@@ -600,18 +620,27 @@ export async function loadSportyBetIndex(
             | undefined;
           const weatherBlock = ev.weather as SportyBetWeatherEntry | null | undefined;
           const refereeBlock = ev.referee as SportyBetRefereeEntry | null | undefined;
+          const liveInjuriesBlock = ev.liveInjuries as
+            | {
+                home?: SportyBetLiveInjuriesEntry | null;
+                away?: SportyBetLiveInjuriesEntry | null;
+              }
+            | null
+            | undefined;
           const stats: SportyBetStats | null =
             baseStats != null ||
             xgBlock != null ||
             availabilityBlock != null ||
             weatherBlock != null ||
-            refereeBlock != null
+            refereeBlock != null ||
+            liveInjuriesBlock != null
               ? {
                   ...(baseStats ?? {}),
                   ...(xgBlock != null ? { xg: xgBlock } : {}),
                   ...(availabilityBlock != null ? { availability: availabilityBlock } : {}),
                   ...(weatherBlock != null ? { weather: weatherBlock } : {}),
                   ...(refereeBlock != null ? { referee: refereeBlock } : {}),
+                  ...(liveInjuriesBlock != null ? { liveInjuries: liveInjuriesBlock } : {}),
                 }
               : null;
           detail = {
