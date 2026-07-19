@@ -1,0 +1,11 @@
+{
+  "date": "2026-07-19",
+  "slateSize": 1,
+  "attempted": 1,
+  "written": 1,
+  "withNews": 1,
+  "sourcesUsed": {"rss": 0, "transfermarkt": 0, "perplexity": 0, "agentic": 8},
+  "startedAt": "2026-07-19T06:45:35Z",
+  "finishedAt": "2026-07-19T06:48:15Z",
+  "notes": "tools/acquire_daily.py (ESPN/Sky HTTP, --no-playwright) returned 0 fixtures — its league-ID list covers domestic club competitions only, which are in mid-July off-season, and does not include international tournament fixtures. WebSearch confirmed the actual slate for this date is the 2026 FIFA World Cup Final (Spain vs Argentina, MetLife Stadium). Sourced that fixture directly via the agentic tier since it was invisible to the automated scrapers. tools/enrich_news.py found 0 rows for the same reason (0 teams to match against). PERPLEXITY_API_KEY not set, degraded silently per workflow. Consider adding a World Cup / international-tournament league-ID branch to tools/acquire_daily.py so major single-fixture windows like this are captured automatically."
+}

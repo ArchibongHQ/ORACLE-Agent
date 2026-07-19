@@ -1,0 +1,41 @@
+{
+  "home": "Spain",
+  "away": "Argentina",
+  "league": "FIFA World Cup",
+  "kickoff": "2026-07-19T19:00:00Z",
+  "injuries": [
+    "Yeremy Pino (Spain) — shoulder injury sustained in group stage vs Uruguay, ruled out for remainder of tournament",
+    "Medina (Argentina) — calf problem since last-32 win vs Cape Verde, has not featured since, doubtful/race against time for the final"
+  ],
+  "suspensions": [
+    "None for either squad — FIFA reset yellow-card counts after the quarterfinals for the expanded 2026 format; only a semifinal red card would have ruled a player out, and neither team had one"
+  ],
+  "lineupHints": [
+    "Spain predicted XI: Simón; Porro, Cubarsí, Laporte, Cucurella; Rodri, M. Ruiz; Yamal, Olmo, Baena; Oyarzabal",
+    "Argentina predicted XI: E. Martínez; Montiel, Romero, Lisandro Martínez, Tagliafico; Paredes; De Paul, Fernández, Mac Allister; Álvarez, Messi",
+    "Lamine Yamal and Pedro Porro trained apart from the main Spain squad in New Jersey as workload management after finishing the semifinal heavily fatigued, but both are expected to start"
+  ],
+  "motivationFlags": [
+    "Argentina chasing back-to-back World Cup titles — would be only the third team ever to repeat as champions, after Brazil (1958/62) and Italy (1934/38)",
+    "Lionel Messi, 39, would become the oldest outfield player to start a World Cup final if he starts as planned",
+    "Spain chasing a first World Cup title since 2010",
+    "Referee: Slavko Vinčić (Slovenia)"
+  ],
+  "travelFlags": [
+    "Neutral-venue final at MetLife Stadium, East Rutherford, NJ — no home-ground advantage for either side",
+    "Both sides on 4 days' rest since their July 15 semifinals (Spain beat France 2-0; Argentina beat England 2-1 with a late comeback)"
+  ],
+  "sources": [
+    "https://www.espn.com/soccer/story/_/id/49378610/spain-lamine-yamal-pedro-porro-train-apart-fit-argentina-world-cup-final",
+    "https://www.espn.com/soccer/story/_/id/49382572/spain-vs-argentina-fifa-world-cup-2026-final-tv-channel-how-watch-kick-live-stream-injury-predicted-line-ups",
+    "https://sports.yahoo.com/articles/spain-xi-vs-argentina-confirmed-185616702.html",
+    "https://uk.sports.yahoo.com/news/argentina-xi-vs-spain-confirmed-192943702.html",
+    "https://www.sportsmole.co.uk/football/spain/world-cup-2026/injuries-and-suspensions/yamal-porro-latest-spain-injury-suspension-list-vs-argentina_601315.html",
+    "https://www.sportsmole.co.uk/football/argentina/world-cup-2026/injuries-and-suspensions/romero-paredes-latest-argentina-injury-suspension-list-for-world-cup-final_601316.html",
+    "https://sports.yahoo.com/articles/players-miss-final-booked-semi-130000340.html",
+    "https://www.si.com/soccer/spain-vs-argentina-who-will-referee-2026-world-cup-final"
+  ],
+  "confidence": 0.8,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-19T06:48:15Z"
+}
