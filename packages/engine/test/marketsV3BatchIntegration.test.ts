@@ -156,6 +156,11 @@ function v3DoneAssessmentFor(m: EVMarket, overrides: Record<string, any> = {}): 
     rawEdge: m.rawEdge,
     penaltyPts: 0,
     adjustedEdge: m.rankingScore,
+    // `ev` (not just adjEvPct) must be set — buildEligibleBets (now applied
+    // to the v3-derived `eligible` too, 2026-07-19 Under-ban widening) hard
+    // -requires ev>0, matching the real V3MarketOutcomeAssessment shape
+    // (evGate.ts) where `ev` is a required, always-populated field.
+    ev: m.ev,
     adjEvPct: m.ev,
     cls: "M",
     outcome: "done",
@@ -163,6 +168,124 @@ function v3DoneAssessmentFor(m: EVMarket, overrides: Record<string, any> = {}): 
     ...overrides,
   };
 }
+
+// [Under ban, 2026-07-19] Reproduces the exact production incident shape end
+// -to-end through runBatch: the LEGACY ExecutionEngine.scanMarkets()/
+// scanAllMarketsFallback() path (enableMarketsV3 unset/off, so v3 never runs)
+// can price combo-family ("Home & Under 2.5") and half-family ("SH Under
+// 1.5") Under legs alongside genuinely eligible candidates — before this fix
+// none of the three pre-existing Under strips (all TOTALS_FAMILIES-only)
+// ever touched this path, since it doesn't go through analyzeFixtureMarketsV3
+// or v3AssessmentsToEvMarkets at all. buildEligibleBets (decision/index.ts)
+// is the ONE function every legacy `eligible` list flows through
+// (batch/index.ts's `let eligible = buildEligibleBets(evMarkets)`), which is
+// exactly why the fix lives there.
+describe("batch/index.ts — universal Under ban on the legacy pricer path (production incident reproduction)", () => {
+  it("strips combo and half Under legs from a legacy ExecutionEngine.run() result, keeping the genuinely eligible non-Under candidates, with enableMarketsV3 unset (pure legacy path, no v3 involvement)", async () => {
+    const comboUnder: EVMarket = {
+      cat: "Combo",
+      label: "Home & Under 2.5",
+      market: "Combo",
+      side: "Home & Under 2.5",
+      family: "combo",
+      mp: 0.5,
+      modelProb: 0.5,
+      ip: 0.3,
+      rawEdge: 0.2,
+      ev: 0.5, // deliberately huge EV — must still be stripped, proving the
+      // ban isn't relying on the candidate losing on its own economic merits
+      odds: 6.0,
+      stake: 0.2,
+      stakeAmt: 200,
+      rankingScore: 0.5,
+      varianceMod: 1,
+    };
+    const halfUnder: EVMarket = {
+      cat: "Half",
+      label: "SH Under 1.5",
+      market: "Half",
+      side: "SH Under 1.5",
+      family: "half",
+      mp: 0.6,
+      modelProb: 0.6,
+      ip: 0.4,
+      rawEdge: 0.2,
+      ev: 0.4,
+      odds: 2.5,
+      stake: 0.15,
+      stakeAmt: 150,
+      rankingScore: 0.4,
+      varianceMod: 1,
+    };
+    const genuineDoubleChance: EVMarket = {
+      cat: "Double Chance",
+      label: "Home or Draw",
+      market: "Double Chance",
+      side: "Home or Draw",
+      family: "double_chance",
+      mp: 0.82,
+      modelProb: 0.82,
+      ip: 0.76,
+      rawEdge: 0.06,
+      ev: 0.08,
+      odds: 1.25,
+      stake: 0.03,
+      stakeAmt: 30,
+      rankingScore: 0.06,
+      varianceMod: 1,
+    };
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce({
+      ...legacyRunResult,
+      // Ranked so a naive top-N-by-score selection would pick the Unders
+      // FIRST if the ban didn't fire — proves stripping, not mere reordering.
+      evMarkets: [comboUnder, halfUnder, genuineDoubleChance],
+    });
+    const job = makeJob({ pipeline: { fetched: { sportyBetOdds: { allMarkets } } } });
+
+    const result = await runBatch([job], { storage, config: baseConfig });
+
+    expect(analyzeFixtureMarketsV3Mock).not.toHaveBeenCalled(); // confirms pure legacy path
+    const success = result.jobs[0] as FixtureJobSuccess;
+    const labels = success.eligibleBets?.map((m) => m.label) ?? [];
+    expect(labels).not.toContain("Home & Under 2.5");
+    expect(labels).not.toContain("SH Under 1.5");
+    expect(labels).toContain("Home or Draw");
+    expect(success.eligibleBets).toHaveLength(1);
+    // The delivered primaryPick itself must never be an Under, end to end.
+    expect(success.decision.primaryPick.side).toBe("Home or Draw");
+  });
+
+  it("delivers an honest NO_EDGE / empty pool when EVERY legacy candidate is an Under — never fabricates a non-Under pick or silently re-admits one", async () => {
+    const comboUnder: EVMarket = {
+      cat: "Combo",
+      label: "Under 2.5 & BTTS No",
+      market: "Combo",
+      side: "Under 2.5 & BTTS No",
+      family: "combo",
+      mp: 0.55,
+      modelProb: 0.55,
+      ip: 0.4,
+      rawEdge: 0.15,
+      ev: 0.3,
+      odds: 3.0,
+      stake: 0.1,
+      stakeAmt: 100,
+      rankingScore: 0.3,
+      varianceMod: 1,
+    };
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce({
+      ...legacyRunResult,
+      evMarkets: [comboUnder],
+    });
+    const job = makeJob({ pipeline: { fetched: { sportyBetOdds: { allMarkets } } } });
+
+    const result = await runBatch([job], { storage, config: baseConfig });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.eligibleBets ?? []).toHaveLength(0);
+    expect(success.eligibleBets?.some((m) => m.label === "Under 2.5 & BTTS No")).not.toBe(true);
+  });
+});
 
 describe("batch/index.ts — enableMarketsV3 wiring", () => {
   it("never calls analyzeFixtureMarketsV3 when enableMarketsV3 is unset (default off at the OracleConfig level)", async () => {
@@ -618,6 +741,11 @@ describe("batch/index.ts — v3Best/v3AssessmentStats projection (PR-5b)", () =>
       rawEdge: overrides.rawEdge,
       penaltyPts: 0.01,
       adjustedEdge: overrides.adjustedEdge,
+      // ev (not just adjEvPct) must be set — buildEligibleBets (now applied
+      // to the v3-derived `eligible` too, 2026-07-19 Under-ban widening)
+      // hard-requires ev>0. 0.2 = mp*odds-1 = 0.6*2.0-1, consistent with
+      // this helper's own mp/odds above.
+      ev: 0.2,
       adjEvPct: 0.1,
       cls: "M",
       outcome: overrides.outcome,
@@ -1105,6 +1233,11 @@ describe("batch/index.ts — R10 goals cross-check (PR-6)", () => {
       rawEdge: 0.09,
       penaltyPts: 0.01,
       adjustedEdge: 0.08,
+      // ev (not just adjEvPct) must be set — buildEligibleBets (now applied
+      // to the v3-derived `eligible` too, 2026-07-19 Under-ban widening)
+      // hard-requires ev>0. 0.2 = mp*odds-1 = 0.6*2.0-1, consistent with
+      // this fixture's own mp/odds below.
+      ev: 0.2,
       adjEvPct: 0.16,
       cls: "M",
       outcome: "done",

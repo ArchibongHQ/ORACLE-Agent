@@ -18,6 +18,17 @@ const ALL_MARKETS: AllMarketEntry[] = [
       { id: "2", desc: "0-0", odds: "9.0" },
     ],
   },
+  {
+    id: "998",
+    name: "Some Combo Market",
+    desc: null,
+    group: null,
+    specifier: null,
+    // A deliberately generous odds/outcome so a "would otherwise clear EV"
+    // Under candidate is available to prove the ban fires BEFORE the EV
+    // check, not because the candidate happened to fail on its own merits.
+    outcomes: [{ id: "1", desc: "Home & Under 2.5", odds: "6.0" }],
+  },
 ];
 
 const BASE_CTX: DecisionContext = {
@@ -135,6 +146,61 @@ describe("runAllMarketsLlmExecutor", () => {
     }));
     const result = await runAllMarketsLlmExecutor(BASE_CTX, RISK);
     expect(result).toBeNull();
+  });
+
+  // Owner rule (locked decision ②): no Under ever ships — this tier lets an
+  // LLM pick from the ENTIRE raw allMarkets catalogue with no family
+  // restriction, the one path in the engine an Under could otherwise reach
+  // delivery through without passing buildEligibleBets' own strip. See
+  // safety/underBan.ts's header for the full picture.
+  it("returns null when the LLM picks a market/outcome whose desc contains a standalone 'Under', even with a strongly positive claimed edge", async () => {
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          marketId: "998",
+          outcomeId: "1",
+          // "Home & Under 2.5" @ 6.0 implies ip≈0.167 — 0.9 is a huge,
+          // easily-EV-clearing claimed edge, proving the ban gate fires
+          // BEFORE the EV check, not merely because the candidate lost on
+          // its own economic merits.
+          estimatedProb: 0.9,
+          rationale: "Home dominant and few goals expected.",
+        })
+      ),
+    }));
+    const result = await runAllMarketsLlmExecutor(BASE_CTX, RISK);
+    expect(result).toBeNull();
+  });
+
+  it("does not false-positive the Under ban on a market whose id/desc merely contains 'under' as a substring (e.g. a team name)", async () => {
+    const substringMarkets: AllMarketEntry[] = [
+      {
+        id: "997",
+        name: "Sunderland To Win",
+        desc: null,
+        group: null,
+        specifier: null,
+        outcomes: [{ id: "1", desc: "Sunderland", odds: "3.5" }],
+      },
+    ];
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          marketId: "997",
+          outcomeId: "1",
+          estimatedProb: 0.4,
+          rationale: "Sunderland favoured at home.",
+        })
+      ),
+    }));
+    const result = await runAllMarketsLlmExecutor(
+      { ...BASE_CTX, allMarkets: substringMarkets },
+      RISK
+    );
+    expect(result).not.toBeNull();
+    expect(result?.market.side).toBe("Sunderland");
   });
 
   it("fails open (returns null) when callClaudeCode throws", async () => {

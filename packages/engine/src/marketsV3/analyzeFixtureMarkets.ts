@@ -53,7 +53,6 @@ import {
 import { buildV3Grid, buildV3HalfGrid } from "./grid.js";
 import { detectPatterns, type PatternInput, type PatternReport } from "./patterns.js";
 import { type RefereeCardsShadowResult, shadowRefereeCards } from "./refereeCardsShadow.js";
-import { TOTALS_FAMILIES } from "./sanity.js";
 import { type DualSplit, deriveDualSplit } from "./split.js";
 
 export interface V3EmpiricalInputs {
@@ -715,8 +714,11 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
   // is null, same as any other gate-dry fixture — never a fabricated pick.
   // `assessments`/`capped` are untouched — Unders stay visible there for
   // transparency, exactly like capped picks already do.
-  const isKilledUnder = (m: EVMarket): boolean =>
-    !!m.family && TOTALS_FAMILIES.has(m.family) && dirOfDesc(m.side ?? "") === "under";
+  // Family-agnostic (2026-07-19, see safety/underBan.ts's header) — this
+  // engine's own "half" family dispatch (priceHalfOutcome) can produce an
+  // Under leg (e.g. "SH Under 1.5") just as easily as goals_ou/team_total;
+  // gating the strip on TOTALS_FAMILIES alone left that case unstripped.
+  const isKilledUnder = (m: EVMarket): boolean => dirOfDesc(m.side ?? "") === "under";
   for (let i = evMarkets.length - 1; i >= 0; i--) {
     if (isKilledUnder(evMarkets[i]!)) evMarkets.splice(i, 1);
   }

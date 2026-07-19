@@ -19,6 +19,7 @@
 import type { MarketFamily } from "../markets/index.js";
 import { familyOf } from "../markets/index.js";
 import { adjEV, clamp, hurdle, optimizedKelly } from "../math/index.js";
+import { isUnderDesc } from "../safety/underBan.js";
 import type {
   AllMarketEntry,
   AllMarketOutcome,
@@ -183,6 +184,16 @@ function validateAndBuild(
   if (!parsed.marketId || !parsed.outcomeId) return null;
   const found = findOutcome(allMarkets, parsed.marketId, parsed.outcomeId);
   if (!found) return null;
+
+  // Owner rule (locked decision ②): no Under ever ships. This tier lets an
+  // LLM pick from the ENTIRE raw allMarkets catalogue with no family
+  // restriction — one of the three places safety/underBan.ts's header
+  // documents as needing its own application (this candidate is spliced
+  // into effectiveEligible AFTER buildEligibleBets already ran on the base
+  // list, so that choke point alone can't catch it). Applied at the
+  // earliest point the outcome text is known, before any EV/Kelly math is
+  // spent on a candidate that can never ship anyway.
+  if (isUnderDesc(found.outcome.desc)) return null;
 
   const odds = parseFloat(found.outcome.odds ?? "");
   if (!Number.isFinite(odds) || odds <= 1) return null;
