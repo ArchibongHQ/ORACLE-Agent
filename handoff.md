@@ -64,14 +64,41 @@
    `workflows/scrape_fixtures.md`, `.claude/skills/sportybet-stats-probe/SKILL.md`. Consider whether
    this should be its own branch/PR rather than riding on `feat/patterns-legacy-pricer`'s existing
    scope — this session didn't branch off because it started mid-session on an already-active branch.
-2. **⚠️ Concurrent-session note**: a second Claude Code session was actively committing to this same
-   branch DURING this session (commit `520dd93`, "Phase 2A — pattern-aware ranking for the legacy
-   pricer," timestamped 2026-07-20 14:22 — check `git log` for what landed after this entry was
-   written). That commit's diff of `packages/engine/src/{batch/index.ts,index.ts,types.ts,
-   marketsV3/analyzeFixtureMarkets.ts}` includes some of THIS session's squad-height/h2hOversRate
-   content (verified byte-for-byte intact, nothing lost, typecheck/tests passed on the combined state)
-   — but that commit's message doesn't describe it, since the other session didn't know it was there.
-   Decide whether to split/reword that commit or accept it as-is before pushing.
+2. **⚠️ Concurrent-session note — UPDATED, still pending owner decision.** A second Claude Code
+   session was actively committing to this same branch DURING this session (commit `520dd93`, "Phase
+   2A — pattern-aware ranking for the legacy pricer," 2026-07-20 14:22, same owner account/different
+   window — `git show -s --format="%an <%ae>" 520dd93` confirms same git identity as this session).
+   That commit's diff of `packages/engine/src/{batch/index.ts,index.ts,types.ts,
+   marketsV3/analyzeFixtureMarkets.ts}` swept in fragments of THIS session's in-progress
+   squad-height/h2hOversRate edits (verified byte-for-byte intact at the time, nothing lost). **This
+   session's own work has since been committed separately as `062b3e9`** (pushed to
+   `origin/feat/patterns-legacy-pricer`, "full SportyBet stat-coverage fix + pattern-aware engine
+   wiring") — `062b3e9` completes `batch/index.ts` and `analyzeFixtureMarkets.ts` to their correct
+   final state, so the swept-in fragments in `520dd93` are functionally superseded, not lost or
+   duplicated-wrong. The **pending decision is purely a history-cleanliness one**: `520dd93` is
+   already pushed and the other session had further uncommitted local changes on top of it
+   (`patterns.ts`/`patterns.test.ts`) at last check, so rewriting/splitting it now means force-pushing
+   over a commit another active session may still be based on — deliberately NOT done this session
+   without explicit owner confirmation. Two verbatim notes the owner asked to preserve here as pending
+   todos:
+   > Two things you should know before committing:
+   > A second Claude Code session was actively committing to this same branch during my session
+   > (flagged earlier, you chose to continue) — nothing of mine was lost, but decide whether to
+   > split/reword that commit.
+   > That same session has since introduced an unrelated, currently-incomplete typecheck failure in
+   > patterns.ts — real, but not mine to fix.
+
+   **Status update on the second note, checked again same session before this entry was written**: the
+   typecheck failure in `patterns.ts` that was real at the time it was flagged is **no longer
+   present** — `pnpm --filter @oracle/engine typecheck` is clean as of the last check. The other
+   session's WIP now shows as **3 test failures** instead (`patterns.test.ts`, `legacyPatternRanking.
+   test.ts`, `patternsIntegration.test.ts` — all exclusively in files this session never touched, on
+   top of 3 pre-existing unrelated `gbm.test.ts` failures = 6 total). Still real, still entirely the
+   other session's own in-progress "Phase 3, patterns-v62-core" work, still not this session's to fix.
+   **Action for owner**: (a) decide whether to rewrite `520dd93` or leave it as-is (recommend leaving
+   it — same-account authorship means no attribution issue, and the content is functionally correct
+   after `062b3e9`), (b) let the other session finish its own `patterns.ts` work and clear its own test
+   failures.
 3. **Watch-and-validate the two new engine coefficients post-hoc.** Per this codebase's own
    established discipline (every other new signal — ratings, GBM residual — goes through a
    walk-forward significance gate before it can move live picks), these two ship without that
