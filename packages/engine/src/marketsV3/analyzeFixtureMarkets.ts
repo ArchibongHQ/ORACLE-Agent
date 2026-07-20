@@ -450,14 +450,22 @@ function buildFixturePatternInput(input: V3AllMarketsInput): PatternInput | null
     last5PtsH: input.last5PtsH,
     last5PtsA: input.last5PtsA,
     h2hOversRate: input.h2hOversRate,
-    // [Phase 3, patterns-v62-core] input.venueSplitUsed is the SAME boolean
-    // this function's own doc comment (above) already describes as the only
-    // signal distinguishing whether homeScoredPer90/etc are a true venue
-    // split or pooled team-overall data — reused here rather than adding a
-    // second, redundant flag. Undefined/false ⇒ "overall" (the documented
-    // default — "most sources provide team-overall stats, not splits"),
-    // matching OracleConfig.v3VenueSplitUsed's own convention.
-    basis: input.venueSplitUsed ? "venue" : "overall",
+    // basis (Phase 3, §2.5.4) intentionally still absent, same rationale as
+    // restDaysMin/mappedFamiliesWithStats below: input.venueSplitUsed LOOKS
+    // like the obvious source (it's this function's own doc comment's
+    // stated distinguisher between a true split and pooled team-overall
+    // data), but it's already a LIVE flag with its own, narrower, unrelated
+    // purpose (goalsV3/lambda.ts's HFA-multiplier gate) — env.ts resolves it
+    // unconditionally to a concrete boolean (default false/"overall" in
+    // virtually every real config, since ORACLE_V3_VENUE_SPLIT is not set
+    // anywhere today), so wiring it here would silently zero out the
+    // already-shipped, already-live Wave 2 pattern-backed ranking
+    // bonus/class-edge relaxation the moment this merges — the opposite of
+    // "purely additive" (found via failing patternsIntegration.test.ts
+    // during Phase 3 development). Needs its own, dedicated per-fixture
+    // data-provenance signal (not yet tracked anywhere) before wiring;
+    // detectPatterns degrades gracefully without it (basis stays null,
+    // behaves exactly like "venue" — unchanged from pre-Phase-3).
     // restDaysMin/mappedFamiliesWithStats intentionally still absent — not
     // yet threaded from V3AllMarketsInput; detectPatterns degrades
     // gracefully without them.
@@ -617,12 +625,14 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         patternReport != null &&
         patternReport.topPattern != null &&
         patternReport.strength >= PATTERN_MIN_STRENGTH &&
-        // [Phase 3, §2.5.4] "zero PATTERN_RANK_BONUS on overall basis" —
-        // gated here (not just at detectPatterns' confidence cap) since
-        // patternBacked feeds BOTH the ranking-only bonus below AND
-        // evGate.ts's class-edge relaxation; `null` (pre-Phase-3 callers
-        // that never set PatternInput.basis) behaves exactly like "venue".
-        patternReport.basis !== "overall" &&
+        // [Phase 3, §2.5.4] once buildFixturePatternInput threads a real
+        // PatternInput.basis (see its own doc comment above — deferred, no
+        // trustworthy per-fixture signal exists yet), add
+        // `patternReport.basis !== "overall" &&` here too: patternBacked
+        // feeds BOTH the ranking-only bonus below AND evGate.ts's class-edge
+        // relaxation, so "zero PATTERN_RANK_BONUS on overall basis" needs
+        // both gated the same way. patternReport.basis is always null today
+        // (basis unset), so this isn't a live gap — just the wiring point.
         patternReport.recommendedFamily === route.family &&
         patternReport.recommendedSide != null &&
         sideMatches(desc, patternReport.recommendedSide, route.family);

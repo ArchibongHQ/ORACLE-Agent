@@ -129,6 +129,24 @@ export interface PatternInput {
   recentScoredA?: number;
   // Market depth (optional) — # mapped families with usable stats.
   mappedFamiliesWithStats?: number;
+  /** [Phase 3, patterns-v62-core] §2.5.4 data-basis marker. "venue" — the
+   *  four core scored/conceded fields (and their correlated ou25/btts/cs
+   *  percentages) are a TRUE home-at-home/away-at-away split. "overall" —
+   *  the same fields carry team-overall/pooled data (no split available
+   *  upstream); a caller opts in explicitly by setting this. Undefined
+   *  (existing callers that predate this field) behaves exactly like
+   *  "venue" — full-strength thresholds, no confidence cap — so this is
+   *  purely additive: only a caller that threads basis:"overall" sees the
+   *  new, more conservative treatment. On "overall": heavy_superior/
+   *  goal_machine/btts_banker/anomaly (the four detectors keyed directly off
+   *  the core venue-split fields) use tightened OVERALL_TIGHTEN thresholds,
+   *  their rationale gets a "°" marker, and detectPatterns caps confidence
+   *  at "medium" regardless of strength (never "high"/"very_high" — v6.2's
+   *  "no confidence uplift on overall basis" rule). corner_kings/
+   *  h2h_dominance/half_share are untouched — their data (corners/H2H
+   *  meetings/first-half share) has independent provenance, not the venue-
+   *  split-vs-overall ambiguity this flag describes. */
+  basis?: "venue" | "overall";
 }
 
 export type PatternKind =
@@ -171,6 +189,12 @@ export interface PatternReport {
   trapWarning: string | null;
   /** Every trap flag that fired (T1-T5; T6/T7 not implemented — see header). */
   trapFlags: TrapFlag[];
+  /** [Phase 3] Echoes PatternInput.basis; null when the caller didn't set it
+   *  (pre-Phase-3 callers) — downstream ranking-bonus consumers (evGate.ts's
+   *  patternBacked, batch/index.ts's applyLegacyPatternRanking call site)
+   *  treat null the same as "venue" (unconditional bonus, unchanged
+   *  behavior) and skip the bonus entirely only on "overall". */
+  basis: "venue" | "overall" | null;
 }
 
 export const PATTERN_THRESHOLDS = {
@@ -221,6 +245,28 @@ export const PATTERN_THRESHOLDS = {
   confMedium: 0.3,
 } as const;
 
+/** [Phase 3, §2.5.4] Tightening applied to the four venue-split-keyed
+ *  detectors (heavy_superior, goal_machine, btts_banker, anomaly) when
+ *  PatternInput.basis === "overall" — pooled team-overall data conflates
+ *  true home/away effects into one number, so a larger raw signal is
+ *  required before trusting it the same as a genuine venue split. */
+export const OVERALL_TIGHTEN = {
+  /** Multiplicative tightening for net-goal-gap / xG-gap thresholds
+   *  (heavy_superior, anomaly). */
+  gapMult: 1.3,
+  /** Multiplicative tightening for expected-total-goals thresholds
+   *  (goal_machine). */
+  totalMult: 1.1,
+  /** Additive tightening for 0-1 percentage-rate thresholds (ou25%/btts%
+   *  minimums, btts_banker's clean-sheet-rate maximum). */
+  pctAdd: 0.05,
+  /** Additive tightening for the anomaly detector's underpriced-odds bar —
+   *  require a larger market mismatch before trusting it. */
+  oddsAdd: 0.15,
+  /** Additive tightening for the anomaly detector's streak-length bar. */
+  streakAdd: 1,
+} as const;
+
 const T = PATTERN_THRESHOLDS;
 
 const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -238,6 +284,13 @@ function sampleShrink(nHome?: number, nAway?: number): number {
 }
 
 function detectHeavySuperior(input: PatternInput): PatternHit | null {
+  const overall = input.basis === "overall";
+  const homeNetMin = overall ? T.hsHomeNetMin * OVERALL_TIGHTEN.gapMult : T.hsHomeNetMin;
+  const awayNetMax = overall ? T.hsAwayNetMax * OVERALL_TIGHTEN.gapMult : T.hsAwayNetMax;
+  const gapMin = overall ? T.hsGapMin * OVERALL_TIGHTEN.gapMult : T.hsGapMin;
+  const gapFull = overall ? T.hsGapFull * OVERALL_TIGHTEN.gapMult : T.hsGapFull;
+  const xgGapMin = overall ? T.hsXgGapMin * OVERALL_TIGHTEN.gapMult : T.hsXgGapMin;
+
   const homeNet = input.homeScoredHome - input.homeConcededHome;
   const awayNet = input.awayScoredAway - input.awayConcededAway;
   const gap = homeNet - awayNet; // > 0 ⇒ home superior, < 0 ⇒ away superior
@@ -245,51 +298,59 @@ function detectHeavySuperior(input: PatternInput): PatternHit | null {
     input.homeXg != null && input.awayXg != null ? input.homeXg - input.awayXg : undefined;
 
   const homeSuperior =
-    (homeNet >= T.hsHomeNetMin && awayNet <= T.hsAwayNetMax) ||
-    gap >= T.hsGapMin ||
-    (xgGap != null && xgGap >= T.hsXgGapMin && gap > 0);
+    (homeNet >= homeNetMin && awayNet <= awayNetMax) ||
+    gap >= gapMin ||
+    (xgGap != null && xgGap >= xgGapMin && gap > 0);
   const awaySuperior =
-    (awayNet >= T.hsHomeNetMin && homeNet <= T.hsAwayNetMax) ||
-    -gap >= T.hsGapMin ||
-    (xgGap != null && -xgGap >= T.hsXgGapMin && gap < 0);
+    (awayNet >= homeNetMin && homeNet <= awayNetMax) ||
+    -gap >= gapMin ||
+    (xgGap != null && -xgGap >= xgGapMin && gap < 0);
 
   if (!homeSuperior && !awaySuperior) return null;
   const side: "home" | "away" = gap >= 0 ? "home" : "away";
   const mag = Math.abs(gap);
-  const score = clamp01((mag - T.hsGapMin * 0.5) / (T.hsGapFull - T.hsGapMin * 0.5));
+  const score = clamp01((mag - gapMin * 0.5) / (gapFull - gapMin * 0.5));
   return {
     kind: "heavy_superior",
     score,
     side,
     recommendedFamily: "asian_handicap",
     recommendedSide: side === "home" ? "Home" : "Away",
-    rationale: `Venue-split mismatch: ${side} net ${side === "home" ? homeNet.toFixed(2) : awayNet.toFixed(2)} vs opponent ${side === "home" ? awayNet.toFixed(2) : homeNet.toFixed(2)} (gap ${mag.toFixed(2)}/game) → Asian Handicap the dominant side.`,
+    rationale: `Venue-split mismatch: ${side} net ${side === "home" ? homeNet.toFixed(2) : awayNet.toFixed(2)} vs opponent ${side === "home" ? awayNet.toFixed(2) : homeNet.toFixed(2)} (gap ${mag.toFixed(2)}/game) → Asian Handicap the dominant side.${overall ? " (overall-basis°, not a true venue split)" : ""}`,
   };
 }
 
 function detectGoalMachine(input: PatternInput): PatternHit | null {
+  const overall = input.basis === "overall";
+  const expTotalMin = overall ? T.gmExpTotalMin * OVERALL_TIGHTEN.totalMult : T.gmExpTotalMin;
+  const expTotalStrong = overall
+    ? T.gmExpTotalStrong * OVERALL_TIGHTEN.totalMult
+    : T.gmExpTotalStrong;
+  const expTotalFull = overall ? T.gmExpTotalFull * OVERALL_TIGHTEN.totalMult : T.gmExpTotalFull;
+  const ou25Min = overall ? T.gmOu25Min + OVERALL_TIGHTEN.pctAdd : T.gmOu25Min;
+  const bttsMin = overall ? T.gmBttsMin + OVERALL_TIGHTEN.pctAdd : T.gmBttsMin;
+
   // Matchup-adjusted expected goals from venue splits.
   const expHome = (input.homeScoredHome + input.awayConcededAway) / 2;
   const expAway = (input.awayScoredAway + input.homeConcededHome) / 2;
   const expTotal = expHome + expAway;
 
-  const ouStrong = num(input.ou25PctH) >= T.gmOu25Min || num(input.ou25PctA) >= T.gmOu25Min;
-  const bttsStrong = num(input.bttsPctH) >= T.gmBttsMin && num(input.bttsPctA) >= T.gmBttsMin;
+  const ouStrong = num(input.ou25PctH) >= ou25Min || num(input.ou25PctA) >= ou25Min;
+  const bttsStrong = num(input.bttsPctH) >= bttsMin && num(input.bttsPctA) >= bttsMin;
 
-  const hit =
-    expTotal >= T.gmExpTotalMin && (ouStrong || bttsStrong || expTotal >= T.gmExpTotalStrong);
+  const hit = expTotal >= expTotalMin && (ouStrong || bttsStrong || expTotal >= expTotalStrong);
   if (!hit) return null;
 
-  const score = clamp01((expTotal - T.gmExpTotalMin) / (T.gmExpTotalFull - T.gmExpTotalMin));
+  const score = clamp01((expTotal - expTotalMin) / (expTotalFull - expTotalMin));
   // Prefer Over 2.5 when the total drives it; fall back to BTTS Yes when the
   // signal is a two-sided both-score trend rather than a high total.
-  const preferBtts = bttsStrong && !ouStrong && expTotal < T.gmExpTotalStrong;
+  const preferBtts = bttsStrong && !ouStrong && expTotal < expTotalStrong;
   return {
     kind: "goal_machine",
     score,
     recommendedFamily: preferBtts ? "btts" : "goals_ou",
     recommendedSide: preferBtts ? "Yes" : "Over 2.5",
-    rationale: `Goal trend: matchup-adjusted expected total ${expTotal.toFixed(2)} (Over-2.5 splits H ${num(input.ou25PctH).toFixed(2)}/A ${num(input.ou25PctA).toFixed(2)}) → ${preferBtts ? "BTTS Yes" : "Over 2.5"}.`,
+    rationale: `Goal trend: matchup-adjusted expected total ${expTotal.toFixed(2)} (Over-2.5 splits H ${num(input.ou25PctH).toFixed(2)}/A ${num(input.ou25PctA).toFixed(2)}) → ${preferBtts ? "BTTS Yes" : "Over 2.5"}.${overall ? " (overall-basis°, not a true venue split)" : ""}`,
   };
 }
 
@@ -298,22 +359,26 @@ function detectGoalMachine(input: PatternInput): PatternHit | null {
  *  and can fire on a high-scoring one-sided game where BTTS is actually
  *  unlikely) — this is specifically a both-teams-score signal. */
 function detectBttsBanker(input: PatternInput): PatternHit | null {
+  const overall = input.basis === "overall";
+  const bttsMin = overall ? T.bbBttsMin + OVERALL_TIGHTEN.pctAdd : T.bbBttsMin;
+  const csMax = overall ? T.bbCsMax - OVERALL_TIGHTEN.pctAdd : T.bbCsMax;
+
   const bttsH = input.bttsPctH;
   const bttsA = input.bttsPctA;
   if (bttsH == null || bttsA == null) return null;
-  const bttsOk = bttsH >= T.bbBttsMin && bttsA >= T.bbBttsMin;
+  const bttsOk = bttsH >= bttsMin && bttsA >= bttsMin;
   if (!bttsOk) return null;
-  const csOk = num(input.csPctH) < T.bbCsMax && num(input.csPctA) < T.bbCsMax;
+  const csOk = num(input.csPctH) < csMax && num(input.csPctA) < csMax;
   if (!csOk) return null;
 
   const minBtts = Math.min(bttsH, bttsA);
-  const score = clamp01((minBtts - T.bbBttsMin) / (T.bbFull - T.bbBttsMin));
+  const score = clamp01((minBtts - bttsMin) / (T.bbFull - bttsMin));
   return {
     kind: "btts_banker",
     score,
     recommendedFamily: "btts",
     recommendedSide: "Yes",
-    rationale: `BTTS trend: venue BTTS H ${bttsH.toFixed(2)} / A ${bttsA.toFixed(2)}, clean-sheet rates both below ${(T.bbCsMax * 100).toFixed(0)}% → BTTS Yes.`,
+    rationale: `BTTS trend: venue BTTS H ${bttsH.toFixed(2)} / A ${bttsA.toFixed(2)}, clean-sheet rates both below ${(csMax * 100).toFixed(0)}% → BTTS Yes.${overall ? " (overall-basis°, not a true venue split)" : ""}`,
   };
 }
 
@@ -367,6 +432,13 @@ function detectCornerKings(input: PatternInput): PatternHit | null {
 }
 
 function detectAnomaly(input: PatternInput): PatternHit | null {
+  const overall = input.basis === "overall";
+  const netGapMin = overall ? T.anomalyNetGapMin * OVERALL_TIGHTEN.gapMult : T.anomalyNetGapMin;
+  const underpricedOdds = overall
+    ? T.anomalyUnderpricedOdds + OVERALL_TIGHTEN.oddsAdd
+    : T.anomalyUnderpricedOdds;
+  const streakMin = overall ? T.anomalyStreakMin + OVERALL_TIGHTEN.streakAdd : T.anomalyStreakMin;
+
   const homeNet = input.homeScoredHome - input.homeConcededHome;
   const awayNet = input.awayScoredAway - input.awayConcededAway;
   const netGap = homeNet - awayNet;
@@ -378,19 +450,26 @@ function detectAnomaly(input: PatternInput): PatternHit | null {
   // sidecar only carries a signed win/loss streak, not a literal "unbeaten"
   // run length, so the streak condition is a data-realistic approximation of
   // G6's ">=5-game unbeaten home / >=4-game winless away" wording.
-  const homeUnderpriced =
-    netGap >= T.anomalyNetGapMin && num(input.homeOdds) >= T.anomalyUnderpricedOdds;
-  const awayUnderpriced =
-    -netGap >= T.anomalyNetGapMin && num(input.awayOdds) >= T.anomalyUnderpricedOdds;
-  const homeStreak = num(input.streakH) >= T.anomalyStreakMin && netGap > 0;
-  const awayStreak = num(input.streakA) >= T.anomalyStreakMin && netGap < 0;
+  const homeUnderpriced = netGap >= netGapMin && num(input.homeOdds) >= underpricedOdds;
+  const awayUnderpriced = -netGap >= netGapMin && num(input.awayOdds) >= underpricedOdds;
+  const homeStreak = num(input.streakH) >= streakMin && netGap > 0;
+  const awayStreak = num(input.streakA) >= streakMin && netGap < 0;
 
   if (!homeUnderpriced && !awayUnderpriced && !homeStreak && !awayStreak) return null;
   const side: "home" | "away" = homeUnderpriced || homeStreak ? "home" : "away";
   const odds = side === "home" ? num(input.homeOdds) : num(input.awayOdds);
   // Score grows with how far the market underprices the venue-split favourite.
-  const oddsEdge = odds > 0 ? clamp01((odds - T.anomalyUnderpricedOdds) / 2) : 0;
-  const gapEdge = clamp01(Math.abs(netGap) / (T.hsGapMin * 1.5));
+  const oddsEdge = odds > 0 ? clamp01((odds - underpricedOdds) / 2) : 0;
+  // Scale is T.hsGapMin (a DIFFERENT detector's threshold), not this
+  // detector's own netGapMin — deliberately preserved as the pre-existing,
+  // already-shipped venue-basis scale (byte-identical) rather than switched
+  // to netGapMin, which would silently change already-shipped venue-basis
+  // scores too, not just the new overall-basis path (adversarial review
+  // raised this as a cosmetic tightening-consistency question, 2026-07-20;
+  // the safer fix scales the SAME constant by the SAME tightening ratio on
+  // overall basis only, leaving venue basis untouched).
+  const gapEdgeScale = overall ? T.hsGapMin * OVERALL_TIGHTEN.gapMult : T.hsGapMin;
+  const gapEdge = clamp01(Math.abs(netGap) / (gapEdgeScale * 1.5));
   const score = clamp01(0.4 + 0.35 * gapEdge + 0.25 * oddsEdge);
   return {
     kind: "anomaly",
@@ -398,7 +477,7 @@ function detectAnomaly(input: PatternInput): PatternHit | null {
     side,
     recommendedFamily: "dnb",
     recommendedSide: side === "home" ? "Home" : "Away",
-    rationale: `Hidden value: ${side} is the venue-split favourite (net gap ${Math.abs(netGap).toFixed(2)}) but priced at ${odds ? odds.toFixed(2) : "n/a"} → Draw-No-Bet the ${side}.`,
+    rationale: `Hidden value: ${side} is the venue-split favourite (net gap ${Math.abs(netGap).toFixed(2)}) but priced at ${odds ? odds.toFixed(2) : "n/a"} → Draw-No-Bet the ${side}.${overall ? " (overall-basis°, not a true venue split)" : ""}`,
   };
 }
 
@@ -491,6 +570,59 @@ function priorityContext(input: PatternInput): number {
   return clamp01(scoreV3Priority(pin) / 100);
 }
 
+/** v6.2 §5.9 concordance/discordance. Two independent effects, applied
+ *  together but computed separately:
+ *   - Concordance: when ≥2 fired patterns (the top pattern plus at least one
+ *     other) share the SAME side, a second independently-derived green flag
+ *     corroborating the same team is a genuinely stronger signal than the
+ *     top pattern alone — lifts confidence exactly one band
+ *     (medium→high→very_high, capped at very_high). Side-neutral patterns
+ *     (goal_machine/btts_banker/half_share, and corner_kings' total-corners
+ *     variant) never carry a `.side` and so can never contribute to or
+ *     block concordance — only patterns that name a favoured team count.
+ *   - Discordance: a fired trap flag from T3/T4/T5 — the three traps that
+ *     specifically question the FAVOURED side's reliability (H2H hasn't
+ *     beaten this opponent, recent scoring dip, false-favourite pricing) —
+ *     costs a small strength penalty (1pt = 0.01, the same probability-point
+ *     unit the rest of the engine's edge math uses) and is promoted to the
+ *     front of trapFlags/trapWarning ahead of any non-contradicting trap
+ *     (T1/T2 stay purely informational — they don't reference the favoured
+ *     side's reliability the way T3-T5 do, so they never trigger this).
+ *  Never touches admission: strength/confidence/trapWarning are
+ *  ranking/labeling signals only, consumed by callers that ALSO enforce the
+ *  ev>0 floor independently — this function has no way to admit or exclude
+ *  a candidate. */
+export function applyConcordance(
+  hits: PatternHit[],
+  top: PatternHit,
+  strength: number,
+  confidence: PatternReport["confidence"],
+  trapFlags: TrapFlag[]
+): { strength: number; confidence: PatternReport["confidence"]; trapFlags: TrapFlag[] } {
+  let liftedConfidence = confidence;
+  if (top.side != null && confidence != null) {
+    const concordantCount = hits.filter((h) => h.side === top.side).length;
+    if (concordantCount >= 2) {
+      const bands: NonNullable<PatternReport["confidence"]>[] = ["medium", "high", "very_high"];
+      const i = bands.indexOf(confidence);
+      if (i >= 0 && i < bands.length - 1) liftedConfidence = bands[i + 1] as typeof confidence;
+    }
+  }
+
+  const DISCORDANT_TRAPS: ReadonlySet<TrapKind> = new Set(["T3", "T4", "T5"]);
+  const discordant = trapFlags.find((f) => DISCORDANT_TRAPS.has(f.kind));
+  const discountedStrength = discordant ? clamp01(strength - 0.01) : strength;
+  const orderedTrapFlags = discordant
+    ? [discordant, ...trapFlags.filter((f) => f !== discordant)]
+    : trapFlags;
+
+  return {
+    strength: discountedStrength,
+    confidence: liftedConfidence,
+    trapFlags: orderedTrapFlags,
+  };
+}
+
 /** Detect all green-flag patterns for a fixture and rank them. Deterministic. */
 export function detectPatterns(input: PatternInput): PatternReport {
   const hits = [
@@ -506,6 +638,8 @@ export function detectPatterns(input: PatternInput): PatternReport {
   hits.sort((a, b) => b.score - a.score);
   const topPattern = hits[0] ?? null;
 
+  const basis = input.basis ?? null;
+
   if (!topPattern) {
     return {
       patterns: [],
@@ -516,6 +650,7 @@ export function detectPatterns(input: PatternInput): PatternReport {
       confidence: null,
       trapWarning: null,
       trapFlags: [],
+      basis,
     };
   }
 
@@ -526,7 +661,7 @@ export function detectPatterns(input: PatternInput): PatternReport {
   const agreementBonus = hits.length >= 2 ? 0.05 : 0;
   const strength = clamp01((0.7 * topPattern.score + 0.3 * priority + agreementBonus) * shrink);
 
-  const confidence: PatternReport["confidence"] =
+  const rawConfidence: PatternReport["confidence"] =
     strength >= T.confVeryHigh
       ? "very_high"
       : strength >= T.confHigh
@@ -537,15 +672,25 @@ export function detectPatterns(input: PatternInput): PatternReport {
 
   const trapFlags = detectTrapFlags(input, topPattern);
 
+  // v6.2 §5.9 concordance/discordance — see applyConcordance's own header.
+  const concordant = applyConcordance(hits, topPattern, strength, rawConfidence, trapFlags);
+
+  // §2.5.4: "no confidence uplift on overall basis" — applied LAST, after
+  // concordance's own lift, so overall-basis reports can never exceed
+  // "medium" via any mechanism (concordance included).
+  const confidence: PatternReport["confidence"] =
+    basis === "overall" && concordant.confidence != null ? "medium" : concordant.confidence;
+
   return {
     patterns: hits,
     topPattern,
-    strength,
+    strength: concordant.strength,
     recommendedFamily: topPattern.recommendedFamily,
     recommendedSide: topPattern.recommendedSide,
     confidence,
-    trapWarning: trapFlags[0]?.text ?? legacyTrapWarning(input, topPattern),
-    trapFlags,
+    trapWarning: concordant.trapFlags[0]?.text ?? legacyTrapWarning(input, topPattern),
+    trapFlags: concordant.trapFlags,
+    basis,
   };
 }
 
