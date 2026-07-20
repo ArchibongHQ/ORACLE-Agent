@@ -1,0 +1,11 @@
+{
+  "date": "2026-07-20",
+  "slateSize": 0,
+  "attempted": 0,
+  "written": 0,
+  "withNews": 0,
+  "sourcesUsed": {"rss": 0, "transfermarkt": 0, "perplexity": 0, "agentic": 0},
+  "startedAt": "2026-07-20T06:45:59Z",
+  "finishedAt": "2026-07-20T06:52:00Z",
+  "notes": "tools/acquire_daily.py (ESPN/Sky HTTP, --no-playwright) returned 0 fixtures. Cross-checked: 7 of 38 ESPN league-ID endpoints returned HTTP 400 (isl.1, che.1, far.cup, ltu.cup, est.cup, qat.1, usa.3) and LiveScore was blocked by the proxy (403), but the remaining 30+ leagues (incl. MLS usa.1, Brazilian Serie A, J League) returned HTTP 200 with 0 events, confirmed via direct curl. WebSearch + WebFetch (skysports.com/football-scores-fixtures/2026-07-20) independently confirmed no fixtures are scheduled for this date — European domestic leagues are in summer break and this is the day after the 2026 FIFA World Cup Final (2026-07-19). tools/enrich_news.py found 0 rows for the same reason (0 teams to match against). PERPLEXITY_API_KEY not set, degraded silently per workflow. Genuine rest day, not a scraper failure."
+}
