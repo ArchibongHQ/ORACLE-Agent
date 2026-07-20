@@ -1108,14 +1108,27 @@ describe("analyzeFixtureMarketsV3 (orchestrator)", () => {
     penaltyFlags: {},
   };
 
-  it("returns null when no λ model can be built", async () => {
+  it("[Phase 4] falls back to the league-baseline λ rung (F3) instead of vanishing when the primary λ path has zero scoring signal", async () => {
     const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
     const result = analyzeFixtureMarketsV3({
       ...baseInput,
       lambdaInput: { league: "__unknown_league__" },
       allMarkets: [],
     });
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result?.lambdaBasis).toBe("league-baseline");
+    expect(result?.lambdaLabel).toMatch(/league baseline \(F3\)/);
+    expect(result?.lambdas.lambdaHome).toBeGreaterThan(0);
+    expect(result?.lambdas.lambdaAway).toBeGreaterThan(0);
+    expect(result?.evMarkets).toEqual([]);
+    expect(result?.best).toBeNull();
+  });
+
+  it("[Phase 4] leaves lambdaBasis/lambdaLabel undefined for a fully-statted fixture — byte-identical to pre-Phase-4 behavior", async () => {
+    const { analyzeFixtureMarketsV3 } = await import("@oracle/engine");
+    const result = analyzeFixtureMarketsV3({ ...baseInput, allMarkets: [] });
+    expect(result?.lambdaBasis).toBeUndefined();
+    expect(result?.lambdaLabel).toBeUndefined();
   });
 
   it("attaches an empty finishingShadow when no side has npxG coverage (PR-25 item 4)", async () => {

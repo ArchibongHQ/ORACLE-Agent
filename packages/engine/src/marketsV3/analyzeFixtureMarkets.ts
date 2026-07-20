@@ -52,6 +52,11 @@ import {
   shadowFinishingRegression,
 } from "./finishingRegression.js";
 import { buildV3Grid, buildV3HalfGrid } from "./grid.js";
+import {
+  CIRCULAR_LAMBDA_BASES,
+  computeLambdaFallback,
+  type LambdaBasis,
+} from "./lambdaFallback.js";
 import { detectPatterns, type PatternInput, type PatternReport } from "./patterns.js";
 import { type RefereeCardsShadowResult, shadowRefereeCards } from "./refereeCardsShadow.js";
 import { type DualSplit, deriveDualSplit } from "./split.js";
@@ -227,6 +232,15 @@ export interface V3MarketOutcomeAssessment extends V3AllMarketsAssessment {
 
 export interface V3AllMarketsResult {
   lambdas: V3Lambdas;
+  /** [Phase 4, λ fallback ladder] Undefined ⇒ computeV3Lambdas' own primary
+   *  path (byte-identical to pre-Phase-4 behavior). Set only when the
+   *  fixture's λ came from marketsV3/lambdaFallback.ts's F1-F4 ladder — see
+   *  that module's header for what each rung means and CIRCULAR_LAMBDA_BASES
+   *  for which basis values are forced watchlist-only. */
+  lambdaBasis?: LambdaBasis;
+  /** Human-readable rung label, e.g. "priced on league baseline (F3)" —
+   *  threaded to watchlist/report rows alongside lambdaBasis. */
+  lambdaLabel?: string;
   split: DualSplit;
   fhShare: number;
   fhShareIsDefault: boolean;
@@ -533,14 +547,42 @@ export function sideMatches(desc: string, recommendedSide: string, family: Marke
 }
 
 export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsResult | null {
-  const lambdas = computeV3Lambdas(input.lambdaInput, {
+  let lambdas = computeV3Lambdas(input.lambdaInput, {
     xgBlend: input.xgBlend,
     hfa: input.hfa,
     venueSplitUsed: input.venueSplitUsed,
     lambdaV5: input.lambdaV5,
     lakeBaselines: input.lakeBaselines,
   });
-  if (!lambdas) return null;
+  let lambdaBasis: LambdaBasis | undefined;
+  let lambdaLabel: string | undefined;
+  if (!lambdas) {
+    // [Phase 4, λ fallback ladder, §3.1c honesty rule] The primary path found
+    // zero usable scoring signal for at least one side — rather than let the
+    // fixture vanish from the slate entirely, try progressively weaker,
+    // honestly-labeled sources before giving up. See lambdaFallback.ts header.
+    const fallback = computeLambdaFallback({
+      league: input.league,
+      leagueId: input.lambdaInput.leagueId,
+      lakeBaselines: input.lakeBaselines,
+      h2hOver25Pct: input.h2hOversRate,
+      ou25PctH: input.empirical?.ou25PctH,
+      ou25PctA: input.empirical?.ou25PctA,
+      devigged1x2: input.devigged1x2 ?? null,
+    });
+    if (!fallback) return null;
+    lambdas = fallback.lambdas;
+    lambdaBasis = fallback.basis;
+    lambdaLabel = fallback.label;
+  }
+  // Defensive-in-depth (2026-07-20 review finding, traced in full): F3 (league
+  // baseline) always resolves — v3LeaguePerTeamAvg has a hardcoded default
+  // floor for any league string — so F4 (market-implied) never actually fires
+  // through the real ladder today; this check protects Tier① correctly the
+  // moment that guarantee is ever loosened, without fabricating a test for a
+  // currently-unreachable branch (same precedent as this file's X-carveout
+  // review finding).
+  const lambdaBasisIsCircular = lambdaBasis !== undefined && CIRCULAR_LAMBDA_BASES.has(lambdaBasis);
 
   const rho = resolveRho(input.league, input.dynamicRho);
   const split = deriveDualSplit(lambdas, input.devigged1x2);
@@ -702,9 +744,19 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
             }
           : {}),
       };
+      // [Phase 4, λ fallback ladder] λ was derived from the F4 market-implied
+      // rung — pricing EV off it is circular (the odds used to price this
+      // outcome are the same odds the λ came from). Demote every otherwise-
+      // passing outcome to below_gate/lambda_market_implied so it can never
+      // reach evMarkets/best/v3BestFallback, but leave it in `assessments`
+      // (outcome !== "done") so v3Watchlist still surfaces it, labeled.
+      if (lambdaBasisIsCircular && assessment.outcome === "done") {
+        assessment.outcome = "below_gate";
+        assessment.gateReason = "lambda_market_implied";
+      }
       assessments.push(assessment);
       if (gate.outcome === "capped") capped.push(assessment);
-      if (gate.outcome !== "done" || !gate.confidence) return;
+      if (assessment.outcome !== "done" || !assessment.confidence) return;
 
       const label = FAMILY_LABEL[route.family];
       // [patterns-engine Wave 2] Ranking boost — "on" mode only, and only for
@@ -792,6 +844,8 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
 
   return {
     lambdas,
+    lambdaBasis,
+    lambdaLabel,
     split,
     fhShare,
     fhShareIsDefault,

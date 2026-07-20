@@ -234,6 +234,37 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-20** — Phase 4 λ fallback ladder (`feat/lambda-fallback-ladder`, stateful-rolling-elephant
+  plan). NEW `marketsV3/lambdaFallback.ts`: `computeLambdaFallback()` — when `computeV3Lambdas`
+  (goalsV3/lambda.ts) returns null (zero usable scoring signal for a side), tries progressively
+  weaker, honestly-labeled λ sources instead of letting the fixture vanish from the slate: **F1**
+  this fixture's own H2H over-2.5 hit rate (Poisson-inverted via bisection), **F2** each team's own
+  season O2.5 hit-rate (independent of this pairing), **F3** the league baseline (always resolves —
+  `v3LeaguePerTeamAvg` has a hardcoded default floor for any league string), **F4** market-implied via
+  the devigged 1X2 book. F1-F3 are independent of the fixture's own odds, so a +EV pick priced off
+  them is real; F4 derives λ FROM the fixture's own market, so pricing EV against it is circular —
+  `analyzeFixtureMarketsV3` forces every F4-sourced outcome to `outcome:"below_gate"` +
+  `gateReason:"lambda_market_implied"` (new `V3AllGateReason` member) so it can never reach
+  `evMarkets`/`best`/`v3BestFallback`'s fill-to-39 pool but still surfaces in `v3Watchlist`
+  (`outcome !== "done"`), labeled. **F3 always resolving means F4 is defensive-in-depth, not reachable
+  through the real ladder today** — documented in-code rather than fabricating a test for it (same
+  precedent as the Wave-2/X-carveout unreachable-branch findings below). **F5** (a single scraped O/U
+  line's devigged probability, per the original plan) deliberately deferred — F4's devigged-1X2 book
+  already covers every fixture that reaches pricing at all (no odds ⇒ no fixture in the pipeline),
+  making it a strict superset of F5's coverage for a fraction of the anchored-line-parsing complexity.
+  **§3.1b recency blend — found already shipped**, not built this pass: `sportyBetStats.ts`'s
+  `blendRecencyScored()` (60/40 recent/season, `stats.recentGoals.{home,away}.scored_avg` with a
+  form-string-decay fallback) was wired into `buildStatsOverride`'s `scoredPer90H/A` — which feeds
+  `V3LambdaInput.homeScoredPer90/awayScoredPer90` directly — by the concurrent SportyBet
+  stat-coverage session (`062b3e9`, same day) before this phase started; confirmed via `git log --
+  packages/runtime/src/sportyBetStats.ts` rather than assumed. Not literally "venue-split" last-5 (the
+  sidecar's `form.last5` is each team's last 5 matches overall, not filtered to home-only/away-only
+  meetings — that specific cut of data does not exist in the Sportradar gismo feed) — using the real,
+  honestly-labeled team-level recency signal instead of fabricating a venue-conditioned one that isn't
+  scraped, per the plan's own explicit "verify the data exists first" gate. New tests:
+  `test/lambdaFallback.test.ts` (11 per-rung unit tests) + 2 `marketsV3.test.ts` integration tests
+  (zero-stats fixture yields an F3-labeled result instead of null; fully-statted fixture leaves
+  `lambdaBasis`/`lambdaLabel` undefined — byte-identical to pre-Phase-4 output).
 - **2026-07-16** — patterns-engine Wave 2, three phases stacked on Wave 1 (PR #69, merged): Phase 2
   (`feature/patterns-engine-wave2-gate`, `7810b38`), Phase 3 (`feature/patterns-engine-wave2-ah-pivot`,
   `41e98a8`, stacked on Phase 2), Phase 0 (`feature/patterns-engine-wave2-telemetry`, `fad1afc`, stacked

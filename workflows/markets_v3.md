@@ -40,6 +40,7 @@ Implement `all-markets-analysis-prompt-v3` (owner-supplied spec) as deterministi
 | §1/§1.2 (eligibility) | `packages/runtime/src/goalsV3/eligibility.ts` (`classifyEligibility`), reused as-is |
 | §2 (prioritisation) | `packages/engine/src/marketsV3/prioritise.ts` |
 | §3.1 (λ) | `packages/engine/src/goalsV3/lambda.ts` (`computeV3Lambdas`), reused |
+| §3.1c (no-fixture-dies λ fallback) | `packages/engine/src/marketsV3/lambdaFallback.ts` (`computeLambdaFallback`) — F1 H2H → F2 hit-rate inversion → F3 league baseline → F4 market-implied (watchlist-only, circular EV). Engages only when `computeV3Lambdas` returns null; `V3AllMarketsResult.lambdaBasis`/`lambdaLabel` undefined ⇒ byte-identical primary-path output |
 | §3.2 (dual split) | `packages/engine/src/marketsV3/split.ts` (`deriveDualSplit`), wraps `goalsV3/matchShape.ts` |
 | §3.3–§3.8 (engines) | `packages/engine/src/marketsV3/engines/{totals,result,shape,half,time,exotics}.ts` |
 | §3.9 (corners/cards) | `packages/engine/src/marketsV3/engines/{corners,cards}.ts` — **routed (PR-6)** via `feedDictionary.routeMarket` for plain O/U total lines; `ORACLE_V3_CORNERS_CARDS=off` withholds stats to keep dormant |

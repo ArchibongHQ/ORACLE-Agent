@@ -240,7 +240,15 @@ export type V3AllGateReason =
   | "model_hot_longshot"
   | "noise"
   | "capped_absolute"
-  | "capped_relative";
+  | "capped_relative"
+  /** [Phase 4, λ fallback ladder] λ was derived from the F4 market-implied
+   *  rung (marketsV3/lambdaFallback.ts) — pricing EV off a λ built from the
+   *  fixture's own odds is circular, not a real edge. analyzeFixtureMarketsV3
+   *  forces every outcome to this reason regardless of the gate's own
+   *  verdict, so it can never reach evMarkets/best/v3BestFallback (the
+   *  class_edge-only fill-to-39 pool) but still surfaces in v3Watchlist
+   *  (outcome !== "done") for report transparency. */
+  | "lambda_market_implied";
 
 export interface V3AllMarketsAssessment {
   q: number;
