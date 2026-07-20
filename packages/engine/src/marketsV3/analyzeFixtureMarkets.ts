@@ -444,7 +444,11 @@ function buildFixturePatternInput(input: V3AllMarketsInput): PatternInput | null
 /** [patterns-engine Wave 2] Conservative family-aware match between a priced
  *  outcome's desc and the detector's recommendedSide string. A false positive
  *  here relaxes the class-edge gate for the WRONG pick (real-money gate
- *  math), so every branch prefers returning false over guessing:
+ *  math), so every branch prefers returning false over guessing. Exported
+ *  (Phase 2A, feat/patterns-legacy-pricer) — the legacy pricer's own
+ *  pattern-aware ranking (packages/engine/src/batch/index.ts) reuses this
+ *  SAME matcher against legacy EVMarket.label/.family, rather than forking
+ *  an equivalent implementation ("one shared rule, two call sites"):
  *   - exact (case-insensitive) match always wins first.
  *   - btts: exact "yes"/"no" only (dirOfDesc/sideOfDesc don't parse this
  *     shape) — the exact check above already covers it.
@@ -469,7 +473,7 @@ function buildFixturePatternInput(input: V3AllMarketsInput): PatternInput | null
  *     anchored lineOfDesc, not a substring check).
  *   - anything else: exact match only (already checked above) — no guessing
  *     for a family none of the four current pattern kinds ever recommend. */
-function sideMatches(desc: string, recommendedSide: string, family: MarketFamily): boolean {
+export function sideMatches(desc: string, recommendedSide: string, family: MarketFamily): boolean {
   const rs = recommendedSide.trim();
   const rsLower = rs.toLowerCase();
   const descLower = desc.trim().toLowerCase();

@@ -17,12 +17,15 @@ import { SHRINK_N } from "../goalsV3/lambda.js";
 import { devigThreeWay, FAMILY_LABEL, type MarketFamily } from "../markets/index.js";
 import {
   analyzeFixtureMarketsV3,
+  sideMatches,
   type V3AllMarketsInput,
   type V3MarketOutcomeAssessment,
 } from "../marketsV3/analyzeFixtureMarkets.js";
 import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
+import { PATTERN_MIN_STRENGTH, PATTERN_RANK_BONUS } from "../marketsV3/evGate.js";
 import { computeTailMarkets, type RouteCoverage } from "../marketsV3/feedDictionary.js";
 import type { V3DeliveryCandidate, V3OutputCandidate } from "../marketsV3/outputs.js";
+import { detectPatterns, type PatternInput, type PatternReport } from "../marketsV3/patterns.js";
 import { buildRatingsLambdaInput, TeamRatingsEngine } from "../ratings/index.js";
 import {
   buildSafetyShadowDiff,
@@ -157,6 +160,8 @@ export function buildV3Input(
           cornersForA: t.cornersForA,
           cornersAgainstH: t.cornersAgainstH,
           cornersAgainstA: t.cornersAgainstA,
+          squadHeightH: t.squadHeightH,
+          squadHeightA: t.squadHeightA,
           cardsAvgH: t.cardsAvgH,
           cardsAvgA: t.cardsAvgA,
         }
@@ -171,6 +176,10 @@ export function buildV3Input(
     streakA: t.streakA,
     last5PtsH: t.last5PtsH,
     last5PtsA: t.last5PtsA,
+    // [2026-07-20] Feeds buildFixturePatternInput's PatternInput.h2hOversRate
+    // (marketsV3/patterns.ts) — previously report-only, reconnected to the
+    // live picker (see analyzeFixtureMarkets.ts's V3AllMarketsInput doc).
+    h2hOversRate: t.h2hOversRate,
     penaltyFlags: {
       // Desktop-audit concept #3: graduated xG-missing penalty. Mutually
       // exclusive with xgMissingLargeSample — full -2pt only when the
@@ -234,6 +243,166 @@ export function buildV3Input(
     // as "off" (analyzeFixtureMarkets.ts's own default), byte-identical.
     v3Patterns: config?.v3Patterns,
   };
+}
+
+/** [Phase 2A, patterns-legacy-pricer] Legacy-pricer sibling of
+ *  analyzeFixtureMarkets.ts's buildFixturePatternInput — builds the SAME
+ *  PatternInput TYPE directly from RunState.telemetry (the legacy pricer's
+ *  own scope has no V3AllMarketsInput to read from). Reuses the identical
+ *  telemetry field names buildV3Input already maps above wherever they
+ *  overlap, per the plan's explicit "reuse, don't re-derive" instruction —
+ *  this is NOT a second, drifting implementation, it's the same fields read
+ *  a second time for a different consumer. Same null-return contract as
+ *  buildFixturePatternInput: requires the four venue-split goal rates to be
+ *  real numbers, else returns null (never fabricates a false signal from a
+ *  0-fallback). Three deliberate field-source choices worth flagging:
+ *   - nHome/nAway sourced from t.formNH/t.formNA (not t.nHome/t.nAway,
+ *     a DIFFERENT lambda-input sample-size pair on the same telemetry
+ *     object) — matches analyzeFixtureMarkets.ts's own choice exactly, so
+ *     both PatternInput builders agree on which "n" the detector's
+ *     sample-shrink math applies to.
+ *   - homeOdds/drawOdds/awayOdds sourced directly from t.hOdds/t.dOdds/
+ *     t.aOdds (the legacy engine's own established telemetry read, see
+ *     execution/index.ts) rather than v3's extract1x2Odds(allMarkets) —
+ *     simpler, and this fixture's allMarkets catalogue isn't in scope here
+ *     the way it is in analyzeFixtureMarkets.ts.
+ *   - NOT byte-identical to buildFixturePatternInput's actual field
+ *     COVERAGE (adversarial review finding, 2026-07-20): this builder DOES
+ *     map fhShareH/fhShareA (enabling detectHalfShare) even though
+ *     buildFixturePatternInput currently does not — the two detectors can
+ *     surface a different topPattern for the same fixture as a result. Not
+ *     a safety issue (half_share only ever recommends a +EV goals_ou over,
+ *     same ev>0-floor-bound-regardless guarantee every pattern kind has),
+ *     just an intentional extra signal here worth being explicit isn't
+ *     mirrored both ways yet.
+ *  Exported for direct unit testing — same rationale as buildV3Input above. */
+export function buildLegacyPatternInput(state: RunState, league: string): PatternInput | null {
+  const t = state.telemetry ?? {};
+  if (
+    !Number.isFinite(t.scoredPer90H) ||
+    !Number.isFinite(t.concededPer90H) ||
+    !Number.isFinite(t.scoredPer90A) ||
+    !Number.isFinite(t.concededPer90A)
+  ) {
+    return null;
+  }
+  return {
+    homeScoredHome: t.scoredPer90H as number,
+    homeConcededHome: t.concededPer90H as number,
+    awayScoredAway: t.scoredPer90A as number,
+    awayConcededAway: t.concededPer90A as number,
+    homeXg: t.xgfH,
+    awayXg: t.xgfA,
+    homeXga: t.xgaH,
+    awayXga: t.xgaA,
+    ou25PctH: t.ouO25H,
+    ou25PctA: t.ouO25A,
+    bttsPctH: t.bttsPctH,
+    bttsPctA: t.bttsPctA,
+    csPctH: t.csPctH,
+    csPctA: t.csPctA,
+    ftsPctH: t.ftsPctH,
+    ftsPctA: t.ftsPctA,
+    fhShareH: t.fhShareH,
+    fhShareA: t.fhShareA,
+    cornersForH: t.cornersForH,
+    cornersForA: t.cornersForA,
+    cornersAgainstH: t.cornersAgainstH,
+    cornersAgainstA: t.cornersAgainstA,
+    cardsAvgH: t.cardsAvgH,
+    cardsAvgA: t.cardsAvgA,
+    nHome: t.formNH,
+    nAway: t.formNA,
+    homeOdds: t.hOdds,
+    drawOdds: t.dOdds,
+    awayOdds: t.aOdds,
+    league,
+    streakH: t.streakH,
+    streakA: t.streakA,
+    last5PtsH: t.last5PtsH,
+    last5PtsA: t.last5PtsA,
+    // leagueAvgGoals/h2hOversRate/restDaysMin/mappedFamiliesWithStats
+    // intentionally absent — same rationale as buildFixturePatternInput's
+    // own trailing comment: not cheaply available in this scope, and
+    // detectPatterns degrades gracefully without them.
+  };
+}
+
+/** [Phase 2A, patterns-legacy-pricer] Applies the SAME pattern-first ranking
+ *  priority markets-v3 already gives its own candidates (evGate.ts's
+ *  PATTERN_RANK_BONUS * strength boost, gated on sideMatches — the shared
+ *  matcher exported from analyzeFixtureMarkets.ts, "one shared rule, two
+ *  call sites, not a forked implementation") to the legacy pricer's
+ *  evMarkets. Ranking/confidence ONLY: returns a NEW array (never mutates
+ *  the input, matching stripUnderComponents' convention), re-sorted by the
+ *  boosted rankingScore — it never changes any candidate's `ev`, so
+ *  buildEligibleBets' ev>0 floor (decision/index.ts, called AFTER this on
+ *  the returned array) is completely unaffected; this function has no power
+ *  to admit or promote a −EV candidate, only to reorder already-priced ones.
+ *  A defensive `m.ev > 0` re-check is included anyway (never boost a
+ *  candidate that's going to be filtered out momentarily regardless) — belt
+ *  and suspenders, not the actual enforcement point.
+ *
+ *  SCOPE BOUNDARY (found writing legacyPatternRanking.test.ts, documented
+ *  rather than "fixed" — out of Phase 2A's stated file scope): reordering
+ *  `eligible`'s array is real and visible to `eligible[0]` (the LLM
+ *  briefing's "top eligible bet" framing) and `runSwarm`'s input order when
+ *  an LLM decision tier is active — but decision/index.ts's
+ *  `deterministicDecide` (the no-LLM-available fallback, used whenever no
+ *  API key/DecisionContext is present, or the whole LLM cascade fails open)
+ *  does its OWN independent `sort((a,b) => b.ev - a.ev)` over whatever it
+ *  receives, ignoring incoming array order entirely. So on a fixture that
+ *  falls all the way through to that fallback, this ranking boost changes
+ *  `eligibleBets`' reported order but does NOT change which candidate
+ *  becomes `primaryPick` — deterministicDecide's own ev-based tie-break
+ *  still wins. That function is general-purpose (every decision path in the
+ *  engine uses it, not legacy-pricer-specific) and outside the file scope
+ *  the plan names for this phase; changing it is a separate, bigger-blast-
+ *  radius decision left for later, not silently bundled into Phase 2A.
+ *  Exported for direct unit testing — same rationale as buildV3Input above. */
+export function applyLegacyPatternRanking(
+  evMarkets: EVMarket[],
+  patternReport: PatternReport
+): EVMarket[] {
+  const { recommendedFamily, recommendedSide, strength } = patternReport;
+  if (!recommendedFamily || !recommendedSide) return evMarkets;
+  return evMarkets
+    .map((m) => {
+      // Match on `.side` (falling back to `.label` only when side is truly
+      // absent), NOT `.label` alone (adversarial review finding, 2026-07-20):
+      // `.side` = `.label` is true for scanMarkets' family-gated BLOCKs
+      // (execution/index.ts's check() closure sets `side: label`), but
+      // FALSE for scanAllMarketsFallback — that path sets `label` to a
+      // COMPOSITE string ("Total Goals Over/Under — Over 2.5") and `side`
+      // to the CLEAN outcome desc ("Over 2.5") the shared sideMatches
+      // matcher actually expects (the same clean shape V3's own call site
+      // passes). Matching on the composite label silently broke matching
+      // for every Scan-sourced candidate (dirOfDesc/lineOfDesc/exact-match
+      // all fail on a string containing the market name) — not a −EV/floor
+      // risk, but it made the feature quietly inert on exactly the
+      // full-catalogue candidates it's meant to help.
+      //
+      // Also excludes `m.veto` explicitly (adversarial review finding):
+      // execution/index.ts pushes capped/noise/MES-vetoed candidates with
+      // `ev > 0` AND `rankingScore: -100` — the `m.ev > 0` check alone does
+      // NOT exclude them (contrary to this function's own prior claim of
+      // "never boost a candidate that's going to be filtered out
+      // momentarily regardless"). buildEligibleBets strips `veto` downstream
+      // regardless, so this was never a real −EV admission risk, but
+      // boosting a −100-sentinel candidate contradicted the stated contract
+      // and rested entirely on downstream filtering rather than this
+      // function's own logic.
+      if (
+        m.ev > 0 &&
+        !m.veto &&
+        m.family === recommendedFamily &&
+        sideMatches(m.side ?? m.label, recommendedSide, m.family)
+      ) {
+        return { ...m, rankingScore: m.rankingScore + PATTERN_RANK_BONUS * strength };
+      }
+      return m;
+    })
+    .sort((a, b) => b.rankingScore - a.rankingScore);
 }
 
 /** Goals-family MarketFamily values the R10 cross-check hook applies to.
@@ -760,6 +929,53 @@ export async function runBatch(
             evMarkets = evMarkets.filter((m) =>
               wl.some((w) => m.cat.toLowerCase().includes(w) || m.label.toLowerCase().includes(w))
             );
+          }
+
+          // [Phase 2A, patterns-legacy-pricer] Pattern-aware ranking for the
+          // legacy pricer path — closes the last pattern-blind gap in
+          // delivery (markets-v3, below, already calls detectPatterns; this
+          // fixture's LEGACY evMarkets never saw it before, and this is what
+          // eligible falls back to on any fixture where v3 was dry or off).
+          // Ranking/confidence boost only, same absolute rule as Phase 2's
+          // two-tier slate — buildEligibleBets' ev>0 floor (line ~950 below)
+          // is untouched by this block; it can only reorder candidates that
+          // already pass it, never rescue one that doesn't. Gated on
+          // v62Patterns, NOT v3Patterns (a deliberately separate flag — see
+          // OracleConfig.v62Patterns's doc comment): "shadow" (default)
+          // computes the pattern report but never reorders, matching the
+          // shadow-never-applies convention v3Patterns itself established;
+          // "on" applies the boost. SCOPE NOTES (see
+          // applyLegacyPatternRanking's own doc comment for the full
+          // explanation of the first): (1) this reorders `eligible`'s
+          // array — real, visible effect on the LLM briefing framing and
+          // swarm input order — but does NOT override decision/index.ts's
+          // deterministicDecide own independent ev-based tie-break on
+          // fixtures that fall through to that no-LLM fallback; changing
+          // that general-purpose function is outside this phase's scope.
+          // (2) buildLegacyPatternInput's null-return contract (missing
+          // venue-split rates) is the SAME contract analyzeFixtureMarketsV3
+          // dry-runs on, so on a fixture that fell to the legacy path
+          // BECAUSE those rates were missing, this ranking is inert too —
+          // an accepted tradeoff (fabricating a signal from missing data
+          // would be worse), flagged so a future session doesn't mistake a
+          // near-zero legacy-path match rate for a bug. (3) "shadow" mode
+          // computes legacyPatternReport but persists no evidence anywhere
+          // (unlike v3Patterns' patternRelaxed:"shadow_pass" ledger tally) —
+          // a real gap if this flag is ever soak-tested before flipping to
+          // "on", named here as a follow-up rather than silently expanding
+          // this phase's scope to add ledger telemetry infrastructure.
+          if (config.v62Patterns && config.v62Patterns !== "off") {
+            const legacyPatternInput = buildLegacyPatternInput(state, job.league);
+            const legacyPatternReport = legacyPatternInput
+              ? detectPatterns(legacyPatternInput)
+              : null;
+            if (
+              config.v62Patterns === "on" &&
+              legacyPatternReport?.topPattern &&
+              legacyPatternReport.strength >= PATTERN_MIN_STRENGTH
+            ) {
+              evMarkets = applyLegacyPatternRanking(evMarkets, legacyPatternReport);
+            }
           }
 
           // [Wave 2, WS2-A + review follow-up] v5 Rule 0.14 per-fixture
