@@ -4,6 +4,7 @@
 
 import type { StoragePort } from "@oracle/storage";
 import { STORAGE_KEYS, withKeyLock } from "@oracle/storage";
+import { stripUnderComponents } from "../safety/underBan.js";
 import type {
   ConfidenceGrade,
   DecisionContext,
@@ -476,8 +477,14 @@ function parseDecisionResponse(text: string): DecisionOutput | null {
 
 // ── Public: buildEligibleBets ─────────────────────────────────────────────────
 
+/** Owner rule (locked decision ②): no Under ever ships, in ANY market family
+ *  (plain totals, combo, half, or a raw allMarkets-scan candidate) — the
+ *  Under strip lives here, family-agnostic, because this is the one function
+ *  every delivery path (legacy ExecutionEngine, v3, the all-markets LLM
+ *  executor splice) ultimately calls to produce its candidate pool. See
+ *  safety/underBan.ts's header for the exact prior gap this closes. */
 export function buildEligibleBets(evMarkets: EVMarket[]): EVMarket[] {
-  return evMarkets.filter((m) => !m.veto && m.ev > 0);
+  return stripUnderComponents(evMarkets.filter((m) => !m.veto && m.ev > 0));
 }
 
 // ── Public: decide ────────────────────────────────────────────────────────────

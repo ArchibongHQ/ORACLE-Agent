@@ -20,11 +20,9 @@ import {
   type V3AllMarketsInput,
   type V3MarketOutcomeAssessment,
 } from "../marketsV3/analyzeFixtureMarkets.js";
-import { dirOfDesc } from "../marketsV3/descParse.js";
 import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
 import { computeTailMarkets, type RouteCoverage } from "../marketsV3/feedDictionary.js";
 import type { V3OutputCandidate } from "../marketsV3/outputs.js";
-import { TOTALS_FAMILIES } from "../marketsV3/sanity.js";
 import { buildRatingsLambdaInput, TeamRatingsEngine } from "../ratings/index.js";
 import {
   buildSafetyShadowDiff,
@@ -33,6 +31,7 @@ import {
   type SafetyShadowDiff,
   v3AssessmentsToEvMarkets,
 } from "../safety/pipeline.js";
+import { isUnderDesc } from "../safety/underBan.js";
 import type {
   AgentError,
   AgentErrorCode,
@@ -903,7 +902,22 @@ export async function runBatch(
                 })
               : [];
             if (config.enableMarketsV3 === "on" && v3StakedEvMarkets.length) {
-              eligible = v3StakedEvMarkets.slice(0, V3_ARBITER_CANDIDATE_LIMIT);
+              // buildEligibleBets (not just its Under-strip half) re-applied
+              // here deliberately: this REASSIGNS `eligible`, replacing the
+              // legacy-path list buildEligibleBets already cleaned above
+              // (line ~775) — v3AssessmentsToEvMarkets's own Under guard
+              // only covers TOTALS_FAMILIES (goals_ou/team_total), the same
+              // narrow gap safety/underBan.ts's header documents, so without
+              // this the universal ban would silently not apply to v3's
+              // (the DEFAULT-on) path. Re-filtering already-gated v3
+              // candidates on !veto/ev>0 is a no-op for every legitimate
+              // entry — only an Under (which should never have been staked
+              // to begin with) is ever actually removed here. Strip BEFORE
+              // slicing to V3_ARBITER_CANDIDATE_LIMIT — v3StakedEvMarkets is
+              // already sorted best-first, so stripping after would silently
+              // shrink the candidate pool below the limit whenever an Under
+              // happened to rank inside the original top-N.
+              eligible = buildEligibleBets(v3StakedEvMarkets).slice(0, V3_ARBITER_CANDIDATE_LIMIT);
               usedV3 = true;
             }
             // Populated whenever v3 ran ("on" OR "shadow") — shadow-mode
@@ -912,18 +926,16 @@ export async function runBatch(
             if (v3Result) {
               v3Coverage = v3Result.coverage;
               // [Phase 3, Under->AH pivot — adversarial review finding,
-              // 2026-07-16] v3Best sources from raw `assessments`, not the
-              // Under-stripped `evMarkets`/`best` analyzeFixtureMarketsV3
-              // returns — this exclusion is the same one v3BestFallback
-              // already applies below, applied here too so a gate-passing
-              // Under can't win v3Best and flow into slateOutputs.ts's
-              // tier-1 pool (the actual delivered picks).
+              // 2026-07-16; widened to the family-agnostic isUnderDesc,
+              // 2026-07-19 — see safety/underBan.ts header] v3Best sources
+              // from raw `assessments`, not the Under-stripped
+              // `evMarkets`/`best` analyzeFixtureMarketsV3 returns — this
+              // exclusion is the same one v3BestFallback already applies
+              // below, applied here too so a gate-passing Under can't win
+              // v3Best and flow into slateOutputs.ts's tier-1 pool (the
+              // actual delivered picks).
               const bestAssessment = v3Result.assessments
-                .filter(
-                  (a) =>
-                    a.outcome === "done" &&
-                    !(TOTALS_FAMILIES.has(a.family) && dirOfDesc(a.desc) === "under")
-                )
+                .filter((a) => a.outcome === "done" && !isUnderDesc(a.desc))
                 .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
               if (bestAssessment) {
                 v3Best = {
@@ -959,24 +971,24 @@ export async function runBatch(
               // this feature's own scope — it relaxes ONLY the class-edge bar,
               // so the fallback pool should surface ONLY candidates that bar
               // alone is blocking, not e.g. a max-odds or ev-floor reject.
-              // [Phase 3, Under->AH pivot] ALSO excludes goals_ou/team_total
-              // Under candidates — same owner rule analyzeFixtureMarketsV3
-              // enforces on evMarkets itself (never recommend an Under). This
-              // fallback pool sources from batch/index.ts, entirely outside
-              // that evMarkets-level filter, so it needs the identical
-              // exclusion here or a near-miss Under could re-enter the
-              // actionable pool through the fill-to-39 back door.
+              // [Phase 3, Under->AH pivot; widened to the family-agnostic
+              // isUnderDesc, 2026-07-19 — see safety/underBan.ts header]
+              // ALSO excludes ANY-family Under candidates — same owner rule
+              // analyzeFixtureMarketsV3 enforces on evMarkets itself (never
+              // recommend an Under). This fallback pool sources from
+              // batch/index.ts, entirely outside that evMarkets-level
+              // filter, so it needs the identical exclusion here or a
+              // near-miss Under could re-enter the actionable pool through
+              // the fill-to-39 back door.
               if (config.v3Patterns && config.v3Patterns !== "off") {
                 const rawEv = (a: V3MarketOutcomeAssessment) => a.evModel ?? a.ev;
-                const isUnder = (a: V3MarketOutcomeAssessment) =>
-                  TOTALS_FAMILIES.has(a.family) && dirOfDesc(a.desc) === "under";
                 const bestFallbackAssessment = v3Result.assessments
                   .filter(
                     (a) =>
                       rawEv(a) > 0 &&
                       a.outcome === "below_gate" &&
                       a.gateReason === "class_edge" &&
-                      !isUnder(a)
+                      !isUnderDesc(a.desc)
                   )
                   .sort((a, b) => b.adjustedEdge - a.adjustedEdge)[0];
                 if (bestFallbackAssessment) {

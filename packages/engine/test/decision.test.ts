@@ -91,6 +91,63 @@ describe("buildEligibleBets", () => {
   it("returns empty array when nothing passes", () => {
     expect(buildEligibleBets([makeMarket({ ev: -0.1, veto: "NOISE" })])).toHaveLength(0);
   });
+
+  // Owner rule (locked decision ②): no Under ever ships. This is the choke
+  // point every legacy/default-path `eligible` list flows through — see
+  // safety/underBan.ts's header for the full picture across all 3 sites.
+  describe("Under ban (owner rule, locked decision ②)", () => {
+    it("excludes a plain goals_ou Under even with a strongly positive EV", () => {
+      const markets = [
+        makeMarket({ side: "Over 2.5", family: "goals_ou", ev: 0.1 }),
+        makeMarket({ side: "Under 2.5", family: "goals_ou", ev: 0.9 }),
+      ];
+      const eligible = buildEligibleBets(markets);
+      expect(eligible).toHaveLength(1);
+      expect(eligible[0]?.side).toBe("Over 2.5");
+    });
+
+    it("excludes an Under leg from a combo market — the exact family the legacy pricer never stripped", () => {
+      const markets = [
+        makeMarket({ side: "Home", family: "match_result", ev: 0.05 }),
+        makeMarket({ side: "Home & Under 2.5", family: "combo", ev: 0.5 }),
+        makeMarket({ side: "Under 2.5 & BTTS No", family: "combo", ev: 0.5 }),
+      ];
+      const eligible = buildEligibleBets(markets);
+      expect(eligible).toHaveLength(1);
+      expect(eligible[0]?.side).toBe("Home");
+    });
+
+    it("excludes an Under leg from a half market — the other family the legacy pricer never stripped", () => {
+      const markets = [
+        makeMarket({ side: "SH Over 1.5", family: "half", ev: 0.05 }),
+        makeMarket({ side: "SH Under 1.5", family: "half", ev: 0.5 }),
+      ];
+      const eligible = buildEligibleBets(markets);
+      expect(eligible).toHaveLength(1);
+      expect(eligible[0]?.side).toBe("SH Over 1.5");
+    });
+
+    it("excludes an Under from a family-agnostic raw-catalogue-scan candidate (sourcedFromScan)", () => {
+      const markets = [
+        makeMarket({
+          side: "Under 3.5",
+          family: undefined,
+          cat: "AllMarkets Scan",
+          sourcedFromScan: true,
+          ev: 0.5,
+        }),
+        makeMarket({ side: "Over 3.5", family: undefined, sourcedFromScan: true, ev: 0.05 }),
+      ];
+      const eligible = buildEligibleBets(markets);
+      expect(eligible).toHaveLength(1);
+      expect(eligible[0]?.side).toBe("Over 3.5");
+    });
+
+    it("does not false-positive on a team name containing 'under' as a substring (e.g. Sunderland)", () => {
+      const markets = [makeMarket({ side: "Sunderland", family: "match_result", ev: 0.05 })];
+      expect(buildEligibleBets(markets)).toHaveLength(1);
+    });
+  });
 });
 
 // ── decide — deterministic fallback path (no API key) ─────────────────────────
