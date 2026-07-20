@@ -98,6 +98,12 @@ export interface V3AllMarketsInput {
   cornersForA?: number;
   cornersAgainstH?: number;
   cornersAgainstA?: number;
+  /** [2026-07-20] Squad average height, cm (StatsOverride.squadHeightH/A) —
+   *  feeds a small, bounded nudge on the corners means via
+   *  engines/corners.ts's heightCornersAdjustment(). Same rollback surface
+   *  as the corners/cards fields above (gated by v3CornersCards). */
+  squadHeightH?: number;
+  squadHeightA?: number;
   cardsAvgH?: number;
   cardsAvgA?: number;
   /** PR-22: 1x2/handicap/range/odd-even corners/cards variants. Default true
@@ -142,6 +148,16 @@ export interface V3AllMarketsInput {
   streakA?: number;
   last5PtsH?: number;
   last5PtsA?: number;
+  /** [2026-07-20] H2H Over-2.5 hit rate across the head-to-head window
+   *  (StatsOverride.h2hOversRate, computed by selectFixtures.ts's
+   *  computeH2hAggregate() from stats.h2h.matches — free/unlimited SportyBet
+   *  gismo data, NOT the separate rate-limited h2h.ts football-data.org
+   *  path). Feeds PatternInput.h2hOversRate (marketsV3/patterns.ts) via
+   *  buildFixturePatternInput below — already-tested consumption
+   *  (h2hOversTrend + the goal-machine override check); this field was
+   *  previously computed by the report-only pattern builder but never
+   *  threaded into the live picker due to a stale blocking comment. */
+  h2hOversRate?: number;
   /** [refactor P0-2] Market-anchored blend (v5 §5.8) — see OracleConfig.v3Blend
    *  for the three-state contract. "off"/undefined ⇒ every gateAllMarkets call
    *  below runs with its own blendMode default ("off"), byte-identical to
@@ -433,18 +449,29 @@ function buildFixturePatternInput(input: V3AllMarketsInput): PatternInput | null
     streakA: input.streakA,
     last5PtsH: input.last5PtsH,
     last5PtsA: input.last5PtsA,
-    // h2hOversRate/restDaysMin/mappedFamiliesWithStats intentionally absent —
-    // h2hOversRate requires modifying the separate, rate-limited h2h.ts
-    // external-API module (its own follow-up scope); restDaysMin/
-    // mappedFamiliesWithStats not yet threaded from V3AllMarketsInput;
-    // detectPatterns degrades gracefully without them.
+    h2hOversRate: input.h2hOversRate,
+    // [Phase 3, patterns-v62-core] input.venueSplitUsed is the SAME boolean
+    // this function's own doc comment (above) already describes as the only
+    // signal distinguishing whether homeScoredPer90/etc are a true venue
+    // split or pooled team-overall data — reused here rather than adding a
+    // second, redundant flag. Undefined/false ⇒ "overall" (the documented
+    // default — "most sources provide team-overall stats, not splits"),
+    // matching OracleConfig.v3VenueSplitUsed's own convention.
+    basis: input.venueSplitUsed ? "venue" : "overall",
+    // restDaysMin/mappedFamiliesWithStats intentionally still absent — not
+    // yet threaded from V3AllMarketsInput; detectPatterns degrades
+    // gracefully without them.
   };
 }
 
 /** [patterns-engine Wave 2] Conservative family-aware match between a priced
  *  outcome's desc and the detector's recommendedSide string. A false positive
  *  here relaxes the class-edge gate for the WRONG pick (real-money gate
- *  math), so every branch prefers returning false over guessing:
+ *  math), so every branch prefers returning false over guessing. Exported
+ *  (Phase 2A, feat/patterns-legacy-pricer) — the legacy pricer's own
+ *  pattern-aware ranking (packages/engine/src/batch/index.ts) reuses this
+ *  SAME matcher against legacy EVMarket.label/.family, rather than forking
+ *  an equivalent implementation ("one shared rule, two call sites"):
  *   - exact (case-insensitive) match always wins first.
  *   - btts: exact "yes"/"no" only (dirOfDesc/sideOfDesc don't parse this
  *     shape) — the exact check above already covers it.
@@ -469,7 +496,7 @@ function buildFixturePatternInput(input: V3AllMarketsInput): PatternInput | null
  *     anchored lineOfDesc, not a substring check).
  *   - anything else: exact match only (already checked above) — no guessing
  *     for a family none of the four current pattern kinds ever recommend. */
-function sideMatches(desc: string, recommendedSide: string, family: MarketFamily): boolean {
+export function sideMatches(desc: string, recommendedSide: string, family: MarketFamily): boolean {
   const rs = recommendedSide.trim();
   const rsLower = rs.toLowerCase();
   const descLower = desc.trim().toLowerCase();
@@ -533,6 +560,8 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
       cornersForA: input.cornersForA,
       cornersAgainstH: input.cornersAgainstH,
       cornersAgainstA: input.cornersAgainstA,
+      squadHeightH: input.squadHeightH,
+      squadHeightA: input.squadHeightA,
     }),
     cards: cardsMeans({ cardsAvgH: input.cardsAvgH, cardsAvgA: input.cardsAvgA }),
     cornersCardsExt: input.v3CornersCardsExt !== false,
@@ -588,6 +617,12 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         patternReport != null &&
         patternReport.topPattern != null &&
         patternReport.strength >= PATTERN_MIN_STRENGTH &&
+        // [Phase 3, §2.5.4] "zero PATTERN_RANK_BONUS on overall basis" —
+        // gated here (not just at detectPatterns' confidence cap) since
+        // patternBacked feeds BOTH the ranking-only bonus below AND
+        // evGate.ts's class-edge relaxation; `null` (pre-Phase-3 callers
+        // that never set PatternInput.basis) behaves exactly like "venue".
+        patternReport.basis !== "overall" &&
         patternReport.recommendedFamily === route.family &&
         patternReport.recommendedSide != null &&
         sideMatches(desc, patternReport.recommendedSide, route.family);

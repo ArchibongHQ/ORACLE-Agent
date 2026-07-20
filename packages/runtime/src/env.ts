@@ -451,6 +451,11 @@ export function buildConfig(
     // above — this is a two-state, not tri-state, flag, so it doesn't use
     // parseTriState).
     unifiedSlate: env.ORACLE_UNIFIED_SLATE?.toLowerCase() === "legacy" ? "legacy" : "on",
+    // [Phase 2A, patterns-legacy-pricer] Governs the v6.2 pattern catalog
+    // everywhere OUTSIDE markets-v3 (legacy pricer ranking now, Phase 3's
+    // trap flags later) — distinct from v3Patterns above. "shadow" (default)
+    // computes but never reorders; "on" applies the ranking boost.
+    v62Patterns: parseTriState(env.ORACLE_V62_PATTERNS, "shadow"),
   };
 }
 

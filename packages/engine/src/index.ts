@@ -124,7 +124,7 @@ export type {
   V3EmpiricalInputs,
   V3MarketOutcomeAssessment,
 } from "./marketsV3/analyzeFixtureMarkets.js";
-export { analyzeFixtureMarketsV3 } from "./marketsV3/analyzeFixtureMarkets.js";
+export { analyzeFixtureMarketsV3, sideMatches } from "./marketsV3/analyzeFixtureMarkets.js";
 export type { V3MarketClass } from "./marketsV3/classes.js";
 export {
   CLASS_L_MAX_ODDS,
@@ -149,11 +149,14 @@ export type { V3CornersInput, V3CornersMeans } from "./marketsV3/engines/corners
 export {
   buildCornersGrid,
   CORNERS_GRID_CAP,
+  CORNERS_HEIGHT_ADJ_MAX,
+  CORNERS_HEIGHT_ADJ_PER_CM,
   CORNERS_R_DEFAULT,
   CORNERS_R_MAX,
   CORNERS_R_MIN,
   clampCornersDispersion,
   cornersMeans,
+  heightCornersAdjustment,
   nbCDF,
   nbPMF,
   nbTailOver,
@@ -191,6 +194,8 @@ export {
   CLASS_GATE_HEIGHTENED,
   gateAllMarkets,
   impliedQ,
+  PATTERN_MIN_STRENGTH,
+  PATTERN_RANK_BONUS,
   RELATIVE_CAP_ODDS_FLOOR,
   RELATIVE_CAP_RATIO,
   RELATIVE_CAP_RATIO_X,

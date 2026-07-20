@@ -24,12 +24,18 @@
  *   - `leagueAvgGoals` here comes from the static `V3_LEAGUE_BASELINES`
  *     table — NOT lake-override-aware (the live run's `lakeBaselines` can
  *     override per league from runtime data this module doesn't have).
- *   - `h2hOversRate` / `restDaysMin` ARE computed here even though the live
- *     picker does not yet consume them (explicitly deferred at
- *     analyzeFixtureMarkets.ts:436-440) — meaning the report can show pattern
- *     context slightly AHEAD of what currently drives selection on these two
- *     fields, not behind. Flagged so a strength/trap-warning difference on
- *     these specifically is understood, not mistaken for a bug.
+ *   - `restDaysMin` is computed here but the live picker does not yet consume
+ *     it (not yet threaded from V3AllMarketsInput) — report can show pattern
+ *     context AHEAD of live selection on this one field, not behind. Sibling
+ *     note: `h2hOversRate` USED to be in this same "report-only" bucket but
+ *     is no longer: as of 2026-07-20 it's threaded through V3AllMarketsInput
+ *     into the live picker too (buildFixturePatternInput) — the two builders
+ *     now agree on this field via the shared `computeH2hAggregate()` in
+ *     selectFixtures.ts. The old blocking comment claiming this "requires
+ *     modifying the separate, rate-limited h2h.ts external-API module" was
+ *     stale/incorrect — `h2hOversRate` only ever read `stats.h2h.matches`
+ *     (free/unlimited SportyBet gismo data), never touched h2h.ts's
+ *     football-data.org path.
  *  Sample-size (`nHome`/`nAway`) also uses a different count (match-count
  *  fields available at report time) than the live run's empirical-block `n`.
  *
@@ -53,7 +59,12 @@ import {
   type TrapKind,
   V3_LEAGUE_BASELINES,
 } from "@oracle/engine";
-import type { ScoringConcedingProfile, SportyBetEvent, SportyBetStats } from "./selectFixtures.js";
+import {
+  computeH2hAggregate,
+  type ScoringConcedingProfile,
+  type SportyBetEvent,
+  type SportyBetStats,
+} from "./selectFixtures.js";
 import { blendRecencyScored, last5Points } from "./sportyBetStats.js";
 import { namesMatch } from "./teamNames.js";
 
@@ -170,22 +181,6 @@ const TRAP_MEANING: Record<TrapKind, string> = {
 const fin = (v: number | null | undefined): v is number =>
   typeof v === "number" && Number.isFinite(v);
 
-/** H2H Over-2.5 hit rate from the sidecar's recent meetings; null under 3
- *  scored meetings (too thin to call a trend). */
-function h2hOversRate(stats: SportyBetStats): number | null {
-  const matches = stats.h2h?.matches;
-  if (!matches?.length) return null;
-  let n = 0;
-  let overs = 0;
-  for (const m of matches) {
-    if (fin(m.home_goals) && fin(m.away_goals)) {
-      n++;
-      if (m.home_goals + m.away_goals > 2.5) overs++;
-    }
-  }
-  return n >= 3 ? overs / n : null;
-}
-
 /** Maps the sidecar's raw H2H match-by-match detail into the engine's
  *  current-fixture-relative H2hMeeting[] (G7 + T3) — does the team-name
  *  matching here so patterns.ts never needs to know about team names. The
@@ -266,7 +261,7 @@ export function buildReportPatternInput(
   const odds1x2 = event.detail?.odds?.["1x2"];
   const restH = stats.congestion?.home?.rest_days;
   const restA = stats.congestion?.away?.rest_days;
-  const h2hRate = h2hOversRate(stats);
+  const h2hAgg = computeH2hAggregate(stats);
 
   // Recency-blend the scored side only (60/40 recent/season), conceded stays
   // flat-season — mirrors buildStatsOverride's scoredPer90H/A exactly
@@ -348,7 +343,7 @@ export function buildReportPatternInput(
   const l5A = last5Points(stats.form?.away?.last5);
   if (l5H !== null) input.last5PtsH = l5H;
   if (l5A !== null) input.last5PtsA = l5A;
-  if (h2hRate !== null) input.h2hOversRate = h2hRate;
+  if (h2hAgg?.over25_pct !== undefined) input.h2hOversRate = h2hAgg.over25_pct;
   if (fin(restH) || fin(restA)) {
     input.restDaysMin = Math.min(fin(restH) ? restH : Infinity, fin(restA) ? restA : Infinity);
   }

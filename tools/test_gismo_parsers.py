@@ -11,20 +11,24 @@ h2h read result as a string (it's an object with a .winner field).
 
 try:
     from scrape_fixtures import (
+        _parse_disciplinary,
         _parse_form,
         _parse_goals,
         _parse_h2h,
         _parse_overunder,
         _parse_rest_congestion,
+        _parse_squad_averages,
         _parse_standings,
     )
 except ImportError:  # repo root on sys.path instead of tools/
     from tools.scrape_fixtures import (
+        _parse_disciplinary,
         _parse_form,
         _parse_goals,
         _parse_h2h,
         _parse_overunder,
         _parse_rest_congestion,
+        _parse_squad_averages,
         _parse_standings,
     )
 
@@ -143,6 +147,40 @@ class TestParseStandings:
         # match via `None in (None, None)` and get mislabeled as a real team.
         data = {"tables": [{"tablerows": [{"team": {}, "pos": 1, "pointsTotal": 30}]}]}
         assert _parse_standings(data, None, None) is None
+
+    def test_extracts_wdl_and_diff_when_present(self):
+        # Live-verified 2026-07-20: winTotal/drawTotal/lossTotal/goalDiffTotal
+        # sit in the same row already read for pos/points/played/gf/ga.
+        data = {
+            "tables": [
+                {
+                    "tablerows": [
+                        {
+                            "team": {"_id": HOME_ID}, "pos": 21, "pointsTotal": 26, "total": 19,
+                            "goalsForTotal": 31, "goalsAgainstTotal": 35,
+                            "winTotal": 6, "drawTotal": 4, "lossTotal": 9, "goalDiffTotal": -4,
+                        }
+                    ]
+                }
+            ]
+        }
+        out = _parse_standings(data, HOME_ID, AWAY_ID)
+        assert out["home"]["w"] == 6
+        assert out["home"]["d"] == 4
+        assert out["home"]["l"] == 9
+        assert out["home"]["diff"] == -4
+        # w + d + l reconciles to played, matching this row's own numbers.
+        assert out["home"]["w"] + out["home"]["d"] + out["home"]["l"] == out["home"]["played"]
+
+    def test_omits_wdl_keys_entirely_when_source_lacks_them(self):
+        # Never fabricate: a row missing winTotal/etc. must not report w/d/l/diff
+        # as None — the keys should be absent, matching _parse_disciplinary's
+        # "omit rather than null" convention.
+        out = _parse_standings(self.DATA, HOME_ID, AWAY_ID)
+        assert "w" not in out["home"]
+        assert "d" not in out["home"]
+        assert "l" not in out["home"]
+        assert "diff" not in out["home"]
 
 
 class TestParseGoals:
@@ -291,6 +329,34 @@ class TestParseOverunder:
         # uid must NOT silently match — this was the live schema-mismatch bug.
         assert _parse_overunder(self.DATA, 9509, 17949) is None
 
+    def test_extracts_ht_lines_from_p1_when_present(self):
+        # Live-verified 2026-07-20: `total.p1` (first-half) sits alongside
+        # `total.ft`, same {over,under} shape.
+        data = {
+            "stats": {
+                str(HOME_UID): {
+                    "team": {"_id": HOME_UID, "name": "Czechia"},
+                    "total": {
+                        "ft": {"1.5": {"over": 2, "under": 0}},
+                        "p1": {
+                            "0.5": {"over": 13, "under": 3},
+                            "1.5": {"over": 5, "under": 11},
+                        },
+                    },
+                }
+            }
+        }
+        out = _parse_overunder(data, HOME_UID, AWAY_UID)
+        assert out["home"]["over15_pct"] == 1.0
+        assert out["home"]["ht_over05_pct"] == round(13 / 16, 3)
+        assert out["home"]["ht_over15_pct"] == round(5 / 16, 3)
+
+    def test_no_p1_block_contributes_no_ht_keys(self):
+        # self.DATA has no `p1` — must not fabricate ht_over*_pct keys.
+        out = _parse_overunder(self.DATA, HOME_UID, AWAY_UID)
+        assert "ht_over05_pct" not in out["home"]
+        assert "ht_over15_pct" not in out["home"]
+
 
 class TestParseRestCongestion:
     # Real shape verified live 2026-06-20 against stats_season_fixtures/101177:
@@ -331,7 +397,98 @@ class TestParseRestCongestion:
 
     def test_none_on_empty(self):
         assert _parse_rest_congestion(None, self.HOME_ID, self.AWAY_ID, 1_000_000) is None
-        assert _parse_rest_congestion(self.DATA, self.HOME_ID, self.AWAY_ID, None) is None
 
     def test_none_when_team_has_no_matches(self):
+        assert _parse_rest_congestion({"matches": []}, self.HOME_ID, self.AWAY_ID, 1_000_000) is None
+
+    def test_none_when_team_ids_not_in_data(self):
+        # DATA has real matches, but neither queried id (555/666) appears in
+        # any of them — distinct from the empty-matches-list case above.
         assert _parse_rest_congestion(self.DATA, 555, 666, 1_000_000) is None
+
+
+class TestParseDisciplinary:
+    DATA = {
+        "stats": {
+            "yellowcardsaverage": {"home": 4.83, "total": 3.5},
+            "redcardsaverage": {"home": 0.0, "total": 0.1},
+            "foulsaverage": {"home": 12.1, "total": 11.0},
+        }
+    }
+
+    def test_extracts_yellow_red_fouls_for_venue(self):
+        out = _parse_disciplinary(self.DATA, "home")
+        assert out["yellow_avg"] == 4.83
+        assert out["red_avg"] == 0.0
+        assert out["fouls_avg"] == 12.1
+
+    def test_total_avg_sums_yellow_and_red(self):
+        out = _parse_disciplinary(self.DATA, "home")
+        assert out["total_avg"] == 4.83
+
+    def test_total_avg_treats_missing_red_as_zero(self):
+        # yellow present, red genuinely absent from the source (not 0.0) —
+        # total_avg still computes (red treated as 0), matching the docstring's
+        # "only fabricate the sum, not the underlying reds" contract.
+        data = {"stats": {"yellowcardsaverage": {"home": 3.0}}}
+        out = _parse_disciplinary(data, "home")
+        assert out["total_avg"] == 3.0
+        assert "red_avg" not in out
+
+    def test_no_total_avg_when_yellow_absent(self):
+        # A missing yellow makes the whole record unreliable — no fabricated
+        # total from red_avg alone.
+        data = {"stats": {"redcardsaverage": {"home": 1.0}}}
+        out = _parse_disciplinary(data, "home")
+        assert "total_avg" not in out
+
+    def test_falls_back_to_total_when_venue_split_absent(self):
+        out = _parse_disciplinary(self.DATA, "away")  # no "away" key in any stat
+        assert out["yellow_avg"] == 3.5  # falls back to "total"
+
+    def test_none_on_empty(self):
+        assert _parse_disciplinary(None, "home") is None
+
+
+class TestParseSquadAverages:
+    # Real shape verified live 2026-07-20 against stats_team_squad/206019
+    # (Real Monarchs SLC, MLS Next Pro) — height/weight=0 is Sportradar's null
+    # sentinel for an unmeasured player, not a real 0cm/0kg measurement.
+    DATA = {
+        "players": [
+            {"birthdate": {"uts": 1_015_891_200}, "height": 185, "weight": 78},  # ~2002 birth
+            {"birthdate": {"uts": 1_069_977_600}, "height": 190, "weight": 84},  # ~2003 birth
+            {"birthdate": {"uts": 1_000_000_000}, "height": 0, "weight": 0},  # sentinel — excluded
+        ]
+    }
+
+    def test_computes_mean_height_and_weight_excluding_zero_sentinel(self):
+        out = _parse_squad_averages(self.DATA)
+        assert out["avg_height_cm"] == round((185 + 190) / 2, 1)
+        assert out["avg_weight_kg"] == round((78 + 84) / 2, 1)
+
+    def test_computes_mean_age_from_birthdate(self):
+        out = _parse_squad_averages(self.DATA)
+        # All 3 players have a valid birthdate (unlike height/weight, no
+        # sentinel observed for this field) — age uses all 3.
+        assert isinstance(out["avg_age"], float)
+        assert 15 < out["avg_age"] < 40  # sanity bound, not an exact value (uses live "now")
+
+    def test_none_on_empty(self):
+        assert _parse_squad_averages(None) is None
+        assert _parse_squad_averages({"players": []}) is None
+
+    def test_no_height_weight_keys_when_all_are_zero_sentinel(self):
+        # Valid birthdate but sentinel height/weight — out is a real dict
+        # (age present) that must simply omit the height/weight keys, not
+        # report them as 0.
+        data = {"players": [{"birthdate": {"uts": 1_000_000_000}, "height": 0, "weight": 0}]}
+        out = _parse_squad_averages(data)
+        assert out is not None
+        assert "avg_height_cm" not in out
+        assert "avg_weight_kg" not in out
+
+    def test_ignores_non_dict_player_entries(self):
+        data = {"players": [{"height": 180, "weight": 75}, "garbage", None]}
+        out = _parse_squad_averages(data)
+        assert out["avg_height_cm"] == 180.0

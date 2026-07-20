@@ -92,6 +92,41 @@ export interface V3CornersInput {
   cornersAgainstH?: number;
   cornersAgainstA?: number;
   dispersion?: number;
+  /** [2026-07-20] Squad average height, cm (SportyBetStats.squadAverages).
+   *  Feeds a small, bounded nudge on this side's corners mean via
+   *  heightCornersAdjustment() below — mechanistically justified (taller
+   *  squads win more aerial duels at set pieces, correlating with corners
+   *  won), narrow in scope by design (see that function's doc comment for
+   *  the exact bound and the research-backed rationale for keeping it
+   *  small). No-op (multiplier of 1) when either side's height is absent. */
+  squadHeightH?: number;
+  squadHeightA?: number;
+}
+
+/** Per-cm-of-height-advantage adjustment on a side's corners mean, and the
+ *  hard cap on the total adjustment — deliberately small. Research reviewed
+ *  before adding this (2026-07-20, this repo's mandatory real-time-research
+ *  rule) found squad-level physical attributes have, at best, mixed/weak
+ *  standalone evidence for match outcomes generally, but height specifically
+ *  has a well-established mechanistic link to aerial duels and set-piece
+ *  outcomes — corners specifically, not goals/results broadly — which is why
+ *  this nudge lives here (the corners model) and NOT as a general team-
+ *  strength coefficient elsewhere. Bounded the same way
+ *  homeAvailabilityMult is in goalsV3/lambda.ts (a clamped multiplier on an
+ *  existing calculation, never a free-floating new term) so a data glitch or
+ *  an unusually tall/short squad can't swing corners pricing by more than
+ *  CORNERS_HEIGHT_ADJ_MAX. */
+export const CORNERS_HEIGHT_ADJ_PER_CM = 0.005;
+export const CORNERS_HEIGHT_ADJ_MAX = 0.05;
+
+/** Multiplier (not a delta) for `self`'s corners mean given the height gap
+ *  vs `opp`. Returns 1 (no-op) whenever either side's height is missing —
+ *  absent data never fabricates an adjustment. */
+export function heightCornersAdjustment(self?: number, opp?: number): number {
+  if (self == null || opp == null || !Number.isFinite(self) || !Number.isFinite(opp)) return 1;
+  const diffCm = self - opp;
+  const adj = diffCm * CORNERS_HEIGHT_ADJ_PER_CM;
+  return 1 + Math.min(CORNERS_HEIGHT_ADJ_MAX, Math.max(-CORNERS_HEIGHT_ADJ_MAX, adj));
 }
 
 export interface V3CornersMeans {
@@ -115,7 +150,14 @@ export function cornersMeans(input: V3CornersInput): V3CornersMeans | null {
   const home = avgDefined(input.cornersForH, input.cornersAgainstA);
   const away = avgDefined(input.cornersForA, input.cornersAgainstH);
   if (home === undefined || away === undefined) return null;
-  return { total: home + away, home, away, r: clampCornersDispersion(input.dispersion) };
+  const homeAdj = home * heightCornersAdjustment(input.squadHeightH, input.squadHeightA);
+  const awayAdj = away * heightCornersAdjustment(input.squadHeightA, input.squadHeightH);
+  return {
+    total: homeAdj + awayAdj,
+    home: homeAdj,
+    away: awayAdj,
+    r: clampCornersDispersion(input.dispersion),
+  };
 }
 
 /** Price "Over/Under X.5" (match total) or a team-total corners outcome.

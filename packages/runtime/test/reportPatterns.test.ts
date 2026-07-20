@@ -162,8 +162,12 @@ describe("buildReportPatternInput", () => {
         statscoverage: {},
       },
     });
-    // Meeting totals: 3+1=4 (over), 2+2=4 (over), 1+0=1 (not over) → 2/3.
-    expect(buildReportPatternInput(withH2h)?.input.h2hOversRate).toBeCloseTo(2 / 3, 5);
+    // Meeting totals: 3+1=4 (over), 2+2=4 (over), 1+0=1 (not over) → 2/3,
+    // rounded to 3dp by computeH2hAggregate() (selectFixtures.ts) — the
+    // shared function this now reads from, matching this codebase's
+    // established rounding convention for percentage-like values (e.g.
+    // tools/scrape_fixtures.py's _parse_overunder rounds the same way).
+    expect(buildReportPatternInput(withH2h)?.input.h2hOversRate).toBeCloseTo(2 / 3, 2);
 
     const thin = arsenalChelseaEvent({
       detail: {

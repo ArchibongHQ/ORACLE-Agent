@@ -482,6 +482,17 @@ export interface OracleConfig {
   // pricing math, Kelly, the +EV floor, and the Under ban are unaffected by
   // this flag either way.
   unifiedSlate?: "legacy" | "on";
+  // [Phase 2A, patterns-legacy-pricer] Governs the v6.2 reference-doc pattern
+  // catalog's reach everywhere OUTSIDE markets-v3 itself — starting with the
+  // legacy ExecutionEngine pricer's pattern-aware evMarkets ranking (Phase
+  // 2A), later also Phase 3's trap flags / overall-basis fallback. Distinct
+  // from v3Patterns above (Wave 1/2's flag, scoped to markets-v3's OWN
+  // class-edge relaxation) — "one flag governs pattern behavior everywhere
+  // [outside markets-v3], not a per-engine flag" per the plan. "shadow"
+  // (default) computes the legacy fixture's PatternReport but never reorders
+  // evMarkets — same shadow-never-applies convention v3Patterns established;
+  // "on" applies the ranking boost; "off" skips computing it entirely.
+  v62Patterns?: "off" | "shadow" | "on";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
@@ -534,6 +545,13 @@ export interface RunState {
     cornersForA?: number;
     cornersAgainstH?: number;
     cornersAgainstA?: number;
+    /** [2026-07-20] Squad average height, cm, direct passthrough from
+     *  sportyBetStats.ts's StatsOverride of the same name — feeds
+     *  marketsV3/engines/corners.ts's heightCornersAdjustment(), a small
+     *  bounded nudge on the corners means (aerial-duel/set-piece mechanism),
+     *  not a general team-strength coefficient. */
+    squadHeightH?: number;
+    squadHeightA?: number;
     /** §3.9 cards module (Poisson) inputs: total cards per game. */
     cardsAvgH?: number;
     cardsAvgA?: number;
@@ -551,6 +569,11 @@ export interface RunState {
     streakA?: number;
     last5PtsH?: number;
     last5PtsA?: number;
+    /** [2026-07-20] H2H Over-2.5 hit rate, direct passthrough from
+     *  sportyBetStats.ts's StatsOverride of the same name — see that file's
+     *  doc comment and marketsV3/patterns.ts's PatternInput.h2hOversRate
+     *  consumer (h2hOversTrend + the goal-machine override check). */
+    h2hOversRate?: number;
     /** PR-22 shots-on-target module (Negative Binomial) inputs, per game. */
     sotForH?: number;
     sotForA?: number;
