@@ -155,10 +155,14 @@ export type {
   MarketsV3SlateOutputs,
   MiniAccaAppendix,
   SlateMarketCoverage,
+  TwoTierSlate,
+  TwoTierSlateOptions,
 } from "./marketsV3/slateOutputs.js";
 export {
+  buildManifestDeliveredSlate,
   buildMarketsV3SlateOutputs,
   buildMiniAccaAppendix,
+  buildTwoTierSlate,
   curateActionableByV3Outputs,
   formatMarketCoverageNote,
   formatMiniAccaAppendix,

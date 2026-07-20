@@ -242,6 +242,7 @@ export {
 export type {
   V3ChunkStatus,
   V3ClassMix,
+  V3DeliveryCandidate,
   V3FinalSummaryInput,
   V3OutputB,
   V3OutputCandidate,
@@ -255,6 +256,7 @@ export {
   buildOutputB,
   buildOutputC,
   buildOutputD,
+  compareDeliveryRows,
   computeClassMix,
   formatChunkStatus,
   formatFinalSummary,

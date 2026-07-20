@@ -44,6 +44,56 @@ export interface V3SlateFixture {
   best: V3OutputCandidate | null;
 }
 
+/** [Phase 2, two-tier slate] Delivery-shaped projection of a candidate —
+ *  extends V3OutputCandidate (the pure ranking-row shape) with the fields
+ *  the DELIVERED slate needs that pure ranking never did: which fixture it
+ *  belongs to (unlike V3OutputCandidate, which stays fixture-agnostic for
+ *  the batch's compact per-fixture carry, this type is already
+ *  fixture-attributed at construction — batch/index.ts has `job.home`/
+ *  `away`/`league`/`kickoff` on hand right where it builds these), which
+ *  real market family it books under, its actual Kelly stake (sourced from
+ *  the canonical staker, v3AssessmentsToEvMarkets — never re-derived here),
+ *  why a watchlist row didn't qualify, its trap-flag warning line, and
+ *  whether its pricing basis was venue-split or the §2.5.4 overall-basis
+ *  fallback ("°"-labeled). Never used to gate anything — the ev>0 floor and
+ *  the capped/noise invariants are enforced upstream, before a candidate is
+ *  eligible to become either a V3OutputCandidate or a V3DeliveryCandidate. */
+export interface V3DeliveryCandidate extends V3OutputCandidate {
+  fixtureId: string;
+  home: string;
+  away: string;
+  league: string;
+  /** ISO-8601 kickoff — used for the §7 tie-break (earlier kickoff wins),
+   *  same field compareRows/compareDeliveryRows already read off V3OutputRow. */
+  kickoff: string;
+  family: string;
+  /** Real Kelly stake (%), sourced from v3AssessmentsToEvMarkets — the
+   *  canonical staker. Never 0.0% by construction (fixes the Wave-4-era
+   *  0.0%-Kelly delivery bug for the pattern-aware two-tier pool). */
+  stakePct: number;
+  /** Present ONLY on Tier② (watchlist) rows — human-readable reason this
+   *  candidate didn't clear the gate (e.g. "class_edge", "ev_floor",
+   *  "capped", "noise"). Absent on every Tier① (qualified) row. */
+  shortfall?: string;
+  /** Mandatory per-pick trap warning (v6.2 §5.9) — "no contradicting signal
+   *  detected" when no trap fired, per the plan's design decision 5 (field
+   *  stays mandatory even when there's nothing to warn about). */
+  trapWarning: string;
+  /** "venue" (default, no label) or "overall°" (§2.5.4 fallback — per-90
+   *  rates exist but the venue split doesn't; tightened thresholds, no
+   *  confidence uplift). Wired fully in Phase 3; Phase 2 always emits
+   *  "venue" until that lands (byte-identical placeholder, not a lie —
+   *  today's pattern engine only ever runs on venue-split data, since
+   *  buildFixturePatternInput still null-returns on a missing split). */
+  basisLabel: "venue" | "overall°";
+  /** [patterns-engine Wave 2] The detector's 0-1 fixture pattern strength,
+   *  carried through from V3AllMarketsAssessment.patternStrength when this
+   *  candidate was pattern-backed — feeds compareDeliveryRows' pattern-first
+   *  tie-break below. Absent (not 0) when the candidate wasn't pattern-backed
+   *  at all, distinguishing "no pattern" from "pattern with zero strength". */
+  patternStrength?: number;
+}
+
 export interface V3OutputRow {
   fixtureId: string;
   home: string;
@@ -102,6 +152,28 @@ export function buildGateSurvivingPool(fixtures: V3SlateFixture[]): V3OutputRow[
     .filter((f): f is V3SlateFixture & { best: V3OutputCandidate } => f.best !== null)
     .map((f) => toRow(f, f.best));
   return rows.sort(compareRows);
+}
+
+/** [Phase 2, two-tier slate] Pattern-first tie-break, owner-directed
+ *  2026-07-18: within a tier, pattern-backed rows sort FIRST (by
+ *  patternStrength descending, then adjustedEdge), non-pattern rows follow,
+ *  ranked by the existing §7 tie-break. EV/edge machinery stays a guide —
+ *  never an override of a pattern-backed pick — but never a floor override
+ *  either: this function is ONLY ever called on candidates that already
+ *  cleared the ev>0 floor and the capped/noise invariants upstream; it has
+ *  no way to admit or reject a candidate, only to order ones already
+ *  admitted. */
+export function compareDeliveryRows<T extends V3OutputRow & { patternStrength?: number }>(
+  a: T,
+  b: T
+): number {
+  const aBacked = (a.patternStrength ?? 0) > 0;
+  const bBacked = (b.patternStrength ?? 0) > 0;
+  if (aBacked !== bBacked) return aBacked ? -1 : 1;
+  if (aBacked && bBacked && b.patternStrength !== a.patternStrength) {
+    return (b.patternStrength ?? 0) - (a.patternStrength ?? 0);
+  }
+  return compareRows(a, b);
 }
 
 export const OUTPUT_A_MAX = 39;

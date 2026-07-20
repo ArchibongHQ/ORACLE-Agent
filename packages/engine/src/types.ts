@@ -475,6 +475,13 @@ export interface OracleConfig {
   v3XCarveout?: "off" | "shadow" | "on";
   // [patterns-engine Wave 1] Pattern/trend-detection gate mode (off | shadow | on), default shadow.
   v3Patterns?: "off" | "shadow" | "on";
+  // [Phase 2, two-tier slate] "on" (default) = delivered slate is the
+  // pattern-first two-tier pool (buildTwoTierSlate); "legacy" = restores
+  // summarizeBatch's pre-Phase-2 per-fixture-decision.primaryPick delivery
+  // byte-identically, the escape hatch. Re-plumbs selection/rendering only —
+  // pricing math, Kelly, the +EV floor, and the Under ban are unaffected by
+  // this flag either way.
+  unifiedSlate?: "legacy" | "on";
 }
 
 /** Input state for ExecutionEngine.run() — all fields optional for incremental construction. */
@@ -848,6 +855,22 @@ export interface RunManifest {
     priced: number;
     gatePassed: number;
     topUnrouted: Array<{ name: string; count: number }>;
+  };
+  /** [Phase 2, two-tier slate] What was actually in each tier for this run —
+   *  additive/optional, following the marketCoverage precedent exactly.
+   *  Enables the deferred per-tier P&L settlement follow-up (compare against
+   *  the calibration ledger's resolved outcomes once enough two-tier slates
+   *  have accumulated — named backlog item, not implemented by this field
+   *  alone). Absent when unifiedSlate is "legacy" or v3 didn't run. */
+  deliveredSlate?: {
+    tier1Count: number;
+    tier2Count: number;
+    /** fixtureId::desc keys for both tiers — enough to join against the
+     *  calibration ledger's resolved-outcome records without duplicating
+     *  every pick's full odds/mp/stake here (already in `fixtures` above
+     *  for tier1 via each FixtureOutcome.pick). */
+    tier1Keys: string[];
+    tier2Keys: string[];
   };
 }
 

@@ -1005,46 +1005,49 @@ describe("batch/index.ts — v3Best/v3AssessmentStats projection (PR-5b)", () =>
   });
 });
 
-describe("batch/index.ts — v3BestFallback fill-to-39 projection (patterns-engine Wave 2)", () => {
-  // Gate-failed on the class-edge bar specifically (outcome "below_gate",
-  // gateReason "class_edge") but +EV at the true model price — the exact
-  // shape v3BestFallback is meant to surface for the slate pool. The fallback
-  // filter (batch/index.ts) requires BOTH outcome==="below_gate" AND
-  // gateReason==="class_edge" — see the HARD INVARIANT comment there
-  // (adversarial review, 2026-07-16): outcome/gateReason are overridable here
-  // specifically so the tests below can exercise "capped"/"noise"/other
-  // below_gate reasons and confirm they're excluded.
-  function makeGateFailedAssessment(overrides: {
-    marketName: string;
-    desc: string;
-    family: string;
-    ev: number;
-    adjustedEdge: number;
-    outcome?: string;
-    gateReason?: string;
-  }) {
-    return {
-      family: overrides.family,
-      marketId: "m1",
-      marketName: overrides.marketName,
-      outcomeId: "o1",
-      desc: overrides.desc,
-      odds: 2.0,
-      mp: 0.6,
-      q: 0.5,
-      devigged: true,
-      rawEdge: 0.06,
-      penaltyPts: 0.01,
-      adjustedEdge: overrides.adjustedEdge,
-      adjEvPct: 0.1,
-      ev: overrides.ev,
-      cls: "M",
-      outcome: overrides.outcome ?? "below_gate",
-      gateReason: overrides.gateReason ?? "class_edge",
-      confidence: null,
-    };
-  }
+// Gate-failed on the class-edge bar specifically (outcome "below_gate",
+// gateReason "class_edge") but +EV at the true model price — the exact
+// shape v3BestFallback is meant to surface for the slate pool. The fallback
+// filter (batch/index.ts) requires BOTH outcome==="below_gate" AND
+// gateReason==="class_edge" — see the HARD INVARIANT comment there
+// (adversarial review, 2026-07-16): outcome/gateReason are overridable here
+// specifically so the tests below can exercise "capped"/"noise"/other
+// below_gate reasons and confirm they're excluded. Module-scoped (not
+// describe-local) since the v3Watchlist describe block below (Phase 2,
+// two-tier slate — a sibling of v3BestFallback, same underlying
+// assessments) reuses it too.
+function makeGateFailedAssessment(overrides: {
+  marketName: string;
+  desc: string;
+  family: string;
+  ev: number;
+  adjustedEdge: number;
+  outcome?: string;
+  gateReason?: string;
+}) {
+  return {
+    family: overrides.family,
+    marketId: "m1",
+    marketName: overrides.marketName,
+    outcomeId: "o1",
+    desc: overrides.desc,
+    odds: 2.0,
+    mp: 0.6,
+    q: 0.5,
+    devigged: true,
+    rawEdge: 0.06,
+    penaltyPts: 0.01,
+    adjustedEdge: overrides.adjustedEdge,
+    adjEvPct: 0.1,
+    ev: overrides.ev,
+    cls: "M",
+    outcome: overrides.outcome ?? "below_gate",
+    gateReason: overrides.gateReason ?? "class_edge",
+    confidence: null,
+  };
+}
 
+describe("batch/index.ts — v3BestFallback fill-to-39 projection (patterns-engine Wave 2)", () => {
   it("derives v3BestFallback from the best +EV gate-failed assessment when v3Patterns is 'on'", async () => {
     vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
     const failedButPositive = makeGateFailedAssessment({
@@ -1214,6 +1217,236 @@ describe("batch/index.ts — v3BestFallback fill-to-39 projection (patterns-engi
     });
 
     expect((result.jobs[0] as FixtureJobSuccess).v3BestFallback).toBeUndefined();
+  });
+});
+
+// [Phase 2, two-tier slate] v3Watchlist is the WIDENED sibling of
+// v3BestFallback above — deliberately contrasted here per the plan's
+// "update the class_edge-only pins ... deliberately" instruction. Where
+// v3BestFallback requires BOTH outcome==="below_gate" AND
+// gateReason==="class_edge" (narrow, single-candidate, feeds only the
+// fill-to-39 back door), v3Watchlist admits ANY below-gate +EV assessment
+// (any gateReason, and capped/noise outcomes too — tagged, never hidden)
+// as a full array, one entry per qualifying assessment, feeding the Tier②
+// two-tier slate pool. Both fields coexist and are derived from the SAME
+// v3Result.assessments in the SAME batch/index.ts block — this is not a
+// replacement, the narrower field's existing tests above remain valid.
+describe("batch/index.ts — v3Watchlist widened Tier② projection (Phase 2, two-tier slate)", () => {
+  it("includes a below_gate candidate whose gateReason is NOT class_edge — the exact shape v3BestFallback's sibling test above excludes", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const wrongReasonForFallback = makeGateFailedAssessment({
+      marketName: "Exotics",
+      desc: "Correct Score 3-1",
+      family: "exotics",
+      ev: 0.3,
+      adjustedEdge: 0.1,
+      outcome: "below_gate",
+      gateReason: "max_odds",
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [wrongReasonForFallback],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3BestFallback).toBeUndefined(); // narrow field: correctly excludes
+    expect(success.v3Watchlist).toHaveLength(1); // wide field: correctly includes
+    expect(success.v3Watchlist?.[0]?.desc).toBe("Correct Score 3-1");
+    expect(success.v3Watchlist?.[0]?.shortfall).toBe("max_odds");
+  });
+
+  it("includes a capped outcome, tagged with its capReason — transparency (v6.2: demotions, not deletions), never hidden", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const capped = {
+      ...makeGateFailedAssessment({
+        marketName: "Exotics",
+        desc: "HT/FT Draw/Home",
+        family: "exotics",
+        ev: 0.4,
+        adjustedEdge: 0.3,
+        outcome: "capped",
+      }),
+      capReason: "absolute",
+    };
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [capped],
+      capped: [capped],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "on" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Watchlist).toHaveLength(1);
+    expect(success.v3Watchlist?.[0]?.shortfall).toBe("capped (absolute)");
+  });
+
+  it("never includes an Under-desc candidate, even with a huge +EV — the universal Under ban applies to the watchlist too, not just Tier①", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const underCandidate = makeGateFailedAssessment({
+      marketName: "Goals O/U",
+      desc: "Under 2.5",
+      family: "goals_ou",
+      ev: 0.9,
+      adjustedEdge: 0.5,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [underCandidate],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "on" },
+    });
+
+    expect((result.jobs[0] as FixtureJobSuccess).v3Watchlist).toEqual([]);
+  });
+
+  it("excludes a −EV below_gate candidate — the ev>0 floor applies to the watchlist too, no exception", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const negativeEv = makeGateFailedAssessment({
+      marketName: "Asian Handicap",
+      desc: "Home -1",
+      family: "asian_handicap",
+      ev: -0.02,
+      adjustedEdge: 0.01,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [negativeEv],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "on" },
+    });
+
+    expect((result.jobs[0] as FixtureJobSuccess).v3Watchlist).toEqual([]);
+  });
+
+  it("populates v3Watchlist even when v3Patterns is off/absent — deliberately NOT gated on v3Patterns (adversarial review finding, 2026-07-20: v3Watchlist's own filter has no pattern dependency, and Phase 2's rollout flag is unifiedSlate, not v3Patterns — coupling it to v3Patterns would silently empty Tier② whenever an operator set ORACLE_V3_PATTERNS=off while Tier① kept populating normally)", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const qualifying = makeGateFailedAssessment({
+      marketName: "Asian Handicap",
+      desc: "Home -1",
+      family: "asian_handicap",
+      ev: 0.05,
+      adjustedEdge: 0.02,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [qualifying],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on" }, // v3Patterns absent
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3Watchlist).toHaveLength(1);
+    expect(success.v3Watchlist?.[0]?.desc).toBe("Home -1");
+    // v3BestFallback stays correctly gated on v3Patterns — unchanged,
+    // pre-existing behavior, a genuinely different feature scope.
+    expect(success.v3BestFallback).toBeUndefined();
+  });
+
+  it("v3BestFallback stays undefined when v3Patterns is explicitly 'off', even though v3Watchlist populates for the same fixture", async () => {
+    vi.spyOn(ExecutionEngine, "run").mockResolvedValueOnce(legacyRunResult);
+    const qualifying = makeGateFailedAssessment({
+      marketName: "Asian Handicap",
+      desc: "Home -1",
+      family: "asian_handicap",
+      ev: 0.05,
+      adjustedEdge: 0.02,
+    });
+    analyzeFixtureMarketsV3Mock.mockReturnValue({
+      lambdas: {},
+      split: {},
+      fhShare: 0.44,
+      fhShareIsDefault: true,
+      coverage: { total: 1, routed: 1, byEngine: {}, skipped: {} },
+      assessments: [qualifying],
+      capped: [],
+      evMarkets: [],
+      best: null,
+    });
+
+    const job = makeJob({
+      telemetry: { scoredPer90H: 1.7 },
+      pipeline: { fetched: { sportyBetOdds: { allMarkets } } },
+    });
+    const result = await runBatch([job], {
+      storage,
+      config: { ...baseConfig, enableMarketsV3: "on", v3Patterns: "off" },
+    });
+
+    const success = result.jobs[0] as FixtureJobSuccess;
+    expect(success.v3BestFallback).toBeUndefined();
+    expect(success.v3Watchlist).toHaveLength(1);
   });
 });
 

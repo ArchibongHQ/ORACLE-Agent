@@ -12,11 +12,15 @@ import type {
   FeedIntegritySignal,
   FixtureJobSuccess,
   RunManifest,
+  V3DeliveryCandidate,
 } from "@oracle/engine";
+import { makeFixtureId } from "@oracle/engine";
+import type { ActionablePick } from "@oracle/notify";
 import { buildNotifiers, notifyAll, summarizeBatch } from "@oracle/notify";
 import {
   buildMarketsV3GateConfig,
   buildMarketsV3SlateOutputs,
+  buildTwoTierSlate,
   curateActionableByV3Outputs,
   fetchTodaysFixtures,
   findSidecarDetail,
@@ -56,6 +60,60 @@ function fetchLineups(): Promise<void> {
     if (stderr) process.stderr.write(stderr);
     if (err) process.stderr.write(`fetch_lineups error: ${err.message}\n`);
   });
+}
+
+// ── Phase 2, two-tier slate: V3DeliveryCandidate → ActionablePick ──────────
+// The engine layer stays notify-agnostic (packages/engine has no @oracle/notify
+// dependency — see engine's CLAUDE.md gotcha), so this conversion lives here,
+// the one place that already has BOTH types in scope. confidence is ALWAYS
+// modelProb (candidate.mp) — never an LLM's self-reported number — per the
+// plan's explicit "confidence = modelProb ALWAYS" requirement for unified-slate
+// delivery. eventId is resolved the same way the pre-Phase-2 summarizeBatch
+// path already did (findSidecarDetail against the shared sportyIndex).
+// Exported for direct unit testing — runDailyBatch's own dependency chain
+// (scraping/LLM/external APIs) has no existing test harness, so this pure
+// conversion is tested in isolation rather than via a full runDailyBatch mock.
+export function deliveryCandidateToPick(
+  c: V3DeliveryCandidate,
+  tier: "qualified" | "watchlist",
+  resolveEventId: (home: string, away: string) => string | undefined
+): ActionablePick {
+  const eventId = resolveEventId(c.home, c.away);
+  return {
+    home: c.home,
+    away: c.away,
+    league: c.league,
+    kickoff: c.kickoff,
+    market: c.marketName,
+    side: c.desc,
+    odds: c.odds,
+    stakePct: c.stakePct,
+    confidence: c.mp,
+    tier,
+    ...(tier === "qualified" ? { trapWarning: c.trapWarning } : { shortfall: c.shortfall }),
+    ...(eventId ? { eventId } : {}),
+  };
+}
+
+// [Phase 2, two-tier slate] Sidecar-unmapped-fixture fallback (design
+// decision 1: single-engine purity — a fixture the unified engine never
+// produced ANY candidate for, on either tier, falls back to its legacy
+// per-fixture pick, watchlist-only, never presented as a Tier① recommendation).
+// Exported for direct unit testing — same rationale as deliveryCandidateToPick
+// above. Both the tier1/tier2 candidates AND the legacy picks must be keyed by
+// the SAME makeFixtureId(home, away, kickoff) slug for this comparison to work;
+// a prior draft compared candidates' real fixtureId slugs against a raw
+// `${home}::${away}::${kickoff}` string built from the legacy picks — the two
+// formats can never match, silently misclassifying EVERY legacy pick as
+// "unmapped" and duplicating it into the watchlist even when the same fixture
+// already had a real Tier① pick (caught by /gstack-review's testing +
+// maintainability specialists before this branch shipped). */
+export function findUnmappedLegacyPicks<T extends { home: string; away: string; kickoff: string }>(
+  legacyPicks: T[],
+  tieredCandidates: Array<{ fixtureId: string }>
+): T[] {
+  const mappedFixtureIds = new Set(tieredCandidates.map((c) => c.fixtureId));
+  return legacyPicks.filter((p) => !mappedFixtureIds.has(makeFixtureId(p.home, p.away, p.kickoff)));
 }
 
 // ── Daily batch (09:35 WAT) ─────────────────────────────────────────────────
@@ -264,6 +322,12 @@ export async function runDailyBatch(
   const staleBuildNote = getStaleBuildNote();
   if (staleBuildNote) summary.staleBuildNote = staleBuildNote;
 
+  // [Phase 2, two-tier slate] Hoisted so the heartbeat write below can attach
+  // a deliveredSlate projection (RunManifest precedent, buildManifestDeliveredSlate)
+  // regardless of which branch below populated it — undefined stays undefined
+  // (legacy mode, v3 off) rather than needing a second condition duplicated here.
+  let deliveredSlateCounts: { tier1: number; tier2: number } | undefined;
+
   // ── PR-5b: v3 slate outputs A–D + sanity (fail-open to the legacy trim) ──
   if (config.enableMarketsV3 === "on" && config.marketsV3Outputs !== false) {
     const successJobs = batch.jobs.filter((j): j is FixtureJobSuccess => j.status === "ok");
@@ -288,7 +352,42 @@ export async function runDailyBatch(
     // Telegram message always states the appendix's outcome one way or another.
     const miniAccaAppendixLine = formatMiniAccaAppendix(v3Outputs.miniAccaAppendix);
     process.stdout.write(`[markets-v3] ${miniAccaAppendixLine}\n`);
-    if (summary.actionable.length > 39) {
+
+    // [Phase 2, two-tier slate] Single selection path: delivered slate = the
+    // cross-fixture pattern-aware pool, default "on". config.unifiedSlate
+    // defaults "on" at the env.ts layer — "legacy" is the byte-identical
+    // escape hatch (curateActionableByV3Outputs' dead >39 branch below,
+    // unchanged) that restores summarizeBatch's per-fixture-decision output.
+    if (config.unifiedSlate !== "legacy") {
+      const resolveEventId = (home: string, away: string) =>
+        sportyIndex ? findSidecarDetail(sportyIndex.detailByKey, home, away)?.eventId : undefined;
+      const { tier1, tier2 } = buildTwoTierSlate(successJobs, { target: 39 });
+      // Sidecar-unmapped fixtures (v3 didn't run, or nothing on either tier
+      // for this fixture) fall back to their legacy per-fixture pick,
+      // watchlist-only — design decision 1 (single-engine purity: an
+      // unmapped fixture's legacy pick was never gated by the unified
+      // engine's ev>0/pattern machinery, so it can never be presented as a
+      // Tier① recommendation, only surfaced for visibility). See
+      // findUnmappedLegacyPicks's own header for the key-format gotcha this
+      // extraction exists to prevent regressing.
+      const unmappedLegacyPicks = findUnmappedLegacyPicks(summary.actionable, [...tier1, ...tier2]);
+      summary.actionable = tier1.map((c) =>
+        deliveryCandidateToPick(c, "qualified", resolveEventId)
+      );
+      summary.actionableCount = summary.actionable.length;
+      summary.watchlist = [
+        ...tier2.map((c) => deliveryCandidateToPick(c, "watchlist", resolveEventId)),
+        ...unmappedLegacyPicks.map((p) => ({
+          ...p,
+          tier: "watchlist" as const,
+          shortfall: "not priced by unified engine",
+        })),
+      ];
+      process.stdout.write(
+        `[slate] tier1:${tier1.length} tier2:${tier2.length} delivered:${summary.actionable.length + summary.watchlist.length}\n`
+      );
+      deliveredSlateCounts = { tier1: tier1.length, tier2: tier2.length };
+    } else if (summary.actionable.length > 39) {
       summary.actionable = curateActionableByV3Outputs(summary.actionable, v3Outputs.outputA, 39);
       summary.actionableCount = summary.actionable.length;
     }
@@ -321,6 +420,12 @@ export async function runDailyBatch(
     summary.actionableCount = summary.actionable.length;
   }
 
+  // [Phase 2, two-tier slate] Booking books Tier① ONLY — bookAccumulator
+  // receives summary.actionable, never summary.watchlist (booking has no
+  // access to it at all — this parameter IS the whole contract). In unified
+  // mode summary.actionable is exactly Tier①, so this line already satisfies
+  // the plan's "booking books Tier① only" requirement structurally, not via
+  // an extra filter. Do not change this call to pass watchlist rows.
   if (env.ENABLE_SPORTYBET_BOOKING === "true" && summary.actionable.length > 0) {
     try {
       const { bookAccumulator } = await import("@oracle/booking");
@@ -354,6 +459,13 @@ export async function runDailyBatch(
     fixtures: jobs.length,
     records: records.length,
     halted: batch.cost.halted,
+    // [Phase 2, two-tier slate] Telemetry only — the RunManifest.deliveredSlate
+    // TYPE + buildManifestDeliveredSlate builder exist (packages/engine/types.ts,
+    // runtime's slateOutputs.ts) for a future session to wire once dailyBatch.ts
+    // (a multi-chunk loop with no single whole-slate RunManifest object today —
+    // runAnalysis only builds one PER CHUNK) gains its own whole-slate manifest.
+    // Undefined (key omitted) when v3/unified-slate didn't run this batch.
+    ...(deliveredSlateCounts ? { deliveredSlate: deliveredSlateCounts } : {}),
   });
 
   return batch;

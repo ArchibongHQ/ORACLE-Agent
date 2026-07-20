@@ -440,3 +440,84 @@ describe("notifyAll", () => {
     expect(writes.join("")).toMatch(/\[notify\] telegram failed: boom/);
   });
 });
+
+// [Phase 2, two-tier slate] Tier①/Tier② rendering — Trap warnings on
+// qualified picks, a distinct non-pick Watchlist block with shortfall text,
+// no stake language anywhere in the watchlist rendering.
+describe("formatSummaryText/formatSummaryHtml — two-tier slate rendering (Phase 2)", () => {
+  const twoTierSummary: BatchSummary = {
+    ...sampleSummary,
+    actionable: [
+      {
+        ...sampleSummary.actionable[0]!,
+        tier: "qualified",
+        trapWarning: "H2H contradicts trend — home won 3/3 meetings despite away's stronger form",
+      },
+    ],
+    watchlist: [
+      {
+        home: "Liverpool",
+        away: "Everton",
+        league: "Premier League",
+        kickoff: "k2",
+        market: "Asian Handicap",
+        side: "Home -0.5",
+        odds: 1.9,
+        stakePct: 0,
+        confidence: 0.6,
+        tier: "watchlist",
+        shortfall: "class_edge",
+      },
+    ],
+  };
+
+  it("renders a Trap warning line under a Tier① qualified pick", () => {
+    const txt = formatSummaryText(twoTierSummary);
+    expect(txt).toMatch(/⚠ Trap: H2H contradicts trend/);
+  });
+
+  it("does NOT render a Trap line on a legacy pick with no tier set", () => {
+    const txt = formatSummaryText(sampleSummary);
+    expect(txt).not.toMatch(/⚠ Trap:/);
+  });
+
+  it("renders the watchlist under a distinct 'NOT picks' header, separate from actionable", () => {
+    const txt = formatSummaryText(twoTierSummary);
+    expect(txt).toMatch(/👁 \*Watchlist — NOT picks\* \(1\):/);
+    expect(txt).toMatch(/Liverpool vs Everton.*class_edge/);
+  });
+
+  it("omits the watchlist block entirely when summary.watchlist is absent (legacy mode)", () => {
+    const txt = formatSummaryText(sampleSummary);
+    expect(txt).not.toMatch(/Watchlist/);
+  });
+
+  it("never uses stake/Kelly language for a watchlist row", () => {
+    const txt = formatSummaryText(twoTierSummary);
+    const watchlistSection = txt.split("Watchlist")[1] ?? "";
+    expect(watchlistSection).not.toMatch(/Kelly/);
+    expect(watchlistSection).not.toMatch(/%\s*conf/);
+  });
+
+  it("HTML: renders a Trap warning row under a Tier① pick and a separate Watchlist table", () => {
+    const html = formatSummaryHtml(twoTierSummary);
+    expect(html).toMatch(/⚠ Trap: H2H contradicts trend/);
+    expect(html).toMatch(/👁 Watchlist — NOT picks \(1\)/);
+    expect(html).toMatch(/Liverpool vs Everton/);
+    expect(html).toMatch(/class_edge/);
+  });
+
+  it("HTML: omits the watchlist table entirely when absent", () => {
+    const html = formatSummaryHtml(sampleSummary);
+    expect(html).not.toMatch(/Watchlist/);
+  });
+
+  it("falls back to 'below gate' when a watchlist row somehow has no shortfall — never renders an empty reason", () => {
+    const withEmptyShortfall: BatchSummary = {
+      ...sampleSummary,
+      watchlist: [{ ...twoTierSummary.watchlist![0]!, shortfall: undefined }],
+    };
+    const txt = formatSummaryText(withEmptyShortfall);
+    expect(txt).toMatch(/below gate/);
+  });
+});

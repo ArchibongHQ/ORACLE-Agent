@@ -13,13 +13,16 @@ import {
   buildOutputB,
   buildOutputC,
   buildOutputD,
+  compareDeliveryRows,
   type FixtureJobSuccess,
   formatSanityFlags,
   formatSkewShrinkShadow,
+  OUTPUT_A_MAX,
   type RouteCoverage,
   type RunManifest,
   shadowSkewShrink,
   slateSanityChecks,
+  type V3DeliveryCandidate,
   type V3Engine,
   type V3OutputB,
   type V3OutputRow,
@@ -199,6 +202,76 @@ export function buildMarketsV3SlateOutputs(
   };
 }
 
+export interface TwoTierSlateOptions {
+  /** Total delivered row target across BOTH tiers combined — default
+   *  OUTPUT_A_MAX (39), matching the plan's "guaranteed 39-row two-tier
+   *  output". Tier① is never truncated to make room for Tier② padding;
+   *  target only bounds how far Tier② fills once Tier① is exhausted. */
+  target?: number;
+}
+
+export interface TwoTierSlate {
+  /** QUALIFIED — every fixture's v3DeliveryBest (a real gate survivor),
+   *  pattern-first ranked. The ev>0 floor and capped/noise invariants were
+   *  already enforced upstream (batch/index.ts) before a candidate could
+   *  ever become a v3DeliveryBest — this function only orders, never gates. */
+  tier1: V3DeliveryCandidate[];
+  /** WATCHLIST — every fixture's v3Watchlist rows (below-gate but +EV),
+   *  pattern-first ranked, capped/noise rows sorted last within the tier
+   *  (never promoted regardless of pattern strength — the 2026-07-09 HSH
+   *  invariant), filled only up to `target - tier1.length`. NOT picks —
+   *  every row carries a mandatory `shortfall` explaining why. */
+  tier2: V3DeliveryCandidate[];
+}
+
+/** [Phase 2, two-tier slate] The core refactor: delivered slate = Tier①
+ *  (QUALIFIED, gate survivors) + Tier② (WATCHLIST, filling to `target`),
+ *  each pattern-first ranked (owner-directed 2026-07-18 — within a tier,
+ *  pattern-backed rows sort first by patternStrength then adjustedEdge; see
+ *  compareDeliveryRows). HARD INVARIANT, absolute, no exception: the ev>0
+ *  value floor and the capped/noise/contamination guards apply
+ *  unconditionally to every candidate in both tiers — this function has no
+ *  power to admit or promote anything; it only orders candidates that
+ *  batch/index.ts already gated. Capped/noise watchlist rows sort behind
+ *  every class_edge/ev_floor row within Tier②, via a stable secondary sort
+ *  key (never promoted to Tier①, regardless of pattern strength — "the one
+ *  line pattern strength can never cross", design decision 6). */
+export function buildTwoTierSlate(
+  jobs: FixtureJobSuccess[],
+  opts?: TwoTierSlateOptions
+): TwoTierSlate {
+  const target = opts?.target ?? OUTPUT_A_MAX;
+
+  const tier1 = jobs
+    .map((j) => j.v3DeliveryBest)
+    .filter((c): c is V3DeliveryCandidate => c != null)
+    .sort(compareDeliveryRows);
+
+  // capped/noise rows sort last within tier2 regardless of edge/pattern —
+  // a stable "is this a real gate-reason shortfall or a safety-invariant
+  // demotion" partition, applied BEFORE the pattern-first sort so a
+  // strongly-patterned capped/noise row still can't out-rank a
+  // weakly-patterned class_edge row (the invariant this whole partition
+  // exists to protect — the 2026-07-09 HSH incident this repeatedly guards
+  // against). batch/index.ts's shortfall derivation renders a capped
+  // outcome as "capped (<reason>)" but a noise outcome falls through to the
+  // bare outcome string "noise" (V3AllGateOutcome has no gateReason on that
+  // branch) — both must be caught here, not just the "capped" prefix.
+  const isSafetyDemoted = (c: V3DeliveryCandidate) =>
+    c.shortfall === "noise" || (c.shortfall?.startsWith("capped") ?? false);
+  const tier2 = jobs
+    .flatMap((j) => j.v3Watchlist ?? [])
+    .sort((a, b) => {
+      const aDemoted = isSafetyDemoted(a);
+      const bDemoted = isSafetyDemoted(b);
+      if (aDemoted !== bDemoted) return aDemoted ? 1 : -1;
+      return compareDeliveryRows(a, b);
+    })
+    .slice(0, Math.max(0, target - tier1.length));
+
+  return { tier1, tier2 };
+}
+
 /** §7-ranked replacement for the legacy league-tier+confidence 39-cap trim
  *  (apps/worker's runDailyBatch). Picks matching a v3Best-ranked fixture (by
  *  home::away key — unique within one batch run, no duplicate fixtures per
@@ -330,4 +403,24 @@ export function buildManifestMarketCoverage(
   if (!coverage) return undefined;
   const { total, routed, priced, gatePassed, topUnrouted } = coverage;
   return { total, routed, priced, gatePassed, topUnrouted };
+}
+
+/** [Phase 2, two-tier slate] Assembles RunManifest.deliveredSlate from an
+ *  already-built TwoTierSlate — mirrors buildManifestMarketCoverage's
+ *  precedent (small pure function, unit-testable without mocking the full
+ *  pipeline). Returns undefined when unifiedSlate is "legacy" (the flag-off
+ *  escape hatch never populates this field — additive/optional, same
+ *  "undefined means omit the key" contract as marketCoverage). */
+export function buildManifestDeliveredSlate(
+  slate: TwoTierSlate,
+  unifiedSlate: "legacy" | "on" | undefined
+): RunManifest["deliveredSlate"] {
+  if (unifiedSlate === "legacy") return undefined;
+  const keyOf = (c: { fixtureId: string; desc: string }) => `${c.fixtureId}::${c.desc}`;
+  return {
+    tier1Count: slate.tier1.length,
+    tier2Count: slate.tier2.length,
+    tier1Keys: slate.tier1.map(keyOf),
+    tier2Keys: slate.tier2.map(keyOf),
+  };
 }
