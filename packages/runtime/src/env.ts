@@ -445,6 +445,12 @@ export function buildConfig(
     // (default) computes and logs pattern signals without gating picks;
     // "on" makes them gating (later wave); "off" disables entirely.
     v3Patterns: parseTriState(env.ORACLE_V3_PATTERNS, "shadow"),
+    // [Phase 2, two-tier slate] "on" (default) = delivered slate is the
+    // pattern-first two-tier pool; "legacy" = pre-Phase-2 behavior, the
+    // escape hatch (mirrors ORACLE_SAFETY_MODE's two-state parse pattern
+    // above — this is a two-state, not tri-state, flag, so it doesn't use
+    // parseTriState).
+    unifiedSlate: env.ORACLE_UNIFIED_SLATE?.toLowerCase() === "legacy" ? "legacy" : "on",
   };
 }
 

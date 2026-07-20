@@ -24,6 +24,22 @@ export interface ActionablePick {
    *  of the literal "AllMarkets Scan", this flag preserves that provenance for
    *  the punt-report "sourced from the full markets scan" note. */
   sourcedFromScan?: boolean;
+  /** [Phase 2, two-tier slate] "qualified" (Tier①, a real pick — this pick's
+   *  stakePct/odds/confidence are a genuine gate-surviving recommendation) or
+   *  "watchlist" (Tier②, NOT a pick — shown for transparency only, carries a
+   *  mandatory shortfall reason, no stake language on render). Absent on
+   *  every summary this refactor didn't touch (goals-accumulator legs,
+   *  legacy-mode main-batch picks) — additive/optional so existing readers
+   *  are unaffected. */
+  tier?: "qualified" | "watchlist";
+  /** [Phase 2, two-tier slate] Mandatory per-pick trap warning on Tier① rows
+   *  (v6.2 §5.9) — "no contradicting signal detected" when nothing fired.
+   *  Present only when `tier` is set (this refactor's output), never on
+   *  legacy/goals-accumulator picks. */
+  trapWarning?: string;
+  /** [Phase 2, two-tier slate] Present ONLY on Tier② (watchlist) rows —
+   *  human-readable reason this candidate didn't clear the gate. */
+  shortfall?: string;
 }
 
 export interface BatchSummary {
@@ -86,6 +102,13 @@ export interface BatchSummary {
    *  this deploy. Already carries its own "⚠️" prefix (set at the source —
    *  see buildFreshness.ts). Absent when every package's dist is fresh. */
   staleBuildNote?: string;
+  /** [Phase 2, two-tier slate] Tier② WATCHLIST rows — NOT picks, shown for
+   *  transparency (v6.2: demotions, not deletions). Every row carries a
+   *  mandatory `shortfall`. Absent when this batch ran in legacy mode
+   *  (ORACLE_UNIFIED_SLATE=legacy) or wasn't a main-batch summary at all
+   *  (goals-accumulator summaries never populate this — additive/optional,
+   *  apps/bot and apps/booking never read it). */
+  watchlist?: ActionablePick[];
 }
 
 /** Build the "which model did the final analysis" attribution line for a goals
@@ -221,6 +244,23 @@ export function formatSummaryText(s: BatchSummary): string {
       lines.push(
         `• ${p.home} vs ${p.away} — ${p.market}${side} @ ${p.odds} · ${(p.confidence * 100).toFixed(0)}% conf${edgePart}`
       );
+      // [Phase 2, two-tier slate] Mandatory per-pick trap warning (v6.2 §5.9) —
+      // present only on this refactor's Tier① rows (tier === "qualified").
+      if (p.tier === "qualified" && p.trapWarning) {
+        lines.push(`  ⚠ Trap: ${p.trapWarning}`);
+      }
+    }
+  }
+  // [Phase 2, two-tier slate] Watchlist — explicitly NOT picks, no stake
+  // language, each row states its shortfall. Rendered only when the batch
+  // carried one (unified-slate mode, ORACLE_UNIFIED_SLATE=on).
+  if (s.watchlist?.length) {
+    lines.push(`\n👁 *Watchlist — NOT picks* (${s.watchlist.length}):`);
+    for (const p of s.watchlist) {
+      const side = p.side ? ` (${p.side})` : "";
+      lines.push(
+        `• ${p.home} vs ${p.away} — ${p.market}${side} @ ${p.odds} — ${p.shortfall ?? "below gate"}`
+      );
     }
   }
   if (s.combinedProb !== undefined && s.combinedOdds !== undefined) {
@@ -267,10 +307,27 @@ export function formatSummaryHtml(s: BatchSummary): string {
     ? s.actionable
         .map(
           (p) =>
-            `<tr><td>${p.home} vs ${p.away}</td><td>${p.market}${p.side ? ` (${p.side})` : ""}</td><td>${p.odds}</td><td>${p.stakePct.toFixed(1)}%</td><td>${(p.confidence * 100).toFixed(0)}%</td></tr>`
+            `<tr><td>${p.home} vs ${p.away}</td><td>${p.market}${p.side ? ` (${p.side})` : ""}</td><td>${p.odds}</td><td>${p.stakePct.toFixed(1)}%</td><td>${(p.confidence * 100).toFixed(0)}%</td></tr>${
+              p.tier === "qualified" && p.trapWarning
+                ? `<tr><td colspan="5"><em>⚠ Trap: ${p.trapWarning}</em></td></tr>`
+                : ""
+            }`
         )
         .join("")
     : '<tr><td colspan="5">No actionable picks today.</td></tr>';
+  // [Phase 2, two-tier slate] Watchlist table — NOT picks, no stake column.
+  const watchlistBlock = s.watchlist?.length
+    ? `<h3>👁 Watchlist — NOT picks (${s.watchlist.length})</h3>
+<table border="1" cellpadding="6" cellspacing="0">
+<tr><th>Fixture</th><th>Market</th><th>Odds</th><th>Shortfall</th></tr>
+${s.watchlist
+  .map(
+    (p) =>
+      `<tr><td>${p.home} vs ${p.away}</td><td>${p.market}${p.side ? ` (${p.side})` : ""}</td><td>${p.odds}</td><td>${p.shortfall ?? "below gate"}</td></tr>`
+  )
+  .join("")}
+</table>`
+    : "";
   return `${s.alertText ? `<p><strong>⚠️ ORACLE alert — ${s.alertText}</strong></p>` : ""}
 <h2>ORACLE ${s.date}</h2>
 <p>${s.analysed} analysed · ${s.actionableCount} actionable · ${s.errors} errors</p>
@@ -278,6 +335,7 @@ export function formatSummaryHtml(s: BatchSummary): string {
 <tr><th>Fixture</th><th>Market</th><th>Odds</th><th>Stake</th><th>Conf</th></tr>
 ${rows}
 </table>
+${watchlistBlock}
 ${
   s.combinedProb !== undefined && s.combinedOdds !== undefined
     ? `<p><strong>Combined: ${(s.combinedProb * 100).toFixed(1)}% win prob · @${s.combinedOdds.toFixed(2)} odds</strong></p>`

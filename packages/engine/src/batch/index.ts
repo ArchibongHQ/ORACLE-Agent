@@ -22,7 +22,7 @@ import {
 } from "../marketsV3/analyzeFixtureMarkets.js";
 import type { V3AllMarketsAssessment } from "../marketsV3/evGate.js";
 import { computeTailMarkets, type RouteCoverage } from "../marketsV3/feedDictionary.js";
-import type { V3OutputCandidate } from "../marketsV3/outputs.js";
+import type { V3DeliveryCandidate, V3OutputCandidate } from "../marketsV3/outputs.js";
 import { buildRatingsLambdaInput, TeamRatingsEngine } from "../ratings/index.js";
 import {
   buildSafetyShadowDiff,
@@ -406,6 +406,30 @@ export interface FixtureJobSuccess {
    *  uses `v3Best ?? v3BestFallback` as the fixture's pool representative when
    *  the fill flag is on; never used when v3Patterns is off. */
   v3BestFallback?: V3OutputCandidate;
+  /** [Phase 2, two-tier slate] Delivery-shaped projection of v3Best (family +
+   *  real Kelly stakePct sourced from v3AssessmentsToEvMarkets + mandatory
+   *  trapWarning + basisLabel) — the Tier① (qualified) row this fixture
+   *  contributes to the delivered slate, when it has one. Present under the
+   *  same condition as v3Best. Never gates anything; purely a richer
+   *  projection of the same already-gated candidate. */
+  v3DeliveryBest?: V3DeliveryCandidate;
+  /** [Phase 2, two-tier slate] EVERY +EV (`ev = mp·odds − 1 > 0`) assessment
+   *  for this fixture that did NOT clear the gate (outcome !== "done"),
+   *  each tagged with a human-readable `shortfall` (its gateReason, or
+   *  "capped"/"noise" for the HSH-invariant-guarded outcomes) — the
+   *  fixture's full Tier② (watchlist) contribution. Unlike v3BestFallback
+   *  (single best class_edge-only candidate, kept for the existing
+   *  fill-to-39 caller), this is the WIDENED set the plan's two-tier slate
+   *  needs: any shortfall reason, not just class_edge, and every qualifying
+   *  candidate, not just the single best. Capped/noise rows are included
+   *  (transparency, v6.2 — demotions not deletions) but the two-tier slate
+   *  assembly sorts them behind class_edge/ev_floor rows and they can never
+   *  reach Tier①, regardless of pattern strength (the one line pattern
+   *  strength can never cross). Never staked (Kelly against a gate-failed
+   *  candidate is not meaningful) — stakePct is always 0 here. Derived only
+   *  when v3Patterns is shadow/on (byte-identical empty array when off,
+   *  matching v3BestFallback's existing gating). */
+  v3Watchlist?: V3DeliveryCandidate[];
   /** PR-5b: compact projection (family/desc/outcome/rawEdge only) of EVERY v3
    *  assessment for this fixture (done/capped/discarded alike) — slate sanity
    *  check input (packages/marketsV3/sanity.ts's slateSanityChecks). */
@@ -854,6 +878,8 @@ export async function runBatch(
           let usedV3 = false;
           let v3Best: V3OutputCandidate | undefined;
           let v3BestFallback: V3OutputCandidate | undefined;
+          let v3DeliveryBest: V3DeliveryCandidate | undefined;
+          let v3Watchlist: V3DeliveryCandidate[] | undefined;
           let v3AssessmentStats: V3AssessmentStat[] | undefined;
           let v3Coverage: RouteCoverage | undefined;
           let safetyShadowDiff: SafetyShadowDiff | undefined;
@@ -951,6 +977,39 @@ export async function runBatch(
                   adjEvPct: bestAssessment.adjEvPct,
                   confidence: bestAssessment.confidence,
                 };
+                // [Phase 2, two-tier slate] Delivery-shaped projection: real
+                // stakePct sourced from v3StakedEvMarkets (the SAME canonical
+                // Kelly staker feeding `eligible` above — never re-derived).
+                // Matched by desc AND family — desc alone is NOT a safe join
+                // key (adversarial review finding, 2026-07-20): raw outcome
+                // desc strings like "Yes"/"No"/"Home"/"Away"/"Over 2.5" can
+                // legitimately recur across different families in one
+                // fixture's assessment set (v3AssessmentsToEvMarkets sets
+                // family: a.family on every staked EVMarket — pipeline.ts —
+                // so it's always available for the match). A desc-only match
+                // could silently attach the wrong staked EVMarket's stake to
+                // this delivered pick — real money on the wrong number.
+                // Falls back to 0 only if the match somehow misses (e.g. the
+                // staker's own veto/ev>0 re-filter dropped it) — never
+                // fabricates a nonzero stake.
+                const stakedMatch = v3StakedEvMarkets.find(
+                  (m) => m.side === bestAssessment.desc && m.family === bestAssessment.family
+                );
+                v3DeliveryBest = {
+                  ...v3Best,
+                  fixtureId: makeFixtureId(job.home, job.away, job.kickoff),
+                  home: job.home,
+                  away: job.away,
+                  league: job.league,
+                  kickoff: job.kickoff,
+                  family: bestAssessment.family,
+                  stakePct: stakedMatch ? stakedMatch.stake * 100 : 0,
+                  trapWarning: "no contradicting signal detected",
+                  basisLabel: "venue",
+                  ...(bestAssessment.patternStrength !== undefined
+                    ? { patternStrength: bestAssessment.patternStrength }
+                    : {}),
+                };
               }
               // [patterns-engine Wave 2] Fill-to-39 fallback projection — only
               // derived when v3Patterns is shadow/on (byte-identical otherwise,
@@ -980,8 +1039,19 @@ export async function runBatch(
               // filter, so it needs the identical exclusion here or a
               // near-miss Under could re-enter the actionable pool through
               // the fill-to-39 back door.
+              // rawEv hoisted above the v3Patterns gate below — v3Watchlist
+              // (Phase 2, two-tier slate) needs it too and is deliberately
+              // NOT gated on v3Patterns (adversarial review finding,
+              // 2026-07-20: v3Watchlist's own filter has no pattern
+              // dependency, and Phase 2's rollout flag is unifiedSlate, not
+              // v3Patterns — gating it on v3Patterns meant ORACLE_V3_PATTERNS=off
+              // would silently empty Tier② while Tier① kept populating
+              // normally, an unrelated-flag coupling nobody was warned
+              // about). v3BestFallback stays gated on v3Patterns below,
+              // unchanged — that field is genuinely part of the
+              // patterns-engine fill-to-39 feature, a different scope.
+              const rawEv = (a: V3MarketOutcomeAssessment) => a.evModel ?? a.ev;
               if (config.v3Patterns && config.v3Patterns !== "off") {
-                const rawEv = (a: V3MarketOutcomeAssessment) => a.evModel ?? a.ev;
                 const bestFallbackAssessment = v3Result.assessments
                   .filter(
                     (a) =>
@@ -1007,6 +1077,53 @@ export async function runBatch(
                   };
                 }
               }
+              // [Phase 2, two-tier slate] Widened Tier② pool — every +EV
+              // (ev = mp·odds−1 > 0, the owner's absolute value floor,
+              // never relaxed regardless of tier or pattern strength)
+              // assessment that did NOT clear the gate, ANY shortfall
+              // reason (not just class_edge — that restriction is specific
+              // to v3BestFallback's narrower fill-to-39 role above).
+              // Capped/noise rows ARE included here (v6.2 transparency:
+              // demotions, not deletions — design decision 3) but tagged
+              // with their real shortfall so the slate-assembly layer can
+              // sort them last and keep the 2026-07-09 HSH invariant that
+              // they can never reach Tier① intact. Never staked (0 here
+              // always — Kelly against a gate-failed candidate isn't
+              // meaningful; the two-tier slate layer never shows a stake
+              // for a watchlist row regardless of this value). Runs
+              // whenever v3 ran for this fixture — NOT gated on v3Patterns
+              // (see comment above the v3Patterns `if` block).
+              v3Watchlist = v3Result.assessments
+                .filter((a) => rawEv(a) > 0 && a.outcome !== "done" && !isUnderDesc(a.desc))
+                .map((a) => ({
+                  fixtureId: makeFixtureId(job.home, job.away, job.kickoff),
+                  home: job.home,
+                  away: job.away,
+                  league: job.league,
+                  kickoff: job.kickoff,
+                  marketName: a.marketName,
+                  desc: a.desc,
+                  cls: a.cls,
+                  mp: a.mp,
+                  odds: a.odds,
+                  q: a.q,
+                  rawEdge: a.rawEdge,
+                  penaltyPts: a.penaltyPts,
+                  adjustedEdge: a.adjustedEdge,
+                  adjEvPct: a.adjEvPct,
+                  confidence: a.confidence,
+                  family: a.family,
+                  stakePct: 0,
+                  shortfall:
+                    a.outcome === "capped"
+                      ? `capped (${a.capReason ?? "limit"})`
+                      : (a.gateReason ?? a.outcome),
+                  trapWarning: "no contradicting signal detected",
+                  basisLabel: "venue" as const,
+                  ...(a.patternStrength !== undefined
+                    ? { patternStrength: a.patternStrength }
+                    : {}),
+                }));
               v3AssessmentStats = v3Result.assessments.map((a) => ({
                 family: a.family,
                 desc: a.desc,
@@ -1307,6 +1424,8 @@ Keep it under 200 words. Identify the single most important risk factor.`;
             agentVerification: filteredResult.agentVerification,
             v3Best,
             v3BestFallback,
+            v3DeliveryBest,
+            v3Watchlist,
             v3AssessmentStats,
             v3Coverage,
             safetyKillCounts: mlResult?.killCounts as Record<string, number> | undefined,
