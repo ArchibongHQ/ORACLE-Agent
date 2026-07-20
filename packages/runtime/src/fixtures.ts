@@ -1056,6 +1056,7 @@ export async function fetchTodaysFixtures(
       perplexityApiKey,
       geminiApiKey,
       storage,
+      apiFootballKey,
     });
     return enrichWithLineups(withNews);
   };
