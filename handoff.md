@@ -1,4 +1,217 @@
-# ⭐ CURRENT — 2026-07-19 (2nd pass): P0-P2 DONE + verified, P3 partially done, hook + research done — Phase 2 onward still pending
+# ⭐ CURRENT — 2026-07-20: Phase 1 (Under-ban) landed as PR #79, Phase 2 (unified two-tier slate) landed as PR #84 — both OPEN, neither merged; next session starts at Phase 2A
+
+> **Cold-read this first.** This supersedes the section immediately below (still accurate history for
+> P0-P3 — read it for that). Per the 2026-07-19 handoff's explicit "continue directly into the 6-phase
+> patterns-first refactor" instruction, this session read the full spec at
+> `C:\Users\HP PC\.claude\plans\stateful-rolling-elephant.md`, found Phase 1 already fully implemented
+> but stranded on an orphan un-pushed branch, landed it as a real PR, then implemented the entirety of
+> Phase 2 (the biggest, highest-value phase in the plan) on top of it — including a real /gstack-review
+> pass that caught and fixed two genuine real-money bugs before the PR opened.
+
+## What happened this pass
+
+1. **Pre-flight checks (both requested by the prior handoff):**
+   - **`gbm.test.ts` failure**: confirmed still reproducing on `main` (3/3 tests in that file failing —
+     `predictGbm: feature vector length 95 !== model.numFeature 120`, a stale test-fixture/model
+     mismatch unrelated to anything in scope this session). Flagged to the owner at the start of this
+     pass, as instructed.
+   - **`enrich_news.py` 15-min timeout**: checked `.tmp/servy_worker_stdout.log` across the retained
+     log window (2026-06-20 → 2026-07-19 evening, spanning multiple normal 09:30 WAT cron runs) — zero
+     `enrich_news error`/timeout lines found anywhere. The timeout from the prior session's manual
+     `--run-acquire-now` run has **not recurred** on normal cron cadence; not treated as a real bug.
+2. **Phase 1 (Under-ban) — discovered orphaned, landed as PR #79.** `fix/under-ban-delivery-choke` existed
+   locally+remotely with one real, complete, well-tested commit (`454621e`, authored earlier the same day
+   by a prior session) — universal Under ban closing the combo/half/LLM-executor delivery leaks — but was
+   never pushed as a reviewable PR, 16 commits stale behind `main`. Rebased clean, ran a full
+   `/gstack-review` pass, which caught one real inconsistency: `analyzeFixtureMarkets.ts`'s `isKilledUnder`
+   had its family gate correctly widened but was left calling the weaker `dirOfDesc` (bare word-boundary)
+   instead of the new number-anchored `isUnderDesc` every other choke point uses. Fixed (commit
+   `b2d653f`), pushed, opened **PR #79** (`fix/under-ban-delivery-choke` → `main`), commented the review
+   finding on the PR. **Not merged — owner action needed.**
+3. **Phase 2 (unified two-tier slate) — implemented in full, opened as PR #84**, stacked on PR #79 (Phase
+   2 structurally depends on Phase 1's Under-ban choke point). This is the plan's "biggest, highest-value
+   phase": delivered slate is now Tier① QUALIFIED (gate survivors) + Tier② WATCHLIST (below-gate +EV,
+   filling to 39), each pattern-first ranked, with the `ev > 0` floor and capped/noise/contamination
+   guards applying unconditionally in both tiers, no exception for pattern strength.
+   - **Engine** (`packages/engine`): new `V3DeliveryCandidate` type, `v3DeliveryBest`/widened `v3Watchlist`
+     array on `FixtureJobSuccess` (real Kelly `stakePct` sourced from the canonical staker — fixes the
+     Wave-4-era 0.0%-Kelly delivery bug for the pattern-aware pool), `compareDeliveryRows` pattern-first
+     tie-break, new `unifiedSlate` config flag (`"legacy"|"on"`, default `"on"`).
+   - **Runtime** (`packages/runtime`): `buildTwoTierSlate` assembles Tier①/Tier② from a day's jobs;
+     capped/noise rows demoted last within Tier② via a stable partition (never promoted regardless of
+     pattern strength). `buildManifestDeliveredSlate`/`RunManifest.deliveredSlate` type added but
+     deliberately NOT wired into a live manifest yet — `dailyBatch.ts` has no whole-slate `RunManifest`
+     object today (only per-chunk manifests via `runAnalysis`), so full wiring is left for a future
+     session per the plan's own "per-tier P&L settlement" backlog item. A lightweight `{tier1, tier2}`
+     count DOES reach the existing heartbeat write today (visible telemetry, not the typed manifest field).
+   - **Worker** (`apps/worker`): `dailyBatch.ts` wires unified-slate delivery — `summary.actionable` =
+     Tier①, `summary.watchlist` = Tier②; sidecar-unmapped fixtures fall back to their legacy pick,
+     watchlist-only; booking books Tier① only (structural — `bookAccumulator` never sees
+     `summary.watchlist` at all).
+   - **Notify** (`packages/notify`): additive `ActionablePick.tier`/`trapWarning`/`shortfall` +
+     `BatchSummary.watchlist`; Telegram/HTML render a "⚠ Trap:" line per Tier① pick and a distinct
+     "👁 Watchlist — NOT picks" block, no stake language.
+   - **`/gstack-review` caught two real defects** before the PR opened (3 parallel passes: testing
+     specialist, maintainability specialist, Claude adversarial — all independently converged on the
+     same first bug):
+     1. **Dedup key format mismatch** (`dailyBatch.ts`) — the sidecar-unmapped-fixture fallback compared
+        candidates' real `makeFixtureId()` slug keys (e.g. `arsenal_vs_chelsea_202601011500`) against a
+        hand-rolled raw `${home}::${away}::${kickoff}` string. The two formats can never match, so
+        **every** legacy pick was silently misclassified "unmapped" and duplicated into the watchlist —
+        even fixtures that already had a real Tier① pick, producing a self-contradicting duplicate row
+        on every single run. Fixed by extracting `findUnmappedLegacyPicks` (exported, unit-tested with
+        the real `makeFixtureId`, not a hand-rolled string).
+     2. **Unrelated-flag coupling** (`batch/index.ts`) — `v3Watchlist`'s derivation was accidentally
+        nested inside the `v3Patterns !== "off"` gate (copied from the adjacent, unrelated
+        `v3BestFallback` block). An operator setting `ORACLE_V3_PATTERNS=off` (reachable — default is
+        `"shadow"`, not `"off"`, but settable) would silently empty Tier② while Tier① kept populating
+        normally. Decoupled; `v3BestFallback`'s own gating is untouched (genuinely a different feature).
+     3. A third finding (stake possibly mismatched via a desc-only join in `v3DeliveryBest`'s `stakePct`
+        sourcing) was traced in full rather than taken at face value: `bestAssessment`'s selection and
+        `v3AssessmentsToEvMarkets`' filter+sort are **provably identical logic over the same source
+        array** (same filter, same sort key, same array, stable sort), so the claimed collision isn't
+        actually reachable today. Added the defensive `family` check anyway (matches this repo's
+        established Under-ban precedent of closing a theoretical gap outright) but did **not** fabricate
+        a "proof" test for a scenario that can't be honestly constructed — a deliberate call not to pad
+        the test suite with test theater.
+   - **Also caught independently** while writing tests (before the formal review pass): the capped/noise
+     Tier② demotion in `buildTwoTierSlate` only checked for a `"capped"`-prefixed shortfall, missing the
+     separate `"noise"` outcome string — a strongly-patterned noise row could have outranked a weak
+     class_edge row within the watchlist, undermining the exact invariant the demotion exists to protect.
+   - **Verification**: full monorepo typecheck clean (19/19 tasks); engine 1003/1006 tests (only the
+     pre-existing, unrelated `gbm.test.ts` failures); runtime 731/731 (+12 new); notify 69/69 (+8 new);
+     worker 87/87 (+15 new); biome clean. `booking`/`bot` compile untouched (every new field additive-
+     optional). Opened **PR #84** (`feat/unified-two-tier-slate` → `fix/under-ban-delivery-choke`).
+     **Not merged — owner action needed, and depends on #79 merging first.**
+
+## NEXT — owner action needed, then continue the plan
+
+1. **Review + merge PR #79 first** (Phase 1, Under-ban), then **PR #84** (Phase 2, stacked on #79 —
+   GitHub will auto-retarget #84 to `main` once #79 merges, same stacking convention used throughout
+   this repo's history).
+2. **Deploy after both merge** (standard rebuild + restart, elevated shell, owner-only):
+   ```
+   pnpm turbo run build --concurrency=1
+   # then in an ELEVATED PowerShell:
+   Restart-Service OracleWorker
+   Restart-Service OracleBot
+   ```
+   `unifiedSlate` defaults `"on"` — this deploy is a real behavior change (delivered slate becomes the
+   two-tier pool), unlike some prior phases' shadow-mode-first flags. Recommend reviewing one real
+   slate's Telegram output before trusting it fully (per this repo's established shadow-promotion
+   discipline elsewhere, even though this specific flag ships default-on per the plan's own explicit
+   sign-off — see the plan's "Design decisions made" §2: *"mandate is explicit; risky primitives
+   unchanged; shadow modes here historically go unreviewed"*).
+3. **Next session: continue the plan from Phase 2A onward** (`C:\Users\HP PC\.claude\plans\stateful-rolling-elephant.md`):
+   - **Phase 2A** — wire `detectPatterns` into the legacy pricer too (`feat/patterns-legacy-pricer`) —
+     closes the last pattern-blind gap (`execution/index.ts`'s legacy `ExecutionEngine`/
+     `scanAllMarketsFallback` never calls `detectPatterns` today).
+   - **Phase 3** — Patterns v6.2 core: §2.5.4 overall-basis fallback, trap flags T1-T7, `h2hOversRate`,
+     `restDaysMin`, one-sweep news-intel injuries enrichment (`feat/patterns-v62-core`).
+   - **Phase 4** — λ recency blend + F1-F5 no-fixture-dies fallback ladder (`feat/lambda-fallback-ladder`).
+   - **Phase 5** — Scrape-triggered batch chaining, parallelizable (`feat/scrape-triggered-batch`).
+   - **Phase 6** — LLM demotion formalized + docs (`feat/llm-demotion-defaults`).
+   - **Deferred backlog item, not urgent**: wire `buildManifestDeliveredSlate`/`RunManifest.deliveredSlate`
+     into a real whole-slate manifest object once `dailyBatch.ts` has one to attach it to — the type +
+     builder exist and are tested, just not called from production code yet (see Phase 2's own notes
+     above). Per-tier P&L settlement (comparing `deliveredSlate` against resolved outcomes) is the
+     genuinely deferred follow-up, named explicitly in the plan's backlog — not blocking, needs ~a week
+     of real two-tier slate data first regardless.
+
+---
+
+# 2026-07-19 (3rd pass): P0-P3 fully closed, deployed, verified LIVE — Phase 2 (patterns-first refactor) is the next session's starting point
+
+> **Cold-read this first.** This supersedes the section immediately below (still accurate history for
+> what P0-P3 actually fixed — read it for that). This pass took the 2nd pass's "uncommitted, owner
+> action needed" list and closed every item: both uncommitted diffs were reviewed, committed, PR'd, and
+> merged; the worker was rebuilt AND (by the owner, elevated shell) restarted; a real recrape + Telegram
+> report dispatch was run end-to-end on the live service; the fix was confirmed present in the actually-
+> delivered report. **Stopped here on explicit owner instruction — did NOT start Phase 2.**
+
+## What happened this pass
+
+1. **Merged PR #82** (`fix/report-acquisition-race`, P1 — the `fixture-report@enriched-followup` race fix)
+   and **PR #83** (`feat/live-injuries-fetcher`, P3 — `tools/fetch_live_injuries.py` +
+   `SportyBetStats.liveInjuries`) onto `main`. Both were CI-green before merge. `main` tip is now
+   `10fb378`.
+2. **Rebuilt `main`** (`pnpm turbo run build --concurrency=1`, all 9-11 packages) — confirmed
+   `apps/worker/dist/index.js` and `packages/runtime/dist/{fixtureWorkbook,reportPatterns,selectFixtures}.js`
+   all contain the merged code (spot-checked via `grep -c` for `GreenFlag`/`liveInjuries` symbols in the
+   compiled output, not just source).
+3. **Owner restarted `OracleWorker`** (elevated shell — I confirmed I cannot self-elevate
+   `Restart-Service` on this box and correctly did not attempt to bypass that). Confirmed via the live
+   service's own `.tmp/servy_worker_stdout.log`: fresh `[worker] effective config` dump post-restart
+   shows `"v3Patterns":"on"` and the rest of the current flag set — the service is now running the
+   just-built code, not the July-18-stale version.
+4. **Ran `node apps/worker/dist/index.js --run-acquire-now`** (one-shot, does not require the daemon
+   itself to be stopped — runs as a second, short-lived process against the same `dist/`). Exit 0. Only
+   7 fresh SportyBet fixtures came back (expected — most of today's ~123-fixture slate had already been
+   scraped hours earlier at the normal 09:30 WAT cron, before this session's fix even landed).
+   **`tools/daily_store.py`'s existing safety guard correctly fired**: `refusing fixtures write for
+   dt=2026-07-19: new=7 rows would replace existing=123 rows (< 50% threshold) — keeping old partition`
+   — the original 123-fixture partition from this morning's real scrape was preserved, not clobbered by
+   a partial late-day re-run. This is the guard working as designed, not a bug.
+   **Also observed, separate open issue, not fixed this pass**: `enrich_news error: ...enrich_news.py
+   timed out after 900000ms` (15 min) during this run — worth a future session's attention if news-intel
+   enrichment keeps timing out on manual one-shot runs (may be fine on the normal cron cadence with more
+   slack; not verified either way).
+5. **Ran `node apps/worker/dist/index.js --run-report-now`** — delivered 3 files to Telegram in ~22.5s
+   (`oracle-fixtures-markets-2026-07-19.html` 573KB, plus both xlsx exports). **Verified the actual fix
+   landed in the delivered artifact**: `grep -c "Green Flags"` → 2, `grep -c "Data Analysis\|Team To
+   Score First"` → 3, `grep -c "gf-meaning"` → 5, all >0 in tonight's HTML (yesterday's broken report
+   would have shown 0 for all three before today's earlier fix). The original bug report — "today's
+   report stripped out every ops update including Green Flags" — is now confirmed fixed in a real,
+   live-delivered report, not just in a local build.
+6. **Corrected 2 stale memory/doc references to Quick Heal AV** (owner flagged mid-session: Quick Heal
+   has been fully uninstalled from this machine, corroborating the already-RESOLVED
+   `oracle_quickheal_io_latency` memory). Updated `CLAUDE.local.md`'s Quick Heal bullet and the
+   `oracle_machine_crash_2026_07_05` memory (which still had a live-sounding reference to `catflt`
+   exclusions as a pending action item) to both say uninstalled/historical-only, so future sessions don't
+   chase a cause that's no longer possible on this box.
+
+## Known-open items observed this pass (not fixed, flagging for next session)
+
+- **`enrich_news.py` timed out at 15 min** during the manual `--run-acquire-now` run (see step 4 above).
+  Not investigated further this pass — unclear if it's a one-off (late-day manual run competing with
+  other load) or a recurring issue on the normal cron cadence too. Check `.tmp/servy_worker_stdout.log`
+  over the next few normal 09:30 WAT runs for a pattern before treating this as a real bug.
+- **`[build-freshness] WARN @oracle/runtime dist STALE (src > dist by 1085s)`** appeared once, turned out
+  to be a filesystem-mtime false positive (turbo's content-hash cache confirmed the actual build output
+  was unchanged/current — `git pull` had touched the source file's mtime after the build ran, not before).
+  Didn't indicate a real problem this time, but if this warning starts appearing persistently /
+  post-verified-fresh-build, it may be worth tightening `checkBuildFreshness`'s comparison to something
+  more robust than raw mtime (e.g. content hash) so it stops crying wolf on pull-after-build orderings.
+
+## NEXT — Phase 2 onward (the standing patterns-engine refactor), owner-directed, do not re-ask
+
+Per explicit standing instruction, once P0-P3 + hook + research closed out (this pass), continue directly
+into the 6-phase patterns-first refactor without asking again. Full spec, research citations, and locked
+design decisions live in `C:\Users\HP PC\.claude\plans\stateful-rolling-elephant.md` — **read that file in
+full before starting**, it is the authoritative plan, not this summary:
+
+1. **Phase 2** — Single selection path: delivered slate = two-tier Top-39 (`feat/unified-two-tier-slate`).
+   The core refactor — biggest, highest-value phase. Pattern-first ranking within each tier; the `ev > 0`
+   value floor stays absolute in both tiers, no exception (confirmed final 2026-07-18, do not revisit).
+2. **Phase 2A** — Wire the pattern engine into the legacy pricer too (`feat/patterns-legacy-pricer`) —
+   closes the last pattern-blind gap in delivery (today `execution/index.ts`'s legacy
+   `ExecutionEngine`/`scanAllMarketsFallback` never calls `detectPatterns`).
+3. **Phase 3** — Patterns v6.2 core: §2.5.4 overall-basis fallback, trap flags T1-T7, `h2hOversRate`,
+   `restDaysMin`, one-sweep news-intel injuries enrichment (`feat/patterns-v62-core`).
+4. **Phase 4** — λ recency blend + F1-F5 no-fixture-dies fallback ladder (`feat/lambda-fallback-ladder`).
+5. **Phase 5** — Scrape-triggered batch chaining, parallelizable (`feat/scrape-triggered-batch`).
+6. **Phase 6** — LLM demotion formalized + docs (`feat/llm-demotion-defaults`).
+7. **Flag the pre-existing `gbm.test.ts` failure to the owner** — confirmed identical to `main`, unrelated
+   to any of this session's branches (a feature-vector length mismatch, 95 vs 120, in
+   `packages/engine/src/gbm/index.ts`'s `predictGbm`). Not yet flagged/reported as of this pass — do this
+   near the start of next session if not already done.
+
+Each phase = its own branch/PR per the plan's stated conventions (conventional commits, typecheck+test
+gate every commit, `/gstack-review` on diffs >50 lines, never push straight to `main`). The plan file's
+"Design decisions made" and "Backlog disposition" sections at the bottom are also load-bearing — read them
+before deviating from anything above.
+
+---
 
 > **Cold-read this first.** This supersedes the section immediately below. A PRIOR session this same day
 > wrote a 5-item bug-fix plan (`C:\Users\HP PC\.claude\plans\provide-a-fix-plan-vast-riddle.md`) believing
