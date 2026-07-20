@@ -16,10 +16,11 @@
  *  the sidecar detail is already in memory (no extra fetch). */
 
 import { applyTemporalDecay, type RecentMatch, type SoftContextItem } from "@oracle/engine";
-import type {
-  ScoringConcedingProfile,
-  SportyBetEventDetail,
-  SportyBetXgEntry,
+import {
+  computeH2hAggregate,
+  type ScoringConcedingProfile,
+  type SportyBetEventDetail,
+  type SportyBetXgEntry,
 } from "./selectFixtures.js";
 
 /** Season matches required before a goals/xG average is trusted enough to
@@ -210,6 +211,13 @@ export interface StatsOverride {
   cornersForA?: number;
   cornersAgainstH?: number;
   cornersAgainstA?: number;
+  /** [2026-07-20] Squad average height, cm (SportyBetStats.squadAverages) —
+   *  feeds engines/corners.ts's heightCornersAdjustment(), a small bounded
+   *  nudge on the corners means. Not consumed by any other engine module —
+   *  see selectFixtures.ts's SportyBetStats.squadAverages doc comment for
+   *  why age/weight do NOT get a parallel coefficient. */
+  squadHeightH?: number;
+  squadHeightA?: number;
   /** Total cards per game (yellow + red), venue split (teamdisciplinary). §3.9. */
   cardsAvgH?: number;
   cardsAvgA?: number;
@@ -282,6 +290,14 @@ export interface StatsOverride {
    *  one does. */
   last5PtsH?: number;
   last5PtsA?: number;
+  /** [2026-07-20] H2H Over-2.5 hit rate across the head-to-head window
+   *  (selectFixtures.ts's computeH2hAggregate(), from stats.h2h.matches —
+   *  free/unlimited SportyBet gismo data). Feeds marketsV3/patterns.ts's
+   *  PatternInput.h2hOversRate (h2hOversTrend + the goal-machine override
+   *  check) — previously computed for the report only; reconnected to the
+   *  live picker now that the blocking comment claiming it needed the
+   *  separate rate-limited h2h.ts module was found to be stale/incorrect. */
+  h2hOversRate?: number;
 }
 
 /** Resolve the credibility-shrinkage prior for a league.
@@ -607,6 +623,11 @@ export function buildStatsOverride(
   const last5PtsA = last5Points(stats.form?.away?.last5);
   if (last5PtsH !== null) override.last5PtsH = last5PtsH;
   if (last5PtsA !== null) override.last5PtsA = last5PtsA;
+  // [2026-07-20] Reconnects h2hOversRate to the live picker — see this
+  // field's doc comment on StatsOverride above for why it was previously
+  // report-only.
+  const h2hAgg = computeH2hAggregate(stats);
+  if (h2hAgg?.over25_pct !== undefined) override.h2hOversRate = h2hAgg.over25_pct;
 
   // ── all-markets v3 typed market-specific stats (§0.3 market-specific tier).
   // Each family gates on its own sample: scoringConceding rates on the
@@ -665,6 +686,14 @@ export function buildStatsOverride(
   if (finite(cornersAgH)) override.cornersAgainstH = cornersAgH;
   if (finite(cornersAgA)) override.cornersAgainstA = cornersAgA;
 
+  // [2026-07-20] Squad average height — ungated by enoughSample (a roster
+  // snapshot, not a small-sample statistical average) — feeds the corners
+  // model's small height nudge (see StatsOverride.squadHeightH/A doc).
+  const squadHeightH = stats.squadAverages?.home?.avg_height_cm;
+  const squadHeightA = stats.squadAverages?.away?.avg_height_cm;
+  if (finite(squadHeightH)) override.squadHeightH = squadHeightH;
+  if (finite(squadHeightA)) override.squadHeightA = squadHeightA;
+
   if (enoughSample) {
     const cards = (d: { yellow_avg?: number; red_avg?: number } | null | undefined) => {
       const yellow = d?.yellow_avg;
@@ -715,7 +744,26 @@ export function buildStatsOverride(
  *  standings are too thin to judge — the engine then keeps its 1.0 default.
  *
  *  The motivationScore lands in RunState.telemetry.motivationScore, which
- *  execution/index.ts already reads (0.5=low … 1.2=high stakes). */
+ *  execution/index.ts already reads (0.5=low … 1.2=high stakes).
+ *
+ *  [2026-07-20] Trend refinement — deliberately narrow, see this repo's
+ *  standing rule against inventing unbounded new coefficients (only bounded
+ *  extensions of already-live mechanisms ship without their own validation
+ *  cycle). This does NOT add a new coefficient; it dampens the EXISTING 0.8
+ *  discount when a team's `positionHistory.trend` (signed count of table
+ *  positions gained/lost over the tracked window — real integer units, not
+ *  a fabricated scale) shows strong recent movement, since a team actively
+ *  climbing or sliding likely still has real stakes even at a position
+ *  snapshot that reads as "safe." Capped at 1.0 (neutral) — never crosses
+ *  into this field's "high stakes" (>1.0) territory from trend alone, and
+ *  the untouched case (no strong trend on either side) still returns exactly
+ *  0.8, byte-identical to this heuristic's pre-existing behavior. Win/draw/
+ *  loss record is NOT folded into this formula — safely translating W/D/L
+ *  into "still has something to play for" needs each league's total season
+ *  length (games remaining to a promotion/relegation cutoff), which isn't
+ *  reliably available from this scraper's data; fabricating that estimate
+ *  would violate this codebase's real-xG-style honesty precedent. W/D/L
+ *  still reaches the LLM's advisory judgement via the text below instead. */
 export function buildMotivation(
   detail: SportyBetEventDetail | undefined,
   observedAt: string = new Date().toISOString()
@@ -731,11 +779,26 @@ export function buildMotivation(
 
   const safeMid = (pos: number) => pos > 5 && pos <= 14;
   if (safeMid(hp) && safeMid(ap)) {
+    const ph = detail?.stats?.positionHistory;
+    const homeTrend = Math.abs(ph?.home?.trend ?? 0);
+    const awayTrend = Math.abs(ph?.away?.trend ?? 0);
+    const maxTrend = Math.max(homeTrend, awayTrend);
+    // Below the threshold: identical to the pre-2026-07-20 behavior (flat 0.8).
+    // At/above it: dampen toward neutral, capped at 1.0, 0.05 per extra place.
+    const motivationScore = maxTrend >= 3 ? Math.min(1.0, 0.8 + 0.05 * (maxTrend - 2)) : 0.8;
+    const trendNote =
+      maxTrend >= 3
+        ? ` One side has moved ${maxTrend} table positions recently — may still have real stakes despite the "safe" snapshot.`
+        : "";
+    const wdl = (side?: { w?: number; d?: number; l?: number } | null) =>
+      side && typeof side.w === "number" && typeof side.d === "number" && typeof side.l === "number"
+        ? ` W${side.w}D${side.d}L${side.l}`
+        : "";
     return {
-      telemetry: { motivationScore: 0.8 },
+      telemetry: { motivationScore },
       soft: {
         kind: "motivation",
-        text: `Possible low-stakes fixture — both teams safely mid-table (home pos ${hp}, away pos ${ap}, ${hPlayed}/${aPlayed} games played). Reduced motivation can suppress goals.`,
+        text: `Possible low-stakes fixture — both teams safely mid-table (home pos ${hp}${wdl(s?.home)}, away pos ${ap}${wdl(s?.away)}, ${hPlayed}/${aPlayed} games played). Reduced motivation can suppress goals.${trendNote}`,
         source: "standings-heuristic",
         observedAt,
       },
@@ -769,7 +832,7 @@ export function buildStatsSoftContext(
   if (standings?.home || standings?.away) {
     const side = (s: typeof standings.home) =>
       s
-        ? `pos=${s.pos ?? "?"} pts=${s.points ?? "?"} (${s.played ?? "?"} played, GF${s.gf ?? "?"}/GA${s.ga ?? "?"})`
+        ? `pos=${s.pos ?? "?"} pts=${s.points ?? "?"} W${s.w ?? "?"}D${s.d ?? "?"}L${s.l ?? "?"} (${s.played ?? "?"} played, GF${s.gf ?? "?"}/GA${s.ga ?? "?"}, diff${s.diff ?? "?"})`
         : "n/a";
     lines.push(`Standings — Home: ${side(standings.home)} | Away: ${side(standings.away)}`);
   }
@@ -796,11 +859,18 @@ export function buildStatsSoftContext(
     );
   }
 
+  const h2hAgg = computeH2hAggregate(stats);
+  if (h2hAgg) {
+    lines.push(
+      `H2H aggregate — BTTS ${pct(h2hAgg.btts_pct)}, O1.5 ${pct(h2hAgg.over15_pct)}, O2.5 ${pct(h2hAgg.over25_pct)} (n=${h2hAgg.total}; no corners/cards field exists at this endpoint, confirmed live)`
+    );
+  }
+
   const ou = stats.overunder;
   if (ou?.home || ou?.away) {
     const side = (s: typeof ou.home) =>
       s
-        ? `O1.5 ${pct(s.over15_pct)} / O2.5 ${pct(s.over25_pct)} / O3.5 ${pct(s.over35_pct)}`
+        ? `O1.5 ${pct(s.over15_pct)} / O2.5 ${pct(s.over25_pct)} / O3.5 ${pct(s.over35_pct)} / HT-O0.5 ${pct(s.ht_over05_pct)} / HT-O1.5 ${pct(s.ht_over15_pct)}`
         : "n/a";
     lines.push(`Season over-line rate — Home: ${side(ou.home)} | Away: ${side(ou.away)}`);
   }
@@ -850,7 +920,7 @@ export function buildStatsSoftContext(
   if (disc?.home || disc?.away) {
     const side = (s: typeof disc.home) =>
       s
-        ? `${s.yellow_avg ?? "?"} yel / ${s.red_avg ?? "?"} red / ${s.fouls_avg ?? "?"} fouls per game`
+        ? `${s.yellow_avg ?? "?"} yel / ${s.red_avg ?? "?"} red / ${s.total_avg ?? "?"} total / ${s.fouls_avg ?? "?"} fouls per game`
         : "n/a";
     lines.push(`Discipline — Home: ${side(disc.home)} | Away: ${side(disc.away)}`);
   }
@@ -871,6 +941,15 @@ export function buildStatsSoftContext(
     const side = (s: typeof tg.home) =>
       s ? `${s.top_scorer_name ?? "?"} ${s.top_scorer_goals ?? "?"} goals` : "n/a";
     lines.push(`Lead scorer — Home: ${side(tg.home)} | Away: ${side(tg.away)}`);
+  }
+
+  const squad = stats.squadAverages;
+  if (squad?.home || squad?.away) {
+    const side = (s: typeof squad.home) =>
+      s
+        ? `age ${s.avg_age ?? "?"}, height ${s.avg_height_cm ?? "?"}cm, weight ${s.avg_weight_kg ?? "?"}kg`
+        : "n/a";
+    lines.push(`Squad averages — Home: ${side(squad.home)} | Away: ${side(squad.away)}`);
   }
 
   if (!lines.length) return [];

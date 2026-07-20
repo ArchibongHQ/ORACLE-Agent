@@ -6,11 +6,13 @@ import { queryParquetRows } from "@oracle/storage";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetDailyStoreCache } from "../src/dailyStore.js";
 import {
+  computeH2hAggregate,
   loadSportyBetIndex,
   predictabilityScore,
   type SelectionCandidate,
   type SportyBetEventDetail,
   type SportyBetIndex,
+  type SportyBetStats,
   scoreFixture,
   selectFixtures,
   sidecarKey,
@@ -730,5 +732,57 @@ describe("loadSportyBetIndex", () => {
     const idx = await loadSportyBetIndex(TODAY, p);
     expect(idx).not.toBeNull();
     expect(idx?.byKey.get(sidecarKey("Arsenal FC", "Chelsea FC"))).toBe(42);
+  });
+});
+
+describe("computeH2hAggregate", () => {
+  const statsWith = (
+    matches: Array<{ home_goals?: number; away_goals?: number }>
+  ): SportyBetStats => ({
+    h2h: { total: matches.length, home_wins: 0, away_wins: 0, draws: 0, matches },
+  });
+
+  it("computes BTTS%/O1.5%/O2.5% from scored meetings", () => {
+    // 3-1 (over1.5, over2.5, btts), 2-2 (over1.5, over2.5, btts), 1-0 (neither)
+    const out = computeH2hAggregate(
+      statsWith([
+        { home_goals: 3, away_goals: 1 },
+        { home_goals: 2, away_goals: 2 },
+        { home_goals: 1, away_goals: 0 },
+      ])
+    );
+    expect(out).not.toBeNull();
+    expect(out?.total).toBe(3);
+    expect(out?.btts_pct).toBeCloseTo(2 / 3, 2);
+    expect(out?.over15_pct).toBeCloseTo(2 / 3, 2);
+    expect(out?.over25_pct).toBeCloseTo(2 / 3, 2);
+  });
+
+  it("returns null under 3 scored meetings — too thin to call a trend", () => {
+    const out = computeH2hAggregate(
+      statsWith([
+        { home_goals: 2, away_goals: 1 },
+        { home_goals: 1, away_goals: 1 },
+      ])
+    );
+    expect(out).toBeNull();
+  });
+
+  it("returns null when h2h/matches is absent", () => {
+    expect(computeH2hAggregate(undefined)).toBeNull();
+    expect(computeH2hAggregate(null)).toBeNull();
+    expect(computeH2hAggregate({})).toBeNull();
+  });
+
+  it("skips unscored meetings (missing goals) but still counts scored ones", () => {
+    const out = computeH2hAggregate(
+      statsWith([
+        { home_goals: 3, away_goals: 2 },
+        { home_goals: 1, away_goals: 1 },
+        { home_goals: 0, away_goals: 0 },
+        {}, // unscored — must not count toward n or the percentages
+      ])
+    );
+    expect(out?.total).toBe(3);
   });
 });

@@ -1516,11 +1516,16 @@ def _parse_form(form_data: dict) -> Optional[dict]:
 
 
 def _parse_standings(tables_data: dict, home_id: Optional[int], away_id: Optional[int]) -> Optional[dict]:
-    """Extract league position, points, and goals for both teams from stats_season_tables.
+    """Extract league position, points, goals, and win/draw/loss record for both
+    teams from stats_season_tables.
 
     Live gismo shape: tables[0].tablerows[] where each row has team:{_id,…} and
     totals fields pointsTotal / total (matches played) / goalsForTotal /
-    goalsAgainstTotal. (The old tot_pts/tot_sp/_id schema was never returned.)
+    goalsAgainstTotal / winTotal / drawTotal / lossTotal / goalDiffTotal. (The
+    old tot_pts/tot_sp/_id schema was never returned.) winTotal/drawTotal/
+    lossTotal/goalDiffTotal confirmed live-present in the same row already
+    being read for pos/points/played/gf/ga (2026-07-20) — previously fetched
+    but discarded.
     """
     if not tables_data:
         return None
@@ -1532,13 +1537,27 @@ def _parse_standings(tables_data: dict, home_id: Optional[int], away_id: Optiona
         # when home_id/away_id are themselves None (mirrors _parse_goals).
         if tid is not None and tid in (home_id, away_id):
             label = "home" if tid == home_id else "away"
-            result[label] = {
+            entry = {
                 "pos": row.get("pos"),
                 "points": row.get("pointsTotal"),
                 "played": row.get("total"),
                 "gf": row.get("goalsForTotal"),
                 "ga": row.get("goalsAgainstTotal"),
             }
+            # w/d/l/diff omitted entirely (not set to None) when the source
+            # row lacks them — matches this file's "never fabricate, omit
+            # rather than null" convention (see _parse_disciplinary) and
+            # keeps the base 5-field shape's existing callers/tests untouched.
+            for key, out_key in (
+                ("winTotal", "w"),
+                ("drawTotal", "d"),
+                ("lossTotal", "l"),
+                ("goalDiffTotal", "diff"),
+            ):
+                v = row.get(key)
+                if v is not None:
+                    entry[out_key] = v
+            result[label] = entry
         if len(result) == 2:
             break
     return result or None
@@ -1596,6 +1615,21 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
     teams{home.name, away.name}). The per-match detail was previously fetched but
     discarded; the report/spreadsheet and the LLM arbiter want the actual results
     (e.g. "2-0; 2-2; 3-1"), not just the tally. The summary shape is unchanged.
+
+    CONFIRMED DATA ABSENCE (live-verified 2026-07-20, not an extraction gap):
+    each match object here carries NO corners/cards fields at all — checked the
+    raw response for a real fixture with 24 H2H entries, keys are exactly
+    {_doc, _doctype, _id, _rcid, _seasonid, _sid, _tid, _utid, bestof, canceled,
+    comment, disqualified, inlivescore, neutralground, numberofperiods, periods,
+    postponed, result, retired, round, roundname, stadiumid, status, teams,
+    time, tobeannounced, walkover, week}. This is a materially different shape
+    from stats_team_lastxextended's match objects, which DO carry a per-match
+    `corners` field — head-to-head corners/cards genuinely do not exist on this
+    endpoint, so BTTS%/Over1.5%/Over2.5% (computed in
+    packages/runtime/src/selectFixtures.ts's computeH2hAggregate(), from the
+    goals already in `result` above) are the full extent of derivable H2H
+    aggregate stats. Do not re-probe this without a new reason to suspect the
+    schema changed.
     """
     if not versus_data:
         return None
@@ -1648,35 +1682,49 @@ def _parse_h2h(versus_data: dict) -> Optional[dict]:
 
 
 def _parse_overunder(ou_data: dict, home_uid: Optional[int], away_uid: Optional[int]) -> Optional[dict]:
-    """Extract season over-1.5/2.5/3.5 percentages per team from stats_season_overunder.
+    """Extract season over-1.5/2.5/3.5 (full-time) and over-0.5/1.5 (first-half)
+    percentages per team from stats_season_overunder.
 
     Live gismo shape: stats is keyed by the team's "uniqueteam" id (`team.uid`),
     NOT the "team" doctype `_id` that match_info/stats_season_tables/stats_season_goals/
     stats_season_fixtures all key by (verified live 2026-06-20 — Czechia: _id=9509,
     uid=4714; both ids coexist on the same match_info team object, callers must pass
     uid here). Each entry's `total.ft["<line>"]` holds {over, under} match counts
-    across the season (both venues combined). Percentage is over/(over+under);
-    a line with zero matches recorded is omitted rather than reported as 0%.
+    across the season (both venues combined); `total.p1["<line>"]` is the same
+    shape for first-half-only goals (confirmed live 2026-07-20 — `total` also
+    carries `p2`/`ap` siblings, not read here as they weren't part of the
+    owner's ask). Percentage is over/(over+under); a line with zero matches
+    recorded is omitted rather than reported as 0%.
     """
     if not ou_data:
         return None
     stats = ou_data.get("stats", {})
     if not isinstance(stats, dict):
         return None
-    result: dict[str, Optional[dict]] = {}
-    for label, tid in (("home", home_uid), ("away", away_uid)):
-        entry = stats.get(str(tid)) if tid is not None else None
-        if not isinstance(entry, dict):
-            continue
-        lines = ((entry.get("total") or {}).get("ft")) or {}
+
+    def pct_for(lines: dict, mapping: tuple) -> dict[str, float]:
         pct: dict[str, float] = {}
-        for line_key, out_key in (("1.5", "over15_pct"), ("2.5", "over25_pct"), ("3.5", "over35_pct")):
+        for line_key, out_key in mapping:
             rec = lines.get(line_key)
             if not isinstance(rec, dict):
                 continue
             over, under = rec.get("over"), rec.get("under")
             if isinstance(over, (int, float)) and isinstance(under, (int, float)) and (over + under) > 0:
                 pct[out_key] = round(over / (over + under), 3)
+        return pct
+
+    result: dict[str, Optional[dict]] = {}
+    for label, tid in (("home", home_uid), ("away", away_uid)):
+        entry = stats.get(str(tid)) if tid is not None else None
+        if not isinstance(entry, dict):
+            continue
+        total = entry.get("total") or {}
+        pct = pct_for(
+            total.get("ft") or {}, (("1.5", "over15_pct"), ("2.5", "over25_pct"), ("3.5", "over35_pct"))
+        )
+        pct.update(
+            pct_for(total.get("p1") or {}, (("0.5", "ht_over05_pct"), ("1.5", "ht_over15_pct")))
+        )
         if pct:
             result[label] = pct
     return result or None
@@ -1943,11 +1991,17 @@ def _parse_disciplinary(disc_data: dict, venue: str) -> Optional[dict]:
             v = rec
         return round(float(v), 2) if isinstance(v, (int, float)) else None
 
-    out = {
+    out: dict[str, Optional[float]] = {
         "yellow_avg": avg("yellowcardsaverage"),
         "red_avg": avg("redcardsaverage"),
         "fouls_avg": avg("foulsaverage"),
     }
+    # Total-cards display figure (owner reference-screenshot request, 2026-07-20):
+    # only computed when yellow is present — red defaults to 0.0 when genuinely
+    # absent, but a missing yellow means the whole record is unreliable, so no
+    # total is fabricated from red_avg alone.
+    if out["yellow_avg"] is not None:
+        out["total_avg"] = round(out["yellow_avg"] + (out["red_avg"] or 0.0), 2)
     cleaned = {k: v for k, v in out.items() if v is not None}
     return cleaned or None
 
@@ -2008,6 +2062,58 @@ def _parse_top_goals(tg_data: dict, team_id: Optional[int], team_uid: Optional[i
                     "top_scorer_name": str(p.get("name") or p.get("playername") or "?"),
                 }
     return None
+
+
+def _parse_squad_averages(squad_data: dict) -> Optional[dict]:
+    """Mean age/height/weight across a team's roster from stats_team_squad/{uid}.
+
+    Live gismo shape (verified 2026-07-20 against a live MLS Next Pro fixture):
+    keyed by the team's "uniqueteam" `uid` — NOT the "team" doctype `_id` that
+    match_info/stats_season_tables/stats_season_goals/stats_season_fixtures use
+    (passing `_id` here returns an empty `players` list, not an error — the
+    same silent-mismatch trap documented on _parse_overunder). `players[]` each
+    carry `birthdate.uts` (age computed from this vs. now), `height` (cm),
+    `weight` (kg).
+
+    Data-quality gotcha (live-verified, not assumed): lower-tier leagues have
+    real gaps in this roster data — height/weight are `0` (a null sentinel,
+    not a real measurement — no professional player is 0cm/0kg) for a material
+    fraction of players (4/13 and 4/19 on the two sides of the verifying
+    fixture). Zero-valued height/weight are excluded from their averages so a
+    missing-data sentinel never silently drags the mean down; age has no such
+    sentinel (birthdate was 100% populated on both verifying rosters) but is
+    still defensively skipped per-player on any unparseable birthdate.
+    """
+    if not squad_data:
+        return None
+    players = squad_data.get("players")
+    if not isinstance(players, list) or not players:
+        return None
+    now = time.time()
+    ages: list[float] = []
+    heights: list[float] = []
+    weights: list[float] = []
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        bd = p.get("birthdate")
+        uts = bd.get("uts") if isinstance(bd, dict) else None
+        if isinstance(uts, (int, float)) and uts > 0:
+            ages.append((now - uts) / 31_557_600)  # seconds per Julian year
+        h = p.get("height")
+        if isinstance(h, (int, float)) and h > 0:
+            heights.append(float(h))
+        w = p.get("weight")
+        if isinstance(w, (int, float)) and w > 0:
+            weights.append(float(w))
+    out: dict[str, float] = {}
+    if ages:
+        out["avg_age"] = round(sum(ages) / len(ages), 1)
+    if heights:
+        out["avg_height_cm"] = round(sum(heights) / len(heights), 1)
+    if weights:
+        out["avg_weight_kg"] = round(sum(weights) / len(weights), 1)
+    return out or None
 
 
 def _fetch_fixture_detail(
@@ -2252,6 +2358,23 @@ def _fetch_fixture_detail(
         if a_tg:
             top_goals["away"] = a_tg
 
+    # 15. Squad averages (age/height/weight) — stats_team_squad/{uid}. uid-keyed
+    # (verified live 2026-07-20: passing the team _id here silently returns an
+    # empty players[] instead of an error — same trap class as overunder/h2h).
+    squad_averages: dict[str, dict] = {}
+    if home_uid:
+        _time.sleep(_SB_PACE)
+        h_squad = _gismo_doc(f"stats_team_squad/{home_uid}")
+        parsed = _parse_squad_averages(h_squad)
+        if parsed:
+            squad_averages["home"] = parsed
+    if away_uid:
+        _time.sleep(_SB_PACE)
+        a_squad = _gismo_doc(f"stats_team_squad/{away_uid}")
+        parsed = _parse_squad_averages(a_squad)
+        if parsed:
+            squad_averages["away"] = parsed
+
     stats: dict = {}
     if form:
         stats["form"] = form
@@ -2283,6 +2406,8 @@ def _fetch_fixture_detail(
         stats["positionHistory"] = position_history
     if top_goals:
         stats["topGoals"] = top_goals
+    if squad_averages:
+        stats["squadAverages"] = squad_averages
 
     return {
         "odds": odds,

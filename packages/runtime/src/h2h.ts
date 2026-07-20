@@ -5,18 +5,37 @@
  *    1. Check .tmp/h2h/<slug>.json cache (TTL 6h — odds can shift but H2H is stable)
  *    2. Search football-data /matches for the fixture to get a match ID
  *    3. Call /matches/{id}/head2head?limit=10
- *    4. Compute h2hHomeWin, h2hDraw, h2hAwayWin, h2hN, h2hGoalDiff (same as GBM features)
- *    5. Merge aggregates into fetched.stats (numeric, existing safety/GBM consumers);
- *       merge raw recentScorelines (if any) into telemetry.rawStatsBlock instead — the
- *       Opus arbiter's STEP 0 passthrough — since fetched.stats stays purely numeric.
- *       Never throws, always returns jobs unchanged on failure.
+ *    4. Compute h2hHomeWin, h2hDraw, h2hAwayWin, h2hN, h2hGoalDiff (same names as
+ *       gbm/index.ts's GBM_FEAT_COLS)
+ *    5. Merge aggregates into fetched.stats (numeric); merge raw recentScorelines
+ *       (if any) into telemetry.rawStatsBlock instead — the Opus arbiter's STEP 0
+ *       passthrough — since fetched.stats stays purely numeric. Never throws,
+ *       always returns jobs unchanged on failure.
  *
  *  Rate limit: football-data free tier = 10 req/min. We batch with 7s inter-request delay.
  *
- *  Scoreline coverage caveat: the SportyBet/Sportradar gismo H2H path (sportyBetStats.ts)
- *  has no match-level detail — only aggregate counts. This football-data.org path is the
- *  ONLY scoreline source, and only for leagues in LEAGUE_TO_COMP with a found scheduled
- *  match; coverage is partial, not universal.
+ *  [2026-07-20 correction — this comment previously claimed two things that were
+ *  verified stale this session, do not re-introduce either]:
+ *   - "existing safety/GBM consumers" (step 5, above) — checked live:
+ *     safety/index.ts has zero references to any h2h* field, and gbm/index.ts's
+ *     GbmLiveInputs (the actual live-population interface, distinct from the
+ *     full GBM_FEAT_COLS training-schema list) does NOT include h2hHomeWin/
+ *     h2hDraw/h2hAwayWin/h2hN/h2hGoalDiff — they zero-fill in
+ *     buildGbmFeatureVector() regardless of what this file computes. More
+ *     fundamentally, blendGbmIntoFp (the function that would ever USE a GBM
+ *     probability) has ZERO call sites anywhere in packages/ — the entire GBM
+ *     residual module is dormant pending its own walk-forward significance
+ *     gate (see that function's doc comment). This file's output is real and
+ *     correctly computed, but currently reaches no live scoring path.
+ *   - "the SportyBet/Sportradar gismo H2H path has no match-level detail —
+ *     only aggregate counts" — no longer true (may have been true when
+ *     originally written): stats_team_versusrecent's `matches[]` carries
+ *     per-meeting scorelines/dates/winner (see selectFixtures.ts's
+ *     SportyBetStats.h2h.matches and _parse_h2h's docstring in
+ *     tools/scrape_fixtures.py, live-verified 2026-06-29 and re-confirmed
+ *     2026-07-20). This file remains the only source for fixtures where the
+ *     owner wants a name-matched football-data.org scoreline specifically,
+ *     but it is no longer the ONLY scoreline source in the codebase.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";

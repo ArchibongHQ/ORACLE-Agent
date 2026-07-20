@@ -275,8 +275,18 @@ export function buildV3Input(
  *     same ev>0-floor-bound-regardless guarantee every pattern kind has),
  *     just an intentional extra signal here worth being explicit isn't
  *     mirrored both ways yet.
- *  Exported for direct unit testing — same rationale as buildV3Input above. */
-export function buildLegacyPatternInput(state: RunState, league: string): PatternInput | null {
+ *  Exported for direct unit testing — same rationale as buildV3Input above.
+ *  `venueSplitUsed` (Phase 3, patterns-v62-core): same OracleConfig.v3VenueSplitUsed
+ *  boolean buildV3Input already threads into V3AllMarketsInput.venueSplitUsed
+ *  (line ~202 below) and analyzeFixtureMarketsV3 reads for its own
+ *  PatternInput.basis — passed here too so BOTH pricer paths agree on
+ *  whether t.scoredPer90H/etc are a true venue split or pooled team-overall
+ *  data. Undefined/false ⇒ "overall" (config's own documented default). */
+export function buildLegacyPatternInput(
+  state: RunState,
+  league: string,
+  venueSplitUsed?: boolean
+): PatternInput | null {
   const t = state.telemetry ?? {};
   if (
     !Number.isFinite(t.scoredPer90H) ||
@@ -321,6 +331,7 @@ export function buildLegacyPatternInput(state: RunState, league: string): Patter
     streakA: t.streakA,
     last5PtsH: t.last5PtsH,
     last5PtsA: t.last5PtsA,
+    basis: venueSplitUsed ? "venue" : "overall",
     // leagueAvgGoals/h2hOversRate/restDaysMin/mappedFamiliesWithStats
     // intentionally absent — same rationale as buildFixturePatternInput's
     // own trailing comment: not cheaply available in this scope, and
@@ -965,14 +976,22 @@ export async function runBatch(
           // "on", named here as a follow-up rather than silently expanding
           // this phase's scope to add ledger telemetry infrastructure.
           if (config.v62Patterns && config.v62Patterns !== "off") {
-            const legacyPatternInput = buildLegacyPatternInput(state, job.league);
+            const legacyPatternInput = buildLegacyPatternInput(
+              state,
+              job.league,
+              config.v3VenueSplitUsed
+            );
             const legacyPatternReport = legacyPatternInput
               ? detectPatterns(legacyPatternInput)
               : null;
             if (
               config.v62Patterns === "on" &&
               legacyPatternReport?.topPattern &&
-              legacyPatternReport.strength >= PATTERN_MIN_STRENGTH
+              legacyPatternReport.strength >= PATTERN_MIN_STRENGTH &&
+              // [Phase 3, §2.5.4] "zero PATTERN_RANK_BONUS on overall basis" —
+              // null (venueSplitUsed not passed) behaves like "venue", same
+              // backward-compat convention as the v3 path's patternBacked gate.
+              legacyPatternReport.basis !== "overall"
             ) {
               evMarkets = applyLegacyPatternRanking(evMarkets, legacyPatternReport);
             }

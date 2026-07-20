@@ -14,7 +14,7 @@ import { lookupMarket, PRICEABLE_FAMILIES } from "@oracle/engine";
 import { type DailyNewsRow, loadDailyNews, teamSlug } from "./dailyStore.js";
 import { findLineupSummary, type LineupSummary, loadLineupSummaries } from "./lineups.js";
 import { CSS, esc, pct } from "./report.js";
-import { loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
+import { computeH2hAggregate, loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
 import { buildMotivation } from "./sportyBetStats.js";
 import { namesMatch } from "./teamNames.js";
 import { buildTravel } from "./travel.js";
@@ -141,6 +141,8 @@ export function renderFixtureRawData(
   const disc = stats?.disciplinary;
   const ph = stats?.positionHistory;
   const tg = stats?.topGoals;
+  const squad = stats?.squadAverages;
+  const h2hAgg = computeH2hAggregate(stats);
   // xG provenance tag — Understat (per-match, true xGA) vs FBref (season aggregate,
   // xGF only). Both home/away carry the same src in practice; read whichever exists.
   const xgSrc = xg?.home?.src ?? xg?.away?.src;
@@ -161,10 +163,10 @@ export function renderFixtureRawData(
     side(
       "Standings",
       standings?.home
-        ? `pos ${standings.home.pos ?? "?"}, pts ${standings.home.points ?? "?"}, GF/GA ${standings.home.gf ?? "?"}/${standings.home.ga ?? "?"}`
+        ? `pos ${standings.home.pos ?? "?"}, pts ${standings.home.points ?? "?"}, W/D/L ${standings.home.w ?? "?"}/${standings.home.d ?? "?"}/${standings.home.l ?? "?"}, GF/GA ${standings.home.gf ?? "?"}/${standings.home.ga ?? "?"} (diff ${standings.home.diff ?? "?"})`
         : null,
       standings?.away
-        ? `pos ${standings.away.pos ?? "?"}, pts ${standings.away.points ?? "?"}, GF/GA ${standings.away.gf ?? "?"}/${standings.away.ga ?? "?"}`
+        ? `pos ${standings.away.pos ?? "?"}, pts ${standings.away.points ?? "?"}, W/D/L ${standings.away.w ?? "?"}/${standings.away.d ?? "?"}/${standings.away.l ?? "?"}, GF/GA ${standings.away.gf ?? "?"}/${standings.away.ga ?? "?"} (diff ${standings.away.diff ?? "?"})`
         : null
     ),
     side(
@@ -182,6 +184,12 @@ export function renderFixtureRawData(
           `last ${h2h.total ?? "?"} meetings — home wins ${h2h.home_wins ?? "?"}, away wins ${h2h.away_wins ?? "?"}, draws ${h2h.draws ?? "?"}`
         )
       : line("H2H", "No history available"),
+    h2hAgg
+      ? line(
+          "H2H aggregate",
+          `BTTS ${pct(h2hAgg.btts_pct ?? 0)}, O1.5 ${pct(h2hAgg.over15_pct ?? 0)}, O2.5 ${pct(h2hAgg.over25_pct ?? 0)} (n${h2hAgg.total})`
+        )
+      : "",
     side(
       `xG${xgTag}`,
       xg?.home
@@ -194,10 +202,10 @@ export function renderFixtureRawData(
     side(
       "O/U hit-rate",
       overunder?.home
-        ? `O1.5 ${pct(overunder.home.over15_pct ?? 0)}, O2.5 ${pct(overunder.home.over25_pct ?? 0)}, O3.5 ${pct(overunder.home.over35_pct ?? 0)}`
+        ? `O1.5 ${pct(overunder.home.over15_pct ?? 0)}, O2.5 ${pct(overunder.home.over25_pct ?? 0)}, O3.5 ${pct(overunder.home.over35_pct ?? 0)}, HT-O0.5 ${pct(overunder.home.ht_over05_pct ?? 0)}, HT-O1.5 ${pct(overunder.home.ht_over15_pct ?? 0)}`
         : null,
       overunder?.away
-        ? `O1.5 ${pct(overunder.away.over15_pct ?? 0)}, O2.5 ${pct(overunder.away.over25_pct ?? 0)}, O3.5 ${pct(overunder.away.over35_pct ?? 0)}`
+        ? `O1.5 ${pct(overunder.away.over15_pct ?? 0)}, O2.5 ${pct(overunder.away.over25_pct ?? 0)}, O3.5 ${pct(overunder.away.over35_pct ?? 0)}, HT-O0.5 ${pct(overunder.away.ht_over05_pct ?? 0)}, HT-O1.5 ${pct(overunder.away.ht_over15_pct ?? 0)}`
         : null
     ),
     side(
@@ -251,10 +259,10 @@ export function renderFixtureRawData(
       ? side(
           "Discipline",
           disc.home
-            ? `${disc.home.yellow_avg ?? "?"} yel, ${disc.home.red_avg ?? "?"} red, ${disc.home.fouls_avg ?? "?"} fouls`
+            ? `${disc.home.yellow_avg ?? "?"} yel, ${disc.home.red_avg ?? "?"} red, ${disc.home.total_avg ?? "?"} total, ${disc.home.fouls_avg ?? "?"} fouls`
             : null,
           disc.away
-            ? `${disc.away.yellow_avg ?? "?"} yel, ${disc.away.red_avg ?? "?"} red, ${disc.away.fouls_avg ?? "?"} fouls`
+            ? `${disc.away.yellow_avg ?? "?"} yel, ${disc.away.red_avg ?? "?"} red, ${disc.away.total_avg ?? "?"} total, ${disc.away.fouls_avg ?? "?"} fouls`
             : null
         )
       : "",
@@ -274,6 +282,17 @@ export function renderFixtureRawData(
           "Lead scorer",
           tg.home ? `${tg.home.top_scorer_name ?? "?"} (${tg.home.top_scorer_goals ?? "?"})` : null,
           tg.away ? `${tg.away.top_scorer_name ?? "?"} (${tg.away.top_scorer_goals ?? "?"})` : null
+        )
+      : "",
+    squad
+      ? side(
+          "Squad averages",
+          squad.home
+            ? `age ${squad.home.avg_age ?? "?"}, height ${squad.home.avg_height_cm ?? "?"}cm, weight ${squad.home.avg_weight_kg ?? "?"}kg`
+            : null,
+          squad.away
+            ? `age ${squad.away.avg_age ?? "?"}, height ${squad.away.avg_height_cm ?? "?"}cm, weight ${squad.away.avg_weight_kg ?? "?"}kg`
+            : null
         )
       : "",
     travel.soft ? line("Travel", travel.soft.text) : "",

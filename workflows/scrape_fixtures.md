@@ -137,16 +137,36 @@ Separate from the fixture-listing scrape above: once a fixture is on `today.txt`
 
 **First-attempt data-acquisition mechanism (mandatory ordering):** Always call the **no-auth gismo host first** — `stats.fn.sportradar.com/sportybet/en/Etc:UTC/gismo/{query}` via plain `urllib.request` with just `_SB_HDR` (a `User-Agent` string, no token). This is what `_sb_get()`/`_gismo_doc()` already do for every call in `_fetch_fixture_detail()`. Only fall back to the SIR-widget-token-harvest technique (see `/sportybet-stats-probe` skill) if a query is later found that the no-auth host doesn't serve — to date (2026-06-23), every gismo query probed (including the new possession/corners endpoints below) returns identical data from both hosts, so the token-harvest path has never actually been needed in production and should stay a documented fallback, not the default.
 
-Calls 10 and 11 (added 2026-06-23) extend the existing 9-call pipeline:
+**This table was stale for a long time — the "9-call pipeline + calls 10/11" framing undercounted the real endpoint set even before the 2026-07-20 pass below (a full code audit that session found 15 numbered calls already present). Verify against `_fetch_fixture_detail()`'s own `# N.` comments before trusting this table's count in future sessions — it has drifted from the real code more than once.**
 
 | # | Endpoint | Parser | Output key |
 | --- | --- | --- | --- |
-| 10 | `gismo/stats_season_uniqueteamstats/{season_id}` | `_parse_possession_value()` | `stats.possessionValue.{home,away}` — shots_on_target_avg, shots_off_target_avg, shots_blocked_avg, corners_avg, possession_pct_avg |
-| 11 | `gismo/stats_team_lastxextended/{home_id}` and `/{away_id}` | `_parse_recent_form_corners()` | `stats.recentCorners.{home,away}` — avg corners won, last 5 matches |
+| 1 | `factsCenter/event` (not gismo — SportyBet's own facts center) | `_parse_odds`/`_parse_half_markets`/`_parse_combo_markets`/`_parse_all_markets` | `odds.*` incl. `odds.allMarkets` (900+ markets, unconditional) |
+| 2 | `gismo/match_info/{mid}` | inline | `home_id`/`away_id`/`home_uid`/`away_uid`/`season_id`/`statscoverage` |
+| 3 | `gismo/stats_match_form/{mid}` | `_parse_form()` | `stats.form.{home,away}` |
+| 4 | `gismo/stats_season_tables/{season_id}` | `_parse_standings()` | `stats.standings.{home,away}` — pos/points/played/gf/ga, **w/d/l/diff [2026-07-20]** |
+| 5 | `gismo/stats_season_goals/{season_id}` | `_parse_goals()` | `stats.goals.{home,away}` |
+| 6 | `gismo/stats_team_versusrecent/{home_uid}/{away_uid}` | `_parse_h2h()` | `stats.h2h` — total/home_wins/away_wins/draws/matches[] |
+| 7 | `gismo/stats_season_overunder/{season_id}` | `_parse_overunder()` | `stats.overunder.{home,away}` — over15/25/35_pct, **ht_over05/15_pct [2026-07-20]** |
+| 8 | `gismo/stats_season_fixtures/{season_id}` | `_parse_rest_congestion()` | `stats.congestion.{home,away}` |
+| 9 | `gismo/match_funfacts/{mid}` | `_parse_funfacts()` | `stats.commentary` |
+| 10 | `gismo/stats_season_uniqueteamstats/{season_id}` | `_parse_possession_value()` | `stats.possessionValue.{home,away}` — shots/corners/possession |
+| 11 | `gismo/stats_team_lastxextended/{home_id}` and `/{away_id}` | `_parse_recent_form_corners()`/`_parse_recent_form_goals()` | `stats.recentCorners`/`recentCornersAgainst`/`recentGoals` |
+| 12 | `gismo/stats_season_teamscoringconceding/{season_id}/{uid}/10` (×2) | `_parse_scoring_conceding()` | `stats.scoringConceding.{home,away}` |
+| 13 | `gismo/stats_season_teamdisciplinary/{season_id}/{uid}` (×2) | `_parse_disciplinary()` | `stats.disciplinary.{home,away}` — yellow/red/fouls_avg, **total_avg [2026-07-20]** |
+| 14 | `gismo/stats_season_teampositionhistory/{season_id}/{uid}` (×2) | `_parse_position_history()` | `stats.positionHistory.{home,away}` |
+| 15 | `gismo/stats_season_topgoals/{season_id}` | `_parse_top_goals()` | `stats.topGoals.{home,away}` |
+| 16 | `gismo/stats_team_squad/{home_uid}` and `/{away_uid}` **[new, 2026-07-20]** | `_parse_squad_averages()` | `stats.squadAverages.{home,away}` — avg_age/avg_height_cm/avg_weight_kg |
 
 **No real xG field exists anywhere in SportyBet/Sportradar's gismo API** (confirmed via non-headless Playwright capture of the Sportradar SIR widget, 93 captured responses, 2026-06-23 — see memory `oracle_sportybet_possession_value_endpoints.md`). `shots_on_target_avg` + `shots_off_target_avg` from endpoint #10 is the closest available shot-volume proxy for xG, and feeds the engine's possession-value feature-store work as such — it is NOT real xG and must not be relabelled as one downstream.
 
-Endpoint #10 is keyed by team **`_id`** (matching `home_id`/`away_id` from `match_info`, NOT `home_uid`/`away_uid` — confirmed live 2026-06-23; this differs from `stats_season_overunder`, which is `uid`-keyed — see that function's docstring for the contrasting gotcha). Endpoint #11's per-match `corners` field is `{home, away}` keyed by venue, not by queried side — the parser matches each match's `teams.home/away._id` against the queried team id to pick the right side.
+Endpoint #10 is keyed by team **`_id`** (matching `home_id`/`away_id` from `match_info`, NOT `home_uid`/`away_uid` — confirmed live 2026-06-23; this differs from `stats_season_overunder`, which is `uid`-keyed). Endpoint #11's per-match `corners` field is `{home, away}` keyed by venue, not by queried side — the parser matches each match's `teams.home/away._id` against the queried team id to pick the right side. **Endpoint #16 is `uid`-keyed** (confirmed live 2026-07-20 against a real MLS Next Pro fixture — passing `_id` silently returns an empty `players[]`, not an error, same trap class as #7).
+
+**H2H aggregate stats [2026-07-20]:** `packages/runtime/src/selectFixtures.ts`'s `computeH2hAggregate()` derives BTTS%/Over1.5%/Over2.5% from endpoint #6's `matches[]` — a pure TS-side computation, not a new gismo call. H2H-specific corners/cards were live-checked and confirmed genuinely absent from endpoint #6's per-match objects (unlike endpoint #11's, which do carry corners) — do not re-probe this without a new reason to suspect the schema changed; see `_parse_h2h`'s docstring for the exact confirmed key list.
+
+**Squad-averages data quality [2026-07-20]:** endpoint #16's `height`/`weight` fields use `0` as Sportradar's null sentinel for an unmeasured player (not a real 0cm/0kg) — confirmed on a real lower-tier roster (4/13 and 4/19 players had `height=0`). `_parse_squad_averages()` excludes zero-valued height/weight from the average; a missing sentinel pattern was NOT observed for `birthdate` (age), so that field has no equivalent filter.
+
+**Win Probability, standings W/D/L "used for analysis," and engine-coefficient wiring [2026-07-20]:** see `packages/engine/src/marketsV3/engines/corners.ts`'s `heightCornersAdjustment()` (a small, bounded squad-height nudge on corners pricing) and `packages/runtime/src/sportyBetStats.ts`'s `buildMotivation()` (extended with a position-trend dampening refinement). Both are deliberately narrow, bounded extensions of already-live mechanisms — not new free-floating coefficients — per this codebase's established discipline for activating a new signal without its own walk-forward validation cycle first. Full rationale in the session's plan file (referenced from `handoff.md`).
 
 ## Generic All-Markets Capture (`_parse_all_markets`, added 2026-06-23)
 

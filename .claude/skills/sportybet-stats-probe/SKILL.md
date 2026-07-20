@@ -102,3 +102,50 @@ more infrastructure than a host that already works.
   10–11 of `_fetch_fixture_detail()` (`_parse_possession_value()` /
   `_parse_recent_form_corners()`), using the no-auth host — no token harvest
   needed in production.
+
+## Confirmed findings (2026-07-20, do not re-probe — reuse directly)
+
+- `gismo/stats_team_squad/{uid}` — **`uid`-keyed, NOT `_id`-keyed** (confirmed
+  live against a real MLS Next Pro fixture: passing the team doctype `_id`
+  returns an empty `players[]` list, not an error — the same silent-mismatch
+  trap as `stats_season_overunder`). Returns a full roster (`_id`/name/
+  `birthdate.uts`/`height`/`weight`/position/shirtnumber per player, ~46KB for
+  a 13-26 player squad). Now wired as call #16 of `_fetch_fixture_detail()`
+  (`_parse_squad_averages()`) → `SportyBetStats.squadAverages`.
+- **`height`/`weight` use `0` as a null sentinel**, not real measurements —
+  confirmed on a real lower-tier roster (4/13 and 4/19 players had
+  `height=0`). Any consumer must filter zero-valued height/weight before
+  averaging; `birthdate` had no equivalent gap on the same rosters (100%
+  populated), so age has no parallel filter.
+- **`stats_team_versusrecent`'s (H2H) per-match objects carry NO
+  corners/cards fields at all** — confirmed live against a real fixture with
+  24 H2H entries; exact key list is `{_doc, _doctype, _id, _rcid, _seasonid,
+  _sid, _tid, _utid, bestof, canceled, comment, disqualified, inlivescore,
+  neutralground, numberofperiods, periods, postponed, result, retired,
+  round, roundname, stadiumid, status, teams, time, tobeannounced, walkover,
+  week}`. This is a materially different shape from
+  `stats_team_lastxextended`'s match objects, which DO carry a per-match
+  `corners` field — do not assume H2H inherits the same per-match richness
+  as recent-form; verify each endpoint's match-object shape independently.
+- **Venue/stadium name/capacity: NOT resolved this session.**
+  `match_info`'s `stadiumid` field is genuinely populated (confirmed a real
+  numeric id), but 8 plausible no-auth-host query names were tried
+  (`venue/{id}`, `stadium/{id}`, `stats_venue/{id}`, `venueinfo/{id}`,
+  `stats_stadium/{id}`, `stadiuminfo/{id}`, `stats_venue_info/{id}`,
+  `stats_venue_details/{id}`) — all returned the gismo "exception" doc shape
+  (HTTP 200, `event: "exception"`), meaning none is the correct query name.
+  `stats_team_info/{uid}` was also checked (already wired) and doesn't carry
+  a venue field either — that check used a national-team fixture (no home
+  ground), a weak test case; re-verify against a club fixture if this is
+  revisited. Resolving this properly needs the full non-headless-Playwright
+  capture technique (Steps 1-5 above), which wasn't run this session —
+  logged in `handoff.md` as a deferred item, not guessed at.
+- `packages/runtime/src/selectFixtures.ts`'s `computeH2hAggregate()` derives
+  BTTS%/Over1.5%/Over2.5% from `stats_team_versusrecent`'s existing
+  `matches[]` scorelines — a pure TS-side computation, not a new gismo call.
+  This generalizes a report-only `h2hOversRate` function that used to exist
+  in `reportPatterns.ts`; that function's disconnection from the live picker
+  was traced to a stale/incorrect blocking comment (claimed it needed "the
+  separate rate-limited h2h.ts external-API module," which it never actually
+  touched) — now reconnected. See `packages/engine/src/marketsV3/
+  analyzeFixtureMarkets.ts`'s `V3AllMarketsInput.h2hOversRate` doc comment.

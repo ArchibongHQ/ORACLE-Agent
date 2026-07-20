@@ -4,12 +4,15 @@
 import {
   buildCardsGrid,
   buildCornersGrid,
+  CORNERS_HEIGHT_ADJ_MAX,
+  CORNERS_HEIGHT_ADJ_PER_CM,
   CORNERS_R_DEFAULT,
   CORNERS_R_MAX,
   CORNERS_R_MIN,
   cardsMeans,
   clampCornersDispersion,
   cornersMeans,
+  heightCornersAdjustment,
   nbCDF,
   nbPMF,
   nbTailOver,
@@ -126,6 +129,53 @@ describe("cornersMeans (dormancy + blending)", () => {
   it("respects a supplied dispersion, clamped", () => {
     const means = cornersMeans({ cornersForH: 5, cornersForA: 5, dispersion: 20 });
     expect(means!.r).toBe(CORNERS_R_MAX);
+  });
+
+  it("is a no-op when squad height is absent (backward-compatible)", () => {
+    const means = cornersMeans({ cornersForH: 6.0, cornersForA: 4.5 });
+    expect(means).toEqual({ home: 6.0, away: 4.5, total: 10.5, r: CORNERS_R_DEFAULT });
+  });
+
+  it("nudges the taller side's mean up and the shorter side's down", () => {
+    const means = cornersMeans({
+      cornersForH: 6.0,
+      cornersForA: 6.0,
+      squadHeightH: 190,
+      squadHeightA: 180, // 10cm shorter
+    })!;
+    expect(means.home).toBeGreaterThan(6.0);
+    expect(means.away).toBeLessThan(6.0);
+    // Symmetric: the two nudges should be mirror images around the base 6.0.
+    expect(means.home - 6.0).toBeCloseTo(6.0 - means.away, 5);
+  });
+
+  it("is a no-op when only one side's height is present", () => {
+    const means = cornersMeans({ cornersForH: 6.0, cornersForA: 6.0, squadHeightH: 190 });
+    expect(means).toEqual({ home: 6.0, away: 6.0, total: 12.0, r: CORNERS_R_DEFAULT });
+  });
+});
+
+describe("heightCornersAdjustment", () => {
+  it("returns 1 (no-op) when either side's height is missing", () => {
+    expect(heightCornersAdjustment(undefined, 180)).toBe(1);
+    expect(heightCornersAdjustment(190, undefined)).toBe(1);
+    expect(heightCornersAdjustment(Number.NaN, 180)).toBe(1);
+  });
+
+  it("scales linearly with the height gap, per CORNERS_HEIGHT_ADJ_PER_CM", () => {
+    expect(heightCornersAdjustment(185, 180)).toBeCloseTo(1 + 5 * CORNERS_HEIGHT_ADJ_PER_CM, 10);
+    expect(heightCornersAdjustment(180, 185)).toBeCloseTo(1 - 5 * CORNERS_HEIGHT_ADJ_PER_CM, 10);
+  });
+
+  it("clamps at CORNERS_HEIGHT_ADJ_MAX for a large height gap", () => {
+    // A 50cm gap would exceed the cap at the per-cm rate — must clamp, not
+    // let one unusually tall/short squad swing pricing unboundedly.
+    expect(heightCornersAdjustment(230, 180)).toBeCloseTo(1 + CORNERS_HEIGHT_ADJ_MAX, 10);
+    expect(heightCornersAdjustment(180, 230)).toBeCloseTo(1 - CORNERS_HEIGHT_ADJ_MAX, 10);
+  });
+
+  it("returns exactly 1 for equal heights", () => {
+    expect(heightCornersAdjustment(185, 185)).toBe(1);
   });
 });
 

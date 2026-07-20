@@ -1,4 +1,103 @@
-# ⭐ CURRENT — 2026-07-19 (2nd pass): P0-P2 DONE + verified, P3 partially done, hook + research done — Phase 2 onward still pending
+# ⭐ CURRENT — 2026-07-20: SportyBet data-coverage fix SHIPPED (uncommitted) — full pipeline wired through report+LLM+engine; 3 genuine leftovers + 1 concurrent-session note
+
+> **Cold-read this first.** This supersedes the section immediately below. Owner reported ORACLE's
+> scraper was missing corner-kick data visible in SportyBet's own app (Real Monarchs SLC v Tacoma
+> Defiance, MLS Next Pro, 2026-07-20), with a broader ask to itemize what's scraped vs. skipped across
+> 10 stat categories, fix the gaps, and — after reviewing the first plan draft — an explicit follow-up
+> instruction to also wire every new/existing signal into live analysis (engine + LLM), not just the
+> report, with genuine leftovers logged here. Full plan (including the investigation and design
+> rationale for every decision below) is `C:\Users\HP PC\.claude\plans\issues-oracle-scrapes-partial-dazzling-hopper.md`.
+
+## What's DONE this session
+
+- **Scraper layer** (`tools/scrape_fixtures.py`): `_parse_standings` now extracts W/D/L/goal-diff
+  (already in the raw response, previously discarded); `_parse_disciplinary` adds a `total_avg`
+  display field; `_parse_overunder` adds half-time O0.5/O1.5 lines (`total.p1`, confirmed live
+  alongside the existing `total.ft`); new `_parse_squad_averages()` + a new endpoint call
+  (`stats_team_squad/{uid}` — **uid-keyed, not `_id`-keyed**, confirmed live, silently returns an
+  empty roster on the wrong key) for age/height/weight, with zero-value sentinel filtering (confirmed
+  live: 4/13 and 4/19 players on a real MLS Next Pro roster had `height=0`, Sportradar's null
+  sentinel, not a real measurement). 45 new/updated Python tests, full repo pytest 332/332.
+- **H2H aggregate** — found `h2hOversRate` was already computed (report-only) and already had real,
+  tested consumption logic in the engine's pattern detector, but was disconnected by a **stale/
+  incorrect blocking comment** (claimed it needed "the separate rate-limited h2h.ts module," which it
+  never touched — it only ever read the free/unlimited SportyBet H2H data). Reconnected it into the
+  live picker (`analyzeFixtureMarkets.ts`'s `buildFixturePatternInput`); generalized it into a shared
+  `computeH2hAggregate()` (`selectFixtures.ts`) also covering BTTS%/O1.5% for the report/LLM layer.
+  This was the 5th stale code comment/doc found and corrected this session (see plan for the other 4).
+- **Win Probability** — found the report's existing "Result 1X2" block already computes model
+  probability AND devigged market probability AND the delta (richer than SportyBet's single number),
+  and already feeds the live EV gate — the only real gap was labeling. Relabeled in
+  `fixtureWorkbook.ts`.
+- **Report + LLM wiring** (`fixtureWorkbook.ts`, `dailyFixtureReport.ts`, `sportyBetStats.ts`): every
+  new field surfaced in both HTML report renderers (they're separate code paths — easy to update one
+  and miss the other, confirmed both this time) and the LLM's advisory soft-context.
+- **Two new bounded engine coefficients** (Steps 7-8 of the plan, per owner's explicit "wire it in
+  now" instruction): `buildMotivation()` (`sportyBetStats.ts`) extended with a position-**trend**
+  dampening refinement (uses `positionHistory.trend`, real integer table-positions-moved units) — the
+  untouched base case (no strong trend) still returns exactly 0.8, byte-identical to prior behavior.
+  `heightCornersAdjustment()` (new, `marketsV3/engines/corners.ts`) — a small, bounded (±5% max)
+  squad-height nudge on the corners model's means, mechanistically justified (aerial duels/set-pieces)
+  and researched before building (this session searched current football-analytics literature per the
+  project's mandatory real-time-research rule; squad age/weight did NOT get a parallel coefficient —
+  no credible mechanism found, so none was fabricated; they still reach the report/LLM layer). Both
+  follow the exact bounded-clamp pattern this codebase already uses for `homeAvailabilityMult`, not a
+  free-floating new term — see the plan file's "Design Rationale" section for the full reasoning.
+- **Verification**: `pnpm turbo run typecheck test --concurrency=1` clean across engine+runtime
+  (only the 3 pre-existing, unrelated `gbm.test.ts` failures — a stale model-artifact feature-count
+  mismatch, documented in an older memory entry, confirmed unrelated by running it in isolation);
+  Python pytest 332/332. New tests added for every new function (parsers, `computeH2hAggregate`,
+  `heightCornersAdjustment`, `buildMotivation`'s trend refinement).
+- **Docs updated**: `workflows/scrape_fixtures.md`'s endpoint table (was stale — undercounted the real
+  call count even before this session; now lists all 16 calls with an explicit "verify against the
+  code's own `# N.` comments, this table has drifted before" warning) and
+  `.claude/skills/sportybet-stats-probe/SKILL.md`'s "Confirmed findings" (squad endpoint keying, H2H
+  corners/cards confirmed absent, venue/stadium probe attempts + why it wasn't resolved).
+
+## NEXT — owner action needed
+
+1. **Review + commit.** Everything above is uncommitted on `feat/patterns-legacy-pricer` (this
+   session's starting branch — did not create a new one). Touched files: `tools/scrape_fixtures.py` +
+   `tools/test_gismo_parsers.py`, `packages/runtime/src/{selectFixtures,sportyBetStats,reportPatterns,
+   fixtureWorkbook,dailyFixtureReport,h2h}.ts` + matching tests, `packages/engine/src/{types,index,
+   marketsV3/analyzeFixtureMarkets,marketsV3/engines/corners,batch/index}.ts` + a corners test file,
+   `workflows/scrape_fixtures.md`, `.claude/skills/sportybet-stats-probe/SKILL.md`. Consider whether
+   this should be its own branch/PR rather than riding on `feat/patterns-legacy-pricer`'s existing
+   scope — this session didn't branch off because it started mid-session on an already-active branch.
+2. **⚠️ Concurrent-session note**: a second Claude Code session was actively committing to this same
+   branch DURING this session (commit `520dd93`, "Phase 2A — pattern-aware ranking for the legacy
+   pricer," timestamped 2026-07-20 14:22 — check `git log` for what landed after this entry was
+   written). That commit's diff of `packages/engine/src/{batch/index.ts,index.ts,types.ts,
+   marketsV3/analyzeFixtureMarkets.ts}` includes some of THIS session's squad-height/h2hOversRate
+   content (verified byte-for-byte intact, nothing lost, typecheck/tests passed on the combined state)
+   — but that commit's message doesn't describe it, since the other session didn't know it was there.
+   Decide whether to split/reword that commit or accept it as-is before pushing.
+3. **Watch-and-validate the two new engine coefficients post-hoc.** Per this codebase's own
+   established discipline (every other new signal — ratings, GBM residual — goes through a
+   walk-forward significance gate before it can move live picks), these two ship without that
+   pre-activation cycle, per explicit owner instruction to activate now rather than defer. Both are
+   deliberately small/bounded (see "What's DONE" above), but should still get a look at real
+   before/after pick behavior once a few days of live data accumulate.
+4. **3 genuine leftovers, not attempted this session** (owner's instruction: log here, plan+implement
+   in a dedicated future session, using Opus or Fable 5):
+   - **Venue/stadium name/capacity** — `match_info`'s `stadiumid` field is real and populated, but 8
+     plausible no-auth-host query names all failed. Needs the full non-headless-Playwright capture
+     technique (`/sportybet-stats-probe` skill, Steps 1-5) to find the real query name — not attempted
+     this session (disproportionate effort for the lowest-priority item in the original ask).
+   - **League-wide comparison averages** (item 10 of the original 10-category ask — the grey
+     reference bar in SportyBet's H2H(New) view: league-avg goals/BTTS%/O-U%/cards/corners). A
+     season-wide, cached aggregate across every team in a league, not a per-fixture enrichment — a
+     materially different shape of work than everything else in this session.
+   - **Referee cards-rate blending into the live cards model** — confirmed genuinely shadow-only/
+     unconsumed (`refereeCardsShadow.ts`) but wasn't part of the owner's original ask; flagged as an
+     adjacent finding, not built.
+5. **Rebuild + restart `OracleWorker`** once committed/merged — same standard deploy as every prior
+   session's changes (`pnpm turbo run build --concurrency=1` then, elevated shell, `Restart-Service
+   OracleWorker`).
+
+═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+# ⭐ PRIOR — 2026-07-19 (2nd pass): P0-P2 DONE + verified, P3 partially done, hook + research done — Phase 2 onward still pending
 
 > **Cold-read this first.** This supersedes the section immediately below. A PRIOR session this same day
 > wrote a 5-item bug-fix plan (`C:\Users\HP PC\.claude\plans\provide-a-fix-plan-vast-riddle.md`) believing

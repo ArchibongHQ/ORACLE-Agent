@@ -214,9 +214,34 @@ export interface SportyBetStats {
       streak?: number;
     } | null;
   } | null;
+  /** [2026-07-20] w/d/l/diff added — confirmed live-present in the same
+   *  tablerow already being read for pos/points/played/gf/ga (previously
+   *  fetched but discarded, same class of gap as this codebase's other
+   *  under-extraction fixes). diff is winTotal-goalDiffTotal passthrough,
+   *  not derived, in case Sportradar's own figure ever diverges from gf-ga. */
   standings?: {
-    home?: { pos?: number; points?: number; played?: number; gf?: number; ga?: number } | null;
-    away?: { pos?: number; points?: number; played?: number; gf?: number; ga?: number } | null;
+    home?: {
+      pos?: number;
+      points?: number;
+      played?: number;
+      gf?: number;
+      ga?: number;
+      w?: number;
+      d?: number;
+      l?: number;
+      diff?: number;
+    } | null;
+    away?: {
+      pos?: number;
+      points?: number;
+      played?: number;
+      gf?: number;
+      ga?: number;
+      w?: number;
+      d?: number;
+      l?: number;
+      diff?: number;
+    } | null;
   } | null;
   goals?: {
     home?: { avg_scored?: number; avg_conceded?: number } | null;
@@ -253,10 +278,24 @@ export interface SportyBetStats {
     home?: SportyBetXgEntry | null;
     away?: SportyBetXgEntry | null;
   } | null;
-  /** Season over-line hit rate per team (stats_season_overunder), both venues combined. */
+  /** Season over-line hit rate per team (stats_season_overunder), both venues
+   *  combined. ht_over05_pct/ht_over15_pct [2026-07-20] read the same doc's
+   *  `total.p1` (first-half) lines, confirmed live alongside `total.ft`. */
   overunder?: {
-    home?: { over15_pct?: number; over25_pct?: number; over35_pct?: number } | null;
-    away?: { over15_pct?: number; over25_pct?: number; over35_pct?: number } | null;
+    home?: {
+      over15_pct?: number;
+      over25_pct?: number;
+      over35_pct?: number;
+      ht_over05_pct?: number;
+      ht_over15_pct?: number;
+    } | null;
+    away?: {
+      over15_pct?: number;
+      over25_pct?: number;
+      over35_pct?: number;
+      ht_over05_pct?: number;
+      ht_over15_pct?: number;
+    } | null;
   } | null;
   /** Rest/fixture-load context derived from stats_season_fixtures, relative to this kickoff. */
   congestion?: {
@@ -312,10 +351,17 @@ export interface SportyBetStats {
   } | null;
   /** Disciplinary profile (stats_season_teamdisciplinary) — cards/fouls per team.
    *  Marginal goals signal: card-heavy referees → stoppages; many fouls →
-   *  set-pieces. Advisory (LLM soft-context + report), no engine coefficient. */
+   *  set-pieces. [Correction 2026-07-20 — this docstring previously claimed
+   *  "no engine coefficient," verified stale: yellow_avg+red_avg IS the
+   *  source of cardsAvgH/cardsAvgA (sportyBetStats.ts's buildStatsOverride),
+   *  the live input to the cards Poisson model
+   *  (marketsV3/engines/cards.ts) — this has been a real, active engine
+   *  coefficient all along.] fouls_avg remains report/LLM-context only;
+   *  total_avg [2026-07-20] is a display-only sum (yellow_avg+red_avg),
+   *  computed only when yellow_avg is present. */
   disciplinary?: {
-    home?: { yellow_avg?: number; red_avg?: number; fouls_avg?: number } | null;
-    away?: { yellow_avg?: number; red_avg?: number; fouls_avg?: number } | null;
+    home?: { yellow_avg?: number; red_avg?: number; fouls_avg?: number; total_avg?: number } | null;
+    away?: { yellow_avg?: number; red_avg?: number; fouls_avg?: number; total_avg?: number } | null;
   } | null;
   /** League-position trend (stats_season_teampositionhistory) — momentum signal.
    *  trend>0 = climbing (lower position number = better). Advisory. */
@@ -375,6 +421,74 @@ export interface SportyBetStats {
     home?: SportyBetLiveInjuriesEntry | null;
     away?: SportyBetLiveInjuriesEntry | null;
   } | null;
+  /** [2026-07-20] Mean age/height/weight across each team's roster
+   *  (tools/scrape_fixtures.py's stats_team_squad/{uid} — uid-keyed, NOT the
+   *  team doctype `_id`, confirmed live; passing `_id` silently returns an
+   *  empty roster instead of an error). Zero-valued height/weight fields are
+   *  excluded before averaging — Sportradar uses `0` as a null sentinel for
+   *  unmeasured players rather than omitting the field, confirmed live on a
+   *  lower-tier roster (4/13 and 4/19 players had height=0 on the verifying
+   *  fixture) — including them would silently drag the mean down. No engine
+   *  coefficient consumes age/weight directly (no credible predictive
+   *  mechanism found for either beyond what the existing goals/form inputs
+   *  already capture); height feeds a small, bounded nudge into the corners
+   *  model (marketsV3/engines/corners.ts) via an aerial-duel/set-piece
+   *  mechanism. Report + LLM soft-context only for age/weight. */
+  squadAverages?: {
+    home?: { avg_age?: number; avg_height_cm?: number; avg_weight_kg?: number } | null;
+    away?: { avg_age?: number; avg_height_cm?: number; avg_weight_kg?: number } | null;
+  } | null;
+}
+
+/** H2H aggregate: BTTS%, Over1.5%/Over2.5% hit rate — a pure derivation from
+ *  `stats.h2h.matches` (NOT a separately-scraped/persisted sidecar field —
+ *  the scraper never writes this; every consumer computes it on demand from
+ *  the already-scraped match list so there's exactly one place this math can
+ *  drift). Fields are omitted (not zeroed) under 3 scored meetings — too thin
+ *  to call a trend. Generalizes the report-only `h2hOversRate` this codebase
+ *  already computed (matching `over25_pct` exactly) into a fuller struct also
+ *  covering BTTS/Over1.5. Single source of truth for both the report's
+ *  pattern-input builder (reportPatterns.ts) and the live picker's engine
+ *  wiring (sportyBetStats.ts's buildStatsOverride → V3AllMarketsInput.
+ *  h2hOversRate → packages/engine/src/marketsV3/patterns.ts) — previously
+ *  duplicated logic risk, now one function both import.
+ *
+ *  H2H-specific cards/corners are NOT included: confirmed live 2026-07-20
+ *  that stats_team_versusrecent's per-match objects carry no corners/cards
+ *  fields at all (unlike stats_team_lastxextended's, which do) — a genuine
+ *  data absence, not an extraction gap. */
+export function computeH2hAggregate(
+  stats: SportyBetStats | null | undefined
+): { total: number; btts_pct?: number; over15_pct?: number; over25_pct?: number } | null {
+  const matches = stats?.h2h?.matches;
+  if (!matches?.length) return null;
+  let n = 0;
+  let btts = 0;
+  let over15 = 0;
+  let over25 = 0;
+  for (const m of matches) {
+    const h = m.home_goals;
+    const a = m.away_goals;
+    if (
+      typeof h !== "number" ||
+      typeof a !== "number" ||
+      !Number.isFinite(h) ||
+      !Number.isFinite(a)
+    ) {
+      continue;
+    }
+    n++;
+    if (h > 0 && a > 0) btts++;
+    if (h + a > 1.5) over15++;
+    if (h + a > 2.5) over25++;
+  }
+  if (n < 3) return null;
+  return {
+    total: n,
+    btts_pct: Math.round((btts / n) * 1000) / 1000,
+    over15_pct: Math.round((over15 / n) * 1000) / 1000,
+    over25_pct: Math.round((over25 / n) * 1000) / 1000,
+  };
 }
 
 /** [PR-25 item 2] One fixture's assigned referee — see SportyBetStats.referee. */

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SportyBetEventDetail } from "../src/selectFixtures.js";
 import {
   blendRecencyScored,
+  buildMotivation,
   buildStatsOverride,
   buildStatsSoftContext,
   goalRateNudge,
@@ -701,5 +702,86 @@ describe("blendRecencyScored (PR-5, §8.1 temporal decay for v3 lambda inputs)",
     const v = blendRecencyScored(1.4, undefined, "LLDLL");
     expect(v).not.toBeNull();
     expect(v as number).toBeLessThan(1.4);
+  });
+});
+
+describe("buildMotivation", () => {
+  const midTable = (extra: Record<string, unknown> = {}) =>
+    detail({
+      standings: {
+        home: { pos: 10, played: 25, ...extra },
+        away: { pos: 12, played: 22 },
+      },
+    });
+
+  it("returns empty telemetry when positions or sample size are missing", () => {
+    expect(buildMotivation(undefined).telemetry).toEqual({});
+    expect(buildMotivation(detail(null)).telemetry).toEqual({});
+    expect(
+      buildMotivation(
+        detail({ standings: { home: { pos: 10, played: 5 }, away: { pos: 12, played: 22 } } })
+      ).telemetry
+    ).toEqual({}); // home played < 20
+  });
+
+  it("returns empty telemetry when either side is outside the safe mid-table window", () => {
+    const d = detail({
+      standings: { home: { pos: 3, played: 25 }, away: { pos: 12, played: 22 } },
+    });
+    expect(buildMotivation(d).telemetry).toEqual({});
+  });
+
+  it("base case (no strong trend) returns exactly 0.8 — unchanged pre-2026-07-20 behavior", () => {
+    const { telemetry, soft } = buildMotivation(midTable());
+    expect(telemetry.motivationScore).toBe(0.8);
+    expect(soft?.kind).toBe("motivation");
+  });
+
+  it("a trend below the threshold (< 3 places) still returns exactly 0.8", () => {
+    const d = detail({
+      standings: { home: { pos: 10, played: 25 }, away: { pos: 12, played: 22 } },
+      positionHistory: { home: { trend: 2 }, away: { trend: -1 } },
+    });
+    expect(buildMotivation(d).telemetry.motivationScore).toBe(0.8);
+  });
+
+  it("dampens toward neutral when a side has moved >=3 table positions", () => {
+    const d = detail({
+      standings: { home: { pos: 10, played: 25 }, away: { pos: 12, played: 22 } },
+      positionHistory: { home: { trend: 4 }, away: { trend: 0 } },
+    });
+    const { telemetry, soft } = buildMotivation(d);
+    // 0.8 + 0.05 * (4 - 2) = 0.9
+    expect(telemetry.motivationScore).toBeCloseTo(0.9, 5);
+    expect(soft?.text).toContain("moved 4 table positions");
+  });
+
+  it("uses the larger of the two sides' |trend| and caps the dampening at 1.0", () => {
+    const d = detail({
+      standings: { home: { pos: 10, played: 25 }, away: { pos: 12, played: 22 } },
+      // away's trend is more extreme (magnitude 20) and negative — |trend| still wins.
+      positionHistory: { home: { trend: 1 }, away: { trend: -20 } },
+    });
+    expect(buildMotivation(d).telemetry.motivationScore).toBe(1.0);
+  });
+
+  it("never exceeds the 0.5-1.2 documented range even for an extreme trend", () => {
+    const d = detail({
+      standings: { home: { pos: 10, played: 25 }, away: { pos: 12, played: 22 } },
+      positionHistory: { home: { trend: 999 }, away: { trend: 0 } },
+    });
+    const score = buildMotivation(d).telemetry.motivationScore!;
+    expect(score).toBeGreaterThanOrEqual(0.5);
+    expect(score).toBeLessThanOrEqual(1.2);
+  });
+
+  it("includes W/D/L in the advisory text when present", () => {
+    const d = detail({
+      standings: {
+        home: { pos: 10, played: 25, w: 8, d: 9, l: 8 },
+        away: { pos: 12, played: 22 },
+      },
+    });
+    expect(buildMotivation(d).soft?.text).toContain("W8D9L8");
   });
 });

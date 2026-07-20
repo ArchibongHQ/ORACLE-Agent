@@ -43,7 +43,7 @@ import {
   slateGreenFlagProfile,
   summarizeGreenFlags,
 } from "./reportPatterns.js";
-import { loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
+import { computeH2hAggregate, loadSportyBetIndex, type SportyBetEvent } from "./selectFixtures.js";
 import { buildMotivation } from "./sportyBetStats.js";
 import { buildTravel } from "./travel.js";
 
@@ -133,6 +133,14 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
   { header: "GF_A", get: ({ event }) => event.detail?.stats?.standings?.away?.gf ?? null },
   { header: "GA_H", get: ({ event }) => event.detail?.stats?.standings?.home?.ga ?? null },
   { header: "GA_A", get: ({ event }) => event.detail?.stats?.standings?.away?.ga ?? null },
+  { header: "W_H", get: ({ event }) => event.detail?.stats?.standings?.home?.w ?? null },
+  { header: "W_A", get: ({ event }) => event.detail?.stats?.standings?.away?.w ?? null },
+  { header: "D_H", get: ({ event }) => event.detail?.stats?.standings?.home?.d ?? null },
+  { header: "D_A", get: ({ event }) => event.detail?.stats?.standings?.away?.d ?? null },
+  { header: "L_H", get: ({ event }) => event.detail?.stats?.standings?.home?.l ?? null },
+  { header: "L_A", get: ({ event }) => event.detail?.stats?.standings?.away?.l ?? null },
+  { header: "DIFF_H", get: ({ event }) => event.detail?.stats?.standings?.home?.diff ?? null },
+  { header: "DIFF_A", get: ({ event }) => event.detail?.stats?.standings?.away?.diff ?? null },
   // ── Season goals avg ──────────────────────────────────────────────────────
   {
     header: "SeasonGF_H",
@@ -159,6 +167,18 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
     header: "H2H results",
     width: 28,
     get: ({ event }) => h2hResultsLine(event.detail?.stats?.h2h?.matches),
+  },
+  {
+    header: "H2H BTTS%",
+    get: ({ event }) => computeH2hAggregate(event.detail?.stats)?.btts_pct ?? null,
+  },
+  {
+    header: "H2H O1.5%",
+    get: ({ event }) => computeH2hAggregate(event.detail?.stats)?.over15_pct ?? null,
+  },
+  {
+    header: "H2H O2.5%",
+    get: ({ event }) => computeH2hAggregate(event.detail?.stats)?.over25_pct ?? null,
   },
   // ── xG ────────────────────────────────────────────────────────────────────
   { header: "xGF_H", get: ({ event }) => event.detail?.stats?.xg?.home?.xgf ?? null },
@@ -209,6 +229,22 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
   {
     header: "O3.5%_A",
     get: ({ event }) => event.detail?.stats?.overunder?.away?.over35_pct ?? null,
+  },
+  {
+    header: "HT-O0.5%_H",
+    get: ({ event }) => event.detail?.stats?.overunder?.home?.ht_over05_pct ?? null,
+  },
+  {
+    header: "HT-O0.5%_A",
+    get: ({ event }) => event.detail?.stats?.overunder?.away?.ht_over05_pct ?? null,
+  },
+  {
+    header: "HT-O1.5%_H",
+    get: ({ event }) => event.detail?.stats?.overunder?.home?.ht_over15_pct ?? null,
+  },
+  {
+    header: "HT-O1.5%_A",
+    get: ({ event }) => event.detail?.stats?.overunder?.away?.ht_over15_pct ?? null,
   },
   // ── Congestion ────────────────────────────────────────────────────────────
   {
@@ -353,6 +389,14 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
     header: "Fouls_A",
     get: ({ event }) => event.detail?.stats?.disciplinary?.away?.fouls_avg ?? null,
   },
+  {
+    header: "TotalCards_H",
+    get: ({ event }) => event.detail?.stats?.disciplinary?.home?.total_avg ?? null,
+  },
+  {
+    header: "TotalCards_A",
+    get: ({ event }) => event.detail?.stats?.disciplinary?.away?.total_avg ?? null,
+  },
   // ── Position trend ────────────────────────────────────────────────────────
   {
     header: "PosTrend_H",
@@ -380,6 +424,31 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
   {
     header: "TopScorerGoals_A",
     get: ({ event }) => event.detail?.stats?.topGoals?.away?.top_scorer_goals ?? null,
+  },
+  // ── Squad averages ────────────────────────────────────────────────────────
+  {
+    header: "SquadAge_H",
+    get: ({ event }) => event.detail?.stats?.squadAverages?.home?.avg_age ?? null,
+  },
+  {
+    header: "SquadAge_A",
+    get: ({ event }) => event.detail?.stats?.squadAverages?.away?.avg_age ?? null,
+  },
+  {
+    header: "SquadHeight_H",
+    get: ({ event }) => event.detail?.stats?.squadAverages?.home?.avg_height_cm ?? null,
+  },
+  {
+    header: "SquadHeight_A",
+    get: ({ event }) => event.detail?.stats?.squadAverages?.away?.avg_height_cm ?? null,
+  },
+  {
+    header: "SquadWeight_H",
+    get: ({ event }) => event.detail?.stats?.squadAverages?.home?.avg_weight_kg ?? null,
+  },
+  {
+    header: "SquadWeight_A",
+    get: ({ event }) => event.detail?.stats?.squadAverages?.away?.avg_weight_kg ?? null,
   },
   // ── Derived (motivation / travel / completeness) ──────────────────────────
   {
@@ -754,7 +823,7 @@ function renderDataAnalysisBlock(panel: FixtureAnalysisPanel | null): string {
 
   return (
     `<div class="h">Data Analysis — mathematical model (venue-adjusted expected goals)</div>` +
-    `<div class="da-group"><div class="da-sub">Result 1X2</div>${result1x2}</div>` +
+    `<div class="da-group"><div class="da-sub">Win Probability — Result 1X2 (model %, delta vs. de-vigged market)</div>${result1x2}</div>` +
     `<div class="da-group"><div class="da-sub">BTTS</div>${btts}</div>` +
     `<div class="da-group"><div class="da-sub">Goals O/U</div>${goalsOU}</div>` +
     `<div class="da-group"><div class="da-sub">First Half Winner</div>${fhw}</div>` +
