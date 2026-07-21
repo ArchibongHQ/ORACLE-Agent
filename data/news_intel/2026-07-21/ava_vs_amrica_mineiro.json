@@ -1,0 +1,24 @@
+{
+  "home": "Avaí", "away": "América Mineiro", "league": "Brazilian Serie B", "kickoff": "2026-07-21T22:30Z",
+  "injuries": [
+    "Ricardo Silva (América Mineiro) — injured, confirmed absence",
+    "Emerson (América Mineiro) — injured, confirmed absence"
+  ],
+  "suspensions": [
+    "DG (Avaí) — left-back, suspended",
+    "Rafa Barcelos (América Mineiro) — suspended"
+  ],
+  "lineupHints": [
+    "Avaí probable XI: Igor Bohn; Wallison, Allyson, Jefferson Maciel, William; Zé Ricardo, Luiz Henrique, Daniel Penha, Jean Lucas; Thayllon, Sorriso",
+    "América Mineiro probable XI: Gustavo; Alex Silva, Manoel, Luca Sosa (Thallyson), Dalbert; Felipe Amaral, Yago Souza, Segovinha; Gabriel Barros, Guilherme Parede, Paulo Victor"
+  ],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://www.ogol.com.br/noticias/avai-x-america-mineiro-horario-escalacoes-e-estatisticas-serie-b-21-07/1159446",
+    "https://www.gazetaesportiva.com/campeonatos/brasileiro-serie-b/avai-x-america-mg-serie-b-onde-assistir-escalacoes/"
+  ],
+  "confidence": 0.75,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-21T06:49:30Z"
+}

@@ -1,0 +1,30 @@
+{
+  "home": "Atlético-MG", "away": "Bahia", "league": "Brazilian Serie A", "kickoff": "2026-07-21T22:30Z",
+  "injuries": [
+    "Scarpa (Atlético-MG) — recovering from knee arthroscopy, expected still unavailable",
+    "Léo Duarte (Atlético-MG) — posterior right thigh injury sustained in training",
+    "Patrick (Atlético-MG) — recovering from complex knee ligament surgery",
+    "Índio (Atlético-MG) — recovering from posterior cruciate and medial collateral knee ligament injury",
+    "Preciado (Atlético-MG) — reporting back from time off, still in physical reconditioning, unlikely to feature",
+    "Alan Minda (Atlético-MG) — reporting back from time off, still in physical reconditioning, unlikely to feature",
+    "Luciano Juba (Bahia) — left-back, confirmed medical-department absence",
+    "Léo Vieira (Bahia) — goalkeeper, confirmed medical-department absence"
+  ],
+  "suspensions": [
+    "Ivan Román (Atlético-MG) — automatic suspension after third yellow card vs Vasco"
+  ],
+  "lineupHints": [
+    "Atlético-MG probable XI: Everson; Natanael, Ruan Tressoldi, Lyanco, Renan Lodi; Maycon, Cissé (Alexsander), Victor Hugo, Bernard; Cuello, Cassierra",
+    "Alan Franco (Atlético-MG) yet to return to Brazil, released by the club to remain in Ecuador for family reasons"
+  ],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://noataque.com.br/futebol/brasileirao-serie-a/time/atletico-mg/noticia/2026/07/20/atletico-x-bahia-desfalques-e-provaveis-escalacoes-para-jogo-pelo-brasileiro/",
+    "https://www.lance.com.br/atletico-mineiro/primeiro-desafio-no-retorno-as-opcoes-de-dominguez-para-escalar-o-atletico-contra-o-bahia.html",
+    "https://www.lance.com.br/atletico-mineiro/jogadores-do-atletico-que-disputaram-a-copa-podem-ser-desfalques-no-retorno-entenda.html"
+  ],
+  "confidence": 0.8,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-21T06:49:30Z"
+}

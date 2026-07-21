@@ -1,0 +1,25 @@
+{
+  "home": "Cruz Azul", "away": "Puebla", "league": "Liga MX", "kickoff": "2026-07-22T01:00Z",
+  "injuries": [
+    "Amaury García (Cruz Azul) — torn ACL suffered in training, ruled out 6-9 months, main confirmed absence",
+    "Kevin Mier (Cruz Azul) — fully recovered from long-term injury, confirmed available and starting in goal"
+  ],
+  "suspensions": [
+    "Iker Moreno (Puebla) — sent off vs Juárez, suspended for this fixture"
+  ],
+  "lineupHints": [
+    "Cruz Azul probable XI (4-2-3-1): Kevin Mier; Omar Campos, Gonzalo Piovi, Willer Ditta, Jeremy Márquez; Agustín Palavecino, Erik Lira; Carlos Rotondi, Charly Rodríguez, José Paradela; Cristian Ebere",
+    "Puebla probable XI (4-2-3-1): Ricardo Gutiérrez; Fernando Monárrez, Juan Vargas, Ángel Leyva, Facundo Almada; Alberto Herrera, Alonso Ramírez; Emiliano Gómez, Alejandro Organista, Kevin Velasco; Edson Maestro Puch"
+  ],
+  "motivationFlags": [],
+  "travelFlags": [],
+  "sources": [
+    "https://vamoscruzazul.bolavip.com/noticias/todas-las-bajas-que-tendra-cruz-azul-ante-puebla-por-la-jornada-3-del-torneo-clausura-2026",
+    "https://www.si.com/es-us/futbol/lesionados-y-sancionados-del-america-para-enfrentarse-al-puebla",
+    "https://www.si.com/es-us/futbol/alineacion-cruz-azul-puebla-21-7-2026",
+    "https://www.si.com/es-us/futbol/cruz-azul-vs-puebla-previa-predicciones-y-alineaciones-21-7-2026"
+  ],
+  "confidence": 0.7,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-21T06:49:30Z"
+}

@@ -1,0 +1,21 @@
+{
+  "home": "Novorizontino", "away": "Criciúma", "league": "Brazilian Serie B", "kickoff": "2026-07-21T22:30Z",
+  "injuries": [], "suspensions": [
+    "Rodrigo (Novorizontino) — suspended, accumulated yellow cards, defensive reshuffle expected"
+  ],
+  "lineupHints": [
+    "Novorizontino probable XI: Jordi; Castrillón, Gabriel Bahia, Patrick, Maykon; Luís Oyama, Matheus Bianqui, Rômulo; Reidiney, Hélio Borges, Robson",
+    "Criciúma probable XI: Airton; Bruno Alves, Walisson Maia, Luciano Castán; Willean Lepo, Eduardo, Guilherme Lobo, Marcelo Hermes; Otero, Waguininho, Fellipe Mateus"
+  ],
+  "motivationFlags": [
+    "Criciúma are Série B leaders on 36 points, 4 clear of second place, on a run of 5 straight wins (7 wins in last 10) — strong incentive to extend the lead"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://portaln10.com.br/esporte/criciuma-x-novorizontino-pela-serie-b-escalacoes-palpites-e-onde-assistir-307608/",
+    "https://www.gazetaesportiva.com/times/gremio-novorizontino/novorizontino-x-criciuma-veja-provaveis-escalacoes-e-onde-assistir-ao-duelo-pela-serie-b/"
+  ],
+  "confidence": 0.65,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-21T06:49:30Z"
+}

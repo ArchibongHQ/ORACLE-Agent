@@ -1,0 +1,18 @@
+{
+  "home": "Toluca", "away": "Pumas UNAM", "league": "Liga MX", "kickoff": "2026-07-22T03:05Z",
+  "injuries": [], "suspensions": [],
+  "lineupHints": [
+    "Toluca probable XI: Luis García; Diego Barbosa, Bruno Méndez, Federico Pereira, Jesús Gallardo; Franco Romero, Marcel Ruiz; Helinho, Jesús Angulo, Alexis Vega; Paulinho"
+  ],
+  "motivationFlags": [
+    "Pumas UNAM arrive off a 3-0 home defeat to Pachuca, added pressure to respond; Toluca opened the half-season with a 2-0 win at Chivas"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://www.wsn.com/liga-mx/toluca-vs-pumas-unam-prediction-2026-07-21/",
+    "https://www.squawka.com/us/news/liga-mx/match-preview-toluca-vs-pumas-07-21-26-liga-mx/"
+  ],
+  "confidence": 0.3,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-21T06:49:30Z"
+}

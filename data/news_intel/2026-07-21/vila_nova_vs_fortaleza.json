@@ -1,0 +1,30 @@
+{
+  "home": "Vila Nova", "away": "Fortaleza", "league": "Brazilian Serie B", "kickoff": "2026-07-22T00:35Z",
+  "injuries": [
+    "Anderson Jesus (Vila Nova) — out with muscular discomfort",
+    "Ryan (Vila Nova) — recovering from arthroscopy"
+  ],
+  "suspensions": [
+    "Tiago Pagnussat (Vila Nova) — suspended, third yellow card",
+    "Higor Luiz (Vila Nova) — suspended, third yellow card",
+    "Lucas Gazal (Fortaleza) — suspended, third yellow card",
+    "Rodriguinho (Fortaleza) — suspended, third yellow card"
+  ],
+  "lineupHints": [
+    "Fortaleza have named newly-signed striker Nathan Fogaça among the 24 relacionados for this fixture",
+    "Vila Nova expected to start Willian Formiga at left-back in place of the suspended Higor Luiz, pending registration of Douglas Mendes in defense",
+    "Fortaleza have no players in the medical department for this match"
+  ],
+  "motivationFlags": [
+    "Direct clash for the Série B vice-leadership between the two sides"
+  ],
+  "travelFlags": [],
+  "sources": [
+    "https://esportegoiano.com.br/provavel-vila-nova-guto-ferreira-perde-zagueiro-lateral-duelo-diante-fortaleza/",
+    "https://www.diariogoianiense.com.br/noticia/vila-nova-x-fortaleza-duelo-direto-pode-definir-vice-lideranca-da-serie-b",
+    "https://ne45.com.br/2026/07/20/fortaleza-relaciona-24-jogadores-vila/"
+  ],
+  "confidence": 0.8,
+  "model": "cloud-routine",
+  "observedAt": "2026-07-21T06:49:30Z"
+}
