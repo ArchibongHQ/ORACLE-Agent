@@ -810,6 +810,78 @@ describe("decide — JSON parsing", () => {
   });
 });
 
+// ── Phase 6: confidence sourcing — LLM path grounds confidence in the ─────────
+// matched EVMarket's modelProb instead of trusting the LLM's self-report,
+// same philosophy as deterministicDecide's `confidence: top.modelProb` and
+// validateSelection's Gate 1.5 (odds/stake). See decision/index.ts's
+// findMatchingMarket + parseDecisionResponse.
+
+describe("decide — confidence sourcing (Phase 6)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("grounds confidence in the matched EVMarket's modelProb, not the LLM's self-reported number", async () => {
+    const bet = makeMarket({ market: "Goals O/U", side: "Over 2.5", modelProb: 0.55, mp: 0.55 });
+    const mockResponse: DecisionOutput = {
+      primaryPick: { market: "Goals O/U", side: "Over 2.5", odds: 2.1, stake: 0.03 },
+      confidence: 0.99, // LLM self-reports an inflated number
+      rationale: "LLM picked this with a self-reported high confidence.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(mockResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    const { decision } = await decide([bet], BASE_CTX, { claudeApiKey: "test-key" });
+    expect(decision.confidence).toBeCloseTo(0.55); // engine's modelProb, not the LLM's 0.99
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it('matches a paraphrased side (LLM says "Home", eligible market is "DNB Home") the same way validateSelection\'s Gate 1 does, and grounds confidence off it', async () => {
+    const bet = makeMarket({
+      cat: "DNB",
+      market: "DNB",
+      side: "DNB Home",
+      modelProb: 0.61,
+      mp: 0.61,
+    });
+    const mockResponse: DecisionOutput = {
+      primaryPick: { market: "DNB", side: "Home", odds: 1.75, stake: 0.02 }, // paraphrased side
+      confidence: 0.15, // deliberately far from modelProb to prove grounding happened, not a fluke
+      rationale: "Paraphrased side.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(mockResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    const { decision } = await decide([bet], BASE_CTX, { claudeApiKey: "test-key" });
+    expect(decision.confidence).toBeCloseTo(0.61);
+    vi.doUnmock("@oracle/llm");
+  });
+
+  it("keeps the LLM's self-reported confidence when the pick can't be matched to any eligible market — validateSelection's Gate 1 discards the whole decision downstream regardless", async () => {
+    const bet = makeMarket({ market: "Goals O/U", side: "Over 2.5", modelProb: 0.55 });
+    const mockResponse: DecisionOutput = {
+      primaryPick: { market: "Asian Handicap", side: "AH Home +0.5", odds: 1.92, stake: 0.05 }, // not eligible
+      confidence: 0.42,
+      rationale: "Fabricated pick outside the eligible set.",
+      rejectedAndWhy: [],
+    };
+    vi.doMock("@oracle/llm", () => ({
+      isLocalRuntime: () => true,
+      callClaudeCode: vi.fn().mockResolvedValue(JSON.stringify(mockResponse)),
+      MODELS: { CLAUDE_OPUS: "claude-opus-4-8" },
+    }));
+    const { decision } = await decide([bet], BASE_CTX, { claudeApiKey: "test-key" });
+    expect(decision.confidence).toBeCloseTo(0.42);
+    vi.doUnmock("@oracle/llm");
+  });
+});
+
 // ── validateSelection ─────────────────────────────────────────────────────────
 
 describe("validateSelection", () => {

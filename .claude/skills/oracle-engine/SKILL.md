@@ -242,6 +242,44 @@ before assuming it affects picks.
 
 ## Changelog
 
+- **2026-07-21** — Phase 6, LLM demotion formalized (`feat/llm-demotion-defaults`, stateful-rolling-elephant
+  plan, final phase). **Confidence sourcing fix** (`decision/index.ts`): `parseDecisionResponse`
+  (`:459-461` in the plan's own line-numbering, now `:477+` after this diff) previously stored the LLM's
+  self-reported `obj.confidence` verbatim whenever an LLM cascade tier won a fixture's decision — the
+  ONE remaining place in the decision pipeline that trusted an LLM's own number instead of the engine's
+  math, inconsistent with `deterministicDecide`'s `confidence: top.modelProb` (`:97`) and
+  `validateSelection`'s Gate 1.5, which already grounds `odds`/`stake` against the matched `EVMarket`
+  rather than the LLM's restated figures. Fix: new `findMatchingMarket(ref, eligibleBets)` (mirrors Gate
+  1's market+normalized-side match, kept as an intentional small duplicate rather than a shared export —
+  see the function's own header comment for why) resolves the LLM's chosen pick back to its `EVMarket`;
+  when found, `confidence` is now `matched.modelProb` — the engine's own model probability for that exact
+  market — not the LLM's self-report. `evApprox` (feeds `coerceGrade`'s fallback branch when the LLM's
+  `grade` field is missing/invalid) is computed from this same corrected `confidence`, so the fallback
+  grade is now also honestly EV-derived rather than riding an LLM-inflated confidence number. Threaded
+  through all 4 call sites (`arbitrate` `:426`, Tier-1 local Claude Code `:700`, Gemini `:739`, OpenRouter
+  free-tier loop `:808`) — all already had `eligibleBets` in scope. **Deliberately NOT changed**:
+  `validateSelection` itself (`:829+`) — its own existing test
+  ("passes through grade/confidence/rationale unchanged for a valid pick",
+  `packages/engine/test/decision.test.ts:829-841`) pins it to leave `confidence` untouched when a
+  `DecisionOutput` is constructed directly, so the fix had to live at the parse boundary instead; the
+  cascade's fail-open-to-deterministic behavior on any tier failure is untouched by this change (only
+  what `confidence` value gets stored when an LLM tier *does* win). New tests in
+  `packages/engine/test/decision.test.ts`. **env.ts default** (`.env.example` only — the code default was
+  already correct): `ENABLE_LLM_MARKET_EXECUTOR`'s tri-state parser (`parseLlmExecutorScope`, `env.ts:495`)
+  already defaulted unset to `"off"`; `.env.example`'s documented template value was still `true` (`"full"`
+  scope — a second full-catalogue LLM pass over every fixture), which real deployments likely copy
+  verbatim. Changed the documented default to `unmapped` (per-fixture sweep of ONLY the recoverable
+  skip-tail markets v3 couldn't price — `computeTailMarkets`, `marketsV3/feedDictionary.ts:407`) with an
+  expanded comment explaining the tri-state contract. **Verified already fully wired, not a stub**: the
+  `"unmapped"` scope's `batch/index.ts` wiring (`unmappedTailScope`/`decisionCtxForDecide` splice at
+  `:1438-1544`) is real, PR-23-shipped, and covered by
+  `packages/engine/test/decision.test.ts`'s "PR-23 unmapped-tail LLM executor scope" suite — confirmed via
+  `git log` before assuming any gap. `v3DeterministicDraft` (`env.ts:383`, `ORACLE_V3_DETERMINISTIC_DRAFT`)
+  verified unchanged, still defaults on. See `workflows/markets_v3.md`'s env-flag table for the new
+  `ORACLE_UNIFIED_SLATE`/`ORACLE_V62_PATTERNS` rows added this same phase (the latter's actual shipped
+  default is `"shadow"`, not the `"on"` the original Phase 3 plan text named — verified against
+  `packages/runtime/src/env.ts:458`'s live `parseTriState` call before documenting, not copied from the
+  plan).
 - **2026-07-21** — `gbm.test.ts` feature-count-drift fix (`fix/gbm-feature-count-mismatch`).
   Root cause: `tools/gbm_residual.py`'s `build_features()` gained 25 new columns across three
   separate feature commits (`2682466` FBref squad stats, `079ec00` weather + squad availability,

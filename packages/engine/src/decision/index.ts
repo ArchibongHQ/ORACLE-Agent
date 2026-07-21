@@ -423,7 +423,7 @@ async function arbitrate(
     ctx.slateSanity
   );
   const raw = await callClaudeCode(prompt, { timeoutMs: ARBITER_TIMEOUT_MS });
-  const parsed = raw ? parseDecisionResponse(raw) : null;
+  const parsed = raw ? parseDecisionResponse(raw, eligibleBets) : null;
 
   if (!raw || !parsed) {
     return { ...draft, decision: { ...draft.decision, arbiterStatus: "unverified" } };
@@ -438,7 +438,43 @@ async function arbitrate(
 
 // ── JSON parser with fence stripping ─────────────────────────────────────────
 
-function parseDecisionResponse(text: string): DecisionOutput | null {
+/** Locates the eligible-set EVMarket an LLM-authored PickRef refers to.
+ *  Mirrors validateSelection's Gate 1 matching (market exact, side
+ *  normalized/suffix-tolerant — models paraphrase "DNB Home" as "Home") so a
+ *  pick Gate 1 will accept resolves to the same EVMarket here. Kept as its
+ *  own small copy rather than a shared export with validateSelection: this
+ *  function only needs read access for confidence-grounding at parse time,
+ *  and duplicating ~8 lines is a smaller, lower-risk diff than restructuring
+ *  validateSelection's already-tested Gate 1 (see decision.test.ts's
+ *  "passes through grade/confidence/rationale unchanged" case, which pins
+ *  validateSelection to NOT touch confidence). */
+function findMatchingMarket(ref: PickRef, eligibleBets: EVMarket[]): EVMarket | undefined {
+  const normalizeSide = (s: string) =>
+    s
+      .replace(/\([^)]*\)/g, "")
+      .trim()
+      .toLowerCase();
+  return eligibleBets.find((m) => {
+    if (m.market !== ref.market) return false;
+    if (!ref.side) return true;
+    if (!m.side) return false;
+    const a = normalizeSide(m.side);
+    const b = normalizeSide(ref.side);
+    return a === b || a.endsWith(" " + b) || b.endsWith(" " + a);
+  });
+}
+
+/** eligibleBets grounds the stored `confidence` in the engine's own model
+ *  probability for this exact pick (EVMarket.modelProb), instead of trusting
+ *  the LLM's self-reported number — same grounding philosophy as
+ *  validateSelection's Gate 1.5 (odds/stake, below) and deterministicDecide's
+ *  `confidence: top.modelProb` (line ~97). Every call site already has its
+ *  eligible list in scope; defaults to [] so a caller that genuinely has none
+ *  degrades to the pre-fix self-reported behavior rather than throwing. When
+ *  the pick can't be matched, validateSelection's Gate 1 rejects the whole
+ *  decision downstream anyway (deterministic fallback replaces it), so the
+ *  unmatched branch only ever feeds a decision that's about to be discarded. */
+function parseDecisionResponse(text: string, eligibleBets: EVMarket[] = []): DecisionOutput | null {
   try {
     // Strip code fences
     const cleaned = text
@@ -457,8 +493,9 @@ function parseDecisionResponse(text: string): DecisionOutput | null {
     // primaryPick must be an object (PickRef) — reject legacy "NO_BET" string responses
     if (typeof obj.primaryPick !== "object" || obj.primaryPick === null) return null;
 
-    const confidence = Number(obj.confidence ?? 0);
     const pickObj = obj.primaryPick as PickRef;
+    const matched = findMatchingMarket(pickObj, eligibleBets);
+    const confidence = matched ? matched.modelProb : Number(obj.confidence ?? 0);
     // Derive EV from the pick's odds for grade calculation when not provided
     const evApprox = (1 / (pickObj.odds || 1) - 1) * confidence;
 
@@ -660,7 +697,7 @@ async function decideInner(
           model: MODELS.CLAUDE_OPUS,
           temperature: 0,
         };
-        const parsed = parseDecisionResponse(raw);
+        const parsed = parseDecisionResponse(raw, eligibleBets);
         if (parsed) return { decision: parsed, replay };
       }
     }
@@ -699,7 +736,7 @@ async function _tryGemini(
         requestedAt: new Date().toISOString(),
       });
       if (raw) {
-        const parsed = parseDecisionResponse(raw);
+        const parsed = parseDecisionResponse(raw, eligibleBets);
         if (parsed) {
           const replay: DecisionReplay = {
             prompt,
@@ -768,7 +805,7 @@ async function _tryOpenRouter(
       0
     );
     if (!raw) continue;
-    const parsed = parseDecisionResponse(raw);
+    const parsed = parseDecisionResponse(raw, eligibleBets);
     if (!parsed) continue;
     const replay: DecisionReplay = {
       prompt,
