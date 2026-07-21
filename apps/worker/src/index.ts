@@ -20,6 +20,7 @@ import cron from "node-cron";
 import { checkBuildFreshness, setStaleBuildNote } from "./buildFreshness.js";
 import { loadCatalogOverlay } from "./catalogOverlay.js";
 import {
+  ACQUIRE_CHAIN_TIMEOUT_MS,
   acquireDailyJob,
   awaitAcquireDailyJobOrTimeout,
   closingOddsSweepJob,
@@ -31,6 +32,7 @@ import { runDailyBatch } from "./dailyBatch.js";
 import { printEffectiveConfig } from "./effectiveConfig.js";
 import { runGoalsBatch } from "./goalsAccumulator.js";
 import { resolveYesterdayFixtures } from "./resolveYesterday.js";
+import { isDailyBatchFreshForToday, runUnifiedBatchOnce } from "./unifiedBatch.js";
 import { config, env, MARKET_CATALOG_OVERLAY_PATH, PYTHON_BIN, ROOT } from "./workerContext.js";
 import {
   HEARTBEAT_FILE,
@@ -256,7 +258,6 @@ const STALE_ALERT_REPEAT_MS = 12 * 60 * 60 * 1000; // don't re-alert more than e
 // through 06-28 all missed the (then-06:00 UTC) slot, leaving oracle-{date}.html
 // and the booking-eligible picks stale for days. Mirrors isLakeFreshForToday/
 // LAKE_TRIGGER_REPEAT_MS below, but keyed off lastBatch instead of lastAcquire.
-const DAILY_BATCH_STALE_MS = 20 * 60 * 60 * 1000; // ~20h — same-day batch is always fresher than this
 let lastDailyBatchTriggerAt = 0;
 const DAILY_BATCH_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a failing batch more than every 6h
 // Slot floors for the back-online triggers below: "today has no data yet" is
@@ -269,13 +270,6 @@ const DAILY_BATCH_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a faili
 // (30/35 past 9 WAT).
 const ACQUIRE_SLOT_MINUTES = 9 * 60 + 30; // 09:30 WAT
 const DAILY_BATCH_SLOT_MINUTES = 9 * 60 + 35; // 09:35 WAT
-
-// [audit fix, P0-4] Cap on how long the 09:35 unified batch (and its
-// back-online equivalents) wait for the 09:30 acquire job before proceeding
-// anyway (awaitAcquireDailyJobOrTimeout) — the "fallback cron" half of the
-// fix: a hung/dead acquire job must not permanently starve the rest of the
-// day's pipeline.
-const ACQUIRE_CHAIN_TIMEOUT_MS = 20 * 60 * 1000; // 20 min
 
 // [reliability fix] Hard ceiling on resolveYesterdayFixtures — confirmed live:
 // a 2026-07-11 internet outage wedged this job 2+ hours with no ceiling at
@@ -312,12 +306,6 @@ function resolveYesterdayWithTimeout(): Promise<void> {
   });
 }
 
-function isDailyBatchFreshForToday(lastBatchAt: string | undefined): boolean {
-  if (!lastBatchAt) return false;
-  if (watDateString(new Date(lastBatchAt)) !== watDateString()) return false;
-  return Date.now() - new Date(lastBatchAt).getTime() < DAILY_BATCH_STALE_MS;
-}
-
 // Lake-staleness back-online trigger: unlike the alert above, this actively
 // re-runs acquisition rather than just notifying — so a daemon that was down
 // across 09:30 WAT catches up as soon as it restarts, instead of waiting for
@@ -328,6 +316,28 @@ const LAKE_TRIGGER_REPEAT_MS = 6 * 60 * 60 * 1000; // don't retry a failing acqu
 
 // readFixtureReportState/isLakeFreshForToday live in ./workerUtils.js — both
 // read the same HEARTBEAT_FILE imported above.
+
+// [Phase 5, scrape-triggered batch] Passed as acquireDailyJob's onAcquired
+// hook at both real-scrape call sites below (09:30 WAT cron + the lake
+// back-online trigger) — fires runUnifiedBatchOnce the moment fixtures are
+// actually acquired, instead of only ever starting the daily->goals sequence
+// on the next clock tick (09:35 WAT cron) or the next hourly back-online
+// check. Routed through logJob (not a bare `void` call) so a rejection from
+// runDailyBatch/runGoalsBatch is logged the same way the cron/back-online
+// triggers already handle it, instead of becoming an unhandled promise
+// rejection — Node terminates the process by default on those (adversarial
+// review finding, 2026-07-21: this trigger fires first on a normal morning,
+// so leaving it unguarded would turn an ordinary downstream batch failure
+// into a full daemon crash). Not awaited here either way: acquireDailyJob's
+// own promise (and therefore the sendDailyFixtureReport call that follows it
+// at each site) must not block on the entire downstream batch finishing.
+// runUnifiedBatchOnce's own in-flight guard + freshness check make the LATER
+// cron/back-online triggers a fast no-op once this has already started or
+// finished today's run — never a duplicate.
+function onScrapeComplete(count: number): void {
+  if (count > 0)
+    logJob("unified-batch@scrape-complete", () => runUnifiedBatchOnce("scrape-complete"));
+}
 
 async function checkHeartbeatFreshness(): Promise<void> {
   // Called at startup and hourly (cron.schedule("0 * * * *", ...) below) — this
@@ -375,7 +385,7 @@ async function checkHeartbeatFreshness(): Promise<void> {
     // retry goals until the next calendar day; same class of gap as any other
     // logJob() failure here, which logs and does not auto-retry.)
     logJob("acquire-daily@back-online", async () => {
-      await acquireDailyJob();
+      await acquireDailyJob(onScrapeComplete);
       await sendDailyFixtureReport();
     });
   }
@@ -406,11 +416,13 @@ async function checkHeartbeatFreshness(): Promise<void> {
     // the unified daily->goals sequence exactly once, mirroring the merged
     // 09:35 WAT cron job's own daily-then-goals order (structural dependency:
     // goals' cross-batch veto reads the RunManifests runDailyBatch just wrote).
-    logJob("unified-batch@back-online", async () => {
-      await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
-      await runDailyBatch("scheduled");
-      await runGoalsBatch("scheduled");
-    });
+    // [Phase 5, scrape-triggered batch] Body is now runUnifiedBatchOnce —
+    // this outer `if`'s slot-floor/6h-repeat/crash-loop gate decides WHETHER
+    // to attempt a back-online trigger at all; runUnifiedBatchOnce's own
+    // in-flight guard + fresh freshness re-check decide whether the attempt
+    // actually does anything (a no-op if onScrapeComplete already covered
+    // today, e.g. the lake/acquire trigger above just fired it).
+    logJob("unified-batch@back-online", () => runUnifiedBatchOnce("back-online"));
   }
 
   // Fixture-report enrichment follow-up: sendDailyFixtureReport() sent today's
@@ -675,14 +687,18 @@ if (!IS_ONE_SHOT) {
   // the old 00:00 scrape was removed so picks are sourced from one fresh morning
   // odds snapshot instead of two. Back-online: if the machine was off at this slot,
   // checkHeartbeatFreshness fires acquireDailyJob + report immediately on daemon
-  // restart (see workerUtils.ts's isLakeFreshForToday/LAKE_STALE_MS); the unified
-  // daily->goals sequence itself is deferred to the daily-batch back-online
-  // trigger below, not fired from here — see that trigger's own comment for why.
+  // restart (see workerUtils.ts's isLakeFreshForToday/LAKE_STALE_MS).
+  // [Phase 5, scrape-triggered batch] onScrapeComplete now fires the unified
+  // daily->goals sequence the moment THIS scrape lands (count > 0) — the
+  // 09:35 cron slot below and the daily-batch back-online trigger become the
+  // fallback path (they still exist for the "onScrapeComplete never fired,
+  // e.g. this whole job failed before acquiring anything" case), not the
+  // primary one.
   cron.schedule(
     "30 9 * * *",
     () =>
       logJob("acquire-daily@09:30-WAT", async () => {
-        await acquireDailyJob();
+        await acquireDailyJob(onScrapeComplete);
         await sendDailyFixtureReport();
       }),
     { timezone: WAT_TZ }
@@ -708,14 +724,14 @@ if (!IS_ONE_SHOT) {
   // (Outputs A-D + mini-ACCA appendix — see slateOutputs.ts); runGoalsBatch
   // sends its own single consolidated "goals supplement" message (was five
   // separate slips — see goalsAccumulator.ts's finalizeGoalsSelection).
+  // [Phase 5, scrape-triggered batch] This is now the FALLBACK slot, not the
+  // primary trigger — on a normal morning, onScrapeComplete above already
+  // started (or finished) today's run several minutes earlier via
+  // runUnifiedBatchOnce's own in-flight guard + freshness check, so this
+  // cron tick becomes a fast no-op logged as "already fresh for today."
   cron.schedule(
     "35 9 * * *",
-    () =>
-      logJob("unified-batch@09:35-WAT", async () => {
-        await awaitAcquireDailyJobOrTimeout(ACQUIRE_CHAIN_TIMEOUT_MS);
-        await runDailyBatch("scheduled");
-        await runGoalsBatch("scheduled");
-      }),
+    () => logJob("unified-batch@09:35-WAT", () => runUnifiedBatchOnce("cron")),
     { timezone: WAT_TZ }
   );
 

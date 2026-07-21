@@ -94,6 +94,24 @@ function readLastAcquire(): { at?: string; date?: string } | undefined {
   }
 }
 
+/** [Phase 5, scrape-triggered batch] Exported so unifiedBatch.ts's
+ *  freshness check and index.ts's own back-online outer gate share ONE
+ *  heartbeat-read implementation instead of three independently-maintained
+ *  copies of the same try/JSON.parse/catch shape (maintainability review
+ *  finding, 2026-07-21) — mirrors readLastAcquire above exactly, just keyed
+ *  on the `lastBatch` heartbeat event instead of `lastAcquire`. */
+export function readLastBatch(): { at?: string } | undefined {
+  try {
+    const current = JSON.parse(readFileSync(HEARTBEAT_FILE, "utf8")) as Record<
+      string,
+      { at?: string } | undefined
+    >;
+    return current.lastBatch;
+  } catch {
+    return undefined;
+  }
+}
+
 // Fixture-report follow-up state: when sendDailyFixtureReport() blocks — either
 // on no fixtures at all, or on marketsEmpty — it stamps fixtureReportPlaceholder
 // (with a `reason` so the two distinct blocked states don't suppress each
@@ -220,7 +238,7 @@ function isRetriableScrapeFailure(err: ExecFileException | null, stderr: string)
 // stranding every step after it with zero visible failure signal for weeks.
 // 15 minutes is comfortably above every observed real workload (today's full
 // acquireDaily scrape+enrichment was ~6min) while still bounding a hang far
-// below the outer ACQUIRE_CHAIN_TIMEOUT_MS (20min, index.ts) umbrella that
+// below the outer ACQUIRE_CHAIN_TIMEOUT_MS (20min, dailyAcquisition.ts) umbrella that
 // already tolerates a slow-but-alive inner job.
 const DEFAULT_PYTHON_TIMEOUT_MS = 15 * 60 * 1000;
 
