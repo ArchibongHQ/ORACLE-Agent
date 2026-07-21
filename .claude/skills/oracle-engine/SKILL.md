@@ -230,10 +230,40 @@ before assuming it affects picks.
   `execution/`, `goalsV3/`, or `marketsV3/` — the wiring is not present even
   behind the flag. See `workflows/gbm_residual.md` for the rejection rationale
   (dated 2026-06-07, concluded calibration-signal-only, not a probability
-  replacement).
+  replacement). **Precision note (2026-07-21 investigation)**: that "no call
+  site" claim is true of the named `blendGbmIntoFp` export specifically —
+  `execution/index.ts:1858-1887` (same original commit, `8ca94e0`) DOES call
+  `predictGbm` directly behind `cfg.enableGbmResidual`, with the identical
+  blend math re-inlined rather than delegating to `blendGbmIntoFp`. Still
+  fully inert by default (`enableGbmResidual` is `undefined`/falsy unless a
+  caller sets it), so this doesn't change any live behavior — flagged here so
+  the next session doesn't re-read "zero call sites in execution/" as "GBM
+  code never runs there under any config."
 
 ## Changelog
 
+- **2026-07-21** — `gbm.test.ts` feature-count-drift fix (`fix/gbm-feature-count-mismatch`).
+  Root cause: `tools/gbm_residual.py`'s `build_features()` gained 25 new columns across three
+  separate feature commits (`2682466` FBref squad stats, `079ec00` weather + squad availability,
+  `d2b1dd7` 1X2 reverse line movement) inserted mid-schema — between `ahCloseDelta` and
+  `h2hHomeWin` — pushing the trained model from 95 to 120 features (confirmed via
+  `.tmp/models/gbm_residual.json`'s `learner_model_param.num_feature` and the matching
+  `feat_cols` persisted in `gbm_residual_meta.json`, itself a deterministic mirror of
+  `build_features()`'s per-row key-insertion order — every column is unconditionally
+  initialized to `NaN`/a default per row regardless of lookup-dict availability, so column
+  order is stable across retrains, not data-dependent). `packages/engine/src/gbm/index.ts`'s
+  `GBM_FEAT_COLS` constant — and `gbm.test.ts`'s three hand-built reference vectors — were
+  never updated to match; the model artifact is regenerated weekly by `apps/worker`'s Sunday
+  03:00 WAT cron (§6 above), so a freshly-retrained `.tmp/models/gbm_residual.json` on any dev
+  box immediately trips `predictGbm`'s length guard. Fix: extended `GBM_FEAT_COLS` to the
+  current 120-column order (elo/market-prob indices 0-2/75-77 unchanged since the insertion
+  point is after index 89, so the live `execution/index.ts:1866` call site — which sizes `x`
+  dynamically off `gbmModel.numFeature`, not `GBM_FEAT_COLS.length` — was never actually
+  broken by this drift); regenerated all three `gbm.test.ts` vectors/expected-probability
+  triples at 120 length against the real checked-in model via `xgb.XGBClassifier().load_model()
+  .predict_proba()` (same ground-truth method the file's own header documents) — no
+  zero-padding, no fabricated expected values. `enableGbmResidual` stays `undefined`/off by
+  default throughout, so no live pricing behavior changed.
 - **2026-07-20** — Phase 4 λ fallback ladder (`feat/lambda-fallback-ladder`, stateful-rolling-elephant
   plan). NEW `marketsV3/lambdaFallback.ts`: `computeLambdaFallback()` — when `computeV3Lambdas`
   (goalsV3/lambda.ts) returns null (zero usable scoring signal for a side), tries progressively
