@@ -142,6 +142,7 @@ export function renderFixtureRawData(
   const ph = stats?.positionHistory;
   const tg = stats?.topGoals;
   const squad = stats?.squadAverages;
+  const venue = stats?.venue;
   const h2hAgg = computeH2hAggregate(stats);
   // xG provenance tag — Understat (per-match, true xGA) vs FBref (season aggregate,
   // xGF only). Both home/away carry the same src in practice; read whichever exists.
@@ -293,6 +294,22 @@ export function renderFixtureRawData(
           squad.away
             ? `age ${squad.away.avg_age ?? "?"}, height ${squad.away.avg_height_cm ?? "?"}cm, weight ${squad.away.avg_weight_kg ?? "?"}kg`
             : null
+        )
+      : "",
+    // Venue: report-only descriptive context (not a home/away split, not a
+    // pricing signal — no engine coefficient). Absent for neutral-ground /
+    // venue-unknown fixtures. See SportyBetStats.venue.
+    venue && (venue.name || venue.city || typeof venue.capacity === "number")
+      ? line(
+          "Venue",
+          [
+            [venue.name, venue.city, venue.country].filter(Boolean).join(", "),
+            typeof venue.capacity === "number"
+              ? `cap. ${venue.capacity.toLocaleString("en-US")}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · ")
         )
       : "",
     travel.soft ? line("Travel", travel.soft.text) : "",

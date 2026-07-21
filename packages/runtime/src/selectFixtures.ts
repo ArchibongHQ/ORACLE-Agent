@@ -438,6 +438,19 @@ export interface SportyBetStats {
     home?: { avg_age?: number; avg_height_cm?: number; avg_weight_kg?: number } | null;
     away?: { avg_age?: number; avg_height_cm?: number; avg_weight_kg?: number } | null;
   } | null;
+  /** Stadium name/city/country/capacity — report-only descriptive context, NOT
+   *  a pricing signal (no engine coefficient; venue capacity has no established
+   *  predictive value beyond what home-field-advantage already captures). Comes
+   *  from match_info's embedded `stadium` object (there is no separate gismo
+   *  venue query — see tools/scrape_fixtures.py `_parse_venue`). Any field is
+   *  omitted when the source lacks it; the whole object is absent for
+   *  neutral-ground / venue-unknown fixtures. */
+  venue?: {
+    name?: string;
+    city?: string;
+    country?: string;
+    capacity?: number;
+  } | null;
 }
 
 /** H2H aggregate: BTTS%, Over1.5%/Over2.5% hit rate — a pure derivation from
