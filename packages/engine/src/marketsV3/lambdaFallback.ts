@@ -32,7 +32,7 @@
 
 import { getLeagueParams } from "../execution/index.js";
 import type { V3Lambdas } from "../goalsV3/lambda.js";
-import { v3LeaguePerTeamAvg } from "../goalsV3/lambda.js";
+import { LAMBDA_MAX, LAMBDA_MIN, v3LeaguePerTeamAvg } from "../goalsV3/lambda.js";
 import { clamp, poissonPMF } from "../math/index.js";
 
 export type LambdaBasis = "h2h" | "hit-rate" | "league-baseline" | "market-implied-1x2";
@@ -48,12 +48,18 @@ export interface LambdaFallbackResult {
   label: string;
 }
 
-const LAMBDA_MIN = 0.05;
-const LAMBDA_MAX = 4.5;
 /** Matches buildV3Grid's scoreline ceiling elsewhere in marketsV3 — goals
  *  beyond this are negligible-probability tail, not a real cutoff. */
 const MAX_TOTAL_GOALS = 12;
 const BISECTION_ITERATIONS = 30;
+/** Upper bisection bound for the implied total-goals mu. 20 keeps
+ *  tailProb(20, line=2.5) effectively 1.0 (no realistic O2.5 hit-rate, even
+ *  from a tiny H2H/season sample, saturates that high) — wide enough that a
+ *  legitimate near-100% observed rate still inverts to a distinct mu instead
+ *  of pinning at the search ceiling (adversarial review finding, 2026-07-20:
+ *  the prior hi=8 saturated around overPct≈0.986, silently losing precision
+ *  on the two non-circular, real-money rungs F1/F2). */
+const BISECTION_HI = 20;
 
 /** Invert a single over/under hit-rate into an implied total-goals mu via
  *  bisection on the Poisson survival function. P(total > line) is monotone
@@ -69,7 +75,7 @@ function invertOverRateToMu(overPct: number | null | undefined, line: number): n
     return p;
   };
   let lo = 0.1;
-  let hi = 8;
+  let hi = BISECTION_HI;
   for (let i = 0; i < BISECTION_ITERATIONS; i++) {
     const mid = (lo + hi) / 2;
     if (tailProb(mid) < overPct) lo = mid;
@@ -87,6 +93,12 @@ function splitByLeagueRatio(
 ): { lambdaHome: number; lambdaAway: number } {
   const lp = getLeagueParams(league);
   const total = lp.homeAvg + lp.awayAvg;
+  // Defensive-in-depth (testing review finding, 2026-07-20): every entry in
+  // execution/index.ts's LEAGUE_PARAMS table, including its Default fallback
+  // (homeAvg 1.45 / awayAvg 1.15), is a positive figure — total > 0 always
+  // holds today, so this 0.55 branch is not reachable through any current
+  // league string. Kept as a real, non-degenerate fallback (not a 50/50
+  // punt) rather than assuming that invariant can never change.
   const homeShare = total > 0 ? lp.homeAvg / total : 0.55;
   return {
     lambdaHome: clamp(muTotal * homeShare, LAMBDA_MIN, LAMBDA_MAX),
@@ -105,16 +117,34 @@ function toV3Lambdas(
     lambdaHome,
     lambdaAway,
     mu: lambdaHome + lambdaAway,
-    // Every fallback rung is by construction a coarser estimate than either
-    // of computeV3Lambdas' own two methods (it never has both a scored and
-    // conceded factor per side) — "simple-average" is the closer-fitting
-    // label of the two, not a claim this reused the simple-average formula.
-    method: "simple-average",
+    // Distinct from computeV3Lambdas' own "multiplicative"/"simple-average"
+    // labels (maintainability review finding, 2026-07-20) — this λ came from
+    // the F1-F4 ladder, not either of that function's real formulas; reusing
+    // "simple-average" would let a reader auditing by .method misattribute a
+    // fallback-ladder fixture to the real simple-average path.
+    method: "fallback",
     shrunk: true,
     xgBlended: false,
     leaguePerTeamAvg: v3LeaguePerTeamAvg(league, leagueId, lakeBaselines),
     hfaApplied: false,
     ratingsBlended: false,
+  };
+}
+
+/** F4's own split: skew the league-baseline mu by the devigged 1X2 book's
+ *  home/away probability differential. Exported so its arithmetic can be
+ *  unit-tested directly — the real F1-F3 ladder always resolves before F4 is
+ *  reached (v3LeaguePerTeamAvg's hardcoded default means F3 never fails), so
+ *  this branch is otherwise untestable through computeLambdaFallback alone
+ *  (testing review finding, 2026-07-20). */
+export function computeMarketImpliedSplit(
+  muTotal: number,
+  devigged1x2: { pHome: number; pDraw: number; pAway: number }
+): { lambdaHome: number; lambdaAway: number } {
+  const skew = clamp(devigged1x2.pHome - devigged1x2.pAway, -0.6, 0.6);
+  return {
+    lambdaHome: clamp(muTotal / 2 + skew * muTotal * 0.35, LAMBDA_MIN, LAMBDA_MAX),
+    lambdaAway: clamp(muTotal / 2 - skew * muTotal * 0.35, LAMBDA_MIN, LAMBDA_MAX),
   };
 }
 
@@ -206,10 +236,7 @@ export function computeLambdaFallback(input: LambdaFallbackInput): LambdaFallbac
   // fixture's own odds is circular, not a real edge.
   if (input.devigged1x2) {
     const L = v3LeaguePerTeamAvg(input.league, input.leagueId, input.lakeBaselines);
-    const muTotal = L * 2;
-    const skew = clamp(input.devigged1x2.pHome - input.devigged1x2.pAway, -0.6, 0.6);
-    const lambdaHome = clamp(muTotal / 2 + skew * muTotal * 0.35, LAMBDA_MIN, LAMBDA_MAX);
-    const lambdaAway = clamp(muTotal / 2 - skew * muTotal * 0.35, LAMBDA_MIN, LAMBDA_MAX);
+    const { lambdaHome, lambdaAway } = computeMarketImpliedSplit(L * 2, input.devigged1x2);
     return {
       lambdas: toV3Lambdas(
         lambdaHome,
@@ -223,5 +250,12 @@ export function computeLambdaFallback(input: LambdaFallbackInput): LambdaFallbac
     };
   }
 
+  // Defensive-in-depth, not reachable today: F3 above always resolves (same
+  // hardcoded-default guarantee documented on that rung), so this null only
+  // fires if a future caller reaches this function with neither H2H/hit-rate/
+  // devigged1x2 data NOR a league string v3LeaguePerTeamAvg can resolve —
+  // which, given that function's own unconditional default floor, cannot
+  // happen through any input shape this interface allows (testing review
+  // finding, 2026-07-20).
   return null;
 }

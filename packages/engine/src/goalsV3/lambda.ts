@@ -184,8 +184,13 @@ export interface V3Lambdas {
   lambdaHome: number;
   lambdaAway: number;
   mu: number;
-  /** Which §3.1 formula produced the goals-based λ. */
-  method: "multiplicative" | "simple-average";
+  /** Which §3.1 formula produced the goals-based λ. "fallback" ⇒
+   *  marketsV3/lambdaFallback.ts's F1-F4 ladder produced this, not
+   *  computeV3Lambdas' own multiplicative/simple-average formulas — kept
+   *  distinct so a reader trusting this field to segment/audit by formula
+   *  never misattributes a fallback-ladder fixture to the real
+   *  simple-average path (maintainability review finding, 2026-07-20). */
+  method: "multiplicative" | "simple-average" | "fallback";
   /** True when small-sample regression (n < 8) moved either λ. */
   shrunk: boolean;
   /** True when the 50/50 xG blend was applied (either side). */
@@ -265,9 +270,12 @@ export function ratingsBlendWeight(n: number | null | undefined, shrinkN: number
   return RATINGS_BLEND_MAX_WEIGHT * (nn / (nn + shrinkN));
 }
 /** λ sanity clamp — a team model outside this range is a data artifact, not a
- *  forecast (0.05 keeps Poisson tails well-defined; 4.5 exceeds any real team). */
-const LAMBDA_MIN = 0.05;
-const LAMBDA_MAX = 4.5;
+ *  forecast (0.05 keeps Poisson tails well-defined; 4.5 exceeds any real team).
+ *  Exported so marketsV3/lambdaFallback.ts's F1-F4 ladder clamps to the exact
+ *  same bounds instead of duplicating the constant (maintainability review
+ *  finding, 2026-07-20). */
+export const LAMBDA_MIN = 0.05;
+export const LAMBDA_MAX = 4.5;
 /** §8.2 availability multiplier bounds — 1.0 matches fetch_squad_availability.py's
  *  own min(ratio, 1.0) cap; 0.5 floors a data glitch (or a genuinely gutted XI)
  *  from ever zeroing a team's λ outright. */

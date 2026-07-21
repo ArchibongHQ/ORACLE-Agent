@@ -2,7 +2,11 @@
  *  Per-rung units (F1 H2H → F2 hit-rate → F3 league baseline → F4
  *  market-implied) plus the circular-basis contract callers must honor. */
 import { describe, expect, it } from "vitest";
-import { CIRCULAR_LAMBDA_BASES, computeLambdaFallback } from "../src/marketsV3/lambdaFallback.js";
+import {
+  CIRCULAR_LAMBDA_BASES,
+  computeLambdaFallback,
+  computeMarketImpliedSplit,
+} from "../src/marketsV3/lambdaFallback.js";
 
 const LEAGUE = "Premier League"; // real entry in V3_LEAGUE_BASELINES (2.85 g/g)
 
@@ -42,6 +46,28 @@ describe("computeLambdaFallback", () => {
   it("F2 averages both sides when only one is present", () => {
     const result = computeLambdaFallback({ league: LEAGUE, ou25PctH: 0.6 });
     expect(result?.basis).toBe("hit-rate");
+  });
+
+  it("F1/F2 inversion is monotone — a higher observed over-rate always implies a higher mu", () => {
+    const low = computeLambdaFallback({ league: LEAGUE, h2hOver25Pct: 0.2 });
+    const mid = computeLambdaFallback({ league: LEAGUE, h2hOver25Pct: 0.5 });
+    const high = computeLambdaFallback({ league: LEAGUE, h2hOver25Pct: 0.8 });
+    expect(low?.lambdas.mu ?? 0).toBeLessThan(mid?.lambdas.mu ?? 0);
+    expect(mid?.lambdas.mu ?? 0).toBeLessThan(high?.lambdas.mu ?? 0);
+  });
+
+  it("F1/F2 reject a negative or NaN over-rate as no real information, falling through to F3", () => {
+    const negative = computeLambdaFallback({ league: LEAGUE, h2hOver25Pct: -0.1 });
+    const nan = computeLambdaFallback({ league: LEAGUE, h2hOver25Pct: Number.NaN });
+    expect(negative?.basis).toBe("league-baseline");
+    expect(nan?.basis).toBe("league-baseline");
+  });
+
+  it('every rung labels its λ with method:"fallback", never claiming the real multiplicative/simple-average formulas', () => {
+    const h2h = computeLambdaFallback({ league: LEAGUE, h2hOver25Pct: 0.6 });
+    const baseline = computeLambdaFallback({ league: LEAGUE });
+    expect(h2h?.lambdas.method).toBe("fallback");
+    expect(baseline?.lambdas.method).toBe("fallback");
   });
 
   it("F3 — falls through to the league baseline when no team/H2H signal exists at all", () => {
@@ -90,5 +116,48 @@ describe("computeLambdaFallback", () => {
     expect(extreme?.lambdas.lambdaAway).toBeLessThanOrEqual(4.5);
     expect(extreme?.lambdas.lambdaHome).toBeGreaterThanOrEqual(0.05);
     expect(extreme?.lambdas.lambdaAway).toBeGreaterThanOrEqual(0.05);
+  });
+});
+
+// ── computeMarketImpliedSplit (F4's own arithmetic) ─────────────────────────
+// Direct unit tests since the real ladder never reaches F4 (F3 always
+// resolves first) — see this function's own header comment.
+describe("computeMarketImpliedSplit", () => {
+  it("splits evenly when the devigged book shows no home/away skew", () => {
+    const { lambdaHome, lambdaAway } = computeMarketImpliedSplit(2.6, {
+      pHome: 0.35,
+      pDraw: 0.3,
+      pAway: 0.35,
+    });
+    expect(lambdaHome).toBeCloseTo(lambdaAway, 5);
+    expect(lambdaHome + lambdaAway).toBeCloseTo(2.6, 5);
+  });
+
+  it("skews toward the favored side without flipping which side is favored", () => {
+    const { lambdaHome, lambdaAway } = computeMarketImpliedSplit(2.6, {
+      pHome: 0.6,
+      pDraw: 0.25,
+      pAway: 0.15,
+    });
+    expect(lambdaHome).toBeGreaterThan(lambdaAway);
+  });
+
+  it("mirrors correctly when away is favored instead of home", () => {
+    const { lambdaHome, lambdaAway } = computeMarketImpliedSplit(2.6, {
+      pHome: 0.15,
+      pDraw: 0.25,
+      pAway: 0.6,
+    });
+    expect(lambdaAway).toBeGreaterThan(lambdaHome);
+  });
+
+  it("clamps to the [0.05, 4.5] sanity bounds even for an extreme skew and a large mu", () => {
+    const { lambdaHome, lambdaAway } = computeMarketImpliedSplit(9, {
+      pHome: 0.95,
+      pDraw: 0.03,
+      pAway: 0.02,
+    });
+    expect(lambdaHome).toBeLessThanOrEqual(4.5);
+    expect(lambdaAway).toBeGreaterThanOrEqual(0.05);
   });
 });

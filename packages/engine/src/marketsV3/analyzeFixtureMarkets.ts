@@ -570,6 +570,10 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
       ou25PctA: input.empirical?.ou25PctA,
       devigged1x2: input.devigged1x2 ?? null,
     });
+    // Defensive-in-depth, not reachable today: computeLambdaFallback's own F3
+    // rung always resolves (v3LeaguePerTeamAvg's hardcoded default), so this
+    // null only fires if that guarantee is ever loosened — see
+    // lambdaFallback.ts's matching comment on its own final `return null`.
     if (!fallback) return null;
     lambdas = fallback.lambdas;
     lambdaBasis = fallback.basis;
@@ -755,7 +759,16 @@ export function analyzeFixtureMarketsV3(input: V3AllMarketsInput): V3AllMarketsR
         assessment.gateReason = "lambda_market_implied";
       }
       assessments.push(assessment);
-      if (gate.outcome === "capped") capped.push(assessment);
+      // Reads assessment.outcome (post-override), not gate.outcome, so a
+      // future override that also demotes INTO "capped" can't silently
+      // desync the two (adversarial review finding, 2026-07-20) — today
+      // they're always equal here since the circular-basis override only
+      // ever fires on "done", never "capped". A circular-basis outcome that
+      // was independently "capped" by evGate itself still lands here
+      // unflagged (its gateReason stays whatever evGate assigned, not
+      // lambda_market_implied) — currently inert since nothing reads
+      // `capped` for staking, but worth revisiting if that ever changes.
+      if (assessment.outcome === "capped") capped.push(assessment);
       if (assessment.outcome !== "done" || !assessment.confidence) return;
 
       const label = FAMILY_LABEL[route.family];
