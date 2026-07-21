@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type GbmModel, loadGbmModel, predictGbm } from "../src/gbm/index.js";
+import { GBM_FEAT_COLS, type GbmModel, loadGbmModel, predictGbm } from "../src/gbm/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MODEL_PATH = resolve(__dirname, "../../../.tmp/models/gbm_residual.json");
@@ -41,6 +41,16 @@ describe.skipIf(!existsSync(MODEL_PATH))(
     let model: GbmModel;
     beforeAll(() => {
       model = loadGbmModel(MODEL_PATH);
+    });
+
+    // Regression guard for the exact drift class that broke this file (2026-07-21): the
+    // Python trainer's build_features() can grow GBM_FEAT_COLS out from under the TS shim
+    // without either side erroring at the source. Without this, a future schema drift
+    // resurfaces as three opaque toBeCloseTo probability mismatches (or the length-guard
+    // throw in predictGbm, once *some* vector runs) instead of one direct, actionable
+    // assertion naming the constant that needs updating.
+    it("GBM_FEAT_COLS length matches the checked-in model's numFeature", () => {
+      expect(GBM_FEAT_COLS.length).toBe(model.numFeature);
     });
 
     it("matches Python on an all-zeros feature row", () => {
