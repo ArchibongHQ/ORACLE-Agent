@@ -450,6 +450,27 @@ const FIXTURE_COLUMNS: FixtureColumn[] = [
     header: "SquadWeight_A",
     get: ({ event }) => event.detail?.stats?.squadAverages?.away?.avg_weight_kg ?? null,
   },
+  // ── Venue (report-only descriptive context — not a home/away split, not a
+  //    pricing signal; from match_info's embedded `stadium` object) ───────────
+  {
+    header: "Venue",
+    width: 26,
+    get: ({ event }) => event.detail?.stats?.venue?.name ?? "",
+  },
+  {
+    header: "VenueCity",
+    width: 18,
+    get: ({ event }) => event.detail?.stats?.venue?.city ?? "",
+  },
+  {
+    header: "VenueCountry",
+    width: 16,
+    get: ({ event }) => event.detail?.stats?.venue?.country ?? "",
+  },
+  {
+    header: "VenueCapacity",
+    get: ({ event }) => event.detail?.stats?.venue?.capacity ?? null,
+  },
   // ── Derived (motivation / travel / completeness) ──────────────────────────
   {
     header: "Motivation",

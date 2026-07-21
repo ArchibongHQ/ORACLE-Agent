@@ -19,6 +19,7 @@ try:
         _parse_rest_congestion,
         _parse_squad_averages,
         _parse_standings,
+        _parse_venue,
     )
 except ImportError:  # repo root on sys.path instead of tools/
     from tools.scrape_fixtures import (
@@ -30,6 +31,7 @@ except ImportError:  # repo root on sys.path instead of tools/
         _parse_rest_congestion,
         _parse_squad_averages,
         _parse_standings,
+        _parse_venue,
     )
 
 
@@ -492,3 +494,51 @@ class TestParseSquadAverages:
         data = {"players": [{"height": 180, "weight": 75}, "garbage", None]}
         out = _parse_squad_averages(data)
         assert out["avg_height_cm"] == 180.0
+
+
+class TestParseVenue:
+    # Real shape verified live 2026-07-21 against match_info/67126642 (Kalmar FF
+    # vs Malmo, Allsvenskan) — venue data is embedded in match_info's own
+    # `stadium` object, there is NO separate gismo venue query. `capacity` is a
+    # STRING in the live response, not an int.
+    DATA = {
+        "match": {"stadiumid": 2322},
+        "stadium": {
+            "_doc": "stadium",
+            "_id": "2322",
+            "name": "Guldfageln Arena",
+            "city": "Kalmar",
+            "country": "Sweden",
+            "capacity": "12500",
+            "googlecoords": "56.691230,16.314930",
+        },
+    }
+
+    def test_extracts_name_city_country_and_coerces_capacity_to_int(self):
+        out = _parse_venue(self.DATA)
+        assert out["name"] == "Guldfageln Arena"
+        assert out["city"] == "Kalmar"
+        assert out["country"] == "Sweden"
+        assert out["capacity"] == 12500  # string "12500" coerced to int
+
+    def test_none_when_stadium_absent(self):
+        # Neutral-ground / venue-unknown fixtures return no stadium object at all
+        # (a club friendly returned stadium=None live) — must degrade to None.
+        assert _parse_venue({"match": {"stadiumid": 0}}) is None
+        assert _parse_venue({"stadium": None}) is None
+        assert _parse_venue(None) is None
+
+    def test_omits_empty_string_fields_never_fabricates(self):
+        data = {"stadium": {"name": "Some Ground", "city": "", "country": "  "}}
+        out = _parse_venue(data)
+        assert out == {"name": "Some Ground"}
+        assert "city" not in out and "country" not in out
+
+    def test_drops_non_numeric_or_zero_capacity(self):
+        assert _parse_venue({"stadium": {"name": "X", "capacity": "n/a"}}) == {"name": "X"}
+        assert _parse_venue({"stadium": {"name": "X", "capacity": "0"}}) == {"name": "X"}
+        assert _parse_venue({"stadium": {"name": "X", "capacity": True}}) == {"name": "X"}
+
+    def test_capacity_as_native_int_also_accepted(self):
+        out = _parse_venue({"stadium": {"name": "X", "capacity": 40000}})
+        assert out["capacity"] == 40000

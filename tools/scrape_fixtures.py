@@ -2116,6 +2116,53 @@ def _parse_squad_averages(squad_data: dict) -> Optional[dict]:
     return out or None
 
 
+def _parse_venue(mi_data: dict) -> Optional[dict]:
+    """Stadium name/city/country/capacity from match_info's embedded `stadium`
+    object — report-only descriptive context, NOT a pricing signal.
+
+    Discovery note (2026-07-21): there is NO separate gismo venue/stadium query.
+    8 plausible names (venue/{id}, stadium/{id}, stats_venue/{id}, venueinfo/{id},
+    stats_stadium/{id}, stadiuminfo/{id}, stats_venue_info/{id},
+    stats_venue_details/{id}) all return the gismo "exception" doc shape. The
+    venue data is embedded in match_info's own `data.stadium` object;
+    `match.stadiumid` is just that object's `_id` pointer (verified equal live:
+    2322==2322 for Kalmar's "Guldfageln Arena", 72069==72069 for Rapid
+    Bucuresti's "Stadionul Rapid-Giulesti"). No new gismo call is made — this
+    reuses the match_info response already fetched as call #2 of
+    _fetch_fixture_detail (stats_team_info/{uid} carries the same object, but
+    reading it there would cost a redundant extra request).
+
+    Live-verified shape (2026-07-21, real CLUB fixtures — Allsvenskan/Superliga):
+    stadium = {name, city, country, capacity, googlecoords, pitchsize, ...}.
+    Gotchas (verified, not assumed):
+    - `capacity` is a STRING ("12500"), not an int — coerced to int, dropped if
+      non-numeric or <= 0.
+    - the whole `stadium` object is absent (None) for neutral-ground / venue-
+      unknown fixtures (a club friendly returned stadium=None) — returns None.
+    - `name`/`city`/`country` can be empty strings; treated as missing (omitted,
+      never fabricated — same "omit rather than null" convention as
+      _parse_disciplinary/_parse_standings).
+    """
+    if not mi_data:
+        return None
+    st = mi_data.get("stadium")
+    if not isinstance(st, dict):
+        return None
+    out: dict = {}
+    for key in ("name", "city", "country"):
+        v = st.get(key)
+        if isinstance(v, str) and v.strip():
+            out[key] = v.strip()
+    cap = st.get("capacity")
+    if isinstance(cap, bool):  # bool is an int subclass — never a capacity
+        cap = None
+    if isinstance(cap, (int, float)) and cap > 0:
+        out["capacity"] = int(cap)
+    elif isinstance(cap, str) and cap.strip().isdigit() and int(cap) > 0:
+        out["capacity"] = int(cap.strip())
+    return out or None
+
+
 def _fetch_fixture_detail(
     event_id: str,
     kickoff_utc: Optional[str] = None,
@@ -2375,6 +2422,11 @@ def _fetch_fixture_detail(
         if parsed:
             squad_averages["away"] = parsed
 
+    # 16. Venue/stadium (name/city/country/capacity) — embedded in match_info's
+    # own `stadium` object (call #2 above), NOT a separate gismo query. No extra
+    # request. Report-only descriptive context; see _parse_venue for the shape.
+    venue = _parse_venue(mi_data)
+
     stats: dict = {}
     if form:
         stats["form"] = form
@@ -2408,6 +2460,8 @@ def _fetch_fixture_detail(
         stats["topGoals"] = top_goals
     if squad_averages:
         stats["squadAverages"] = squad_averages
+    if venue:
+        stats["venue"] = venue
 
     return {
         "odds": odds,

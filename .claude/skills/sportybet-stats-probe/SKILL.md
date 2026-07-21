@@ -127,19 +127,36 @@ more infrastructure than a host that already works.
   `stats_team_lastxextended`'s match objects, which DO carry a per-match
   `corners` field — do not assume H2H inherits the same per-match richness
   as recent-form; verify each endpoint's match-object shape independently.
-- **Venue/stadium name/capacity: NOT resolved this session.**
-  `match_info`'s `stadiumid` field is genuinely populated (confirmed a real
-  numeric id), but 8 plausible no-auth-host query names were tried
-  (`venue/{id}`, `stadium/{id}`, `stats_venue/{id}`, `venueinfo/{id}`,
-  `stats_stadium/{id}`, `stadiuminfo/{id}`, `stats_venue_info/{id}`,
-  `stats_venue_details/{id}`) — all returned the gismo "exception" doc shape
-  (HTTP 200, `event: "exception"`), meaning none is the correct query name.
-  `stats_team_info/{uid}` was also checked (already wired) and doesn't carry
-  a venue field either — that check used a national-team fixture (no home
-  ground), a weak test case; re-verify against a club fixture if this is
-  revisited. Resolving this properly needs the full non-headless-Playwright
-  capture technique (Steps 1-5 above), which wasn't run this session —
-  logged in `handoff.md` as a deferred item, not guessed at.
+- **Venue/stadium name/capacity: RESOLVED 2026-07-21 — there is NO separate
+  gismo venue query; the data is embedded in `match_info` itself.** The 8
+  prior guesses (`venue/{id}`, `stadium/{id}`, `stats_venue/{id}`,
+  `venueinfo/{id}`, `stats_stadium/{id}`, `stadiuminfo/{id}`,
+  `stats_venue_info/{id}`, `stats_venue_details/{id}`) all failed because
+  they assumed a standalone endpoint that does not exist. `match_info/{mid}`'s
+  `doc[0].data` carries a **top-level `stadium` object** whose `_id` IS the
+  `match.stadiumid` value (verified equal live: `2322`==`2322` for Kalmar FF's
+  "Guldfageln Arena", `72069`==`72069` for Rapid Bucuresti's "Stadionul
+  Rapid-Giulesti"). So `stadiumid` was always just a pointer into an object
+  already present in the same response. Shape (live-verified against real
+  **CLUB** fixtures — Allsvenskan/Superliga, the club test the 2026-07-20
+  national-team check lacked): `stadium = {_id, name, description, city,
+  country, cc:{...}, capacity, hometeams:[...], googlecoords, pitchsize,
+  constryear}`. Gotchas: **`capacity` is a STRING** (`"12500"`), not an int;
+  the whole `stadium` object is **absent (None)** for neutral-ground /
+  venue-unknown fixtures (a club friendly returned `stadium=None`);
+  `match.coverage.venue` was `false` on all sampled league games yet the
+  `stadium` object was still fully populated — do NOT gate on
+  `coverage.venue`. `stats_team_info/{uid}` (uid-keyed; `_id` returns
+  `exception`) ALSO carries the same `stadium` object — the 2026-07-20 note
+  that it "doesn't carry a venue field" was a false negative from testing a
+  national team (no home ground). Now wired as `_parse_venue(mi_data)` in
+  `tools/scrape_fixtures.py` (reuses the already-fetched `match_info` response,
+  no new gismo call) → `SportyBetStats.venue` → rendered report-only in BOTH
+  `dailyFixtureReport.ts` (Venue line) and `fixtureWorkbook.ts` (Venue/
+  VenueCity/VenueCountry/VenueCapacity columns). No engine coefficient: venue
+  capacity has no established predictive value beyond home-field advantage
+  (Pollard HFA literature attributes the effect to crowd/travel/familiarity,
+  not raw seat count), so it stays descriptive context, not a pricing signal.
 - `packages/runtime/src/selectFixtures.ts`'s `computeH2hAggregate()` derives
   BTTS%/Over1.5%/Over2.5% from `stats_team_versusrecent`'s existing
   `matches[]` scorelines — a pure TS-side computation, not a new gismo call.
