@@ -72,6 +72,11 @@ vi.mock("../src/workerContext.js", () => ({
 // workerUtils.ts, so the (date, reason) suppression logic under test runs
 // unmodified against this fake store instead of the real filesystem.
 let heartbeat: { fixtureReportPlaceholder?: { date: string; reason: string } } = {};
+// [Phase 5, scrape-triggered batch] Call-order log shared with the
+// onAcquired hook tests below — proves onAcquired fires AFTER the
+// lastAcquire heartbeat write, not before (a consumer of the hook may
+// reasonably assume the heartbeat is already visible once it runs).
+let writeHeartbeatCallOrder: string[] = [];
 
 const runPythonScriptMock = vi.fn().mockResolvedValue({ err: null, stdout: "", stderr: "" });
 
@@ -82,6 +87,7 @@ vi.mock("../src/workerUtils.js", () => ({
     placeholderReason: heartbeat.fixtureReportPlaceholder?.reason,
   }),
   writeHeartbeat: (event: string, detail: Record<string, unknown>) => {
+    writeHeartbeatCallOrder.push(event);
     if (event === "fixtureReportPlaceholder") {
       heartbeat.fixtureReportPlaceholder = detail as { date: string; reason: string };
     }
@@ -98,6 +104,7 @@ const {
   awaitAcquireDailyJobOrTimeout,
   runWeeklyKaggleRefresh,
   acquireDaily,
+  acquireDailyJob,
 } = await import("../src/dailyAcquisition.js");
 
 describe("sendDailyFixtureReport — blocked-state Telegram alert suppression", () => {
@@ -312,6 +319,52 @@ describe("acquireDaily — explicit timeoutMs override (2026-07-16 silent-failur
       [],
       expect.objectContaining({ timeoutMs: 25 * 60 * 1000 })
     );
+  });
+});
+
+/** [Phase 5, scrape-triggered batch] acquireDailyJob's new onAcquired hook is
+ *  what lets the unified daily->goals batch start the moment a scrape lands,
+ *  instead of only ever on the next clock tick — but only when fixtures were
+ *  actually acquired. A hook that fired unconditionally (including on a
+ *  0-fixture run, e.g. every SportyBet fixture already kicked off) would
+ *  kick off a real batch run against an empty/stale slate for no reason. */
+describe("acquireDailyJob — onAcquired hook (Phase 5, scrape-triggered batch)", () => {
+  beforeEach(() => {
+    runPythonScriptMock.mockClear();
+    writeHeartbeatCallOrder = [];
+  });
+
+  it("fires onAcquired with the real count when fixtures were acquired", async () => {
+    runPythonScriptMock.mockResolvedValue({ err: null, stdout: "acquired:12", stderr: "" });
+    const onAcquired = vi.fn();
+
+    await acquireDailyJob(onAcquired);
+
+    expect(onAcquired).toHaveBeenCalledTimes(1);
+    expect(onAcquired).toHaveBeenCalledWith(12);
+  });
+
+  it("fires onAcquired AFTER the lastAcquire heartbeat write, not before", async () => {
+    runPythonScriptMock.mockResolvedValue({ err: null, stdout: "acquired:12", stderr: "" });
+
+    await acquireDailyJob(() => writeHeartbeatCallOrder.push("onAcquired"));
+
+    expect(writeHeartbeatCallOrder).toEqual(["lastAcquire", "onAcquired"]);
+  });
+
+  it("does NOT fire onAcquired when the scrape acquired zero fixtures", async () => {
+    runPythonScriptMock.mockResolvedValue({ err: null, stdout: "acquired:0", stderr: "" });
+    const onAcquired = vi.fn();
+
+    await acquireDailyJob(onAcquired);
+
+    expect(onAcquired).not.toHaveBeenCalled();
+  });
+
+  it("does not require onAcquired at all — omitting it behaves exactly as before", async () => {
+    runPythonScriptMock.mockResolvedValue({ err: null, stdout: "acquired:5", stderr: "" });
+
+    await expect(acquireDailyJob()).resolves.toBeUndefined();
   });
 });
 

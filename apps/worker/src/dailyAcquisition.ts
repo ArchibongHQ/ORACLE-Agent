@@ -103,7 +103,7 @@ export function acquireDaily(): Promise<number> {
   // own docstring calls out as different from the lower-stakes best-effort
   // tools the new 15-minute DEFAULT_PYTHON_TIMEOUT_MS was calibrated against
   // (today's real run: ~9min end-to-end). 25 minutes stays comfortably above
-  // the outer ACQUIRE_CHAIN_TIMEOUT_MS (20min, index.ts) that callers already
+  // the outer ACQUIRE_CHAIN_TIMEOUT_MS (20min, exported below) that callers already
   // use to stop *waiting* on this job without killing it — so a legitimately
   // slow-but-alive scrape on a bad day still gets to finish rather than being
   // killed just because it's slower than the tools this default was tuned for.
@@ -159,16 +159,39 @@ function runCloudNewsSync(): Promise<void> {
   });
 }
 
+/** [audit fix, P0-4] Cap on how long a caller waits for a still-in-flight
+ *  acquire-daily job before proceeding anyway — the "fallback cron" half of
+ *  the fix: a hung/dead acquire job must not permanently starve the rest of
+ *  the day's pipeline. Exported so index.ts's fixture-report@enriched-followup
+ *  retry and unifiedBatch.ts's runUnifiedBatchOnce (an unrelated job and an
+ *  unrelated module with the identical "don't wait forever on acquisition"
+ *  need) share one bound instead of independently hardcoding the same
+ *  20-minute figure. */
+export const ACQUIRE_CHAIN_TIMEOUT_MS = 20 * 60 * 1000; // 20 min
+
 /** Full 09:30 WAT acquisition job: scrape -> lake write -> news enrichment ->
  *  cloud news/xG sync -> heartbeat. Only stamps lastAcquire when fixtures
  *  were actually acquired, so a failed run leaves the lake-staleness check
  *  above free to keep retrying rather than masking the failure with a fresh
  *  timestamp.
  *
- *  [audit fix, P0-4] Tracked via trackAcquireJob so the 09:35/09:40 cron slots
- *  (and the daily-batch back-online trigger) can await its actual completion
- *  instead of firing on a fixed wall-clock offset — see acquireChain.ts. */
-export function acquireDailyJob(): Promise<void> {
+ *  [audit fix, P0-4] Tracked via trackAcquireJob so a caller can await its
+ *  actual completion instead of firing on a fixed wall-clock offset — see
+ *  acquireChain.ts. [Phase 5 update] The 09:35 WAT cron slot no longer
+ *  awaits this directly; it now goes through unifiedBatch.ts's
+ *  runUnifiedBatchOnce, which awaits it internally the same way.
+ *
+ *  [Phase 5, scrape-triggered batch] Optional `onAcquired` fires — fire-
+ *  and-forget, NOT awaited — the moment fixtures are actually acquired
+ *  (count > 0), before this function's own promise resolves. A dependency-
+ *  injected callback rather than a direct import of unifiedBatch.ts's
+ *  runUnifiedBatchOnce: dailyBatch.ts (which unifiedBatch.ts itself imports,
+ *  for runDailyBatch) already imports acquireDaily from this file, so this
+ *  file importing unifiedBatch.ts directly would create a real module
+ *  cycle. The caller (index.ts, which already sits above both modules)
+ *  wires the two together instead. Callers that don't need the downstream
+ *  cascade (e.g. the --run-acquire-now one-shot CLI flag) simply omit it. */
+export function acquireDailyJob(onAcquired?: (count: number) => void): Promise<void> {
   return trackAcquireJob(
     (async () => {
       const count = await acquireDaily();
@@ -178,6 +201,7 @@ export function acquireDailyJob(): Promise<void> {
       await runCloudNewsSync();
       if (count > 0) {
         writeHeartbeat("lastAcquire", { date: watDateString(), fixtures: count });
+        onAcquired?.(count);
       }
     })()
   );
