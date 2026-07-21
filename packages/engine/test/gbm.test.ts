@@ -12,6 +12,21 @@ const MODEL_PATH = resolve(__dirname, "../../../.tmp/models/gbm_residual.json");
 // against the same saved model this TS shim loads — ground truth for the
 // tree-walking re-implementation, not a value chosen to make the test pass.
 //
+// Feature-vector length is 120 (GBM_FEAT_COLS in ../src/gbm/index.ts), matching
+// tools/gbm_residual.py's build_features() column order — NOT the 95-column
+// schema this file originally shipped with. The model gets retrained weekly by
+// apps/worker's Sunday 03:00 WAT cron (see .claude/skills/oracle-engine/SKILL.md
+// §6); three feature-adding commits (Kaggle FBref squad stats, match-day weather
+// + squad availability, 1X2 reverse line movement) inserted 25 new columns into
+// build_features() between "ahCloseDelta" and "h2hHomeWin" without the TS
+// GBM_FEAT_COLS constant (or this test) ever being updated to match, so the
+// saved model artifact's numFeature (120) drifted out from under both. Fixed by
+// updating GBM_FEAT_COLS to the current column order (verified against
+// .tmp/models/gbm_residual_meta.json's persisted feat_cols, which mirrors
+// build_features()'s deterministic per-row key-insertion order) and
+// regenerating every vector/expected-probability pair below against the
+// current model — no zero-padding or fabricated values.
+//
 // MODEL_PATH is gitignored (.tmp/) and only exists once tools/gbm_residual.py
 // has been run locally to train it — CI and fresh clones never have it.
 // describe.skipIf keeps this a real correctness check on a dev box with the
@@ -29,16 +44,16 @@ describe.skipIf(!existsSync(MODEL_PATH))(
     });
 
     it("matches Python on an all-zeros feature row", () => {
-      const x = new Array(95).fill(0);
+      const x = new Array(120).fill(0);
       const probs = predictGbm(model, x);
-      const expected = [0.6438524723052979, 0.15855282545089722, 0.19759471714496613];
+      const expected = [0.6228882670402527, 0.2038373202085495, 0.173274427652359];
       expect(probs[0]).toBeCloseTo(expected[0]!, 4);
       expect(probs[1]).toBeCloseTo(expected[1]!, 4);
       expect(probs[2]).toBeCloseTo(expected[2]!, 4);
     });
 
     it("matches Python on an odds+elo-populated row", () => {
-      const x = new Array(95).fill(0);
+      const x = new Array(120).fill(0);
       x[0] = 0.45; // mktH
       x[1] = 0.27; // mktD
       x[2] = 0.28; // mktA
@@ -46,7 +61,7 @@ describe.skipIf(!existsSync(MODEL_PATH))(
       x[76] = 1480; // eloAway
       x[77] = 70; // eloDiff
       const probs = predictGbm(model, x);
-      const expected = [0.6069156527519226, 0.18873852491378784, 0.20434582233428955];
+      const expected = [0.5592502951622009, 0.24929431080818176, 0.1914554089307785];
       expect(probs[0]).toBeCloseTo(expected[0]!, 4);
       expect(probs[1]).toBeCloseTo(expected[1]!, 4);
       expect(probs[2]).toBeCloseTo(expected[2]!, 4);
@@ -77,10 +92,16 @@ describe.skipIf(!existsSync(MODEL_PATH))(
         0.45677523755741145, -0.6619259410666513, -0.3630538465650718, -0.3817378939983291,
         -1.1958396455890397, 0.4869724807855818, -0.46940234020272387, 0.01249411872768743,
         0.48074665890590895, 0.4465311760299441, 0.6653851089727862, -0.09848548450942361,
-        -0.42329831204415375, -0.07971821090639905, -1.6873344339580298,
+        -0.42329831204415375, -0.07971821090639905, -1.6873344339580298, -1.4471124724230873,
+        -1.3226996123544024, -0.9972468276014818, 0.3997742267234366, -0.9054790553600608,
+        -0.3781625540393897, 1.2992282977860654, -0.35626397106142593, 0.7375155684670865,
+        -0.933617680009877, -0.20543755786763002, -0.9500220549105812, -0.3390330759005625,
+        0.8403081374573955, -1.7273204231923487, 0.43442364354585733, 0.2377356023322779,
+        -0.5941499556967944, -1.4460578543884546, 0.07212950771386951, -0.5294927090638024,
+        0.23267621135470395, 0.02185214552344288, 1.6017788913209154, -0.23935562747302427,
       ];
       const probs = predictGbm(model, x);
-      const expected = [0.46741434931755066, 0.21935124695301056, 0.3132343888282776];
+      const expected = [0.35443800687789917, 0.1851782500743866, 0.46038374304771423];
       expect(probs[0]).toBeCloseTo(expected[0]!, 4);
       expect(probs[1]).toBeCloseTo(expected[1]!, 4);
       expect(probs[2]).toBeCloseTo(expected[2]!, 4);
